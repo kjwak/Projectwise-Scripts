@@ -1,0 +1,26 @@
+---
+description: Prepend PDF QC script conventions (PW document search, export, WhatIf)
+globs: "**/*.ps1"
+alwaysApply: false
+---
+
+# Prepend PDF QC Conventions
+
+## ProjectWise usage in this repo
+
+- **Connection**: `Open-PWConnection -DatasourceName $DatasourceName -BentleyIMS` (or NoGUI/SSO as needed). Call `Close-PWConnection` when done.
+- **Document search**: Use exact name in one folder — avoid wildcard searches (environment may not handle them reliably).
+  - `Get-PWDocumentsBySearch -FolderPath $folderPath -JustThisFolder -DocumentName $docName -PopulatePath`
+- **Export**: `Export-PWDocumentsSimple -InputDocuments $doc -TargetFolder $localDir`. After export, resolve local file via path or `CopiedOutLocalFileName` / newest file in target if name differs.
+- **Create history doc**: `New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localPdf -DocumentName $HistoryDocName` (same folder as incoming)
+- **Update history content**: `Update-PWDocumentFile -InputDocument $historyDoc -FilePath $localMergedPdf`
+
+## Script style
+
+- Use `$ErrorActionPreference = "Stop"` for fail-fast.
+- Support **-WhatIf** where scripts modify PW or files: `[CmdletBinding(SupportsShouldProcess=$true)]` and `if ($PSCmdlet.ShouldProcess(...)) { ... }`.
+- Validate required external tools (e.g. qpdf) early; fail with a clear message or defer until the operation that needs them.
+
+## Reference
+
+- PW command/parameter details: **pwps_dump_20260209_125642/commands_parameters.txt** (search by cmdlet name).

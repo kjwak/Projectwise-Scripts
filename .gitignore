@@ -1,0 +1,65 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg
+MANIFEST
+
+# Virtual environments (any name)
+.venv/
+.venv_overlay_build/
+.venv*/
+venv/
+ENV/
+env/
+.env
+.env.*
+
+# --- PyInstaller (keep *.spec in git for reproducible builds) ---
+build/
+dist/
+
+# --- Tests / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# --- Logs & temp ---
+*.log
+logs/
+tmp/
+temp/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# --- Project-specific local/runtime ---
+# PowerShell / ProjectWise dumps and scratch
+pwps_dump_*/
+# Local working dirs (logs under these shouldn’t be synced)
+-WriteBackToPW/
+-DatasourceName/
+
+# Generated or drop-in output (add subpaths here if you use them for artifacts)
+output/
+tools/

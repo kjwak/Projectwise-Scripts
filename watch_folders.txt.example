@@ -1,0 +1,11 @@
+# List of ProjectWise folders to scan for |QC| trigger (one path per line).
+# Lines starting with # and blank lines are ignored.
+# Path format: full pw:\datasource\folder\path OR relative folder path (uses default -DatasourceName).
+#
+# Examples (replace with your paths):
+# pw:\typsa-us-pw.bentley.com:typsa-us-pw-03\AZDOT 2024\ProjectName\CADD\Working\QC Folder
+# AZDOT 2024\OtherProject\CADD\Working\TYPSA\Drainage\Prepend Test
+#
+# ALTERNATIVE: Scan all Sheets folders under a root (no need to list each project):
+#   .\prepend_qc_on_trigger.ps1 -WatchUnderRoot "Documents\AZDOT 2024" -SheetsPathFromProject "CADD\Sheets"
+# This discovers each project under AZDOT 2024 and watches <project>\CADD\Sheets for each.

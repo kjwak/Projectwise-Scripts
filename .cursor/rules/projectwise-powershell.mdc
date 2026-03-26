@@ -1,0 +1,48 @@
+---
+description: ProjectWise PowerShell (pwps / pwps_dab) API conventions and reference
+globs: "**/*.ps1"
+alwaysApply: false
+---
+
+# ProjectWise PowerShell Conventions
+
+## Modules
+
+- **pwps**: Core module (datasource, users, groups, storage, connection). Path: `C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1`
+- **pwps_dab**: Design and Automation (documents, folders, search, export/import, PDF, cloud). Most document/folder workflows use pwps_dab.
+
+Import before using: `Import-Module pwps_dab -Force` (pwps_dab typically loads pwps). For connection use `Open-PWConnection` from pwps.
+
+## Connection lifecycle
+
+- **Open-PWConnection** (pwps): Required before any PW operations. Parameter sets:
+  - **NoGUI**: `-DatasourceName` (alias `-Name`, mandatory), optional `-UserName`, `-Password` (SecureString), `-Admin`
+  - **SSO**: `-DatasourceName` and `-SSO`
+  - Other auth (e.g. Bentley IMS) may exist; check `Get-Command Open-PWConnection | % { $_.ParameterSets }` if needed.
+- **Close-PWConnection** (pwps): No parameters. Call when script is done with PW (e.g. in `finally` or end of script).
+
+## Naming and parameter patterns
+
+- Cmdlets use **Verb-PW*** or **Verb-PW*Noun** (e.g. `Get-PWUser`, `Get-PWDocumentsBySearch`).
+- Many cmdlets expose **multiple parameter sets**: by **ID** (e.g. `-GroupID`, `-UserID`) vs by **Name** (e.g. `-GroupName`, `-UserName`). Prefer the set that matches your input (IDs for pipeline/objects, names for user-facing params).
+- Parameters that accept pipeline by property name are common for IDs (e.g. `-DocumentID`, `-ProjectID` with `PipeByProp=True`).
+- **Add-PWUserIdentityProvider** uses `-Name` for provider name and `-Protocol` (position 1); **Add-PWUserWindowsIdentity** uses `-UserName`, `-DomainName`, and optional `-Name` for the Windows identity name.
+
+## Document and folder (pwps_dab)
+
+- **Search**: `Get-PWDocumentsBySearch` — use `-FolderPath`, `-JustThisFolder`, `-DocumentName` for exact name in one folder. Use `-PopulatePath` when you need full path. Avoid broad wildcards if the environment is unreliable.
+- **Export**: `Export-PWDocumentsSimple -InputDocuments <object(s)> -TargetFolder <path>`.
+- **Create**: `New-PWDocument -FolderPath -FilePath -DocumentName`.
+- **Update content**: `Update-PWDocumentFile -InputDocument -FilePath`.
+- **Attributes**: pwps has `Get-PWDocumentEAttributes` / `Set-PWDocumentEAttributes` (by DocumentID/ProjectID or DocumentGUID).
+
+## CEL (pwps)
+
+- **Invoke-PWCelExpression -Expression** for CEL queries. Parameter sets: Contextless, CurrentVersion (and others). Requires an active PW connection.
+
+## Parameter lookup
+
+- Exact parameters and parameter sets are in **pwps_dump_20260209_125642/commands_parameters.txt** (search for the cmdlet name).
+- Command list: **commands.txt** or **commands.csv** (Name, ModuleName, Source). **modules.txt** lists pwps and pwps_dab versions/paths.
+
+When suggesting or writing PW PowerShell, prefer the ID vs Name parameter set that fits the context and check the dump for mandatory/positional parameters.

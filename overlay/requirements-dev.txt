@@ -1,0 +1,4 @@
+# Development / test dependencies (install after overlay/requirements.txt)
+-r requirements.txt
+pytest>=8.0
+pytest-cov>=4.0
