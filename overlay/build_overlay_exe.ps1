@@ -49,7 +49,7 @@ try {
         Write-Host "Size: $([math]::Round($size, 2)) MB"
         Write-Host ""
         Write-Host "Deploy: copy the entire dist\qc_overlay_prepend folder to the target PC (exe needs sibling _internal)."
-        Write-Host "prepend_qc.ps1 defaults to qc_overlay_prepend.exe next to the script; use -QcOverlayExe for this onedir exe path, or place a onefile exe at the repo root."
+        Write-Host "prepend_qc.ps1 defaults to dist\qc_overlay_prepend.exe (onefile); use -QcOverlayExe for dist\qc_overlay_prepend\qc_overlay_prepend.exe if you deploy the onedir folder."
         Write-Host "Automation: call the exe from PowerShell (e.g. after a ProjectWise trigger):"
         Write-Host '  & "C:\path\to\qc_overlay_prepend\qc_overlay_prepend.exe" incoming.pdf qc_history.pdf -o output.pdf'
     } else {

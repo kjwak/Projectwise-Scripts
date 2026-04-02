@@ -64,14 +64,14 @@ Result: overlay page (with 3 layers) becomes new page 1; previous page 1 shifts 
 
 ## Standalone executable (no Python on the machine that runs QC)
 
-Build **once** on a machine that has Python; deploy **`qc_overlay_prepend.exe`** next to your PowerShell scripts (repo root next to `prepend_qc.ps1`) or another path you pass as `-QcOverlayExe`. Those hosts do not need Python—PowerShell or any scheduler should call the `.exe` with PDF paths.
+Build **once** on a machine that has Python; deploy **`dist\qc_overlay_prepend.exe`** next to your scripts (same layout as the repo, beside `prepend_qc.ps1`) or another path you pass as `-QcOverlayExe`. Those hosts do not need Python—PowerShell or any scheduler should call the `.exe` with PDF paths.
 
 ```powershell
 # Build (developer / build agent only):
 .\overlay\build_overlay_exe.ps1
 ```
 
-This uses [`qc_overlay_prepend.spec`](../qc_overlay_prepend.spec) (portable paths) and writes `dist\qc_overlay_prepend\` (one-folder build). Copy `qc_overlay_prepend.exe` to the repo root beside `prepend_qc.ps1` when using a single-file build, or point `-QcOverlayExe` at `dist\qc_overlay_prepend\qc_overlay_prepend.exe` if you deploy the full folder.
+This uses [`qc_overlay_prepend.spec`](../qc_overlay_prepend.spec) (portable paths) and writes `dist\qc_overlay_prepend\` (one-folder build). For `prepend_qc.ps1` defaults, use a onefile build as **`dist\qc_overlay_prepend.exe`**, or point `-QcOverlayExe` at **`dist\qc_overlay_prepend\qc_overlay_prepend.exe`** if you deploy the full onedir folder.
 
 **Typical automation (target machine, no Python):** from your trigger script, invoke the exe with full paths:
 
