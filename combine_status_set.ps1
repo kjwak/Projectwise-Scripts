@@ -12,6 +12,9 @@
 #
 # RUN (one-shot): add -RunOnce
 #
+# Manifest JSON stores hashes and pwLastModified. Bump $StatusSetManifestSchemaVersion in this file when those
+# semantics change so old manifests are ignored once (no manual delete). Or use -ForceRebuild to re-export all sheets.
+#
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
   [Parameter(Mandatory = $false)]
@@ -267,7 +270,7 @@ function Get-ManifestPath([string]$folderPath, [string]$localRoot) {
   return Join-Path $localRoot "status_set_manifest_$safe.json"
 }
 
-# Coerce PW/COM date fields to DateTime (avoid [DateTime]::TryParse — can fail binding ref on some PS/.NET combos)
+# Coerce PW/COM date fields to DateTime (avoid [DateTime]::TryParse - can fail binding ref on some PS/.NET combos)
 function ConvertTo-DateTimeFromPwValue([object]$v) {
   if ($null -eq $v) { return $null }
   if ($v -is [DateTime]) { if ($v.Year -gt 1) { return $v }; return $null }
@@ -304,9 +307,10 @@ function ConvertTo-DateTimeFromPwValue([object]$v) {
   return $null
 }
 
-# Last-modified time from a PW document row (export skip + manifest)
+# Last-modified time from a PW document row (export skip + manifest).
+# Prefer File Updated (FileUpdatedDate / FileUpdateDate) - matches ProjectWise document Properties "File Updated".
 function Get-DocLastModified([psobject]$doc) {
-  foreach ($prop in @("DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date", "FileUpdatedDate", "FileUpdateDate")) {
+  foreach ($prop in @("FileUpdatedDate", "FileUpdateDate", "DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date")) {
     $v = $null
     if ($doc.PSObject.Properties[$prop]) { $v = $doc.PSObject.Properties[$prop].Value }
     if (-not $v -and $doc.$prop) { $v = $doc.$prop }
@@ -474,7 +478,7 @@ if ($TestColumns) {
     @(@{ DatasourceName = $DatasourceName; FolderPath = $SheetsFolderPath })
   }
   if ($folders.Count -eq 0) { throw "No Sheets folders found" }
-  $dateCols = @("Name", "DocumentID", "DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date", "FileUpdatedDate")
+  $dateCols = @("Name", "DocumentID", "FileUpdatedDate", "FileUpdateDate", "DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date")
   $allDocs = $null
   $docSearchPath = $null
   foreach ($entry in $folders) {
@@ -560,6 +564,9 @@ Ensure-Dir $tempWorkDir
 
 Import-Module pwps_dab -Force
 
+# Bump when manifest fields or date rules change (older JSON files are treated as stale for one run).
+$StatusSetManifestSchemaVersion = 2
+
 while ($true) {
   # Build folder list (re-discover each poll when using WatchUnderRoot)
   $folderList = @()
@@ -615,8 +622,8 @@ foreach ($tp in $sheetTryPaths) {
   Write-Log "  $tp"
 }
 
-# List documents in folder only (no subfolders); prefer Get-PWDocumentsBySearchWithReturnColumns for last-saved comparison
-$dateCols = @("Name", "DocumentID", "DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date")
+# List documents in folder only (no subfolders); include File Updated columns (same as PW Properties)
+$dateCols = @("Name", "DocumentID", "FileUpdatedDate", "FileUpdateDate", "DocumentUpdateDate", "VersionModifiedDate", "Version Modified Date")
 $allDocs = @()
 $docSearchPath = $pwSheetsPath
 foreach ($tryPath in $sheetTryPaths) {
@@ -715,6 +722,19 @@ if (Test-Path $manifestPath) {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
   } catch { }
 }
+$manifestSchemaStale = $false
+if ($manifest) {
+  $mv = $manifest.manifestSchemaVersion
+  if ($null -eq $mv -or [int]$mv -lt $StatusSetManifestSchemaVersion) {
+    $manifestSchemaStale = $true
+    Write-Log "Manifest schema is v$(if ($null -ne $mv) { $mv } else { 'unset' }) (need v$StatusSetManifestSchemaVersion); ignoring file for skip logic so sheets re-export with current date rules." -Severity WARNING
+    $manifest = $null
+  }
+}
+if ($ForceRebuild) {
+  Write-Log "ForceRebuild: ignoring manifest for export skip (re-export all sheet PDFs from PW)."
+  $manifest = $null
+}
 Write-Log "Manifest file (hashes/cutoff): $manifestPath (exists: $(Test-Path -LiteralPath $manifestPath))"
 
 $safeForCache = ($pwSheetsPath -replace '[\\/:]', '_').Trim()
@@ -789,7 +809,7 @@ foreach ($doc in $pdfDocs) {
           $stored = $null
           if ($oldSrc.pwLastModified) { $stored = Parse-IsoDateTime ([string]$oldSrc.pwLastModified) }
           if ($docLastMod -and $stored -and ($docLastMod -gt $stored)) {
-            # Metadata newer than last build snapshot — refresh from PW
+            # Metadata newer than last build snapshot - refresh from PW
           } else {
             $shouldExport = $false
           }
@@ -837,7 +857,7 @@ $outPdf = Join-Path $tempWorkDir $outputName
 $needsFullRebuild = $ForceRebuild
 $changedIndices = @()
 
-if (-not $needsFullRebuild -and (Test-Path $manifestPath)) {
+if (-not $needsFullRebuild -and (Test-Path $manifestPath) -and -not $manifestSchemaStale) {
   try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $manifestSources = @($manifest.sources)
@@ -867,8 +887,12 @@ if (-not $needsFullRebuild -and (Test-Path $manifestPath)) {
   }
 } else {
   $needsFullRebuild = $true
-  if (-not (Test-Path $manifestPath)) {
+  if ($manifestSchemaStale) {
+    Write-Log "Manifest schema out of date; full rebuild."
+  } elseif (-not (Test-Path $manifestPath)) {
     Write-Log "No manifest found; full rebuild."
+  } elseif ($ForceRebuild) {
+    Write-Log "ForceRebuild; full rebuild."
   }
 }
 
@@ -880,7 +904,7 @@ if ($needsFullRebuild) {
 } elseif ($changedIndices.Count -gt 0 -and (Test-Path $outPdf)) {
   $actualPages = Get-PdfPageCount $outPdf
   if ($actualPages -ne $expectedTotalPages) {
-    Write-Log "Existing combined PDF has $actualPages page(s) on disk; merging all $($localPdfPaths.Count) current source PDF(s) would yield $expectedTotalPages page(s). Full rebuild (stale or partial StatusSet vs folder — not limited to changed sources)." -Severity WARNING
+    Write-Log "Existing combined PDF has $actualPages page(s) on disk; merging all $($localPdfPaths.Count) current source PDF(s) would yield $expectedTotalPages page(s). Full rebuild (stale or partial StatusSet vs folder - not limited to changed sources)." -Severity WARNING
     Merge-Pdfs -pdfPaths $localPdfPaths -outPath $outPdf
     Write-Log "Combined PDF created: $outPdf"
     $needsFullRebuild = $true
@@ -932,6 +956,7 @@ if ($needsFullRebuild -or $changedIndices.Count -gt 0) {
     $pinned = [string]$manifest.pinnedStatusSetLastModified
   }
   $manifestObj = @{
+    manifestSchemaVersion       = $StatusSetManifestSchemaVersion
     folderPath                  = $pwSheetsPath
     pinnedStatusSetLastModified = $pinned
     sources                     = $sources

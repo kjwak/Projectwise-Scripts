@@ -12,6 +12,8 @@
 #   .\prepend_qc_on_trigger.ps1 -WatchFolderPaths "path1","path2","path3"
 # All Sheets folders under a root (discovers project\CADD\Sheets for each project under root):
 #   .\prepend_qc_on_trigger.ps1 -WatchUnderRoot "Documents\AZDOT 2024" -SheetsPathFromProject "CADD\Sheets"
+# Multiple roots (pipe-separated; use from powershell.exe -File launchers when string[] binding is unreliable):
+#   .\prepend_qc_on_trigger.ps1 -WatchUnderRootJoined "Documents\AZDOT 2024|Documents\AZDOT" -SheetsPathFromProject "CADD\Sheets"
 # One shot: .\prepend_qc_on_trigger.ps1 -ConfigPath "C:\QC\watch_folders.txt" -RunOnce
 # Logging: activity + errors to C:\PW_QC_LOCAL\logs\ (override with -LogDir)
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -30,6 +32,10 @@ param(
 
   [Parameter(Mandatory = $false)]
   [string] $WatchUnderRoot,
+
+  # Pipe-separated watch roots (same pattern as combine_status_set.ps1).
+  [Parameter(Mandatory = $false)]
+  [string] $WatchUnderRootJoined,
 
   [Parameter(Mandatory = $false)]
   [string] $SheetsPathFromProject = "CADD\Sheets",
@@ -61,6 +67,14 @@ $TriggerTag = "QC_Archivist"
 
 $PrependQc_LogDir = $LogDir
 . "$PSScriptRoot\Logging.ps1"
+
+$WatchRootList = @()
+if ($WatchUnderRootJoined -and $WatchUnderRootJoined.Trim()) {
+  $WatchRootList = @($WatchUnderRootJoined -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+} elseif ($WatchUnderRoot -and $WatchUnderRoot.Trim()) {
+  $WatchRootList = @($WatchUnderRoot.Trim())
+}
+$useWatchUnderRoot = $WatchRootList.Count -gt 0
 
 # ProjectWise credentials: C:\PW_QC_LOCAL\pw_cred.txt
 # Format:
@@ -146,7 +160,7 @@ function Get-FolderList {
     }
     return $list
   }
-  if ($WatchUnderRoot) { return @() }
+  if ($useWatchUnderRoot) { return @() }
   $single = if ($TriggerFolderPath) { $TriggerFolderPath } else { $WatchFolderPath }
   $n = Get-NormalizedFolder $single $DatasourceName
   if ($n -and $n.FolderPath) { return @($n) }
@@ -156,7 +170,8 @@ function Get-FolderList {
 # When WatchUnderRoot is set: connect, list immediate children of root, return list of { DatasourceName, FolderPath } for each child\SheetsPathFromProject.
 # Leading "Documents\" is stripped from the path for the API (PW often uses paths without that segment).
 function Get-SheetsFoldersUnderRoot {
-  $rootEntry = Get-NormalizedFolder $WatchUnderRoot $DatasourceName
+  param([Parameter(Mandatory = $true)][string] $RootForDiscovery)
+  $rootEntry = Get-NormalizedFolder $RootForDiscovery $DatasourceName
   if (-not $rootEntry) { return @() }
   $rootPath = $rootEntry.FolderPath -replace '^Documents\\', ''
   $ds = $rootEntry.DatasourceName
@@ -197,16 +212,22 @@ function Get-SheetsFoldersUnderRoot {
 }
 
 $folderList = @(Get-FolderList)
-$useWatchUnderRoot = [bool]($WatchUnderRoot -and $WatchUnderRoot.Trim())
 if ($folderList.Count -eq 0 -and -not $useWatchUnderRoot) {
-  throw "No folders to watch. Use -ConfigPath, -WatchFolderPaths, -WatchUnderRoot, or -WatchFolderPath / -TriggerFolderPath."
+  throw "No folders to watch. Use -ConfigPath, -WatchFolderPaths, -WatchUnderRoot / -WatchUnderRootJoined, or -WatchFolderPath / -TriggerFolderPath."
 }
 
 # pwps_dab requires MTA. Re-launch with same params.
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   $passThrough = @('-DatasourceName', $DatasourceName, '-PollIntervalSeconds', $PollIntervalSeconds)
   if ($ConfigPath) { $passThrough += '-ConfigPath'; $passThrough += $ConfigPath }
-  elseif ($useWatchUnderRoot) { $passThrough += '-WatchUnderRoot'; $passThrough += $WatchUnderRoot; $passThrough += '-SheetsPathFromProject'; $passThrough += $SheetsPathFromProject }
+  elseif ($useWatchUnderRoot) {
+    if ($WatchRootList.Count -gt 1) {
+      $passThrough += '-WatchUnderRootJoined'; $passThrough += ($WatchRootList -join '|')
+    } else {
+      $passThrough += '-WatchUnderRoot'; $passThrough += $WatchRootList[0]
+    }
+    $passThrough += '-SheetsPathFromProject'; $passThrough += $SheetsPathFromProject
+  }
   elseif ($WatchFolderPaths -and $WatchFolderPaths.Count -gt 0) { $passThrough += '-WatchFolderPaths'; $passThrough += $WatchFolderPaths }
   else { $passThrough += '-WatchFolderPath'; $passThrough += $folderList[0].FolderPath }
   if ($RunOnce) { $passThrough += '-RunOnce' }
@@ -220,7 +241,7 @@ $scriptDir = $PSScriptRoot
 if (-not $PrependScriptPath) { $PrependScriptPath = Join-Path $scriptDir "prepend_qc.ps1" }
 
 $folderDesc = if ($ConfigPath) { "Config: $ConfigPath ($($folderList.Count) folders)" }
-  elseif ($useWatchUnderRoot) { "Under root: $WatchUnderRoot -> *\$SheetsPathFromProject (discover each poll)" }
+  elseif ($useWatchUnderRoot) { "Under root(s): $(@($WatchRootList) -join ' | ') -> *\$SheetsPathFromProject (discover each poll)" }
   else { "$($folderList.Count) folder(s)" }
 Write-Log "Watching $folderDesc | Poll: $PollIntervalSeconds s | RunOnce: $RunOnce"
 
@@ -229,16 +250,19 @@ Import-Module pwps_dab -Force
 while ($true) {
   $folderList = @(Get-FolderList)
   if ($useWatchUnderRoot -and $folderList.Count -eq 0) {
-    $rootEntry = Get-NormalizedFolder $WatchUnderRoot $DatasourceName
-    if ($rootEntry) {
+    $merged = @()
+    foreach ($root in $WatchRootList) {
+      $rootEntry = Get-NormalizedFolder $root $DatasourceName
+      if (-not $rootEntry) { continue }
       try {
-        #Open-PWConnection -DatasourceName $rootEntry.DatasourceName -BentleyIMS | Out-Null
         Connect-PW $rootEntry.DatasourceName
-        $folderList = @(Get-SheetsFoldersUnderRoot)
-        Write-Log "Discovered $($folderList.Count) Sheets folders under $($rootEntry.FolderPath)"
-      } catch { Write-Log "WatchUnderRoot discovery failed: $_" -Severity WARNING }
+        $discovered = @(Get-SheetsFoldersUnderRoot -RootForDiscovery $root)
+        $merged += $discovered
+        Write-Log "Discovered $($discovered.Count) Sheets folders under $($rootEntry.FolderPath)"
+      } catch { Write-Log "WatchUnderRoot discovery failed for ${root}: $_" -Severity WARNING }
       Close-PWConnection -ErrorAction SilentlyContinue
     }
+    $folderList = @($merged)
   }
   foreach ($entry in $folderList) {
     $WatchFolderPath = $entry.FolderPath
