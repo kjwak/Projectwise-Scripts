@@ -213,7 +213,10 @@ function Get-SheetsFoldersUnderRoot {
 
 $folderList = @(Get-FolderList)
 if ($folderList.Count -eq 0 -and -not $useWatchUnderRoot) {
-  throw "No folders to watch. Use -ConfigPath, -WatchFolderPaths, -WatchUnderRoot / -WatchUnderRootJoined, or -WatchFolderPath / -TriggerFolderPath."
+  $hint = if ($ConfigPath -and -not (Test-Path -LiteralPath $ConfigPath)) {
+    " (-ConfigPath was set but file not found: $ConfigPath — create it on this machine or fix the path)"
+  } else { "" }
+  throw "No folders to watch.$hint Use run_prepend_qc.ps1 (launcher), or pass -ConfigPath, -WatchFolderPaths, -WatchUnderRoot / -WatchUnderRootJoined, or -WatchFolderPath / -TriggerFolderPath."
 }
 
 # pwps_dab requires MTA. Re-launch with same params.

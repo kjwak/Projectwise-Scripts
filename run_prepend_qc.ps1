@@ -15,11 +15,12 @@ param(
 
 $scriptDir = $PSScriptRoot
 $triggerScript = Join-Path $scriptDir "prepend_qc_on_trigger.ps1"
-$params = @(
-  '-WatchUnderRootJoined', 'Documents\AZDOT 2024|Documents\AZDOT',
-  '-SheetsPathFromProject', 'CADD\Sheets'
-)
-if ($RunOnce) { $params += '-RunOnce' }
+# Hashtable splatting binds named parameters reliably (array form can fail in some hosts).
+$triggerParams = @{
+  WatchUnderRootJoined  = 'Documents\AZDOT 2024|Documents\AZDOT'
+  SheetsPathFromProject = 'CADD\Sheets'
+}
+if ($RunOnce) { $triggerParams['RunOnce'] = $true }
 
-& $triggerScript @params
+& $triggerScript @triggerParams
 exit $LASTEXITCODE
