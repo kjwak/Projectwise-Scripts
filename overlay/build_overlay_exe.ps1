@@ -3,6 +3,10 @@
 # Builds dist\qc_overlay_prepend\qc_overlay_prepend.exe (one-folder) for machines that do NOT have Python
 # (e.g. ProjectWise automation hosts). Run this script only on a build machine where Python is installed.
 #
+# If pip fails with WinError 10013 ("socket ... forbidden by its access permissions"), outbound HTTPS to
+# PyPI is blocked (firewall, corporate policy, or no proxy). Fix network/proxy, or build on another PC and
+# copy dist\qc_overlay_prepend\ to this machine; do not rely on a "SUCCESS" if pip never installed PyInstaller.
+#
 # Your ProjectWise / trigger PowerShell should invoke the exe directly, for example:
 #   & "C:\Path\to\qc_overlay_prepend\qc_overlay_prepend.exe" $incomingPdf $qcHistoryPdf -o $outputPdf
 #
@@ -37,9 +41,22 @@ try {
 
     Write-Host "Installing PyInstaller and overlay dependencies (overlay/requirements.txt)..."
     & $pipExe install -r (Join-Path $scriptDir "requirements.txt") pyinstaller --quiet
+    if ($LASTEXITCODE -ne 0) {
+      throw @"
+pip install failed (exit code $LASTEXITCODE). PyInstaller was not installed.
+Common causes: WinError 10013 = outbound HTTPS to pypi.org blocked (firewall/proxy). Allow Python/pip through the firewall, configure HTTPS_PROXY, or run this script on a machine with internet and copy dist\qc_overlay_prepend\ here.
+"@
+    }
+    & $pythonExe -c "import PyInstaller"
+    if ($LASTEXITCODE -ne 0) {
+      throw "PyInstaller import check failed. pip reported success but PyInstaller is not importable."
+    }
 
     Write-Host "Building qc_overlay_prepend (onedir) from qc_overlay_prepend.spec (may take 2-3 minutes)..."
     & $pythonExe -m PyInstaller --clean --noconfirm $specFile
+    if ($LASTEXITCODE -ne 0) {
+      throw "PyInstaller build failed (exit code $LASTEXITCODE)."
+    }
 
     $exe = Join-Path $projectRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"
     if (Test-Path $exe) {

@@ -19,7 +19,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # App does not use multiprocessing; excluding avoids pyi_rth_multiprocessing (socket/_socket) on some hosts.
+    # UPX must stay off: compressing .pyd often breaks _socket and other stdlib extensions on Windows.
+    excludes=["multiprocessing"],
     noarchive=False,
     optimize=0,
 )
@@ -34,7 +36,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
@@ -50,7 +52,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="qc_overlay_prepend",
 )
