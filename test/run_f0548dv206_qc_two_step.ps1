@@ -17,7 +17,7 @@ $testDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $testDir
 
 if (-not $ExePath) {
-    $ExePath = Join-Path $projectRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"
+    $ExePath = Join-Path $projectRoot "qc_overlay_prepend.exe"
 }
 
 if (-not (Test-Path $ExePath)) {

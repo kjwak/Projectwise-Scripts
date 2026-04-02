@@ -10,7 +10,7 @@
 # REQUIREMENTS:
 #   - pwps_dab module installed
 #   - qpdf installed and on PATH (or set $QpdfExe to full path) - used when overlay exe not found
-#   - qc_overlay_prepend.exe in dist\ (optional) - when present, creates layered overlay (Old red, New green, Current black)
+#   - qc_overlay_prepend.exe next to this script (optional) - when present, creates layered overlay (Old red, New green, Current black)
 #
 # RUN (standalone example):
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\prepend_qc.ps1" -IncomingDocName "input1.pdf"
@@ -40,7 +40,7 @@ param(
   [string] $QpdfExe = "qpdf",
 
   [Parameter(Mandatory=$false)]
-  [string] $QcOverlayExe = "",  # default: dist\qc_overlay_prepend.exe next to script
+  [string] $QcOverlayExe = "",  # default: qc_overlay_prepend.exe next to script
 
   [Parameter(Mandatory=$false)]
   [switch] $NoOverlayLayers,  # if set, use qpdf only (no layered overlay)
@@ -66,7 +66,7 @@ if ($QpdfExe -eq "qpdf") {
 
 # Default overlay exe path (standalone, no Python needed)
 if (-not $QcOverlayExe) {
-  $QcOverlayExe = Join-Path $PSScriptRoot "dist\qc_overlay_prepend.exe"
+  $QcOverlayExe = Join-Path $PSScriptRoot "qc_overlay_prepend.exe"
 }
 
 # pwps_dab requires MTA; Cursor/VS Code terminals often use STA. Re-launch in MTA to avoid ThreadOptions error.
@@ -381,7 +381,7 @@ if ($haveOverlay) {
   Write-Log "Using qpdf (simple merge, no layers)..."
   Prepend-Pdf -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
 } else {
-  throw "Neither overlay exe nor qpdf found. Copy dist\qc_overlay_prepend.exe or install qpdf."
+  throw "Neither overlay exe nor qpdf found. Place qc_overlay_prepend.exe next to this script or install qpdf."
 }
 Write-Log "Merged file created: $localMerged"
 
