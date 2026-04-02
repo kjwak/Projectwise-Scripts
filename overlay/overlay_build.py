@@ -157,6 +157,48 @@ def _fitz_enable_all_optional_content(doc) -> None:
         LOGGER.debug("Could not enable all OCGs on source: %s", exc)
 
 
+def _fitz_qc_triplet_xrefs(ocgs: dict) -> dict[str, int]:
+    """Map Old / New / Current -> xref (same rules as qc_overlay_prepend.extract_page_1_current_as_old)."""
+    out: dict[str, int] = {}
+    for xref, info in ocgs.items():
+        nm = str(info.get("name", "")).strip().strip("/")
+        key = nm.lower()
+        if key == "old":
+            out["Old"] = xref
+        elif key == "new":
+            out["New"] = xref
+        elif key == "current":
+            out["Current"] = xref
+    return out
+
+
+def _fitz_apply_old_source_layer_visibility(doc) -> None:
+    """Match page-1 extract: QC Old+New off, everything else on (previous Current visible in Old slot).
+
+    Re-applying here matters because show_pdf_page can embed optional content such that the
+    reopened extract's default /D state is not what MuPDF uses when grafting into the overlay,
+    which produced an empty Old layer while New/Current still drew.
+    """
+    if not doc.is_pdf:
+        return
+    ocgs = doc.get_ocgs()
+    if not ocgs:
+        return
+    qc = _fitz_qc_triplet_xrefs(ocgs)
+    if not (qc.get("Old") and qc.get("New") and qc.get("Current")):
+        return
+    all_x = list(ocgs.keys())
+    off_list = [qc["Old"], qc["New"]]
+    on_list = [x for x in all_x if x not in off_list]
+    try:
+        doc.set_layer(-1, on=on_list, off=off_list)
+        LOGGER.info(
+            "Old source: set_layer (QC Old/New off, Current + base layers on) before overlay embed"
+        )
+    except Exception as exc:
+        LOGGER.warning("Old source set_layer failed (Old slot may be empty): %s", exc)
+
+
 def parse_page_ranges(spec: Optional[str], max_pages: int) -> list[int]:
     """Parse 1-based page range specification."""
     if max_pages < 0:
@@ -246,7 +288,11 @@ def build_overlay(old_path: Path, new_path: Path, out_path: Path,
 
     try:
         # Old input is often a page-1 extract with QC layer defaults (Current on, Old/New off).
-        # Do not force all OCGs on here — that stacks all three layers into the Old slot.
+        # Do not force all OCGs on here — that stacks all three QC compare layers into the Old slot.
+        # Re-apply the same visibility as extract_page_1_current_as_old() so show_pdf_page embeds
+        # the previous Current (not empty nested OCG).
+        _fitz_apply_old_source_layer_visibility(old_doc)
+
         _fitz_enable_all_optional_content(new_doc)
 
         max_pairs = min(len(old_doc), len(new_doc))

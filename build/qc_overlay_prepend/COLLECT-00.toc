@@ -1,0 +1,1929 @@
+([('qc_overlay_prepend.exe',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\build\\qc_overlay_prepend\\qc_overlay_prepend.exe',
+   'EXECUTABLE'),
+  ('pikepdf\\concrt140.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\concrt140.dll',
+   'BINARY'),
+  ('pikepdf\\msvcp140.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\msvcp140.dll',
+   'BINARY'),
+  ('pikepdf\\msvcp140_1.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\msvcp140_1.dll',
+   'BINARY'),
+  ('pikepdf\\msvcp140_2.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\msvcp140_2.dll',
+   'BINARY'),
+  ('pikepdf\\msvcp140_atomic_wait.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\msvcp140_atomic_wait.dll',
+   'BINARY'),
+  ('pikepdf\\msvcp140_codecvt_ids.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\msvcp140_codecvt_ids.dll',
+   'BINARY'),
+  ('pikepdf\\qpdf30.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\qpdf30.dll',
+   'BINARY'),
+  ('pikepdf\\vcruntime140.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\vcruntime140.dll',
+   'BINARY'),
+  ('pikepdf\\vcruntime140_1.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\vcruntime140_1.dll',
+   'BINARY'),
+  ('pymupdf\\mupdfcpp64.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdfcpp64.dll',
+   'BINARY'),
+  ('python312.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\python312.dll',
+   'BINARY'),
+  ('_decimal.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_decimal.pyd',
+   'EXTENSION'),
+  ('_hashlib.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_hashlib.pyd',
+   'EXTENSION'),
+  ('unicodedata.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\unicodedata.pyd',
+   'EXTENSION'),
+  ('select.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\select.pyd',
+   'EXTENSION'),
+  ('_socket.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_socket.pyd',
+   'EXTENSION'),
+  ('_lzma.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_lzma.pyd',
+   'EXTENSION'),
+  ('_bz2.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_bz2.pyd',
+   'EXTENSION'),
+  ('PIL\\_webp.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_webp.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imagingtk.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingtk.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imagingmorph.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingmorph.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imagingmath.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingmath.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imagingft.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingft.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imagingcms.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingcms.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_imaging.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imaging.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('PIL\\_avif.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_avif.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('_elementtree.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_elementtree.pyd',
+   'EXTENSION'),
+  ('pyexpat.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\pyexpat.pyd',
+   'EXTENSION'),
+  ('_ssl.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_ssl.pyd',
+   'EXTENSION'),
+  ('lxml\\sax.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\sax.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('lxml\\objectify.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\objectify.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('lxml\\html\\diff.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\diff.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('lxml\\html\\_difflib.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\_difflib.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('lxml\\etree.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\etree.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('_overlapped.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_overlapped.pyd',
+   'EXTENSION'),
+  ('_queue.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_queue.pyd',
+   'EXTENSION'),
+  ('_asyncio.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_asyncio.pyd',
+   'EXTENSION'),
+  ('_wmi.pyd',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_wmi.pyd',
+   'EXTENSION'),
+  ('lxml\\builder.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\builder.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('lxml\\_elementpath.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\_elementpath.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('pymupdf\\_mupdf.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\_mupdf.pyd',
+   'EXTENSION'),
+  ('pymupdf\\_extra.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\_extra.pyd',
+   'EXTENSION'),
+  ('pikepdf\\_core.cp312-win_amd64.pyd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_core.cp312-win_amd64.pyd',
+   'EXTENSION'),
+  ('MSVCP140.dll', 'C:\\WINDOWS\\system32\\MSVCP140.dll', 'BINARY'),
+  ('VCRUNTIME140.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\VCRUNTIME140.dll',
+   'BINARY'),
+  ('VCRUNTIME140_1.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\VCRUNTIME140_1.dll',
+   'BINARY'),
+  ('libcrypto-3.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\libcrypto-3.dll',
+   'BINARY'),
+  ('libssl-3.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\libssl-3.dll',
+   'BINARY'),
+  ('python3.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\python3.dll',
+   'BINARY'),
+  ('PIL\\AvifImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\AvifImagePlugin.py',
+   'DATA'),
+  ('PIL\\BdfFontFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\BdfFontFile.py',
+   'DATA'),
+  ('PIL\\BlpImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\BlpImagePlugin.py',
+   'DATA'),
+  ('PIL\\BmpImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\BmpImagePlugin.py',
+   'DATA'),
+  ('PIL\\BufrStubImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\BufrStubImagePlugin.py',
+   'DATA'),
+  ('PIL\\ContainerIO.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ContainerIO.py',
+   'DATA'),
+  ('PIL\\CurImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\CurImagePlugin.py',
+   'DATA'),
+  ('PIL\\DcxImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\DcxImagePlugin.py',
+   'DATA'),
+  ('PIL\\DdsImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\DdsImagePlugin.py',
+   'DATA'),
+  ('PIL\\EpsImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\EpsImagePlugin.py',
+   'DATA'),
+  ('PIL\\ExifTags.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ExifTags.py',
+   'DATA'),
+  ('PIL\\FitsImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\FitsImagePlugin.py',
+   'DATA'),
+  ('PIL\\FliImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\FliImagePlugin.py',
+   'DATA'),
+  ('PIL\\FontFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\FontFile.py',
+   'DATA'),
+  ('PIL\\FpxImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\FpxImagePlugin.py',
+   'DATA'),
+  ('PIL\\FtexImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\FtexImagePlugin.py',
+   'DATA'),
+  ('PIL\\GbrImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GbrImagePlugin.py',
+   'DATA'),
+  ('PIL\\GdImageFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GdImageFile.py',
+   'DATA'),
+  ('PIL\\GifImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GifImagePlugin.py',
+   'DATA'),
+  ('PIL\\GimpGradientFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GimpGradientFile.py',
+   'DATA'),
+  ('PIL\\GimpPaletteFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GimpPaletteFile.py',
+   'DATA'),
+  ('PIL\\GribStubImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\GribStubImagePlugin.py',
+   'DATA'),
+  ('PIL\\Hdf5StubImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\Hdf5StubImagePlugin.py',
+   'DATA'),
+  ('PIL\\IcnsImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\IcnsImagePlugin.py',
+   'DATA'),
+  ('PIL\\IcoImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\IcoImagePlugin.py',
+   'DATA'),
+  ('PIL\\ImImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImImagePlugin.py',
+   'DATA'),
+  ('PIL\\Image.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\Image.py',
+   'DATA'),
+  ('PIL\\ImageChops.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageChops.py',
+   'DATA'),
+  ('PIL\\ImageCms.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageCms.py',
+   'DATA'),
+  ('PIL\\ImageColor.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageColor.py',
+   'DATA'),
+  ('PIL\\ImageDraw.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageDraw.py',
+   'DATA'),
+  ('PIL\\ImageDraw2.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageDraw2.py',
+   'DATA'),
+  ('PIL\\ImageEnhance.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageEnhance.py',
+   'DATA'),
+  ('PIL\\ImageFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageFile.py',
+   'DATA'),
+  ('PIL\\ImageFilter.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageFilter.py',
+   'DATA'),
+  ('PIL\\ImageFont.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageFont.py',
+   'DATA'),
+  ('PIL\\ImageGrab.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageGrab.py',
+   'DATA'),
+  ('PIL\\ImageMath.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageMath.py',
+   'DATA'),
+  ('PIL\\ImageMode.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageMode.py',
+   'DATA'),
+  ('PIL\\ImageMorph.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageMorph.py',
+   'DATA'),
+  ('PIL\\ImageOps.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageOps.py',
+   'DATA'),
+  ('PIL\\ImagePalette.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImagePalette.py',
+   'DATA'),
+  ('PIL\\ImagePath.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImagePath.py',
+   'DATA'),
+  ('PIL\\ImageQt.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageQt.py',
+   'DATA'),
+  ('PIL\\ImageSequence.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageSequence.py',
+   'DATA'),
+  ('PIL\\ImageShow.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageShow.py',
+   'DATA'),
+  ('PIL\\ImageStat.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageStat.py',
+   'DATA'),
+  ('PIL\\ImageText.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageText.py',
+   'DATA'),
+  ('PIL\\ImageTk.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageTk.py',
+   'DATA'),
+  ('PIL\\ImageTransform.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageTransform.py',
+   'DATA'),
+  ('PIL\\ImageWin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImageWin.py',
+   'DATA'),
+  ('PIL\\ImtImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\ImtImagePlugin.py',
+   'DATA'),
+  ('PIL\\IptcImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\IptcImagePlugin.py',
+   'DATA'),
+  ('PIL\\Jpeg2KImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\Jpeg2KImagePlugin.py',
+   'DATA'),
+  ('PIL\\JpegImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\JpegImagePlugin.py',
+   'DATA'),
+  ('PIL\\JpegPresets.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\JpegPresets.py',
+   'DATA'),
+  ('PIL\\McIdasImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\McIdasImagePlugin.py',
+   'DATA'),
+  ('PIL\\MicImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\MicImagePlugin.py',
+   'DATA'),
+  ('PIL\\MpegImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\MpegImagePlugin.py',
+   'DATA'),
+  ('PIL\\MpoImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\MpoImagePlugin.py',
+   'DATA'),
+  ('PIL\\MspImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\MspImagePlugin.py',
+   'DATA'),
+  ('PIL\\PSDraw.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PSDraw.py',
+   'DATA'),
+  ('PIL\\PaletteFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PaletteFile.py',
+   'DATA'),
+  ('PIL\\PalmImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PalmImagePlugin.py',
+   'DATA'),
+  ('PIL\\PcdImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PcdImagePlugin.py',
+   'DATA'),
+  ('PIL\\PcfFontFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PcfFontFile.py',
+   'DATA'),
+  ('PIL\\PcxImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PcxImagePlugin.py',
+   'DATA'),
+  ('PIL\\PdfImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PdfImagePlugin.py',
+   'DATA'),
+  ('PIL\\PdfParser.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PdfParser.py',
+   'DATA'),
+  ('PIL\\PixarImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PixarImagePlugin.py',
+   'DATA'),
+  ('PIL\\PngImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PngImagePlugin.py',
+   'DATA'),
+  ('PIL\\PpmImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PpmImagePlugin.py',
+   'DATA'),
+  ('PIL\\PsdImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\PsdImagePlugin.py',
+   'DATA'),
+  ('PIL\\QoiImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\QoiImagePlugin.py',
+   'DATA'),
+  ('PIL\\SgiImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\SgiImagePlugin.py',
+   'DATA'),
+  ('PIL\\SpiderImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\SpiderImagePlugin.py',
+   'DATA'),
+  ('PIL\\SunImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\SunImagePlugin.py',
+   'DATA'),
+  ('PIL\\TarIO.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\TarIO.py',
+   'DATA'),
+  ('PIL\\TgaImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\TgaImagePlugin.py',
+   'DATA'),
+  ('PIL\\TiffImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\TiffImagePlugin.py',
+   'DATA'),
+  ('PIL\\TiffTags.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\TiffTags.py',
+   'DATA'),
+  ('PIL\\WalImageFile.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\WalImageFile.py',
+   'DATA'),
+  ('PIL\\WebPImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\WebPImagePlugin.py',
+   'DATA'),
+  ('PIL\\WmfImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\WmfImagePlugin.py',
+   'DATA'),
+  ('PIL\\XVThumbImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\XVThumbImagePlugin.py',
+   'DATA'),
+  ('PIL\\XbmImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\XbmImagePlugin.py',
+   'DATA'),
+  ('PIL\\XpmImagePlugin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\XpmImagePlugin.py',
+   'DATA'),
+  ('PIL\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\__init__.py',
+   'DATA'),
+  ('PIL\\__main__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\__main__.py',
+   'DATA'),
+  ('PIL\\_avif.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_avif.pyi',
+   'DATA'),
+  ('PIL\\_binary.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_binary.py',
+   'DATA'),
+  ('PIL\\_deprecate.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_deprecate.py',
+   'DATA'),
+  ('PIL\\_imaging.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imaging.pyi',
+   'DATA'),
+  ('PIL\\_imagingcms.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingcms.pyi',
+   'DATA'),
+  ('PIL\\_imagingft.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingft.pyi',
+   'DATA'),
+  ('PIL\\_imagingmath.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingmath.pyi',
+   'DATA'),
+  ('PIL\\_imagingmorph.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingmorph.pyi',
+   'DATA'),
+  ('PIL\\_imagingtk.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_imagingtk.pyi',
+   'DATA'),
+  ('PIL\\_tkinter_finder.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_tkinter_finder.py',
+   'DATA'),
+  ('PIL\\_typing.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_typing.py',
+   'DATA'),
+  ('PIL\\_util.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_util.py',
+   'DATA'),
+  ('PIL\\_version.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_version.py',
+   'DATA'),
+  ('PIL\\_webp.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\_webp.pyi',
+   'DATA'),
+  ('PIL\\features.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\features.py',
+   'DATA'),
+  ('PIL\\py.typed',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\py.typed',
+   'DATA'),
+  ('PIL\\report.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\PIL\\report.py',
+   'DATA'),
+  ('flatten_source_layers.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\overlay\\flatten_source_layers.py',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\INSTALLER',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\INSTALLER',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\METADATA',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\METADATA',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\RECORD',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\RECORD',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\WHEEL',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\WHEEL',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\licenses\\LICENSE.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\licenses\\LICENSE.txt',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\licenses\\LICENSES.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\licenses\\LICENSES.txt',
+   'DATA'),
+  ('lxml-6.0.2.dist-info\\top_level.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml-6.0.2.dist-info\\top_level.txt',
+   'DATA'),
+  ('lxml\\ElementInclude.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\ElementInclude.py',
+   'DATA'),
+  ('lxml\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\__init__.py',
+   'DATA'),
+  ('lxml\\_elementpath.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\_elementpath.py',
+   'DATA'),
+  ('lxml\\apihelpers.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\apihelpers.pxi',
+   'DATA'),
+  ('lxml\\builder.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\builder.py',
+   'DATA'),
+  ('lxml\\classlookup.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\classlookup.pxi',
+   'DATA'),
+  ('lxml\\cleanup.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\cleanup.pxi',
+   'DATA'),
+  ('lxml\\cssselect.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\cssselect.py',
+   'DATA'),
+  ('lxml\\debug.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\debug.pxi',
+   'DATA'),
+  ('lxml\\docloader.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\docloader.pxi',
+   'DATA'),
+  ('lxml\\doctestcompare.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\doctestcompare.py',
+   'DATA'),
+  ('lxml\\dtd.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\dtd.pxi',
+   'DATA'),
+  ('lxml\\etree.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\etree.h',
+   'DATA'),
+  ('lxml\\etree.pyx',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\etree.pyx',
+   'DATA'),
+  ('lxml\\etree_api.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\etree_api.h',
+   'DATA'),
+  ('lxml\\extensions.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\extensions.pxi',
+   'DATA'),
+  ('lxml\\html\\ElementSoup.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\ElementSoup.py',
+   'DATA'),
+  ('lxml\\html\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\__init__.py',
+   'DATA'),
+  ('lxml\\html\\_diffcommand.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\_diffcommand.py',
+   'DATA'),
+  ('lxml\\html\\_difflib.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\_difflib.py',
+   'DATA'),
+  ('lxml\\html\\_html5builder.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\_html5builder.py',
+   'DATA'),
+  ('lxml\\html\\_setmixin.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\_setmixin.py',
+   'DATA'),
+  ('lxml\\html\\builder.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\builder.py',
+   'DATA'),
+  ('lxml\\html\\clean.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\clean.py',
+   'DATA'),
+  ('lxml\\html\\defs.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\defs.py',
+   'DATA'),
+  ('lxml\\html\\diff.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\diff.py',
+   'DATA'),
+  ('lxml\\html\\formfill.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\formfill.py',
+   'DATA'),
+  ('lxml\\html\\html5parser.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\html5parser.py',
+   'DATA'),
+  ('lxml\\html\\soupparser.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\soupparser.py',
+   'DATA'),
+  ('lxml\\html\\usedoctest.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\html\\usedoctest.py',
+   'DATA'),
+  ('lxml\\includes\\__init__.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\__init__.pxd',
+   'DATA'),
+  ('lxml\\includes\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\__init__.py',
+   'DATA'),
+  ('lxml\\includes\\c14n.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\c14n.pxd',
+   'DATA'),
+  ('lxml\\includes\\config.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\config.pxd',
+   'DATA'),
+  ('lxml\\includes\\dtdvalid.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\dtdvalid.pxd',
+   'DATA'),
+  ('lxml\\includes\\etree_defs.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\etree_defs.h',
+   'DATA'),
+  ('lxml\\includes\\etreepublic.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\etreepublic.pxd',
+   'DATA'),
+  ('lxml\\includes\\extlibs\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\extlibs\\__init__.py',
+   'DATA'),
+  ('lxml\\includes\\extlibs\\zconf.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\extlibs\\zconf.h',
+   'DATA'),
+  ('lxml\\includes\\extlibs\\zlib.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\extlibs\\zlib.h',
+   'DATA'),
+  ('lxml\\includes\\htmlparser.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\htmlparser.pxd',
+   'DATA'),
+  ('lxml\\includes\\libexslt\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libexslt\\__init__.py',
+   'DATA'),
+  ('lxml\\includes\\libexslt\\exslt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libexslt\\exslt.h',
+   'DATA'),
+  ('lxml\\includes\\libexslt\\exsltconfig.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libexslt\\exsltconfig.h',
+   'DATA'),
+  ('lxml\\includes\\libexslt\\exsltexports.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libexslt\\exsltexports.h',
+   'DATA'),
+  ('lxml\\includes\\libexslt\\libexslt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libexslt\\libexslt.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\HTMLparser.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\HTMLparser.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\HTMLtree.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\HTMLtree.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\SAX.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\SAX.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\SAX2.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\SAX2.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\__init__.py',
+   'DATA'),
+  ('lxml\\includes\\libxml\\c14n.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\c14n.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\catalog.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\catalog.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\chvalid.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\chvalid.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\debugXML.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\debugXML.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\dict.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\dict.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\encoding.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\encoding.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\entities.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\entities.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\globals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\globals.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\hash.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\hash.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\list.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\list.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\nanoftp.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\nanoftp.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\nanohttp.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\nanohttp.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\parser.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\parser.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\parserInternals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\parserInternals.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\pattern.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\pattern.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\relaxng.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\relaxng.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\schemasInternals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\schemasInternals.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\schematron.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\schematron.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\threads.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\threads.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\tree.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\tree.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\uri.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\uri.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\valid.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\valid.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xinclude.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xinclude.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xlink.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xlink.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlIO.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlIO.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlautomata.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlautomata.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlerror.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlerror.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlexports.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlexports.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlmemory.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlmemory.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlmodule.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlmodule.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlreader.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlreader.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlregexp.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlregexp.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlsave.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlsave.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlschemas.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlschemas.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlschemastypes.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlschemastypes.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlstring.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlstring.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlunicode.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlunicode.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlversion.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlversion.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xmlwriter.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xmlwriter.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xpath.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xpath.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xpathInternals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xpathInternals.h',
+   'DATA'),
+  ('lxml\\includes\\libxml\\xpointer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxml\\xpointer.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\__init__.py',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\attributes.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\attributes.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\documents.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\documents.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\extensions.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\extensions.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\extra.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\extra.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\functions.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\functions.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\imports.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\imports.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\keys.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\keys.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\libxslt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\libxslt.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\namespaces.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\namespaces.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\numbersInternals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\numbersInternals.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\preproc.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\preproc.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\security.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\security.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\templates.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\templates.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\transform.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\transform.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\trio.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\trio.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\triodef.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\triodef.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\variables.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\variables.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\win32config.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\win32config.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xslt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xslt.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xsltInternals.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xsltInternals.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xsltconfig.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xsltconfig.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xsltexports.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xsltexports.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xsltlocale.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xsltlocale.h',
+   'DATA'),
+  ('lxml\\includes\\libxslt\\xsltutils.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\libxslt\\xsltutils.h',
+   'DATA'),
+  ('lxml\\includes\\lxml-version.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\lxml-version.h',
+   'DATA'),
+  ('lxml\\includes\\relaxng.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\relaxng.pxd',
+   'DATA'),
+  ('lxml\\includes\\schematron.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\schematron.pxd',
+   'DATA'),
+  ('lxml\\includes\\tree.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\tree.pxd',
+   'DATA'),
+  ('lxml\\includes\\uri.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\uri.pxd',
+   'DATA'),
+  ('lxml\\includes\\xinclude.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xinclude.pxd',
+   'DATA'),
+  ('lxml\\includes\\xmlerror.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xmlerror.pxd',
+   'DATA'),
+  ('lxml\\includes\\xmlparser.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xmlparser.pxd',
+   'DATA'),
+  ('lxml\\includes\\xmlschema.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xmlschema.pxd',
+   'DATA'),
+  ('lxml\\includes\\xpath.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xpath.pxd',
+   'DATA'),
+  ('lxml\\includes\\xslt.pxd',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\includes\\xslt.pxd',
+   'DATA'),
+  ('lxml\\isoschematron\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\__init__.py',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\rng\\iso-schematron.rng',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\rng\\iso-schematron.rng',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'DATA'),
+  ('lxml\\iterparse.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\iterparse.pxi',
+   'DATA'),
+  ('lxml\\lxml.etree.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\lxml.etree.h',
+   'DATA'),
+  ('lxml\\lxml.etree_api.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\lxml.etree_api.h',
+   'DATA'),
+  ('lxml\\nsclasses.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\nsclasses.pxi',
+   'DATA'),
+  ('lxml\\objectify.pyx',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\objectify.pyx',
+   'DATA'),
+  ('lxml\\objectpath.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\objectpath.pxi',
+   'DATA'),
+  ('lxml\\parser.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\parser.pxi',
+   'DATA'),
+  ('lxml\\parsertarget.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\parsertarget.pxi',
+   'DATA'),
+  ('lxml\\proxy.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\proxy.pxi',
+   'DATA'),
+  ('lxml\\public-api.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\public-api.pxi',
+   'DATA'),
+  ('lxml\\pyclasslookup.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\pyclasslookup.py',
+   'DATA'),
+  ('lxml\\readonlytree.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\readonlytree.pxi',
+   'DATA'),
+  ('lxml\\relaxng.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\relaxng.pxi',
+   'DATA'),
+  ('lxml\\sax.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\sax.py',
+   'DATA'),
+  ('lxml\\saxparser.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\saxparser.pxi',
+   'DATA'),
+  ('lxml\\schematron.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\schematron.pxi',
+   'DATA'),
+  ('lxml\\serializer.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\serializer.pxi',
+   'DATA'),
+  ('lxml\\usedoctest.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\usedoctest.py',
+   'DATA'),
+  ('lxml\\xinclude.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xinclude.pxi',
+   'DATA'),
+  ('lxml\\xmlerror.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xmlerror.pxi',
+   'DATA'),
+  ('lxml\\xmlid.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xmlid.pxi',
+   'DATA'),
+  ('lxml\\xmlschema.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xmlschema.pxi',
+   'DATA'),
+  ('lxml\\xpath.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xpath.pxi',
+   'DATA'),
+  ('lxml\\xslt.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xslt.pxi',
+   'DATA'),
+  ('lxml\\xsltext.pxi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\xsltext.pxi',
+   'DATA'),
+  ('overlay_build.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\overlay\\overlay_build.py',
+   'DATA'),
+  ('overlay_layerize.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\overlay\\overlay_layerize.py',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\INSTALLER',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\INSTALLER',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\METADATA',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\METADATA',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\RECORD',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\RECORD',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\REQUESTED',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\REQUESTED',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\WHEEL',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\WHEEL',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\licenses\\LICENSE.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\licenses\\LICENSE.txt',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\licenses\\licenses-for-wheels.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\licenses\\licenses-for-wheels.txt',
+   'DATA'),
+  ('pikepdf-10.3.0.dist-info\\top_level.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf-10.3.0.dist-info\\top_level.txt',
+   'DATA'),
+  ('pikepdf\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\__init__.py',
+   'DATA'),
+  ('pikepdf\\_augments.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_augments.py',
+   'DATA'),
+  ('pikepdf\\_core.pyi',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_core.pyi',
+   'DATA'),
+  ('pikepdf\\_cpphelpers.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_cpphelpers.py',
+   'DATA'),
+  ('pikepdf\\_data.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_data.py',
+   'DATA'),
+  ('pikepdf\\_exceptions.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_exceptions.py',
+   'DATA'),
+  ('pikepdf\\_explicit_conv.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_explicit_conv.py',
+   'DATA'),
+  ('pikepdf\\_io.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_io.py',
+   'DATA'),
+  ('pikepdf\\_methods.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_methods.py',
+   'DATA'),
+  ('pikepdf\\_version.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_version.py',
+   'DATA'),
+  ('pikepdf\\_xml.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\_xml.py',
+   'DATA'),
+  ('pikepdf\\canvas.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\canvas.py',
+   'DATA'),
+  ('pikepdf\\codec.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\codec.py',
+   'DATA'),
+  ('pikepdf\\exceptions.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\exceptions.py',
+   'DATA'),
+  ('pikepdf\\form.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\form.py',
+   'DATA'),
+  ('pikepdf\\jbig2.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\jbig2.py',
+   'DATA'),
+  ('pikepdf\\models\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\__init__.py',
+   'DATA'),
+  ('pikepdf\\models\\_content_stream.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\_content_stream.py',
+   'DATA'),
+  ('pikepdf\\models\\_transcoding.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\_transcoding.py',
+   'DATA'),
+  ('pikepdf\\models\\ctm.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\ctm.py',
+   'DATA'),
+  ('pikepdf\\models\\encryption.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\encryption.py',
+   'DATA'),
+  ('pikepdf\\models\\image.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\image.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\__init__.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\_constants.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\_constants.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\_converters.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\_converters.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\_core.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\_core.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\_docinfo.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\_docinfo.py',
+   'DATA'),
+  ('pikepdf\\models\\metadata\\_xmp.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\metadata\\_xmp.py',
+   'DATA'),
+  ('pikepdf\\models\\outlines.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\models\\outlines.py',
+   'DATA'),
+  ('pikepdf\\objects.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\objects.py',
+   'DATA'),
+  ('pikepdf\\py.typed',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\py.typed',
+   'DATA'),
+  ('pikepdf\\settings.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\settings.py',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\INSTALLER',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\INSTALLER',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\METADATA',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\METADATA',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\RECORD',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\RECORD',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\WHEEL',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\WHEEL',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\licenses\\LICENSE',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\licenses\\LICENSE',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\top_level.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\top_level.txt',
+   'DATA'),
+  ('pillow-12.1.1.dist-info\\zip-safe',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pillow-12.1.1.dist-info\\zip-safe',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\COPYING',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\COPYING',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\INSTALLER',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\INSTALLER',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\METADATA',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\METADATA',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\README.md',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\README.md',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\RECORD',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\RECORD',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\REQUESTED',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\REQUESTED',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\WHEEL',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\WHEEL',
+   'DATA'),
+  ('pymupdf-1.27.1.dist-info\\entry_points.txt',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf-1.27.1.dist-info\\entry_points.txt',
+   'DATA'),
+  ('pymupdf\\__init__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\__init__.py',
+   'DATA'),
+  ('pymupdf\\__main__.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\__main__.py',
+   'DATA'),
+  ('pymupdf\\_apply_pages.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\_apply_pages.py',
+   'DATA'),
+  ('pymupdf\\_build.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\_build.py',
+   'DATA'),
+  ('pymupdf\\_wxcolors.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\_wxcolors.py',
+   'DATA'),
+  ('pymupdf\\extra.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\extra.py',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\classes.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\classes.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\classes2.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\classes2.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\exceptions.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\exceptions.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\extra.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\extra.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\archive.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\archive.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\band-writer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\band-writer.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\barcode.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\barcode.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\bidi.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\bidi.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\bitmap.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\bitmap.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\buffer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\buffer.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\color.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\color.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\compress.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\compress.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\compressed-buffer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\compressed-buffer.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\config.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\config.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\context.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\context.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\crypt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\crypt.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\deskew.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\deskew.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\device.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\device.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\display-list.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\display-list.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\document.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\document.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\export.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\export.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\filter.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\filter.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\font.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\font.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\geometry.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\geometry.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\getopt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\getopt.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\glyph-cache.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\glyph-cache.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\glyph.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\glyph.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\hash.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\hash.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\heap-imp.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\heap-imp.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\heap.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\heap.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\hyphen.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\hyphen.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\image.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\image.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\json.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\json.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\link.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\link.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\log.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\log.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\outline.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\outline.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\output-svg.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\output-svg.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\output.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\output.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\path.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\path.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\pixmap.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\pixmap.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\pool.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\pool.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\separation.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\separation.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\shade.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\shade.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\store.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\store.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\story-writer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\story-writer.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\story.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\story.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\stream.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\stream.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\string-util.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\string-util.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\structured-text.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\structured-text.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\system.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\system.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\text.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\text.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\track-usage.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\track-usage.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\transition.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\transition.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\tree.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\tree.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\types.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\types.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\util.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\util.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\version.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\version.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\write-pixmap.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\write-pixmap.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\writer.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\writer.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\xml.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\fitz\\xml.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\functions.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\functions.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\mu-office-lib.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\mu-office-lib.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\mu-threads.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\mu-threads.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\pkcs7-openssl.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\helpers\\pkcs7-openssl.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\html.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\html.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\internal.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\internal.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\memento.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\memento.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\annot.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\annot.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\clean.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\clean.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\cmap.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\cmap.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\crypt.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\crypt.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\document.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\document.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\event.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\event.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\font.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\font.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\form.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\form.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\image-rewriter.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\image-rewriter.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\interpret.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\interpret.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\javascript.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\javascript.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\name-table.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\name-table.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\object.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\object.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\page.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\page.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\parse.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\parse.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\recolor.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\recolor.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\resource.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\resource.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\xref.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\xref.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\zugferd.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\pdf\\zugferd.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\include\\mupdf\\ucdn.h',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\include\\mupdf\\ucdn.h',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\lib\\libmuthreads.lib',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\lib\\libmuthreads.lib',
+   'DATA'),
+  ('pymupdf\\mupdf-devel\\lib\\mupdfcpp64.lib',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf-devel\\lib\\mupdfcpp64.lib',
+   'DATA'),
+  ('pymupdf\\mupdf.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdf.py',
+   'DATA'),
+  ('pymupdf\\py.typed',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\py.typed',
+   'DATA'),
+  ('pymupdf\\pymupdf.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\pymupdf.py',
+   'DATA'),
+  ('pymupdf\\table.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\table.py',
+   'DATA'),
+  ('pymupdf\\utils.py',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\utils.py',
+   'DATA'),
+  ('base_library.zip',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\build\\qc_overlay_prepend\\base_library.zip',
+   'DATA')],)
