@@ -132,17 +132,21 @@
   ('VCRUNTIME140_1.dll',
    'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\VCRUNTIME140_1.dll',
    'BINARY'),
+  ('python3.dll',
+   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\python3.dll',
+   'BINARY'),
   ('pymupdf\\mupdfcpp64.dll',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\mupdfcpp64.dll',
-   'BINARY'),
-  ('python3.dll',
-   'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\python3.dll',
    'BINARY'),
   ('MSVCP140.dll', 'C:\\WINDOWS\\system32\\MSVCP140.dll', 'BINARY'),
   ('pikepdf\\VCRUNTIME140.dll',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\VCRUNTIME140.dll',
+   'BINARY'),
+  ('pikepdf\\MSVCP140.dll',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\MSVCP140.dll',
    'BINARY'),
   ('pikepdf\\VCRUNTIME140_1.dll',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
@@ -151,10 +155,6 @@
   ('pikepdf\\qpdf30.dll',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\qpdf30.dll',
-   'BINARY'),
-  ('pikepdf\\MSVCP140.dll',
-   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
-   'QC\\.venv_overlay_build\\Lib\\site-packages\\pikepdf\\MSVCP140.dll',
    'BINARY'),
   ('flatten_source_layers.py',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
@@ -168,17 +168,25 @@
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\overlay\\overlay_layerize.py',
    'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
-   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
+   'DATA'),
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
    'DATA'),
   ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_message.xsl',
    'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
-   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\readme.txt',
+   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_dsdl_include.xsl',
    'DATA'),
   ('lxml\\isoschematron\\resources\\xsl\\RNG2Schtrn.xsl',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
@@ -188,17 +196,9 @@
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\rng\\iso-schematron.rng',
    'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
-   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
-   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_abstract_expand.xsl',
-   'DATA'),
   ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_schematron_skeleton_for_xslt1.xsl',
-   'DATA'),
-  ('lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
-   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
-   'QC\\.venv_overlay_build\\Lib\\site-packages\\lxml\\isoschematron\\resources\\xsl\\XSD2Schtrn.xsl',
    'DATA'),
   ('lxml\\isoschematron\\resources\\xsl\\iso-schematron-xslt1\\iso_svrl_for_xslt1.xsl',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '

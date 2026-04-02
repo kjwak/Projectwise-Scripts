@@ -16,13 +16,20 @@ $ErrorActionPreference = "Stop"
 $testDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $testDir
 
+. (Join-Path $projectRoot "Resolve-OverlayExe.ps1")
+
 if (-not $ExePath) {
-    $ExePath = Join-Path $projectRoot "dist\qc_overlay_prepend.exe"
+    $ExePath = Select-ExistingOverlayExePath $projectRoot
+    if (-not $ExePath) {
+        $ExePath = Join-Path $projectRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"
+    }
 }
 
-if (-not (Test-Path $ExePath)) {
-    throw "Executable not found: $ExePath`nBuild with: .\overlay\build_overlay_exe.ps1"
+if (-not (Test-Path -LiteralPath $ExePath)) {
+    throw "Executable not found: $ExePath`nBuild with: .\overlay\build_overlay_exe.ps1 (outputs dist\qc_overlay_prepend\ with _internal)"
 }
+
+$ExePath = Resolve-OverlayExePath $ExePath
 
 $v00 = Join-Path $testDir "Version 00\f0548dv206.pdf"
 $v01 = Join-Path $testDir "Version 01\f0548dv206.pdf"
