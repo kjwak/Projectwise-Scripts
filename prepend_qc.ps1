@@ -6,6 +6,9 @@
 # - History document is (incoming filename base)-qc.pdf, saved in the same PW folder as the incoming file.
 # - If the history doc doesn't exist, it creates it from the incoming PDF (base case).
 #   - If it exists, it exports both and prepends (with overlay layers when available), then updates the history doc in PW.
+# - PDF tools (qpdf / qc_overlay_prepend) need local temp files: export from PW → process → upload merged PDF back.
+#   "Old" vs "new" for the overlay always comes from PW content (exported history + exported incoming). Optional
+#   LocalRoot\work\*_current_master.pdf is only a quality workaround for some layered PDFs; use -OverlayOldFromHistoryOnly to skip it.
 #
 # REQUIREMENTS:
 #   - pwps_dab module installed
@@ -42,10 +45,14 @@ param(
   [Parameter(Mandatory=$false)]
   [string] $QcOverlayExe = "",  # default: first existing of dist\qc_overlay_prepend\qc_overlay_prepend.exe, dist\qc_overlay_prepend.exe
 
-  # Same as test\run_f0548dv206_qc_two_step.ps1: pass --current-master so Old=previous sheet (vector), not history page-1 extract (often empty Old with layered QC).
-  # Default: LocalRoot\work\<historyBase>_current_master.pdf — created from history page 1 on first run (needs qpdf), then updated by qc_overlay_prepend each merge.
+  # Optional: persist a local "previous sheet" vector file for qc_overlay_prepend --current-master (test\run_f0548dv206_qc_two_step.ps1 style).
+  # When -OverlayOldFromHistoryOnly is $true (recommended for servers with no long-lived local baselines), this is ignored and Old comes only from the exported *-qc.pdf.
   [Parameter(Mandatory=$false)]
   [string] $OverlayCurrentMasterPath = "",
+
+  # $true: do not use LocalRoot\work\*_current_master.pdf or --current-master; overlay Old is derived only from exported QC history in qc_overlay_prepend (PW is still the source — we export history to temp first).
+  [Parameter(Mandatory=$false)]
+  [bool] $OverlayOldFromHistoryOnly = $false,
 
   [Parameter(Mandatory=$false)]
   [switch] $NoOverlayLayers,  # if set, use qpdf only (no layered overlay)
@@ -423,10 +430,9 @@ if (-not $isPdf) {
 }
 Write-Log "Local history file: $localHistory"
 
-# Overlay --current-master (same idea as test\run_f0548dv206_qc_two_step.ps1): Old layer uses this vector page
-# (previous approved sheet). Without it, qc_overlay_prepend falls back to history page-1 extract, which often yields an empty Old layer on layered QC PDFs.
+# Optional --current-master: local vector baseline updated each run. Skip when OverlayOldFromHistoryOnly (Old comes only from exported *-qc.pdf; PW remains source of truth via export).
 $overlayCurrentMasterForExe = ""
-if ($haveOverlay) {
+if ($haveOverlay -and -not $OverlayOldFromHistoryOnly) {
   $resolvedOverlayCurrentMaster = if ($OverlayCurrentMasterPath) {
     $OverlayCurrentMasterPath
   } else {
@@ -448,6 +454,8 @@ if ($haveOverlay) {
     $overlayCurrentMasterForExe = $resolvedOverlayCurrentMaster
     Write-Log "Overlay current-master: $overlayCurrentMasterForExe"
   }
+} elseif ($haveOverlay -and $OverlayOldFromHistoryOnly) {
+  Write-Log "Overlay: Old from exported QC history only (no local current-master file; --current-master not passed)."
 }
 
 # Prepend merge locally (use overlay when available for layered Old/New/Current)

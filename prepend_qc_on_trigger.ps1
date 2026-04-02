@@ -63,7 +63,11 @@ param(
 
   # Passed to prepend_qc.ps1 — same as default; override if current-master / work files live elsewhere.
   [Parameter(Mandatory = $false)]
-  [string] $LocalRoot = "C:\PW_QC_LOCAL"
+  [string] $LocalRoot = "C:\PW_QC_LOCAL",
+
+  # $true (default): overlay Old layer from exported *-qc.pdf only — no local *_current_master.pdf baselines. PW exports history each run; temp files are still used for tools.
+  [Parameter(Mandatory = $false)]
+  [bool] $OverlayOldFromHistoryOnly = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -239,6 +243,8 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   if ($RunOnce) { $passThrough += '-RunOnce' }
   if ($PrependScriptPath) { $passThrough += '-PrependScriptPath'; $passThrough += $PrependScriptPath }
   if ($LogDir) { $passThrough += '-LogDir'; $passThrough += $LogDir }
+  $passThrough += '-LocalRoot'; $passThrough += $LocalRoot
+  $passThrough += '-OverlayOldFromHistoryOnly'; $passThrough += $OverlayOldFromHistoryOnly
   & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @passThrough
   exit $LASTEXITCODE
 }
@@ -329,11 +335,12 @@ while ($true) {
       Write-Log "Processing: $docName (incoming PDF: $incomingPdf)"
 
       $prependParams = @{
-        IncomingFolderPath = $WatchFolderPath
-        IncomingDocName    = $incomingPdf
-        DatasourceName     = $DatasourceName
-        LogDir             = $LogDir
-        LocalRoot          = $LocalRoot
+        IncomingFolderPath         = $WatchFolderPath
+        IncomingDocName            = $incomingPdf
+        DatasourceName             = $DatasourceName
+        LogDir                     = $LogDir
+        LocalRoot                  = $LocalRoot
+        OverlayOldFromHistoryOnly  = $OverlayOldFromHistoryOnly
       }
       # Resolve bundled qpdf / overlay next to prepend_qc.ps1 (run_prepend_qc often uses a deploy folder without PATH entries).
       $prependRoot = Split-Path -Parent $PrependScriptPath

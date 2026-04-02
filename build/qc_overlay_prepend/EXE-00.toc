@@ -77,7 +77,7 @@
  [],
  False,
  False,
- 1775169560,
+ 1775170858,
  [('run.exe',
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\run.exe',

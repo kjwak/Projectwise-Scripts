@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import logging
 import os
 import sys
@@ -35,6 +36,15 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 LOGGER = logging.getLogger("qc_overlay_prepend")
+
+
+def _file_sha256(path: Path) -> str:
+    """SHA-256 of file contents (for duplicate Old/New detection)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _get_fitz():
@@ -500,8 +510,10 @@ Examples:
         page1_pdf = tmp / "page1.pdf"
         overlay_pdf = tmp / "overlay.pdf"
 
+        used_current_master_for_old = False
         if current_master is not None and current_master.exists():
             old_source_pdf = current_master
+            used_current_master_for_old = True
             LOGGER.info("Using current master as OLD source: %s", old_source_pdf)
         else:
             if current_master is not None and not current_master.exists():
@@ -509,6 +521,21 @@ Examples:
             if not extract_page_1_current_as_old(history, page1_pdf):
                 sys.exit(1)
             old_source_pdf = page1_pdf
+
+        # If current-master is the same file bytes as incoming, build_overlay would embed identical art for Old and New
+        # (only colors differ). Typical causes: same revision resubmitted, or a seed file that matched incoming.
+        if used_current_master_for_old and current_master is not None:
+            try:
+                if _file_sha256(current_master) == _file_sha256(incoming):
+                    LOGGER.warning(
+                        "current-master is byte-identical to incoming; using history page-1 extract for Old instead "
+                        "(avoids duplicate Old/New content). If this is unexpected, fix or delete the current-master file."
+                    )
+                    if not extract_page_1_current_as_old(history, page1_pdf):
+                        sys.exit(1)
+                    old_source_pdf = page1_pdf
+            except OSError as exc:
+                LOGGER.warning("Could not compare current-master to incoming: %s", exc)
 
         LOGGER.info("[*] Building overlay (Old=page1 Current layer red, New=incoming green, Current=incoming black)")
         if not _run_overlay_pipeline(

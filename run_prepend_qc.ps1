@@ -7,18 +7,23 @@
 #
 # Run: cd "C:\Users\jflint\Documents\ProjectWise Prepend"; .\run_prepend_qc.ps1
 # One-shot: .\run_prepend_qc.ps1 -RunOnce
+# Overlay uses exported *-qc.pdf from PW for the Old layer (no local *_current_master.pdf). Override: -OverlayOldFromHistoryOnly:$false
 
 param(
   [Parameter(Mandatory = $false)]
-  [switch] $RunOnce
+  [switch] $RunOnce,
+
+  [Parameter(Mandatory = $false)]
+  [bool] $OverlayOldFromHistoryOnly = $true
 )
 
 $scriptDir = $PSScriptRoot
 $triggerScript = Join-Path $scriptDir "prepend_qc_on_trigger.ps1"
 # Hashtable splatting binds named parameters reliably (array form can fail in some hosts).
 $triggerParams = @{
-  WatchUnderRootJoined  = 'Documents\AZDOT 2024|Documents\AZDOT'
-  SheetsPathFromProject = 'CADD\Sheets'
+  WatchUnderRootJoined        = 'Documents\AZDOT 2024|Documents\AZDOT'
+  SheetsPathFromProject       = 'CADD\Sheets'
+  OverlayOldFromHistoryOnly   = $OverlayOldFromHistoryOnly
 }
 if ($RunOnce) { $triggerParams['RunOnce'] = $true }
 
