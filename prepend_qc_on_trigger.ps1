@@ -65,7 +65,6 @@ param(
 $ErrorActionPreference = "Stop"
 $TriggerTag = "QC_Archivist"
 
-$PrependQc_LogDir = $LogDir
 . "$PSScriptRoot\Logging.ps1"
 
 $WatchRootList = @()

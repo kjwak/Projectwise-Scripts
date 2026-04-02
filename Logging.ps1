@@ -1,14 +1,18 @@
 # Logging.ps1
-# Shared logging for prepend_qc scripts. Dot-source after setting $PrependQc_LogDir (optional).
+# Shared logging for prepend_qc scripts. Dot-source after $LogDir and/or $PrependQc_LogDir (optional).
 # Usage:
-#   $PrependQc_LogDir = "C:\PW_QC_LOCAL\logs"  # optional; default used if not set
+#   $LogDir = "C:\PW_QC_LOCAL\logs"   # or set $PrependQc_LogDir directly
 #   . "$PSScriptRoot\Logging.ps1"
 #   Write-Log "Activity message"
 #   Write-Log "Something went wrong" -Severity WARNING
 #   Write-Log "Fatal error" -Severity ERROR
 
 if (-not (Get-Variable -Name PrependQc_LogDir -ErrorAction SilentlyContinue)) {
-  $PrependQc_LogDir = "C:\PW_QC_LOCAL\logs"
+  if (Get-Variable -Name LogDir -ErrorAction SilentlyContinue) {
+    $PrependQc_LogDir = $LogDir
+  } else {
+    $PrependQc_LogDir = "C:\PW_QC_LOCAL\logs"
+  }
 }
 
 function Write-Log {

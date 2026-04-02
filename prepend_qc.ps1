@@ -77,7 +77,6 @@ if (-not $LogDir) { $LogDir = Join-Path $LocalRoot "logs" }
 # Format: username=domain\user and password=... on separate lines.
 $CredentialPath = 'C:\PW_QC_LOCAL\pw_cred.txt'
 
-$PrependQc_LogDir = $LogDir
 . "$PSScriptRoot\Logging.ps1"
 . "$PSScriptRoot\Resolve-OverlayExe.ps1"
 
@@ -98,13 +97,13 @@ trap {
   throw
 }
 
-function Ensure-Dir([string]$path) {
+function Initialize-Directory([string]$path) {
   if (-not (Test-Path $path)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
   }
 }
 
-function Assert-Command([string]$exeName) {
+function Test-CommandExists([string]$exeName) {
   $cmd = Get-Command $exeName -ErrorAction SilentlyContinue
   if (-not $cmd) {
     throw "Required executable not found on PATH: '$exeName'. Install it or set -QpdfExe to the full path."
@@ -161,7 +160,7 @@ function Invoke-RetryOnAccessDenied([scriptblock]$sb, [int]$maxAttempts = 4) {
 }
 
 # Delete file without failing when antivirus blocks Remove-Item (tries .NET delete, retries on access denied, then logs and continues)
-function Safe-RemoveFile([string]$path) {
+function Remove-ItemWithRetry([string]$path) {
   if (-not $path -or -not (Test-Path -LiteralPath $path)) { return }
   try {
     Invoke-RetryOnAccessDenied {
@@ -176,7 +175,7 @@ function Safe-RemoveFile([string]$path) {
   }
 }
 
-function Prepend-Pdf([string]$newPdf, [string]$historyPdf, [string]$outPdf) {
+function Invoke-PdfPrependMerge([string]$newPdf, [string]$historyPdf, [string]$outPdf) {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $newPdf -Destination $outPdf -Force
     return
@@ -190,7 +189,12 @@ function Prepend-Pdf([string]$newPdf, [string]$historyPdf, [string]$outPdf) {
   }
 }
 
-function Prepend-PdfWithOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe) {
+function Convert-OverlayExeOutputLine($obj) {
+  if ($null -eq $obj) { return '' }
+  return [string]$obj
+}
+
+function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe) {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $incomingPdf -Destination $outPdf -Force
     return
@@ -199,16 +203,27 @@ function Prepend-PdfWithOverlay([string]$incomingPdf, [string]$historyPdf, [stri
   $exeToRun = Resolve-OverlayExePath $overlayExe
 
   # qc_overlay_prepend: page1 of history = Old/red, incoming = New/green + Current/black, prepended to history
+  # With $ErrorActionPreference = Stop, stderr from the exe (Python tracebacks) becomes terminating on the first line; use Continue for this call only.
+  $prevEap = $ErrorActionPreference
+  $overlayExit = $null
+  $overlayOut = $null
   try {
+    $ErrorActionPreference = 'Continue'
     $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf 2>&1
     $overlayExit = $LASTEXITCODE
-    $overlayOut | ForEach-Object { Write-Log $_ }
   } catch {
     $m = $_.Exception.Message
     if ($m -match 'corrupted and unreadable') {
       throw "Windows could not load qc_overlay_prepend.exe ($exeToRun). Often: (1) exe on a slow/network/cloud path or blocked by AV - copy to a local folder (e.g. C:\Tools\) and set -QcOverlayExe; (2) incomplete or wrong-architecture copy - redeploy a Windows-built exe; (3) PyInstaller onedir - deploy the full folder including _internal. Original error: $m"
     }
     throw
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  $sev = if ($null -ne $overlayExit -and $overlayExit -ne 0) { 'ERROR' } else { 'INFO' }
+  foreach ($line in $overlayOut) {
+    $s = Convert-OverlayExeOutputLine $line
+    if ($s) { Write-Log $s -Severity $sev }
   }
   if ($null -ne $overlayExit -and $overlayExit -ne 0) {
     throw "qc_overlay_prepend exited with code $overlayExit"
@@ -239,14 +254,14 @@ if (-not $NoOverlayLayers -and $QcOverlayExe -and (Test-Path -LiteralPath $QcOve
 $exportDir   = Join-Path $LocalRoot "export_test"
 $workDir     = Join-Path $LocalRoot "work"
 $tempWorkDir = Join-Path $env:TEMP "PW_QC"
-Ensure-Dir $exportDir
-Ensure-Dir $workDir
-Ensure-Dir $tempWorkDir
+Initialize-Directory $exportDir
+Initialize-Directory $workDir
+Initialize-Directory $tempWorkDir
 
 # Validate qpdf presence (only needed when history exists and we need merge)
 $haveQpdf = $false
 try {
-  Assert-Command $QpdfExe
+  Test-CommandExists $QpdfExe
   $haveQpdf = $true
 } catch {
   # We'll only hard-fail later if we actually need to prepend.
@@ -302,17 +317,17 @@ foreach ($suffix in @('', '_2', '_3', '_4', '_5')) {
     throw
   }
 }
-Safe-RemoveFile $localIncoming   # best effort; PW may still have lock
+Remove-ItemWithRetry $localIncoming   # best effort; PW may still have lock
 $localIncoming = $localIncomingTmp
 $fi = Get-Item -LiteralPath $localIncoming
 if ($fi.Length -eq 0) {
-  Safe-RemoveFile $localIncoming
+  Remove-ItemWithRetry $localIncoming
   throw "Incoming export failed (zero file size - unmanaged copy?). Document may have no file in PW."
 }
 $header = [System.IO.File]::ReadAllBytes($localIncoming) | Select-Object -First 4
 $isPdf = ($header.Count -ge 4) -and ([char]$header[0] -eq '%' -and [char]$header[1] -eq 'P' -and [char]$header[2] -eq 'D' -and [char]$header[3] -eq 'F')
 if (-not $isPdf) {
-  Safe-RemoveFile $localIncoming
+  Remove-ItemWithRetry $localIncoming
   throw "Incoming export failed (file not a valid PDF - Error 100 unmanaged copy?). Path: $localIncoming"
 }
 Write-Log "Local incoming file: $localIncoming"
@@ -333,7 +348,7 @@ if (-not $historyDoc) {
     Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
     New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
     Write-Log "Created history document."
-    if (Test-Path $localIncoming) { Safe-RemoveFile $localIncoming }
+    if (Test-Path $localIncoming) { Remove-ItemWithRetry $localIncoming }
   } else {
     Write-Log "WhatIf: would create history document."
   }
@@ -378,17 +393,17 @@ foreach ($suffix in @('', '_2', '_3', '_4', '_5')) {
     throw
   }
 }
-Safe-RemoveFile $localHistoryExport   # best effort; PW may still have lock on export
+Remove-ItemWithRetry $localHistoryExport   # best effort; PW may still have lock on export
 $localHistory = $localHistoryTmp
 $fh = Get-Item -LiteralPath $localHistory
 if ($fh.Length -eq 0) {
-  Safe-RemoveFile $localHistory
+  Remove-ItemWithRetry $localHistory
   throw "History export failed (zero file size - unmanaged copy?). Document may have no file in PW."
 }
 $header = [System.IO.File]::ReadAllBytes($localHistory) | Select-Object -First 4
 $isPdf = ($header.Count -ge 4) -and ([char]$header[0] -eq '%' -and [char]$header[1] -eq 'P' -and [char]$header[2] -eq 'D' -and [char]$header[3] -eq 'F')
 if (-not $isPdf) {
-  Safe-RemoveFile $localHistory
+  Remove-ItemWithRetry $localHistory
   throw "History export failed (file not a valid PDF - Error 100 unmanaged copy?). Document may have no file in PW."
 }
 Write-Log "Local history file: $localHistory"
@@ -397,10 +412,10 @@ Write-Log "Local history file: $localHistory"
 Write-Log "Merging (prepend) incoming -> history..."
 if ($haveOverlay) {
   Write-Log "Using qc_overlay_prepend (layered output)..."
-  Prepend-PdfWithOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe
+  Invoke-PdfPrependOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe
 } elseif ($haveQpdf) {
   Write-Log "Using qpdf (simple merge, no layers)..."
-  Prepend-Pdf -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
+  Invoke-PdfPrependMerge -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
 } else {
   throw "Neither overlay exe nor qpdf found. Run .\overlay\build_overlay_exe.ps1 (dist\qc_overlay_prepend\...) or place dist\qc_overlay_prepend.exe, or install qpdf."
 }
@@ -418,12 +433,12 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
     $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -ne 'InputDocument' } | Select-Object -First 1
   }
   if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
-  $args = @{ InputDocument = $historyDoc; $fileParamName = $localMerged }
-  Update-PWDocumentFile @args | Out-Null
+  $pwUpdateFileParams = @{ InputDocument = $historyDoc; $fileParamName = $localMerged }
+  Update-PWDocumentFile @pwUpdateFileParams | Out-Null
 
   Write-Log "Updated history document."
-  # Clear working files after successful PW update (Safe-RemoveFile continues if antivirus blocks)
-  @($localIncoming, $localHistory, $localMerged) | Where-Object { $_ } | ForEach-Object { Safe-RemoveFile $_ }
+  # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
+  @($localIncoming, $localHistory, $localMerged) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {
   Write-Log "WhatIf: would update history document file content."
 }

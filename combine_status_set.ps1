@@ -92,7 +92,6 @@ $ErrorActionPreference = "Stop"
 if (-not $LogDir) { $LogDir = Join-Path $LocalRoot "logs" }
 
 $CredentialPath = 'C:\PW_QC_LOCAL\pw_cred.txt'
-$PrependQc_LogDir = $LogDir
 . "$PSScriptRoot\Logging.ps1"
 
 trap {
