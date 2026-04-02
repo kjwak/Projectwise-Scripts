@@ -184,14 +184,55 @@ function Prepend-Pdf([string]$newPdf, [string]$historyPdf, [string]$outPdf) {
   }
 }
 
+# Avoids cryptic "corrupted and unreadable" from the Windows loader when the path is an LFS pointer, truncated file, or non-PE.
+function Assert-OverlayExeRunnable([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw "Overlay exe not found: $path"
+  }
+  $len = (Get-Item -LiteralPath $path).Length
+  $fs = [System.IO.File]::OpenRead($path)
+  try {
+    $toRead = [Math]::Min(4096, [int]$len)
+    if ($toRead -lt 2) {
+      throw "Overlay exe too small ($len bytes): $path"
+    }
+    $buf = New-Object byte[] $toRead
+    [void]$fs.Read($buf, 0, $toRead)
+    if ($buf[0] -ne 0x4D -or $buf[1] -ne 0x5A) {
+      $head = [System.Text.Encoding]::ASCII.GetString($buf[0..([Math]::Min(199, $toRead - 1))])
+      if ($head -match 'git-lfs|oid sha256') {
+        throw "Overlay exe is a Git LFS pointer, not the real binary. Run 'git lfs pull' or copy qc_overlay_prepend.exe from a build machine. Path: $path"
+      }
+      throw "Overlay exe is not a valid Windows program (missing MZ header). Path: $path size=$len bytes"
+    }
+  } finally {
+    $fs.Dispose()
+  }
+}
+
 function Prepend-PdfWithOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe) {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $incomingPdf -Destination $outPdf -Force
     return
   }
 
+  Assert-OverlayExeRunnable $overlayExe
+
   # qc_overlay_prepend: page1 of history = Old/red, incoming = New/green + Current/black, prepended to history
-  & $overlayExe $incomingPdf $historyPdf -o $outPdf 2>&1 | ForEach-Object { Write-Log $_ }
+  try {
+    $overlayOut = & $overlayExe $incomingPdf $historyPdf -o $outPdf 2>&1
+    $overlayExit = $LASTEXITCODE
+    $overlayOut | ForEach-Object { Write-Log $_ }
+  } catch {
+    $m = $_.Exception.Message
+    if ($m -match 'corrupted and unreadable') {
+      throw "Windows could not load qc_overlay_prepend.exe ($overlayExe). Often: (1) file under OneDrive/Cloud - right-click 'Always keep on this device' or copy to e.g. C:\Tools\ and use -QcOverlayExe; (2) incomplete copy - redeploy the exe; (3) PyInstaller onedir build - deploy the full folder including _internal next to the exe. Original error: $m"
+    }
+    throw
+  }
+  if ($null -ne $overlayExit -and $overlayExit -ne 0) {
+    throw "qc_overlay_prepend exited with code $overlayExit"
+  }
   if (-not (Test-Path $outPdf)) {
     throw "qc_overlay_prepend failed to create output: $outPdf"
   }
