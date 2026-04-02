@@ -191,49 +191,88 @@ function Get-HexPrefix([byte[]]$bytes, [int]$count) {
   return ($parts -join ' ')
 }
 
-function Assert-OverlayExeRunnable([string]$path) {
-  if (-not (Test-Path -LiteralPath $path)) {
-    throw "Overlay exe not found: $path"
-  }
+function Read-OverlayExeHeaderSample([string]$path) {
   $len = (Get-Item -LiteralPath $path).Length
   $fs = [System.IO.File]::OpenRead($path)
   try {
     $toRead = [Math]::Min(4096, [int]$len)
     if ($toRead -lt 2) {
-      throw "Overlay exe too small ($len bytes): $path"
+      return @{ Ok = $false; Err = "Overlay exe too small ($len bytes): $path" }
     }
     $buf = New-Object byte[] $toRead
     $read = $fs.Read($buf, 0, $toRead)
     if ($read -lt 2) {
-      throw "Could only read $read byte(s) from overlay exe (file locked or incomplete). Path: $path"
+      return @{ Ok = $false; Err = "Could only read $read byte(s) from overlay exe (file locked or incomplete). Path: $path" }
     }
-    $hex = Get-HexPrefix $buf 16
-    if ($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A) {
-      return
-    }
-    $head = [System.Text.Encoding]::ASCII.GetString($buf[0..([Math]::Min(199, $read - 1))])
-    if ($head -match 'git-lfs|oid sha256') {
-      throw "Overlay exe is a Git LFS pointer, not the real binary. Run 'git lfs pull' or copy qc_overlay_prepend.exe from a build machine. Path: $path"
-    }
-    if ($read -ge 4 -and $buf[0] -eq 0x7F -and $buf[1] -eq 0x45 -and $buf[2] -eq 0x4C -and $buf[3] -eq 0x46) {
-      throw "Overlay exe is ELF (Linux), not Windows. Run overlay\build_overlay_exe.ps1 on a Windows machine and copy that qc_overlay_prepend.exe. First bytes: $hex Path: $path"
-    }
-    if ($read -ge 4 -and $buf[0] -eq 0xCF -and $buf[1] -eq 0xFA -and $buf[2] -eq 0xED -and $buf[3] -eq 0xFE) {
-      throw "Overlay exe is Mach-O (macOS), not Windows. Build with PyInstaller on Windows and deploy that .exe. First bytes: $hex Path: $path"
-    }
-    if ($read -ge 4 -and $buf[0] -eq 0xFE -and $buf[1] -eq 0xED -and $buf[2] -eq 0xFA -and $buf[3] -eq 0xCE) {
-      throw "Overlay exe is Mach-O (macOS), not Windows. Build with PyInstaller on Windows and deploy that .exe. First bytes: $hex Path: $path"
-    }
-    $sampleEnd = [Math]::Min(512, $read) - 1
-    $nonZero = 0
-    for ($i = 0; $i -le $sampleEnd; $i++) { if ($buf[$i] -ne 0) { $nonZero++ } }
-    if ($nonZero -eq 0) {
-      throw "Overlay exe starts with all zeros (first bytes: $hex). File may be incomplete or still syncing from OneDrive; use 'Always keep on this device' or copy from a known-good USB build. Path: $path size=$len"
-    }
-    throw "Overlay exe does not look like a Windows PE (expected MZ at start). First bytes: $hex size=$len bytes Path: $path Rebuild with .\overlay\build_overlay_exe.ps1 on Windows, or copy a Windows-built qc_overlay_prepend.exe."
+    return @{ Ok = $true; Buf = $buf; Read = $read; Len = $len }
   } finally {
     $fs.Dispose()
   }
+}
+
+function Test-OverlayHeaderBytes([byte[]]$buf, [int]$read, [long]$len, [string]$path) {
+  $hex = Get-HexPrefix $buf 16
+  if ($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A) {
+    return @{ Ok = $true }
+  }
+  $head = [System.Text.Encoding]::ASCII.GetString($buf[0..([Math]::Min(199, $read - 1))])
+  if ($head -match 'git-lfs|oid sha256') {
+    return @{ Ok = $false; Err = "Overlay exe is a Git LFS pointer, not the real binary. Run 'git lfs pull' or copy qc_overlay_prepend.exe from a build machine. Path: $path" }
+  }
+  if ($read -ge 4 -and $buf[0] -eq 0x7F -and $buf[1] -eq 0x45 -and $buf[2] -eq 0x4C -and $buf[3] -eq 0x46) {
+    return @{ Ok = $false; Err = "Overlay exe is ELF (Linux), not Windows. Run overlay\build_overlay_exe.ps1 on a Windows machine and copy that qc_overlay_prepend.exe. First bytes: $hex Path: $path" }
+  }
+  if ($read -ge 4 -and $buf[0] -eq 0xCF -and $buf[1] -eq 0xFA -and $buf[2] -eq 0xED -and $buf[3] -eq 0xFE) {
+    return @{ Ok = $false; Err = "Overlay exe is Mach-O (macOS), not Windows. Build with PyInstaller on Windows and deploy that .exe. First bytes: $hex Path: $path" }
+  }
+  if ($read -ge 4 -and $buf[0] -eq 0xFE -and $buf[1] -eq 0xED -and $buf[2] -eq 0xFA -and $buf[3] -eq 0xCE) {
+    return @{ Ok = $false; Err = "Overlay exe is Mach-O (macOS), not Windows. Build with PyInstaller on Windows and deploy that .exe. First bytes: $hex Path: $path" }
+  }
+  $sampleEnd = [Math]::Min(512, $read) - 1
+  $nonZero = 0
+  for ($i = 0; $i -le $sampleEnd; $i++) { if ($buf[$i] -ne 0) { $nonZero++ } }
+  if ($nonZero -eq 0) {
+    return @{ Ok = $false; AllZeros = $true; Hex = $hex; Len = $len }
+  }
+  return @{ Ok = $false; Err = "Overlay exe does not look like a Windows PE (expected MZ at start). First bytes: $hex size=$len bytes Path: $path Rebuild with .\overlay\build_overlay_exe.ps1 on Windows, or copy a Windows-built qc_overlay_prepend.exe." }
+}
+
+# Returns path to invoke (original or TEMP copy when first read returned zeros; Copy-Item often yields real bytes).
+function Resolve-OverlayExePath([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw "Overlay exe not found: $path"
+  }
+  $s = Read-OverlayExeHeaderSample $path
+  if (-not $s.Ok) { throw $s.Err }
+  $v = Test-OverlayHeaderBytes $s.Buf $s.Read $s.Len $path
+  if ($v.Ok) {
+    return $path
+  }
+  if ($v.Err) {
+    throw $v.Err
+  }
+  if ($v.AllZeros) {
+    $tempDir = Join-Path $env:TEMP "PW_QC"
+    if (-not (Test-Path -LiteralPath $tempDir)) {
+      New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    }
+    $tempExe = Join-Path $tempDir "qc_overlay_prepend.exe"
+    Copy-Item -LiteralPath $path -Destination $tempExe -Force
+    $s2 = Read-OverlayExeHeaderSample $tempExe
+    if (-not $s2.Ok) { throw $s2.Err }
+    $v2 = Test-OverlayHeaderBytes $s2.Buf $s2.Read $s2.Len $tempExe
+    if ($v2.Ok) {
+      Write-Log "Overlay exe first bytes were zero at source; using local copy: $tempExe"
+      return $tempExe
+    }
+    if ($v2.Err) { throw $v2.Err }
+    if ($v2.AllZeros) {
+      $hz = $v2.Hex
+      throw "Overlay exe still unreadable after copy to TEMP (first bytes: $hz). Source: $path size=$($s.Len). Replace the file with a known-good Windows build, try a local path (e.g. C:\Tools\qc_overlay_prepend.exe) via -QcOverlayExe, rule out antivirus blocking, or copy via USB (not a partial network copy)."
+    }
+    throw "Resolve-OverlayExePath: unexpected validation state for $tempExe"
+  }
+  throw "Resolve-OverlayExePath: unexpected state for $path"
 }
 
 function Prepend-PdfWithOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe) {
@@ -242,17 +281,17 @@ function Prepend-PdfWithOverlay([string]$incomingPdf, [string]$historyPdf, [stri
     return
   }
 
-  Assert-OverlayExeRunnable $overlayExe
+  $exeToRun = Resolve-OverlayExePath $overlayExe
 
   # qc_overlay_prepend: page1 of history = Old/red, incoming = New/green + Current/black, prepended to history
   try {
-    $overlayOut = & $overlayExe $incomingPdf $historyPdf -o $outPdf 2>&1
+    $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf 2>&1
     $overlayExit = $LASTEXITCODE
     $overlayOut | ForEach-Object { Write-Log $_ }
   } catch {
     $m = $_.Exception.Message
     if ($m -match 'corrupted and unreadable') {
-      throw "Windows could not load qc_overlay_prepend.exe ($overlayExe). Often: (1) file under OneDrive/Cloud - right-click 'Always keep on this device' or copy to e.g. C:\Tools\ and use -QcOverlayExe; (2) incomplete copy - redeploy the exe; (3) PyInstaller onedir build - deploy the full folder including _internal next to the exe. Original error: $m"
+      throw "Windows could not load qc_overlay_prepend.exe ($exeToRun). Often: (1) exe on a slow/network/cloud path or blocked by AV - copy to a local folder (e.g. C:\Tools\) and set -QcOverlayExe; (2) incomplete or wrong-architecture copy - redeploy a Windows-built exe; (3) PyInstaller onedir - deploy the full folder including _internal. Original error: $m"
     }
     throw
   }
