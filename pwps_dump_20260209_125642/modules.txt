@@ -1,0 +1,16 @@
+﻿=== Modules (ListAvailable filter: (?i)pw|projectwise|bentley) ===
+
+
+Name     Version     Path                                                                    
+----     -------     ----                                                                    
+pwps_dab 24.0.2      C:\Program Files\WindowsPowerShell\Modules\pwps_dab\24.0.2\pwps_dab.psd1
+pwps     25.0.1.8026 C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1
+pwps     0.0         C:\Program Files\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1
+
+=== Loaded Modules (after imports) ===
+
+
+Name Version     Path                                                                   
+---- -------     ----                                                                   
+pwps 25.0.1.8026 C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\PWPS.dll
+pwps 0.0         C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.ps1

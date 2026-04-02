@@ -1,0 +1,11 @@
+﻿2026-03-05 14:34:13  [INFO]  Starting combine_status_set...
+2026-03-05 14:34:13  [INFO]  LocalRoot: -WriteBackToPW
+2026-03-05 14:34:13  [INFO]  WriteBackToPW: False
+2026-03-05 14:34:13  [INFO]  ForceRebuild: False
+2026-03-05 14:34:14  [INFO]  Connecting to ProjectWise...
+2026-03-05 14:34:16  [ERROR]  Unhandled error: Error logging in.
+
+PW Error ID#: 58087
+PW Error Message: Cannot login to the datasource.
+PW Error Detail: Invalid data source name.
+
