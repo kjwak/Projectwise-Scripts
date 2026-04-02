@@ -1,15 +1,4 @@
-# --- Python ---
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg
-MANIFEST
+
 
 # Virtual environments (any name)
 .venv/
@@ -25,25 +14,5 @@ env/
 
 
 
-# --- Tests / coverage ---
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-.hypothesis/
 
 
-# --- IDE / editor ---
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# --- OS ---
-.DS_Store
-Thumbs.db
-Desktop.ini
-ehthumbs.db

@@ -2,20 +2,41 @@
 """PyInstaller spec for qc_overlay_prepend (portable paths; spec lives at repo root)."""
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 # SPECDIR = repo root when this file is qc_overlay_prepend.spec at project root
 SPECDIR = Path(SPEC).resolve().parent
 OVERLAY = SPECDIR / "overlay"
 
+# Pull full packages (binaries + data + submodules); hiddenimports alone often misses pikepdf/pymupdf native bits.
+_extra_datas = []
+_extra_binaries = []
+_extra_hidden = []
+for _pkg in ("pikepdf", "pymupdf", "lxml", "PIL"):
+    try:
+        d, b, h = collect_all(_pkg)
+        _extra_datas += d
+        _extra_binaries += b
+        _extra_hidden += h
+    except Exception:
+        pass
+
 a = Analysis(
     [str(OVERLAY / "qc_overlay_prepend.py")],
     pathex=[str(OVERLAY)],
-    binaries=[],
+    binaries=_extra_binaries,
     datas=[
         (str(OVERLAY / "overlay_build.py"), "."),
         (str(OVERLAY / "overlay_layerize.py"), "."),
         (str(OVERLAY / "flatten_source_layers.py"), "."),
-    ],
-    hiddenimports=["pymupdf", "pikepdf", "fitz"],
+    ]
+    + _extra_datas,
+    hiddenimports=list(
+        dict.fromkeys(
+            ["pymupdf", "pikepdf", "fitz", "PIL", "lxml"]
+            + _extra_hidden
+        )
+    ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
