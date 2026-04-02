@@ -59,7 +59,11 @@ param(
   [switch] $PromptForCredential,
 
   [Parameter(Mandatory = $false)]
-  [string] $LogDir = "C:\PW_QC_LOCAL\logs"
+  [string] $LogDir = "C:\PW_QC_LOCAL\logs",
+
+  # Passed to prepend_qc.ps1 — same as default; override if current-master / work files live elsewhere.
+  [Parameter(Mandatory = $false)]
+  [string] $LocalRoot = "C:\PW_QC_LOCAL"
 )
 
 $ErrorActionPreference = "Stop"
@@ -329,7 +333,24 @@ while ($true) {
         IncomingDocName    = $incomingPdf
         DatasourceName     = $DatasourceName
         LogDir             = $LogDir
+        LocalRoot          = $LocalRoot
       }
+      # Resolve bundled qpdf / overlay next to prepend_qc.ps1 (run_prepend_qc often uses a deploy folder without PATH entries).
+      $prependRoot = Split-Path -Parent $PrependScriptPath
+      foreach ($q in @(
+          (Join-Path $prependRoot "tools\qpdf\bin\qpdf.exe"),
+          (Join-Path $prependRoot "tools\qpdf\qpdf.exe")
+        )) {
+        if (Test-Path -LiteralPath $q) {
+          $prependParams['QpdfExe'] = $q
+          break
+        }
+      }
+      $ov = Join-Path $prependRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"
+      if (Test-Path -LiteralPath $ov) {
+        $prependParams['QcOverlayExe'] = $ov
+      }
+
       try {
         & $PrependScriptPath @prependParams
         if (-not $?) { Write-Log "Prepend failed for $docName" -Severity WARNING; continue }

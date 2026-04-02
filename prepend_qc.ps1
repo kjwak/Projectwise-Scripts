@@ -70,8 +70,10 @@ if ($QpdfExe -eq "qpdf") {
 }
 
 # pwps_dab requires MTA; Cursor/VS Code terminals often use STA. Re-launch in MTA to avoid ThreadOptions error.
+# Named parameters from callers (e.g. prepend_qc_on_trigger) are bound to $PSBoundParameters — $args is empty — so we must forward @PSBoundParameters, not @args.
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
-  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @args
+  $bp = @{} + $PSBoundParameters
+  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @bp
   exit $LASTEXITCODE
 }
 
@@ -113,6 +115,14 @@ function Test-CommandExists([string]$exeName) {
   if (-not $cmd) {
     throw "Required executable not found on PATH: '$exeName'. Install it or set -QpdfExe to the full path."
   }
+}
+
+function Test-ExecutableAvailable([string]$path) {
+  if (-not $path) { return $false }
+  if ($path -match '\\' -or $path -match '^[A-Za-z]:') {
+    return (Test-Path -LiteralPath $path)
+  }
+  return [bool](Get-Command $path -ErrorAction SilentlyContinue)
 }
 
 # Load PW credential from C:\PW_QC_LOCAL\pw_cred.txt
@@ -267,14 +277,10 @@ Initialize-Directory $exportDir
 Initialize-Directory $workDir
 Initialize-Directory $tempWorkDir
 
-# Validate qpdf presence (only needed when history exists and we need merge)
-$haveQpdf = $false
-try {
-  Test-CommandExists $QpdfExe
-  $haveQpdf = $true
-} catch {
-  # We'll only hard-fail later if we actually need to prepend.
-  Write-Log $_.Exception.Message -Severity WARNING
+# Validate qpdf presence (merge fallback + seeding current-master). Prefer Test-Path for full paths — Get-Command is unreliable for tools\qpdf\... on some hosts.
+$haveQpdf = Test-ExecutableAvailable $QpdfExe
+if (-not $haveQpdf) {
+  Write-Log "qpdf not available at '$QpdfExe' (merge fallback and current-master seed disabled). Install qpdf or add tools\qpdf under the script folder." -Severity WARNING
 }
 
 # Load module + connect IMS
