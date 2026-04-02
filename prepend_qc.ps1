@@ -9,7 +9,7 @@
 #
 # REQUIREMENTS:
 #   - pwps_dab module installed
-#   - qpdf installed and on PATH (or set $QpdfExe to full path) - used when overlay exe not found
+#   - qpdf installed and on PATH (or set $QpdfExe to full path) - used when overlay exe not found, and to seed LocalRoot\work\<historyBase>_current_master.pdf on first overlay run (same role as test\run_f0548dv206_qc_two_step.ps1)
 #   - dist\qc_overlay_prepend\qc_overlay_prepend.exe (onedir build) or dist\qc_overlay_prepend.exe (onefile) - optional layered overlay
 #
 # RUN (standalone example):
@@ -41,6 +41,11 @@ param(
 
   [Parameter(Mandatory=$false)]
   [string] $QcOverlayExe = "",  # default: first existing of dist\qc_overlay_prepend\qc_overlay_prepend.exe, dist\qc_overlay_prepend.exe
+
+  # Same as test\run_f0548dv206_qc_two_step.ps1: pass --current-master so Old=previous sheet (vector), not history page-1 extract (often empty Old with layered QC).
+  # Default: LocalRoot\work\<historyBase>_current_master.pdf — created from history page 1 on first run (needs qpdf), then updated by qc_overlay_prepend each merge.
+  [Parameter(Mandatory=$false)]
+  [string] $OverlayCurrentMasterPath = "",
 
   [Parameter(Mandatory=$false)]
   [switch] $NoOverlayLayers,  # if set, use qpdf only (no layered overlay)
@@ -194,7 +199,7 @@ function Convert-OverlayExeOutputLine($obj) {
   return [string]$obj
 }
 
-function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe) {
+function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe, [string]$currentMasterPath = "") {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $incomingPdf -Destination $outPdf -Force
     return
@@ -209,7 +214,11 @@ function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [st
   $overlayOut = $null
   try {
     $ErrorActionPreference = 'Continue'
-    $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf 2>&1
+    if ($currentMasterPath -and (Test-Path -LiteralPath $currentMasterPath)) {
+      $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf --current-master $currentMasterPath 2>&1
+    } else {
+      $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf 2>&1
+    }
     $overlayExit = $LASTEXITCODE
   } catch {
     $m = $_.Exception.Message
@@ -408,11 +417,38 @@ if (-not $isPdf) {
 }
 Write-Log "Local history file: $localHistory"
 
+# Overlay --current-master (same idea as test\run_f0548dv206_qc_two_step.ps1): Old layer uses this vector page
+# (previous approved sheet). Without it, qc_overlay_prepend falls back to history page-1 extract, which often yields an empty Old layer on layered QC PDFs.
+$overlayCurrentMasterForExe = ""
+if ($haveOverlay) {
+  $resolvedOverlayCurrentMaster = if ($OverlayCurrentMasterPath) {
+    $OverlayCurrentMasterPath
+  } else {
+    Join-Path $workDir ("${baseName}_current_master.pdf")
+  }
+  Initialize-Directory (Split-Path -Parent $resolvedOverlayCurrentMaster)
+  if (-not (Test-Path -LiteralPath $resolvedOverlayCurrentMaster)) {
+    if ($haveQpdf) {
+      Write-Log "Seeding overlay current-master from history page 1 (first run for this sheet): $resolvedOverlayCurrentMaster"
+      & $QpdfExe --empty --pages $localHistory 1-1 -- $resolvedOverlayCurrentMaster | Out-Null
+      if (-not (Test-Path -LiteralPath $resolvedOverlayCurrentMaster)) {
+        Write-Log "qpdf did not create current-master seed; Old layer may be empty until this file exists." -Severity WARNING
+      }
+    } else {
+      Write-Log "No current-master file and qpdf not available to seed it. Install qpdf or pass -OverlayCurrentMasterPath to a baseline PDF (see test\run_f0548dv206_qc_two_step.ps1). Overlay may show an empty Old layer." -Severity WARNING
+    }
+  }
+  if (Test-Path -LiteralPath $resolvedOverlayCurrentMaster) {
+    $overlayCurrentMasterForExe = $resolvedOverlayCurrentMaster
+    Write-Log "Overlay current-master: $overlayCurrentMasterForExe"
+  }
+}
+
 # Prepend merge locally (use overlay when available for layered Old/New/Current)
 Write-Log "Merging (prepend) incoming -> history..."
 if ($haveOverlay) {
   Write-Log "Using qc_overlay_prepend (layered output)..."
-  Invoke-PdfPrependOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe
+  Invoke-PdfPrependOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe -currentMasterPath $overlayCurrentMasterForExe
 } elseif ($haveQpdf) {
   Write-Log "Using qpdf (simple merge, no layers)..."
   Invoke-PdfPrependMerge -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
