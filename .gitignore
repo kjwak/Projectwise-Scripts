@@ -22,8 +22,8 @@ env/
 .env.*
 
 # --- PyInstaller (keep *.spec in git for reproducible builds) ---
-build/
-dist/
+
+
 
 # --- Tests / coverage ---
 .pytest_cache/
