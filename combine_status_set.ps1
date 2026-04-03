@@ -62,8 +62,14 @@ param(
   [switch] $PromptForCredential
 )
 
-# pwps_dab requires MTA; re-launch with same params (same pattern as prepend_qc_on_trigger)
+# pwps_dab requires MTA; re-launch with same params (manual passThrough — does not forward common -Verbose/-WhatIf; avoids PSBoundParameters leakage)
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+  $scriptPath = $PSCommandPath
+  if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+  if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'combine_status_set.ps1' }
+  if (-not (Test-Path -LiteralPath $scriptPath)) {
+    throw "MTA relaunch: could not resolve script path. Tried: $scriptPath"
+  }
   $passThrough = @('-DatasourceName', $DatasourceName)
   if ($WatchUnderRootJoined) {
     $passThrough += '-WatchUnderRootJoined'; $passThrough += $WatchUnderRootJoined
@@ -84,7 +90,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   if ($TestColumns) { $passThrough += '-TestColumns' }
   if ($QpdfExe -ne 'qpdf') { $passThrough += '-QpdfExe'; $passThrough += $QpdfExe }
   if ($PromptForCredential) { $passThrough += '-PromptForCredential' }
-  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @passThrough
+  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $scriptPath @passThrough
   exit $LASTEXITCODE
 }
 

@@ -14,7 +14,7 @@ param(
   [switch] $RunOnce,
 
   [Parameter(Mandatory = $false)]
-  [bool] $OverlayOldFromHistoryOnly = $true
+  $OverlayOldFromHistoryOnly = $true
 )
 
 $scriptDir = $PSScriptRoot

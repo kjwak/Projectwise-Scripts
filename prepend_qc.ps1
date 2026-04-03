@@ -52,7 +52,7 @@ param(
 
   # $true: do not use LocalRoot\work\*_current_master.pdf or --current-master; overlay Old is derived only from exported QC history in qc_overlay_prepend (PW is still the source — we export history to temp first).
   [Parameter(Mandatory=$false)]
-  [bool] $OverlayOldFromHistoryOnly = $false,
+  $OverlayOldFromHistoryOnly = $false,
 
   [Parameter(Mandatory=$false)]
   [switch] $NoOverlayLayers,  # if set, use qpdf only (no layered overlay)
@@ -76,11 +76,32 @@ if ($QpdfExe -eq "qpdf") {
   elseif (Test-Path $localQpdfBin) { $QpdfExe = $localQpdfBin }
 }
 
+. "$PSScriptRoot\StaMtaRelaunch.ps1"
+
+if ($PSBoundParameters.ContainsKey('OverlayOldFromHistoryOnly')) {
+  $OverlayOldFromHistoryOnly = ConvertTo-BoolLoose $PSBoundParameters['OverlayOldFromHistoryOnly']
+}
+
 # pwps_dab requires MTA; Cursor/VS Code terminals often use STA. Re-launch in MTA to avoid ThreadOptions error.
-# Named parameters from callers (e.g. prepend_qc_on_trigger) are bound to $PSBoundParameters — $args is empty — so we must forward @PSBoundParameters, not @args.
+# Do not splat full $PSBoundParameters to powershell.exe (common params -Verbose/-WhatIf/etc. break child -File; bool/switch types break native argv).
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
-  $bp = @{} + $PSBoundParameters
-  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @bp
+  $scriptPath = $PSCommandPath
+  if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+  if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'prepend_qc.ps1' }
+  if (-not (Test-Path -LiteralPath $scriptPath)) {
+    throw "MTA relaunch: could not resolve script path (PSCommandPath / MyInvocation). Tried: $scriptPath"
+  }
+  $paramNames = @(
+    'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'LocalRoot', 'QpdfExe',
+    'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'NoOverlayLayers',
+    'PromptForCredential', 'LogDir'
+  )
+  $bp = @{}
+  foreach ($n in $paramNames) {
+    if ($PSBoundParameters.ContainsKey($n)) { $bp[$n] = $PSBoundParameters[$n] }
+  }
+  $exeArgs = Build-PowerShellExeFileArgs -ScriptPath $scriptPath -BoundParameters $bp
+  & powershell.exe @exeArgs
   exit $LASTEXITCODE
 }
 

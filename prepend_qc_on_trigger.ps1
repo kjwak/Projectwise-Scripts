@@ -67,13 +67,20 @@ param(
 
   # $true (default): overlay Old layer from exported *-qc.pdf only — no local *_current_master.pdf baselines. PW exports history each run; temp files are still used for tools.
   [Parameter(Mandatory = $false)]
-  [bool] $OverlayOldFromHistoryOnly = $true
+  $OverlayOldFromHistoryOnly = $true
 )
 
 $ErrorActionPreference = "Stop"
 $TriggerTag = "QC_Archivist"
 
 . "$PSScriptRoot\Logging.ps1"
+. "$PSScriptRoot\StaMtaRelaunch.ps1"
+
+if ($PSBoundParameters.ContainsKey('OverlayOldFromHistoryOnly')) {
+  $OverlayOldFromHistoryOnly = ConvertTo-BoolLoose $PSBoundParameters['OverlayOldFromHistoryOnly']
+} else {
+  $OverlayOldFromHistoryOnly = $true
+}
 
 $WatchRootList = @()
 if ($WatchUnderRootJoined -and $WatchUnderRootJoined.Trim()) {
@@ -226,40 +233,9 @@ if ($folderList.Count -eq 0 -and -not $useWatchUnderRoot) {
   throw "No folders to watch.$hint Use run_prepend_qc.ps1 as launcher, or pass -ConfigPath / -WatchFolderPaths / -WatchUnderRoot / -WatchUnderRootJoined / -WatchFolderPath / -TriggerFolderPath."
 }
 
-# Build flat string[] for powershell.exe -File: splatting @PSBoundParameters to the native exe fails (bool/switch/array types -> "Cannot process argument").
-function Build-PowerShellExeFileArgs {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string] $ScriptPath,
-    [Parameter(Mandatory = $true)]
-    [hashtable] $BoundParameters
-  )
-  $list = New-Object System.Collections.ArrayList
-  [void]$list.AddRange([string[]]@('-MTA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath))
-  foreach ($name in @($BoundParameters.Keys)) {
-    $val = $BoundParameters[$name]
-    if ($null -eq $val) { continue }
-    if ($val -is [System.Management.Automation.SwitchParameter]) {
-      if ($val.IsPresent) { [void]$list.Add("-$name") }
-      continue
-    }
-    if ($val -is [bool]) {
-      [void]$list.Add("-$name")
-      [void]$list.Add($(if ($val) { 'True' } else { 'False' }))
-      continue
-    }
-    if ($val -is [System.Array]) {
-      [void]$list.Add("-$name")
-      foreach ($item in $val) { [void]$list.Add([string]$item) }
-      continue
-    }
-    [void]$list.Add("-$name")
-    [void]$list.Add([string]$val)
-  }
-  return [string[]]$list.ToArray()
-}
-
-# pwps_dab requires MTA. Re-launch with same bound parameters as strings only.
+# pwps_dab requires MTA. Re-launch with same bound parameters as strings only (Build-PowerShellExeFileArgs in StaMtaRelaunch.ps1).
+# PSBoundParameters can include common parameters (-Verbose, -ErrorAction, -WhatIf, etc.); those are not in our param()
+# block and break child -File parsing with "Cannot process argument" if forwarded.
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   $scriptPath = $PSCommandPath
   if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
@@ -267,7 +243,15 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "MTA relaunch: could not resolve script path (PSCommandPath / MyInvocation). Tried: $scriptPath"
   }
-  $bp = @{} + $PSBoundParameters
+  $paramNames = @(
+    'WatchFolderPath', 'TriggerFolderPath', 'WatchFolderPaths', 'ConfigPath', 'WatchUnderRoot', 'WatchUnderRootJoined',
+    'SheetsPathFromProject', 'DatasourceName', 'PollIntervalSeconds', 'RunOnce', 'PrependScriptPath',
+    'BatchCooldownSeconds', 'PromptForCredential', 'LogDir', 'LocalRoot', 'OverlayOldFromHistoryOnly'
+  )
+  $bp = @{}
+  foreach ($n in $paramNames) {
+    if ($PSBoundParameters.ContainsKey($n)) { $bp[$n] = $PSBoundParameters[$n] }
+  }
   $exeArgs = Build-PowerShellExeFileArgs -ScriptPath $scriptPath -BoundParameters $bp
   & powershell.exe @exeArgs
   exit $LASTEXITCODE
