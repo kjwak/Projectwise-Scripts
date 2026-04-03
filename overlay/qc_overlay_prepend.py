@@ -22,7 +22,6 @@ import tempfile
 from pathlib import Path
 try:
     import pikepdf
-    from pikepdf import Page
 except ImportError:
     print("Error: pikepdf is required. Install with: pip install pikepdf")
     sys.exit(1)
@@ -177,8 +176,78 @@ def _find_current_layer_xobject(page) -> tuple:
     return None, None
 
 
+def _pdf_name_token_for_content_stream(key) -> bytes:
+    """PDF content stream name token for an XObject key (e.g. /fzFrm2)."""
+    s = str(key).strip("'")
+    if not s.startswith("/"):
+        s = "/" + s.lstrip("/")
+    return s.encode("latin-1")
+
+
+def _strip_oc_from_xobject_tree(xobj, max_depth: int = 12) -> None:
+    """Remove /OC so optional content state cannot hide art when re-embedding as Old."""
+    if max_depth <= 0 or xobj is None:
+        return
+    try:
+        if hasattr(xobj, "get") and xobj.get("/OC") is not None:
+            del xobj["/OC"]
+    except Exception:
+        return
+    try:
+        res = xobj.get("/Resources") if hasattr(xobj, "get") else None
+        if not res:
+            return
+        xo = res.get("/XObject")
+        if not xo:
+            return
+        for _k, child in xo.items():
+            _strip_oc_from_xobject_tree(child, max_depth - 1)
+    except Exception:
+        return
+
+
+def _extract_page_1_current_form_only_full_page_impl(pdf: pikepdf.Pdf, out_path: Path) -> bool:
+    """Copy page 1 with full resource graph, then Contents = draw Current form only.
+
+    Copying the Current XObject alone drops nested /fullpage and other dependencies — empty Old.
+    """
+    if len(pdf.pages) < 1:
+        return False
+    page0 = pdf.pages[0]
+    key, cur = _find_current_layer_xobject(page0)
+    if key is None or cur is None:
+        return False
+    try:
+        dst = pikepdf.Pdf.new()
+        dst.pages.append(dst.copy_foreign(page0))
+        page = dst.pages[0]
+        key2, cur2 = _find_current_layer_xobject(page)
+        if key2 is None:
+            LOGGER.warning("Current form not found on page after copy_foreign; cannot build Old extract")
+            return False
+        _strip_oc_from_xobject_tree(cur2)
+        name = _pdf_name_token_for_content_stream(key2)
+        content = b"q 1 0 0 1 0 0 cm " + name + b" Do Q"
+        page.obj["/Contents"] = pikepdf.Stream(dst, content)
+        dst.save(out_path)
+        LOGGER.info("Extracted page 1 Current via full page copy + Contents trim -> %s", out_path)
+        return True
+    except Exception as exc:
+        LOGGER.warning("Full-page Current-form extract failed: %s", exc)
+        return False
+
+
+def _extract_page_1_current_form_only_full_page(pdf_path: Path, out_path: Path) -> bool:
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            return _extract_page_1_current_form_only_full_page_impl(pdf, out_path)
+    except Exception as exc:
+        LOGGER.warning("Could not open PDF for Current-form extract: %s", exc)
+        return False
+
+
 def _extract_page_1_pikepdf_current_form(pdf_path: Path, out_path: Path) -> bool:
-    """Fallback: copy BBL_Current / fzFrm2 form only (may miss nested resources)."""
+    """Fallback when fitz fails: full page + Current-only contents, else full page 1."""
     with pikepdf.open(pdf_path) as pdf:
         if len(pdf.pages) < 1:
             LOGGER.error("QC history has no pages")
@@ -188,36 +257,26 @@ def _extract_page_1_pikepdf_current_form(pdf_path: Path, out_path: Path) -> bool
 
         if _name is None or current_xobj is None:
             pdf_out = pikepdf.Pdf.new()
-            pdf_out.pages.append(page)
+            pdf_out.pages.append(pdf_out.copy_foreign(page))
             pdf_out.save(out_path)
             LOGGER.info("Extracted page 1 (full, pikepdf fallback) to %s", out_path)
             return True
 
-        pdf_out = pikepdf.Pdf.new()
-        xobj_copy = pdf_out.copy_foreign(current_xobj)
-        media_box = page.get("/MediaBox", pikepdf.Array([0, 0, 612, 792]))
-        xo = pikepdf.Dictionary()
-        xo["/Cur"] = xobj_copy
-        content = b"q 1 0 0 1 0 0 cm /Cur Do Q"
-        new_page = pikepdf.Dictionary(
-            Type=pikepdf.Name.Page,
-            MediaBox=media_box,
-            Resources=pikepdf.Dictionary(XObject=xo),
-            Contents=pikepdf.Stream(pdf_out, content),
-        )
-        pdf_out.pages.append(Page(new_page))
-        pdf_out.save(out_path)
-        LOGGER.info("Extracted page 1 Current form only (pikepdf fallback) to %s", out_path)
-        return True
+        return _extract_page_1_current_form_only_full_page_impl(pdf, out_path)
 
 
 def extract_page_1_current_as_old(pdf_path: Path, out_path: Path) -> bool:
     """Extract page 1 for the Old overlay input: visible 'Current' QC art (previous approved).
 
-    Primary path uses PyMuPDF: set default OCG state so Old+New are OFF and everything else
-    (including Current and non-QC OCGs) is ON, then graft page 1. That matches viewer default
-    and avoids empty Old when pikepdf copies a single form without nested /fullpage resources.
+    When page 1 has QC overlay forms (BBL_*/fzFrm*), prefer copying the full page graph with
+    pikepdf then trimming Contents to only the Current form — copying the form XObject alone
+    drops nested /fullpage resources and yields an empty Old layer.
+
+    Otherwise use PyMuPDF (global Old/New/Current OCG triplet + select page 0), then pikepdf fallbacks.
     """
+    if _extract_page_1_current_form_only_full_page(pdf_path, out_path):
+        return True
+
     fitz = _get_fitz()
     doc = None
     try:
