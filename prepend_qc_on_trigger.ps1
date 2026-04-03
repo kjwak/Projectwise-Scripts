@@ -226,26 +226,10 @@ if ($folderList.Count -eq 0 -and -not $useWatchUnderRoot) {
   throw "No folders to watch.$hint Use run_prepend_qc.ps1 as launcher, or pass -ConfigPath / -WatchFolderPaths / -WatchUnderRoot / -WatchUnderRootJoined / -WatchFolderPath / -TriggerFolderPath."
 }
 
-# pwps_dab requires MTA. Re-launch with same params.
+# pwps_dab requires MTA. Re-launch with same bound parameters (not a manual arg array: bools break powershell.exe -File parsing).
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
-  $passThrough = @('-DatasourceName', $DatasourceName, '-PollIntervalSeconds', $PollIntervalSeconds)
-  if ($ConfigPath) { $passThrough += '-ConfigPath'; $passThrough += $ConfigPath }
-  elseif ($useWatchUnderRoot) {
-    if ($WatchRootList.Count -gt 1) {
-      $passThrough += '-WatchUnderRootJoined'; $passThrough += ($WatchRootList -join '|')
-    } else {
-      $passThrough += '-WatchUnderRoot'; $passThrough += $WatchRootList[0]
-    }
-    $passThrough += '-SheetsPathFromProject'; $passThrough += $SheetsPathFromProject
-  }
-  elseif ($WatchFolderPaths -and $WatchFolderPaths.Count -gt 0) { $passThrough += '-WatchFolderPaths'; $passThrough += $WatchFolderPaths }
-  else { $passThrough += '-WatchFolderPath'; $passThrough += $folderList[0].FolderPath }
-  if ($RunOnce) { $passThrough += '-RunOnce' }
-  if ($PrependScriptPath) { $passThrough += '-PrependScriptPath'; $passThrough += $PrependScriptPath }
-  if ($LogDir) { $passThrough += '-LogDir'; $passThrough += $LogDir }
-  $passThrough += '-LocalRoot'; $passThrough += $LocalRoot
-  $passThrough += '-OverlayOldFromHistoryOnly'; $passThrough += $OverlayOldFromHistoryOnly
-  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @passThrough
+  $bp = @{} + $PSBoundParameters
+  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @bp
   exit $LASTEXITCODE
 }
 
