@@ -226,10 +226,50 @@ if ($folderList.Count -eq 0 -and -not $useWatchUnderRoot) {
   throw "No folders to watch.$hint Use run_prepend_qc.ps1 as launcher, or pass -ConfigPath / -WatchFolderPaths / -WatchUnderRoot / -WatchUnderRootJoined / -WatchFolderPath / -TriggerFolderPath."
 }
 
-# pwps_dab requires MTA. Re-launch with same bound parameters (not a manual arg array: bools break powershell.exe -File parsing).
+# Build flat string[] for powershell.exe -File: splatting @PSBoundParameters to the native exe fails (bool/switch/array types -> "Cannot process argument").
+function Build-PowerShellExeFileArgs {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string] $ScriptPath,
+    [Parameter(Mandatory = $true)]
+    [hashtable] $BoundParameters
+  )
+  $list = New-Object System.Collections.ArrayList
+  [void]$list.AddRange([string[]]@('-MTA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath))
+  foreach ($name in @($BoundParameters.Keys)) {
+    $val = $BoundParameters[$name]
+    if ($null -eq $val) { continue }
+    if ($val -is [System.Management.Automation.SwitchParameter]) {
+      if ($val.IsPresent) { [void]$list.Add("-$name") }
+      continue
+    }
+    if ($val -is [bool]) {
+      [void]$list.Add("-$name")
+      [void]$list.Add($(if ($val) { 'True' } else { 'False' }))
+      continue
+    }
+    if ($val -is [System.Array]) {
+      [void]$list.Add("-$name")
+      foreach ($item in $val) { [void]$list.Add([string]$item) }
+      continue
+    }
+    [void]$list.Add("-$name")
+    [void]$list.Add([string]$val)
+  }
+  return [string[]]$list.ToArray()
+}
+
+# pwps_dab requires MTA. Re-launch with same bound parameters as strings only.
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+  $scriptPath = $PSCommandPath
+  if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+  if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'prepend_qc_on_trigger.ps1' }
+  if (-not (Test-Path -LiteralPath $scriptPath)) {
+    throw "MTA relaunch: could not resolve script path (PSCommandPath / MyInvocation). Tried: $scriptPath"
+  }
   $bp = @{} + $PSBoundParameters
-  & powershell.exe -MTA -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @bp
+  $exeArgs = Build-PowerShellExeFileArgs -ScriptPath $scriptPath -BoundParameters $bp
+  & powershell.exe @exeArgs
   exit $LASTEXITCODE
 }
 
