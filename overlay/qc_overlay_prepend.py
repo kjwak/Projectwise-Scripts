@@ -3,11 +3,14 @@
 QC Overlay Prepend: Compare incoming PDF vs page 1 of QC history, create overlay, prepend to history.
 
 Flow:
-  1. Determine Old input: use --current-master when provided (preferred, stable vector path);
-     otherwise extract from page 1 of QC history.
-  2. Create overlay: Old=extracted page 1 (red), New=incoming (green), Current=incoming (black)
-  3. Prepend: PyMuPDF insert_pdf grafts history after the overlay page (better OC preservation
-     than pikepdf append for multi-layer sheets)
+  1. Determine Old input: use --current-master when provided; else extract from page 1 of the full
+     QC history PDF (--sheet-work-dir still splits pages for MANIFEST; Old extract is not from split files).
+  2. Create overlay: Old=previous front Current (red), New=incoming (green), Current=incoming (black).
+     Only one new overlay page is built per run; tail pages are appended verbatim.
+  3. Prepend: pikepdf grafts full history after the overlay page (OC preservation on tail pages).
+
+Optional --sheet-work-dir: split each history page to {stem}-NN.pdf (rev 0 = oldest), copy incoming,
+  write MANIFEST.txt and overlay artifacts for debugging.
 
 Usage:
   python qc_overlay_prepend.py incoming.pdf qc_history.pdf [--output qc_history.pdf]
@@ -17,6 +20,7 @@ import argparse
 import hashlib
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -97,6 +101,41 @@ def _page0_has_qc_overlay_forms(pdf_path: Path) -> bool:
         return False
 
 
+def _safe_work_stem(pdf_name: str) -> str:
+    """Folder-safe stem from a PDF filename (history doc name)."""
+    stem = Path(pdf_name).stem
+    out: list[str] = []
+    for c in stem:
+        if c.isalnum() or c in "._- ":
+            out.append(c)
+        else:
+            out.append("_")
+    s = "".join(out).strip().replace(" ", "_")
+    return s[:120] if s else "qc_sheet"
+
+
+def split_qc_history_to_work_dir(history: Path, work_dir: Path, stem: str) -> list[Path]:
+    """Split each page to {stem}-NN.pdf. NN=rev: 0 = oldest (last page of PDF), n-1 = newest (PDF page 1).
+
+    Returns paths in PDF page order [page1, page2, ...] (prepend stack top to bottom).
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    with pikepdf.open(history) as pdf:
+        n = len(pdf.pages)
+        if n < 1:
+            raise ValueError("QC history has no pages")
+        for i in range(n):
+            page_num = i + 1
+            rev = n - page_num
+            out_path = work_dir / f"{stem}-{rev:02d}.pdf"
+            dst = pikepdf.Pdf.new()
+            dst.pages.append(pdf.pages[i])
+            dst.save(out_path)
+            paths.append(out_path)
+    return paths
+
+
 def _run_overlay_pipeline(
     old_pdf: Path,
     new_pdf: Path,
@@ -105,7 +144,7 @@ def _run_overlay_pipeline(
     fit: bool = False,
     alpha: float = 0.6,
     verbose: bool = False,
-    flatten_sources: bool = False,
+    flatten_sources: bool = True,
     flatten_dpi: float = 144.0,
     flatten_raster: bool = False,
 ) -> bool:
@@ -173,6 +212,20 @@ def _find_current_layer_xobject(page) -> tuple:
             if "Current" in ocg_name:
                 return name, xobj
 
+    # fzFrm0/1/2 = Old/New/Current in our overlay; some exports use fzFrm3+ or omit fzFrm2
+    frm: list[tuple[int, object, object]] = []
+    for key, xobj in xobjects.items():
+        nk = str(key).strip("'").lstrip("/")
+        if nk.startswith("fzFrm") and len(nk) > 5 and nk[5:].isdigit():
+            frm.append((int(nk[5:]), key, xobj))
+    if len(frm) >= 2:
+        frm.sort(key=lambda t: t[0])
+        for n, key, xobj in frm:
+            if n == 2:
+                return key, xobj
+        if len(frm) >= 3:
+            return frm[-1][1], frm[-1][2]
+
     return None, None
 
 
@@ -219,11 +272,12 @@ def _extract_page_1_current_form_only_full_page_impl(pdf: pikepdf.Pdf, out_path:
         return False
     try:
         dst = pikepdf.Pdf.new()
-        dst.pages.append(dst.copy_foreign(page0))
+        # Cross-PDF page copy must use Pdf.pages.append (pikepdf 8+); copy_foreign(page) is rejected.
+        dst.pages.append(page0)
         page = dst.pages[0]
         key2, cur2 = _find_current_layer_xobject(page)
         if key2 is None:
-            LOGGER.warning("Current form not found on page after copy_foreign; cannot build Old extract")
+            LOGGER.warning("Current form not found on page after cross-PDF copy; cannot build Old extract")
             return False
         _strip_oc_from_xobject_tree(cur2)
         name = _pdf_name_token_for_content_stream(key2)
@@ -257,7 +311,7 @@ def _extract_page_1_pikepdf_current_form(pdf_path: Path, out_path: Path) -> bool
 
         if _name is None or current_xobj is None:
             pdf_out = pikepdf.Pdf.new()
-            pdf_out.pages.append(pdf_out.copy_foreign(page))
+            pdf_out.pages.append(page)
             pdf_out.save(out_path)
             LOGGER.info("Extracted page 1 (full, pikepdf fallback) to %s", out_path)
             return True
@@ -528,13 +582,25 @@ Examples:
     parser.add_argument("--alpha", type=float, default=0.6, help="Layer transparency")
     parser.add_argument("--fit", action="store_true", help="Fit pages to match size")
     parser.add_argument("--keep-temp", action="store_true", help="Keep temporary files")
-    parser.add_argument("--flatten-sources", action="store_true",
-                        help="Preprocess inputs to merge/strip authoring layers (vector merge by default)")
+    parser.add_argument(
+        "--no-flatten-sources",
+        action="store_true",
+        help="Skip vector merge of authoring (Civil/CAD) layers before overlay. Default is to flatten "
+        "(more reliable for multi-round QC; still vector, three OCG layers preserved in output).",
+    )
     parser.add_argument("--flatten-raster", action="store_true",
-                        help="With --flatten-sources, rasterize each page (CAD fallback; loses vectors)")
+                        help="With vector flatten (default), rasterize each page instead (CAD fallback; loses vectors)")
     parser.add_argument("--flatten-dpi", type=float, default=144.0,
                         help="Resolution for --flatten-raster (higher = sharper, larger)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--sheet-work-dir",
+        type=Path,
+        default=None,
+        help="Per-sheet folder: split history to {stem}-NN.pdf (rev0=oldest/last page), copy incoming.pdf, "
+             "MANIFEST.txt, old_source_for_overlay.pdf, new_overlay_page.pdf, merged output. "
+             "Old is still extracted from page 1 of the full history PDF (splits are for audit/debug).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -547,6 +613,7 @@ Examples:
     history = args.qc_history_pdf.resolve()
     output = (args.output or history).resolve()
     current_master = args.current_master.resolve() if args.current_master else None
+    sheet_work_dir = args.sheet_work_dir.resolve() if args.sheet_work_dir else None
 
     if not incoming.exists():
         LOGGER.error(f"Incoming PDF not found: {incoming}")
@@ -569,15 +636,68 @@ Examples:
         page1_pdf = tmp / "page1.pdf"
         overlay_pdf = tmp / "overlay.pdf"
 
+        page_paths = None  # list of split page paths when --sheet-work-dir set
+        manifest_lines = []
+        if sheet_work_dir:
+            sheet_work_dir.mkdir(parents=True, exist_ok=True)
+            stem = _safe_work_stem(history.name)
+            try:
+                page_paths = split_qc_history_to_work_dir(history, sheet_work_dir, stem)
+            except Exception as exc:
+                LOGGER.error("Failed to split QC history to --sheet-work-dir: %s", exc)
+                sys.exit(1)
+            shutil.copy2(incoming, sheet_work_dir / "incoming.pdf")
+            npg = len(page_paths)
+            manifest_lines = [
+                "Per-sheet QC work folder (one PDF per history page; one new overlay page per prepend run).",
+                f"History source: {history}",
+                "incoming.pdf = this run's submitted sheet (feeds New + Current on the overlay page).",
+                "",
+                f"Split files: {stem}-NN.pdf — NN is rev; rev 0 = oldest / first print (last page of history PDF); "
+                f"rev {npg - 1} = previous front (PDF page 1). Old layer is extracted from page 1 of the full history "
+                f"above (splits are for reference only).",
+                "",
+                "Pages (PDF order 1 = newest / top of prepend stack):",
+            ]
+            for i, p in enumerate(page_paths):
+                manifest_lines.append(f"  PDF page {i + 1} -> {p.name}")
+            manifest_lines.append("")
+            LOGGER.info("Split QC history to %s (%d page file(s))", sheet_work_dir, npg)
+
         used_current_master_for_old = False
         if current_master is not None and current_master.exists():
             old_source_pdf = current_master
             used_current_master_for_old = True
             LOGGER.info("Using current master as OLD source: %s", old_source_pdf)
+            # qpdf page-1 slice is often the full QC sheet (Old/New/Current forms in Contents). That
+            # prevents overlay_build's "single QC Do -> enable all OCGs" path, so nested Civil/DGN art
+            # inside the Current form stays off and Old looks empty. Trim to Current form only (same as
+            # history extract) when the page has BBL/fzFrm Current.
+            trimmed_cm = tmp / "current_master_trimmed.pdf"
+            try:
+                with pikepdf.open(current_master) as cm_pdf:
+                    if _extract_page_1_current_form_only_full_page_impl(cm_pdf, trimmed_cm):
+                        old_source_pdf = trimmed_cm
+                        LOGGER.info(
+                            "Refined OLD to Current-form-only from current-master (enables nested CAD in overlay embed)"
+                        )
+            except Exception as exc:
+                LOGGER.warning("Could not trim current-master to Current-only Old (%s); using full page", exc)
         else:
             if current_master is not None and not current_master.exists():
                 LOGGER.warning("Current master not found, falling back to history page 1 extraction: %s", current_master)
-            if not extract_page_1_current_as_old(history, page1_pdf):
+            # Always extract Old from the full exported history PDF (page 1 in context), same as runs
+            # without --sheet-work-dir. Per-page split files ({stem}-NN.pdf) differ subtly from in-place
+            # page 1 (catalog/OCG resolution); that can break Current-only trim or leave multiple QC Dos,
+            # so overlay_build never enables nested Civil OCGs and Old embeds empty. Splits remain for
+            # MANIFEST and debugging only.
+            extract_src = history
+            if sheet_work_dir and page_paths:
+                LOGGER.info(
+                    "Old/current extract uses full history (page 1), not split file; work-dir has %s",
+                    page_paths[0].name,
+                )
+            if not extract_page_1_current_as_old(extract_src, page1_pdf):
                 sys.exit(1)
             old_source_pdf = page1_pdf
 
@@ -604,7 +724,7 @@ Examples:
             fit=args.fit,
             alpha=args.alpha,
             verbose=args.verbose,
-            flatten_sources=args.flatten_sources,
+            flatten_sources=not args.no_flatten_sources,
             flatten_dpi=args.flatten_dpi,
             flatten_raster=args.flatten_raster,
         ):
@@ -616,19 +736,48 @@ Examples:
             LOGGER.error("Overlay was not created")
             sys.exit(1)
 
+        if sheet_work_dir:
+            try:
+                shutil.copy2(old_source_pdf, sheet_work_dir / "old_source_for_overlay.pdf")
+                shutil.copy2(overlay_pdf, sheet_work_dir / "new_overlay_page.pdf")
+            except OSError as exc:
+                LOGGER.warning("Could not copy overlay artifacts to sheet work dir: %s", exc)
+
         if not prepend_overlay_to_history(overlay_pdf, history, output):
             sys.exit(1)
+
+        if sheet_work_dir:
+            try:
+                shutil.copy2(output, sheet_work_dir / "merged_qc_history_output.pdf")
+            except OSError as exc:
+                LOGGER.warning("Could not copy merged output to sheet work dir: %s", exc)
+            trailer = [
+                "",
+                "Artifacts (this run):",
+                "  incoming.pdf — submitted sheet.",
+                "  old_source_for_overlay.pdf — PDF fed to OLD (red) layer (previous front Current).",
+                "  new_overlay_page.pdf — prepended compare page only.",
+                "  merged_qc_history_output.pdf — full QC PDF after prepend (matches -o output).",
+            ]
+            try:
+                (sheet_work_dir / "MANIFEST.txt").write_text(
+                    "\n".join(manifest_lines + trailer) + "\n", encoding="utf-8"
+                )
+            except OSError as exc:
+                LOGGER.warning("Could not write MANIFEST.txt: %s", exc)
 
         if current_master is not None:
             if not write_current_master_from_incoming(incoming, current_master):
                 sys.exit(1)
 
         if args.keep_temp:
-            import shutil
             keep_dir = output.parent / (output.stem + "_overlay_temp")
             keep_dir.mkdir(exist_ok=True)
             if page1_pdf.exists():
                 shutil.copy(page1_pdf, keep_dir / "page1.pdf")
+            tcm = tmp / "current_master_trimmed.pdf"
+            if tcm.exists():
+                shutil.copy(tcm, keep_dir / "current_master_trimmed.pdf")
             shutil.copy(overlay_pdf, keep_dir / "overlay.pdf")
             LOGGER.info(f"Temp files kept in {keep_dir}")
 

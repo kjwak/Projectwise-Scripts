@@ -121,15 +121,26 @@ def _flatten_vector_merge(src: Path, dst: Path) -> None:
         _pikepdf_deep_strip(dst)
 
     doc2 = fitz.open(str(dst))
+    sidecar = dst.with_name(dst.stem + "_clean_contents.pdf")
     try:
         for i in range(len(doc2)):
             try:
                 doc2[i].clean_contents(sanitize=True)
             except Exception as exc:
                 LOGGER.warning("clean_contents page %s: %s", i + 1, exc)
-        doc2.save(str(dst), garbage=4, deflate=True)
+        # In-place save to same path can require incremental=True; write sidecar then replace.
+        doc2.save(str(sidecar), garbage=4, deflate=True)
     finally:
         doc2.close()
+    try:
+        os.replace(str(sidecar), str(dst))
+    except OSError:
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _flatten_raster_combined(src: Path, dst: Path, dpi: float) -> None:

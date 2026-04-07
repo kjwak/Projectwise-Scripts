@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+import re
 import shutil
 import sys
 import tempfile
@@ -199,6 +200,56 @@ def _fitz_apply_old_source_layer_visibility(doc) -> None:
         LOGGER.warning("Old source set_layer failed (Old slot may be empty): %s", exc)
 
 
+# QC compare form XObjects invoked from page Contents (PyMuPDF overlay / layerize names).
+_QC_COMPARE_DO_RE = re.compile(
+    rb"/(?:fzFrm\d+|BBL_Current|BBL1|BBL)\s+Do"
+)
+
+
+def _fitz_page_contents_bytes(page) -> bytes:
+    """Concatenated page content streams (PyMuPDF)."""
+    try:
+        return page.read_contents()
+    except Exception:
+        pass
+    try:
+        c = page.get_contents()
+        if isinstance(c, bytes):
+            return c
+    except Exception:
+        pass
+    return b""
+
+
+def _fitz_qc_compare_form_do_count(page) -> int:
+    """How many QC compare form Do operators appear in page Contents."""
+    return len(_QC_COMPARE_DO_RE.findall(_fitz_page_contents_bytes(page)))
+
+
+def _fitz_enable_cad_for_trimmed_old_source(doc) -> None:
+    """When Old input draws exactly one QC compare form in Contents (pikepdf trim), Civil/DGN
+    OCGs nested inside that form may still default off — show_pdf_page then embeds an empty Old.
+
+    Turning all OCGs on is safe here: other QC forms (Old/New slots) are not invoked by Contents,
+    so they do not draw. Do not run when multiple QC compare Dos appear (full page — would stack).
+
+    Runs after _fitz_apply_old_source_layer_visibility; may override layer state so nested CAD art
+    inside the single form is visible.
+    """
+    if not doc.is_pdf or doc.page_count < 1:
+        return
+    ocgs = doc.get_ocgs()
+    if not ocgs:
+        return
+    if _fitz_qc_compare_form_do_count(doc[0]) != 1:
+        return
+    _fitz_enable_all_optional_content(doc)
+    LOGGER.info(
+        "Old source: single QC compare form in Contents — enabled all OCGs for overlay embed "
+        "(nested Civil/DGN layers inside that form)"
+    )
+
+
 def parse_page_ranges(spec: Optional[str], max_pages: int) -> list[int]:
     """Parse 1-based page range specification."""
     if max_pages < 0:
@@ -292,6 +343,7 @@ def build_overlay(old_path: Path, new_path: Path, out_path: Path,
         # Re-apply the same visibility as extract_page_1_current_as_old() so show_pdf_page embeds
         # the previous Current (not empty nested OCG).
         _fitz_apply_old_source_layer_visibility(old_doc)
+        _fitz_enable_cad_for_trimmed_old_source(old_doc)
 
         _fitz_enable_all_optional_content(new_doc)
 

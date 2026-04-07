@@ -65,9 +65,13 @@ param(
   [Parameter(Mandatory = $false)]
   [string] $LocalRoot = "C:\PW_QC_LOCAL",
 
-  # $true (default): overlay Old layer from exported *-qc.pdf only — no local *_current_master.pdf baselines. PW exports history each run; temp files are still used for tools.
+  # $true (default): qpdf page 1 -> TEMP --current-master only when OverlaySheetWorkDir:$false. $false: persistent work\ current-master.
   [Parameter(Mandatory = $false)]
-  $OverlayOldFromHistoryOnly = $true
+  $OverlayOldFromHistoryOnly = $true,
+
+  # $true (default): LocalRoot\work\<sheet>\ split pages + MANIFEST. Passed to prepend_qc.ps1.
+  [Parameter(Mandatory = $false)]
+  $OverlaySheetWorkDir = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -80,6 +84,11 @@ if ($PSBoundParameters.ContainsKey('OverlayOldFromHistoryOnly')) {
   $OverlayOldFromHistoryOnly = ConvertTo-BoolLoose $PSBoundParameters['OverlayOldFromHistoryOnly']
 } else {
   $OverlayOldFromHistoryOnly = $true
+}
+if ($PSBoundParameters.ContainsKey('OverlaySheetWorkDir')) {
+  $OverlaySheetWorkDir = ConvertTo-BoolLoose $PSBoundParameters['OverlaySheetWorkDir']
+} else {
+  $OverlaySheetWorkDir = $true
 }
 
 $WatchRootList = @()
@@ -246,7 +255,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   $paramNames = @(
     'WatchFolderPath', 'TriggerFolderPath', 'WatchFolderPaths', 'ConfigPath', 'WatchUnderRoot', 'WatchUnderRootJoined',
     'SheetsPathFromProject', 'DatasourceName', 'PollIntervalSeconds', 'RunOnce', 'PrependScriptPath',
-    'BatchCooldownSeconds', 'PromptForCredential', 'LogDir', 'LocalRoot', 'OverlayOldFromHistoryOnly'
+    'BatchCooldownSeconds', 'PromptForCredential', 'LogDir', 'LocalRoot', 'OverlayOldFromHistoryOnly', 'OverlaySheetWorkDir'
   )
   $bp = @{}
   foreach ($n in $paramNames) {
@@ -349,6 +358,7 @@ while ($true) {
         LogDir                     = $LogDir
         LocalRoot                  = $LocalRoot
         OverlayOldFromHistoryOnly  = $OverlayOldFromHistoryOnly
+        OverlaySheetWorkDir        = $OverlaySheetWorkDir
       }
       # Resolve bundled qpdf / overlay next to prepend_qc.ps1 (run_prepend_qc often uses a deploy folder without PATH entries).
       $prependRoot = Split-Path -Parent $PrependScriptPath

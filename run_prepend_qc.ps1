@@ -7,14 +7,17 @@
 #
 # Run: cd "C:\Users\jflint\Documents\ProjectWise Prepend"; .\run_prepend_qc.ps1
 # One-shot: .\run_prepend_qc.ps1 -RunOnce
-# Overlay uses exported *-qc.pdf from PW for the Old layer (no local *_current_master.pdf). Override: -OverlayOldFromHistoryOnly:$false
+# Overlay: default per-sheet work folder under LocalRoot\work\<sheet>\ (split pages + MANIFEST). Override: -OverlaySheetWorkDir:$false -OverlayOldFromHistoryOnly:$true for qpdf temp --current-master only.
 
 param(
   [Parameter(Mandatory = $false)]
   [switch] $RunOnce,
 
   [Parameter(Mandatory = $false)]
-  $OverlayOldFromHistoryOnly = $true
+  $OverlayOldFromHistoryOnly = $true,
+
+  [Parameter(Mandatory = $false)]
+  $OverlaySheetWorkDir = $true
 )
 
 $scriptDir = $PSScriptRoot
@@ -24,6 +27,7 @@ $triggerParams = @{
   WatchUnderRootJoined        = 'Documents\AZDOT 2024|Documents\AZDOT'
   SheetsPathFromProject       = 'CADD\Sheets'
   OverlayOldFromHistoryOnly   = $OverlayOldFromHistoryOnly
+  OverlaySheetWorkDir         = $OverlaySheetWorkDir
 }
 if ($RunOnce) { $triggerParams['RunOnce'] = $true }
 

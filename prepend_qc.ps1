@@ -7,8 +7,11 @@
 # - If the history doc doesn't exist, it creates it from the incoming PDF (base case).
 #   - If it exists, it exports both and prepends (with overlay layers when available), then updates the history doc in PW.
 # - PDF tools (qpdf / qc_overlay_prepend) need local temp files: export from PW → process → upload merged PDF back.
-#   "Old" vs "new" for the overlay always comes from PW content (exported history + exported incoming). Optional
-#   LocalRoot\work\*_current_master.pdf is only a quality workaround for some layered PDFs; use -OverlayOldFromHistoryOnly to skip it.
+#   "Old" vs "new" for the overlay always comes from PW content (exported history + exported incoming).
+#   -OverlaySheetWorkDir:$true (default): LocalRoot\work\<historyBase>\ splits each history page to <stem>-NN.pdf, MANIFEST,
+#   and overlay artifacts; Old is extracted from page 1 of the full exported history (same as test; splits are audit/debug).
+#   -OverlayOldFromHistoryOnly:$true with -OverlaySheetWorkDir:$false: qpdf page 1 -> TEMP --current-master.
+#   -OverlayOldFromHistoryOnly:$false: persistent work\<sheet>_current_master.pdf.
 #
 # REQUIREMENTS:
 #   - pwps_dab module installed
@@ -45,14 +48,17 @@ param(
   [Parameter(Mandatory=$false)]
   [string] $QcOverlayExe = "",  # default: first existing of dist\qc_overlay_prepend\qc_overlay_prepend.exe, dist\qc_overlay_prepend.exe
 
-  # Optional: persist a local "previous sheet" vector file for qc_overlay_prepend --current-master (test\run_f0548dv206_qc_two_step.ps1 style).
-  # When -OverlayOldFromHistoryOnly is $true (recommended for servers with no long-lived local baselines), this is ignored and Old comes only from the exported *-qc.pdf.
+  # Optional: when -OverlayOldFromHistoryOnly:$false, path for persistent current-master (default: LocalRoot\work\<sheet>_current_master.pdf).
   [Parameter(Mandatory=$false)]
   [string] $OverlayCurrentMasterPath = "",
 
-  # $true: do not use LocalRoot\work\*_current_master.pdf or --current-master; overlay Old is derived only from exported QC history in qc_overlay_prepend (PW is still the source — we export history to temp first).
+  # $true: no persistent work\ current-master file; each run qpdf slices page 1 of exported *-qc.pdf to TEMP and passes --current-master (matches PW source; avoids Python page-1 extract). $false: persistent current-master under work\.
   [Parameter(Mandatory=$false)]
   $OverlayOldFromHistoryOnly = $false,
+
+  # $true (default): work\<historyBase>\ per-sheet splits + MANIFEST (--sheet-work-dir on exe). $false: no split folder; use current-master paths below.
+  [Parameter(Mandatory=$false)]
+  $OverlaySheetWorkDir = $true,
 
   [Parameter(Mandatory=$false)]
   [switch] $NoOverlayLayers,  # if set, use qpdf only (no layered overlay)
@@ -81,6 +87,11 @@ if ($QpdfExe -eq "qpdf") {
 if ($PSBoundParameters.ContainsKey('OverlayOldFromHistoryOnly')) {
   $OverlayOldFromHistoryOnly = ConvertTo-BoolLoose $PSBoundParameters['OverlayOldFromHistoryOnly']
 }
+if ($PSBoundParameters.ContainsKey('OverlaySheetWorkDir')) {
+  $OverlaySheetWorkDir = ConvertTo-BoolLoose $PSBoundParameters['OverlaySheetWorkDir']
+} else {
+  $OverlaySheetWorkDir = $true
+}
 
 # pwps_dab requires MTA; Cursor/VS Code terminals often use STA. Re-launch in MTA to avoid ThreadOptions error.
 # Do not splat full $PSBoundParameters to powershell.exe (common params -Verbose/-WhatIf/etc. break child -File; bool/switch types break native argv).
@@ -93,7 +104,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   }
   $paramNames = @(
     'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'LocalRoot', 'QpdfExe',
-    'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'NoOverlayLayers',
+    'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'OverlaySheetWorkDir', 'NoOverlayLayers',
     'PromptForCredential', 'LogDir'
   )
   $bp = @{}
@@ -237,7 +248,14 @@ function Convert-OverlayExeOutputLine($obj) {
   return [string]$obj
 }
 
-function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [string]$outPdf, [string]$overlayExe, [string]$currentMasterPath = "") {
+function Invoke-PdfPrependOverlay(
+  [string]$incomingPdf,
+  [string]$historyPdf,
+  [string]$outPdf,
+  [string]$overlayExe,
+  [string]$currentMasterPath = "",
+  [string]$sheetWorkDir = ""
+) {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $incomingPdf -Destination $outPdf -Force
     return
@@ -252,11 +270,14 @@ function Invoke-PdfPrependOverlay([string]$incomingPdf, [string]$historyPdf, [st
   $overlayOut = $null
   try {
     $ErrorActionPreference = 'Continue'
+    $exeArgs = @($incomingPdf, $historyPdf, '-o', $outPdf)
     if ($currentMasterPath -and (Test-Path -LiteralPath $currentMasterPath)) {
-      $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf --current-master $currentMasterPath 2>&1
-    } else {
-      $overlayOut = & $exeToRun $incomingPdf $historyPdf -o $outPdf 2>&1
+      $exeArgs += @('--current-master', $currentMasterPath)
     }
+    if ($sheetWorkDir -and $sheetWorkDir.Trim()) {
+      $exeArgs += @('--sheet-work-dir', $sheetWorkDir)
+    }
+    $overlayOut = & $exeToRun @exeArgs 2>&1
     $overlayExit = $LASTEXITCODE
   } catch {
     $m = $_.Exception.Message
@@ -451,9 +472,19 @@ if (-not $isPdf) {
 }
 Write-Log "Local history file: $localHistory"
 
-# Optional --current-master: local vector baseline updated each run. Skip when OverlayOldFromHistoryOnly (Old comes only from exported *-qc.pdf; PW remains source of truth via export).
+# Ephemeral qpdf page-1 slice when OverlayOldFromHistoryOnly (deleted after PW update; not written over by exe).
+$overlayEphemeralPage1Master = $null
+$overlaySheetWorkDirForExe = ""
+
+# Optional --current-master: persistent work\ file, or temp page-1 slice when OverlayOldFromHistoryOnly + qpdf.
+# --sheet-work-dir: per-sheet split pages under work\<baseName>\ (default $true); skips qpdf temp current-master.
 $overlayCurrentMasterForExe = ""
-if ($haveOverlay -and -not $OverlayOldFromHistoryOnly) {
+if ($haveOverlay -and $OverlaySheetWorkDir) {
+  $sheetWorkDirPath = Join-Path $workDir $baseName
+  Initialize-Directory $sheetWorkDirPath
+  $overlaySheetWorkDirForExe = $sheetWorkDirPath
+  Write-Log "Overlay: per-sheet work dir (split pages + MANIFEST): $sheetWorkDirPath"
+} elseif ($haveOverlay -and -not $OverlayOldFromHistoryOnly) {
   $resolvedOverlayCurrentMaster = if ($OverlayCurrentMasterPath) {
     $OverlayCurrentMasterPath
   } else {
@@ -476,14 +507,25 @@ if ($haveOverlay -and -not $OverlayOldFromHistoryOnly) {
     Write-Log "Overlay current-master: $overlayCurrentMasterForExe"
   }
 } elseif ($haveOverlay -and $OverlayOldFromHistoryOnly) {
-  Write-Log "Overlay: Old from exported QC history only (no local current-master file; --current-master not passed)."
+  if ($haveQpdf) {
+    $overlayEphemeralPage1Master = Join-Path $tempWorkDir ("${baseName}_qc_page1_$stamp.pdf")
+    Write-Log "Overlay: qpdf page 1 of exported *-qc.pdf -> temp --current-master (PW source; exe may overwrite temp with incoming before delete)"
+    & $QpdfExe --empty --pages $localHistory 1-1 -- $overlayEphemeralPage1Master | Out-Null
+    if (Test-Path -LiteralPath $overlayEphemeralPage1Master) {
+      $overlayCurrentMasterForExe = $overlayEphemeralPage1Master
+    } else {
+      Write-Log "qpdf failed to create page-1 slice; overlay will use Python extract from history only." -Severity WARNING
+    }
+  } else {
+    Write-Log "OverlayOldFromHistoryOnly but qpdf missing: Python page-1 extract only (Old may be empty for some Civil PDFs)." -Severity WARNING
+  }
 }
 
 # Prepend merge locally (use overlay when available for layered Old/New/Current)
 Write-Log "Merging (prepend) incoming -> history..."
 if ($haveOverlay) {
   Write-Log "Using qc_overlay_prepend (layered output)..."
-  Invoke-PdfPrependOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe -currentMasterPath $overlayCurrentMasterForExe
+  Invoke-PdfPrependOverlay -incomingPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged -overlayExe $QcOverlayExe -currentMasterPath $overlayCurrentMasterForExe -sheetWorkDir $overlaySheetWorkDirForExe
 } elseif ($haveQpdf) {
   Write-Log "Using qpdf (simple merge, no layers)..."
   Invoke-PdfPrependMerge -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
@@ -509,7 +551,7 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
 
   Write-Log "Updated history document."
   # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
-  @($localIncoming, $localHistory, $localMerged) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
+  @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {
   Write-Log "WhatIf: would update history document file content."
 }
