@@ -13,6 +13,18 @@ param(
   [Parameter(Mandatory = $false)]
   [switch] $RunOnce,
 
+  # Add explicit watch folders (full pw:\...\path or relative folder paths).
+  [Parameter(Mandatory = $false)]
+  [string[]] $AddWatchFolderPaths,
+
+  # Add more watch roots (same format as WatchUnderRootJoined entries, e.g. 'Documents\AZDOT 2024').
+  [Parameter(Mandatory = $false)]
+  [string[]] $AddWatchUnderRoot,
+
+  # If set: scan each watched folder plus its immediate child folders.
+  [Parameter(Mandatory = $false)]
+  [switch] $OneLevelDeep,
+
   [Parameter(Mandatory = $false)]
   $OverlayOldFromHistoryOnly = $true,
 
@@ -22,12 +34,29 @@ param(
 
 $scriptDir = $PSScriptRoot
 $triggerScript = Join-Path $scriptDir "prepend_qc_on_trigger.ps1"
+$watchListPath = Join-Path $scriptDir "watchlist.json"
 # Hashtable splatting binds named parameters reliably (array form can fail in some hosts).
+$defaultRoots = @()
+$allRoots = @($defaultRoots + @($AddWatchUnderRoot) | ForEach-Object { ($_ -as [string]).Trim() } | Where-Object { $_ })
+$rootsJoined = ($allRoots | Select-Object -Unique) -join '|'
+$allWatchFolders = @(@($AddWatchFolderPaths) | ForEach-Object { ($_ -as [string]).Trim() } | Where-Object { $_ })
 $triggerParams = @{
-  WatchUnderRootJoined        = 'Documents\AZDOT 2024|Documents\AZDOT'
+  WatchListPath              = $watchListPath
   SheetsPathFromProject       = 'CADD\Sheets'
   OverlayOldFromHistoryOnly   = $OverlayOldFromHistoryOnly
   OverlaySheetWorkDir         = $OverlaySheetWorkDir
+}
+
+if ($OneLevelDeep) {
+  $triggerParams['OneLevelDeep'] = $true
+}
+
+if ($allWatchFolders -and $allWatchFolders.Count -gt 0) {
+  $triggerParams['ExtraWatchFolderPaths'] = @($allWatchFolders | Select-Object -Unique)
+}
+
+if ($rootsJoined -and $rootsJoined.Trim()) {
+  $triggerParams['WatchUnderRootJoined'] = $rootsJoined
 }
 if ($RunOnce) { $triggerParams['RunOnce'] = $true }
 
