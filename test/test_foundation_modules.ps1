@@ -61,7 +61,8 @@ $triggerConfig = @{
             @{ id='disabled-top'; enabled=$false; priority=999; jobType='DISABLED'; triggerType='desc'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('|QC|'); pathRegexAny=@(); fileNameRegexAny=@() }; requireAll=@('extensions','descriptionContainsAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@() } },
             @{ id='low'; enabled=$true; priority=10; jobType='LOW'; triggerType='desc'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('|QC|'); pathRegexAny=@(); fileNameRegexAny=@() }; requireAll=@('extensions','descriptionContainsAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@() } },
             @{ id='high'; enabled=$true; priority=100; jobType='HIGH'; triggerType='desc'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('|QC|'); pathRegexAny=@(); fileNameRegexAny=@() }; requireAll=@('extensions','descriptionContainsAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@() } },
-            @{ id='exclude'; enabled=$true; priority=200; jobType='X'; triggerType='name'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('|QC|'); pathRegexAny=@(); fileNameRegexAny=@() }; requireAll=@('extensions','descriptionContainsAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@('(?i)draft') } }
+            # "Exclude" rule should only activate for drafts; when it activates, it excludes and lets next match win.
+            @{ id='exclude'; enabled=$true; priority=200; jobType='X'; triggerType='name'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('|QC|'); pathRegexAny=@(); fileNameRegexAny=@('(?i)draft') }; requireAll=@('extensions','descriptionContainsAny','fileNameRegexAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@('(?i)draft') } }
         )
     }
 }

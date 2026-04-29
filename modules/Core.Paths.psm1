@@ -16,7 +16,7 @@ function Normalize-QCPath {
 
     $normalized = $Path.Trim()
     $normalized = $normalized -replace '/', '\\'
-    $normalized = $normalized -replace '\\{2,}', '\\'
+    $normalized = $normalized -replace '\\{2,}', '\'
 
     if ($normalized.Length -gt 1 -and $normalized.EndsWith('\')) {
         $normalized = $normalized.TrimEnd('\\')
