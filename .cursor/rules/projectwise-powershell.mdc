@@ -33,7 +33,7 @@ Import before using: `Import-Module pwps_dab -Force` (pwps_dab typically loads p
 - **Search**: `Get-PWDocumentsBySearch` — use `-FolderPath`, `-JustThisFolder`, `-DocumentName` for exact name in one folder. Use `-PopulatePath` when you need full path. Avoid broad wildcards if the environment is unreliable.
 - **Export**: `Export-PWDocumentsSimple -InputDocuments <object(s)> -TargetFolder <path>`.
 - **Create**: `New-PWDocument -FolderPath -FilePath -DocumentName`.
-- **Update content**: `Update-PWDocumentFile -InputDocument -FilePath`.
+- **Update content**: `Update-PWDocumentFile -InputDocuments <doc(s)> -NewFilePathName <localPath>` (pwps_dab 24+; **not** `-InputDocument` / `-FilePath`).
 - **Attributes**: pwps has `Get-PWDocumentEAttributes` / `Set-PWDocumentEAttributes` (by DocumentID/ProjectID or DocumentGUID).
 
 ## CEL (pwps)

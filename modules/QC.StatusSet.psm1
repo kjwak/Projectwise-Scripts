@@ -1,0 +1,2400 @@
+<#
+QC.StatusSet.psm1
+
+Native StatusSet implementation that matches legacy/combine_status_set.ps1 method:
+  - manifest path naming:   LocalRoot\status_set_manifest_<safe>.json
+  - cache dir:              LocalRoot\status_set_cache\<safe>\*.pdf
+  - manifest schema:        v2 (bump to invalidate old logic)
+  - pairing:                PDF must have matching DGN/DWG (or CAD doc without extension) base name in same folder listing
+  - ordering:               alphabetical by PDF filename (same as legacy)
+  - native PW rebuild:     reuse `_sheet_cache\\*.pdf` when manifest row matches
+                             (`pwSheetReusePolicy`: `Signature` = id+size like rebuild compare;
+                             `PdfTimestamp` = same PDF length + PW last-modified instant);
+                             otherwise export that sheet only and refresh cache
+  - write-back:             optional _SSS-UpdatePWDocumentFileFromDisk (pwps_dab 24+: -InputDocuments/-NewFilePathName) / New-PWDocument
+#>
+
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+
+$script:StatusSetManifestSchemaVersion = 2
+$script:StatusSetOutputName = '_StatusSet.pdf'
+
+# Per-process throttle (milliseconds) inserted between PDF/cache file operations
+# (Move/Remove batches) so AV scanners (Fortinet, etc.) don't flag rapid temp-PDF
+# churn. Default 2000 ms; override via top-level Config.fileOpThrottleMs in
+# appsettings.json. Set to 0 to disable.
+$script:_SSS_FsThrottleMs = 2000
+
+# Per-PW-export throttle (milliseconds). The legacy combine_status_set.ps1 sleeps
+# 400 ms after every Export-PWDocumentsSimple because Fortinet briefly opens each
+# freshly-written PDF for scanning, and starting the next export immediately
+# results in file-handle contention / partial writes / occasional corruption.
+# Default 400 ms (matches legacy). Override via Config.statusSet.pwExportThrottleMs
+# or top-level Config.pwExportThrottleMs. Set to 0 to disable.
+$script:_SSS_PwExportThrottleMs = 400
+
+function _SSS-FsThrottle {
+    if ($script:_SSS_FsThrottleMs -and $script:_SSS_FsThrottleMs -gt 0) {
+        Start-Sleep -Milliseconds $script:_SSS_FsThrottleMs
+    }
+}
+
+function _SSS-PwExportThrottle {
+    if ($script:_SSS_PwExportThrottleMs -and $script:_SSS_PwExportThrottleMs -gt 0) {
+        Start-Sleep -Milliseconds $script:_SSS_PwExportThrottleMs
+    }
+}
+
+function _SSS-UpdatePWDocumentFileFromDisk {
+    <#
+    .SYNOPSIS
+    Wrapper for pwps_dab Update-PWDocumentFile with the 24.x parameter names.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$InputDocument,
+        [Parameter(Mandatory)]
+        [string]$LocalFilePath
+    )
+    # pwps_dab 24+: Update-PWDocumentFile [-InputDocuments] ... [-NewFilePathName] ...
+    # (Older samples used -InputDocument / -FilePath; those do not exist and throw
+    # "parameter cannot be found".)
+    $docs = @($InputDocument | Where-Object { $_ })
+    Update-PWDocumentFile -InputDocuments $docs -NewFilePathName $LocalFilePath -ErrorAction Stop | Out-Null
+}
+
+function _SSS-ApplyFsThrottleConfig([hashtable]$Config) {
+    if (-not $Config) { return }
+    try {
+        if ($Config.ContainsKey('fileOpThrottleMs') -and $null -ne $Config['fileOpThrottleMs']) {
+            $script:_SSS_FsThrottleMs = [int]$Config['fileOpThrottleMs']
+        }
+        if ($Config.ContainsKey('pwExportThrottleMs') -and $null -ne $Config['pwExportThrottleMs']) {
+            $script:_SSS_PwExportThrottleMs = [int]$Config['pwExportThrottleMs']
+        }
+        if ($Config.ContainsKey('statusSet') -and $Config['statusSet']) {
+            $ss = $Config['statusSet']
+            if ($ss -is [hashtable]) {
+                if ($ss.ContainsKey('pwExportThrottleMs') -and $null -ne $ss['pwExportThrottleMs']) {
+                    $script:_SSS_PwExportThrottleMs = [int]$ss['pwExportThrottleMs']
+                }
+            } elseif ($ss.PSObject -and $ss.PSObject.Properties['pwExportThrottleMs']) {
+                $v = $ss.PSObject.Properties['pwExportThrottleMs'].Value
+                if ($null -ne $v) { $script:_SSS_PwExportThrottleMs = [int]$v }
+            }
+        }
+    } catch { }
+}
+
+function _SSS-IsNullOrWhiteSpace([object]$Value) {
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }
+    return $false
+}
+
+function _SSS-EnsureDir([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function _SSS-ParseIsoDateTime([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    try {
+        if ($Value -is [DateTime]) { return ([DateTime]$Value).ToUniversalTime() }
+        if ($Value -is [DateTimeOffset]) { return ([DateTimeOffset]$Value).UtcDateTime }
+        $s = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+        return [DateTime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    } catch {
+        return $null
+    }
+}
+
+function _SSS-Sha256TextHex([string]$Text) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    return (([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant())
+}
+
+function _SSS-Sha256HexOfPath([string]$Path) {
+    # Stable hex digest of a normalized path. Used by Get-StatusSetWorkspaceDirectory
+    # to derive a deterministic per-folder workspace key so cached manifests survive
+    # across runs and different folders never collide. Returns $null if the input
+    # cannot be normalized (caller treats that as STATUS_SET_PATH_NORMALIZE_FAILED).
+    if (_SSS-IsNullOrWhiteSpace $Path) { return $null }
+    $norm = $null
+    try {
+        $r = Normalize-QCPath -Path $Path
+        if ($r -and $r.IsSuccess -and $r.Data -and $r.Data.path) { $norm = [string]$r.Data.path }
+    } catch { $norm = $null }
+    if (_SSS-IsNullOrWhiteSpace $norm) {
+        # Fallback to a manual normalization so the workspace can still be derived
+        # even if Core.Paths failed to load (e.g. import-order edge cases).
+        $norm = ([string]$Path).Trim() -replace '/', '\' -replace '\\{2,}', '\'
+        $norm = $norm.TrimEnd('\').ToLowerInvariant()
+    }
+    if (_SSS-IsNullOrWhiteSpace $norm) { return $null }
+    return (_SSS-Sha256TextHex -Text $norm)
+}
+
+function _SSS-GetFileHashSha256([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    return ([BitConverter]::ToString($hash) -replace '-', '')
+}
+
+function _SSS-AssertCommand([string]$ExePath) {
+    $cmd = Get-Command $ExePath -ErrorAction SilentlyContinue
+    if (-not $cmd -and -not (Test-Path -LiteralPath $ExePath)) {
+        throw "Required executable not found: '$ExePath'. Install it or configure statusSet.qpdfExe."
+    }
+}
+
+function _SSS-GetPdfPageCount([string]$Path, [string]$QpdfExe) {
+    try {
+        $info = & $QpdfExe --show-npages $Path 2>&1
+        $line = ($info | Select-Object -First 1) -as [string]
+        if ($line -match '^\d+$') { return [int]$line }
+    } catch { }
+    return 1
+}
+
+function _SSS-MergePdfs([string[]]$PdfPaths, [string]$OutPath, [string]$QpdfExe) {
+    if ($PdfPaths.Count -eq 0) { throw 'No PDFs to merge.' }
+    if ($PdfPaths.Count -eq 1) {
+        Copy-Item -LiteralPath $PdfPaths[0] -Destination $OutPath -Force
+        return
+    }
+    $maxPerBatch = 100
+    $chunkDir = Split-Path -Parent $OutPath
+    if (-not $chunkDir) { $chunkDir = $env:TEMP }
+    _SSS-EnsureDir $chunkDir
+    if ($PdfPaths.Count -le $maxPerBatch) {
+        $allArgs = @('--empty', '--pages') + @($PdfPaths) + @('--', $OutPath)
+        & $QpdfExe @allArgs | Out-Null
+        if (-not (Test-Path -LiteralPath $OutPath)) { throw "qpdf failed to create output: $OutPath" }
+        return
+    }
+    $chunkTemp = @()
+    try {
+        for ($i = 0; $i -lt $PdfPaths.Count; $i += $maxPerBatch) {
+            $end = [Math]::Min($i + $maxPerBatch - 1, $PdfPaths.Count - 1)
+            $batch = @($PdfPaths[$i..$end])
+            $chunkOut = Join-Path $chunkDir ("_pw_status_chunk_{0}.pdf" -f [guid]::NewGuid().ToString('N'))
+            $chunkTemp += $chunkOut
+            _SSS-MergePdfs -PdfPaths $batch -OutPath $chunkOut -QpdfExe $QpdfExe
+        }
+        _SSS-MergePdfs -PdfPaths $chunkTemp -OutPath $OutPath -QpdfExe $QpdfExe
+    } finally {
+        foreach ($t in $chunkTemp) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not (Test-Path -LiteralPath $OutPath)) { throw "qpdf failed to create output: $OutPath" }
+}
+
+function _SSS-ReplacePdfPages([string]$CombinedPath, [string]$NewPdfPath, [int]$PageStart, [int]$PageEnd, [string]$OutPath, [string]$QpdfExe) {
+    $totalPages = _SSS-GetPdfPageCount -Path $CombinedPath -QpdfExe $QpdfExe
+    if ($PageStart -lt 1 -or $PageEnd -lt $PageStart) { throw "Replace-PdfPages: invalid range $PageStart-$PageEnd." }
+    if ($PageEnd -gt $totalPages -or $PageStart -gt $totalPages) { throw "Replace-PdfPages: range $PageStart-$PageEnd is outside combined PDF ($totalPages page(s))." }
+    $pageArgs = @()
+    if ($PageStart -gt 1) { $pageArgs += $CombinedPath; $pageArgs += "1-$($PageStart - 1)" }
+    $pageArgs += $NewPdfPath
+    if ($PageEnd -lt $totalPages) { $pageArgs += $CombinedPath; $pageArgs += "$($PageEnd + 1)-z" }
+    $allArgs = @($CombinedPath, '--pages') + $pageArgs + @('--', $OutPath)
+    & $QpdfExe @allArgs | Out-Null
+    if (-not (Test-Path -LiteralPath $OutPath)) { throw "qpdf failed to replace pages: $OutPath" }
+}
+
+function _SSS-PWGetProp([object]$Obj, [string]$Name) {
+    try {
+        if ($null -eq $Obj) { return $null }
+        if ($Obj.PSObject -and $Obj.PSObject.Properties[$Name]) { return $Obj.$Name }
+    } catch { }
+    return $null
+}
+
+function _SSS-GetDocName([object]$Doc) {
+    foreach ($n in @('Name','DocumentName')) {
+        $v = _SSS-PWGetProp -Obj $Doc -Name $n
+        if ($v) { return [string]$v }
+    }
+    try { return [System.IO.Path]::GetFileName([string](_SSS-PWGetProp -Obj $Doc -Name 'FullPath')) } catch { }
+    return ''
+}
+
+function _SSS-PWGetDocName([object]$Doc) {
+    # Back-compat shim: older code referenced _SSS-PWGetDocName; it maps to the same name extraction.
+    return _SSS-GetDocName $Doc
+}
+
+function _SSS-GetDocLastModified([object]$Doc) {
+    foreach ($n in @('DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileUpdatedDate','FileUpdateDate')) {
+        $v = _SSS-PWGetProp -Obj $Doc -Name $n
+        $dt = _SSS-ParseIsoDateTime $v
+        if ($dt) { return $dt }
+    }
+    return $null
+}
+
+function _SSS-PWGetDocLastModifiedUtcIso([object]$Doc) {
+    # Back-compat shim for older watcher/state code: return UTC ISO string (or '').
+    $dt = _SSS-GetDocLastModified $Doc
+    if ($dt) { return $dt.ToString('o') }
+    return ''
+}
+
+function _SSS-GetPwFolderPath([string]$Path) {
+    $p = ($Path -as [string]).Trim().TrimEnd('\')
+    return ($p -replace '^Documents\\', '')
+}
+
+function _SSS-GetPwSheetsTryPaths([string]$SheetsFolderPath) {
+    $trimmed = ($SheetsFolderPath -as [string]).Trim().TrimEnd('\')
+    if (-not $trimmed) { return @() }
+    $pw = _SSS-GetPwFolderPath $trimmed
+    $withDoc = "Documents\\$pw"
+    $ordered = @()
+    if ($pw) { $ordered += $pw }
+    if ($withDoc -and $ordered -notcontains $withDoc) { $ordered += $withDoc }
+    if ($trimmed -match '^Documents\\' -and $trimmed -ne $withDoc -and $ordered -notcontains $trimmed) { $ordered += $trimmed }
+    return $ordered
+}
+
+function _SSS-PWListDocsInFolder([string]$FolderPath, [string[]]$DateCols) {
+    # Legacy order: search-with-columns -> plain search -> folder view
+    try {
+        $cmd = Get-Command -Name Get-PWDocumentsBySearchWithReturnColumns -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $withCols = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $FolderPath -JustThisFolder -ColumnsToReturn $DateCols -PopulatePath -ErrorAction SilentlyContinue
+            if ($withCols -and @($withCols).Count -gt 0) { return @($withCols) }
+        }
+    } catch { }
+    try {
+        $plain = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -PopulatePath -ErrorAction SilentlyContinue)
+        if ($plain.Count -gt 0) { return @($plain) }
+    } catch { }
+    try {
+        $folder = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction SilentlyContinue
+        if ($folder) {
+            $view = $folder | Get-PWFolderView -ErrorAction SilentlyContinue
+            if ($view -and $view.Documents) { return @($view.Documents) }
+            if ($view -and $view.Children) { return @($view.Children | Where-Object { $_.DocumentID }) }
+        }
+    } catch { }
+    return @()
+}
+
+function Get-StatusSetManifestPathLegacy([string]$FolderPath, [string]$LocalRoot) {
+    $safe = (($FolderPath -replace '[\\/:]', '_').Trim())
+    if (-not $safe) { $safe = 'default' }
+    return Join-Path $LocalRoot ("status_set_manifest_{0}.json" -f $safe)
+}
+
+function Get-StatusSetCacheDirLegacy([string]$FolderPath, [string]$LocalRoot) {
+    $safe = (($FolderPath -replace '[\\/:]', '_').Trim())
+    if (-not $safe) { $safe = 'default' }
+    return Join-Path (Join-Path $LocalRoot 'status_set_cache') $safe
+}
+
+function Read-StatusSetManifestLegacy([string]$ManifestPath) {
+    if (-not (Test-Path -LiteralPath $ManifestPath)) { return $null }
+    try { return (Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+}
+
+function Write-StatusSetManifestLegacy([string]$ManifestPath, [hashtable]$ManifestObj) {
+    _SSS-EnsureDir (Split-Path -Parent $ManifestPath)
+    $ManifestObj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
+}
+
+function _SSS-SelectPairedPdfDocsLegacy([object[]]$AllDocs) {
+    $hasCad = @{}
+    $nonCadExt = '\.(pdf|xlsx|xls|doc|docx|txt|zip|jpg|jpeg|png|gif|bmp|tif|tiff|log|xml|json|csv)$'
+    foreach ($doc in @($AllDocs)) {
+        $name = _SSS-GetDocName $doc
+        if (-not $name) { continue }
+        if ($name -match '\.pdf$') { continue }
+        if ($name -match $nonCadExt) { continue }
+        if ($name -match '\.(dgn|dwg)$') { $base = ($name -replace '\.(dgn|dwg)$', '').ToLowerInvariant() }
+        else { $base = $name.ToLowerInvariant() }
+        $hasCad[$base] = $true
+    }
+    $pdfDocs = @()
+    foreach ($doc in @($AllDocs)) {
+        $name = _SSS-GetDocName $doc
+        if (-not $name -or $name -notmatch '\.pdf$') { continue }
+        if ($name -match '-qc\.pdf$') { continue }
+        $base = ($name -replace '\.pdf$', '').ToLowerInvariant()
+        if (-not $hasCad[$base]) { continue }
+        $pdfDocs += $doc
+    }
+    return @($pdfDocs | Sort-Object { _SSS-GetDocName $_ })
+}
+
+function Get-StatusSetLocalFolderState {
+    <#
+    .SYNOPSIS
+    Watcher helper: stable fingerprint for local folder (legacy pairing: PDF requires matching DGN/DWG base).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RootFolder
+    )
+
+    $pdfs = @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.pdf' -ErrorAction SilentlyContinue)
+    $cads = @()
+    $cads += @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.dgn' -ErrorAction SilentlyContinue)
+    $cads += @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.dwg' -ErrorAction SilentlyContinue)
+
+    $cadByDir = @{}
+    foreach ($c in $cads) {
+        $dir = [string]$c.DirectoryName
+        if (-not $cadByDir.ContainsKey($dir)) { $cadByDir[$dir] = @{} }
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$c.Name)
+        if ($stem) { $cadByDir[$dir][$stem.ToLowerInvariant()] = $c }
+    }
+
+    $lines = @()
+    $pairedSheets = @()
+    $paired = 0
+    foreach ($p in $pdfs) {
+        $name = [string]$p.Name
+        if (-not $name) { continue }
+        if ($name -match '(?i)-qc\.pdf$') { continue }
+        if ($name -match '(?i)_statusset\.pdf$') { continue }
+        if ($name -match '(?i)_statusset\.manifest\.json$') { continue }
+
+        $dir = [string]$p.DirectoryName
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
+        if (-not $stem) { continue }
+        $stemKey = $stem.ToLowerInvariant()
+
+        if (-not ($cadByDir.ContainsKey($dir) -and $cadByDir[$dir].ContainsKey($stemKey))) { continue }
+        $c = $cadByDir[$dir][$stemKey]
+
+        $paired++
+        $pairedSheets += @{
+            stem = $stemKey
+            dir = ([string]$dir).ToLowerInvariant()
+            pdf = @{
+                name = [string]$p.Name
+                fullName = [string]$p.FullName
+                length = [int64]$p.Length
+                lastWriteTimeUtc = $p.LastWriteTimeUtc.ToString('o')
+            }
+            cad = @{
+                name = [string]$c.Name
+                fullName = [string]$c.FullName
+                length = [int64]$c.Length
+                lastWriteTimeUtc = $c.LastWriteTimeUtc.ToString('o')
+            }
+        }
+        $lines += (@(
+            $stemKey,
+            ([string]$p.Length),
+            ($p.LastWriteTimeUtc.ToString('o')),
+            ([string]$c.Length),
+            ($c.LastWriteTimeUtc.ToString('o')),
+            ([string]$dir).ToLowerInvariant()
+        ) -join '|')
+    }
+
+    $lines = @($lines | Sort-Object)
+    $stable = ($lines -join "`n")
+    # Use text hash, not file hash
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($stable)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $h = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    $hash = ([BitConverter]::ToString($h) -replace '-', '').ToLowerInvariant()
+
+    $pairedSheets = @($pairedSheets | Sort-Object -Property @{ Expression = { $_.dir } }, @{ Expression = { $_.stem } })
+    $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
+
+    return @{
+        folderStateHash = $hash
+        pairedCount = $paired
+        stableInput = $stable
+        orderKey = $orderKey
+        pairedSheets = $pairedSheets
+    }
+}
+
+function Get-StatusSetPWFolderState {
+    <#
+    .SYNOPSIS
+    Watcher helper: stable fingerprint for PW folder using legacy pairing (PDF requires matching DGN/DWG base).
+    .PARAMETER FolderPath
+    PW folder path WITHOUT leading Documents\ (same convention as other watcher PW calls).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [Parameter(Mandatory)]
+        [bool]$OneLevelDeep
+    )
+
+    $paths = @([string]$FolderPath)
+    if ($OneLevelDeep) {
+        try {
+            $kids = @(Get-PWFoldersImmediateChildren -FolderPath $FolderPath -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+            foreach ($k in $kids) {
+                $kp = _SSS-PWGetProp -Obj $k -Name 'FolderPath'
+                if ($kp) { $paths += [string]$kp }
+            }
+        } catch { }
+    }
+
+    $dateCols = @('Name','DocumentID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size')
+    $docs = @()
+    foreach ($p in @($paths | Select-Object -Unique)) {
+        $docs += @(_SSS-PWListDocsInFolder -FolderPath $p -DateCols $dateCols)
+    }
+
+    $hasCad = @{}
+    $pdfDocs = @()
+    $nonCadExt = '\.(pdf|xlsx|xls|doc|docx|txt|zip|jpg|jpeg|png|gif|bmp|tif|tiff|log|xml|json|csv)$'
+    foreach ($doc in @($docs)) {
+        $name = _SSS-GetDocName $doc
+        if (-not $name) { continue }
+        if ($name -match '\.pdf$') { continue }
+        if ($name -match $nonCadExt) { continue }
+        if ($name -match '\.(dgn|dwg)$') { $base = ($name -replace '\.(dgn|dwg)$','').ToLowerInvariant() } else { $base = $name.ToLowerInvariant() }
+        $hasCad[$base] = $true
+    }
+    foreach ($doc in @($docs)) {
+        $name = _SSS-GetDocName $doc
+        if (-not $name -or $name -notmatch '\.pdf$') { continue }
+        if ($name -match '-qc\.pdf$') { continue }
+        if ($name -match '(?i)_statusset\.pdf$') { continue }
+        $base = ($name -replace '\.pdf$','').ToLowerInvariant()
+        if (-not $hasCad[$base]) { continue }
+        $pdfDocs += $doc
+    }
+    $pdfDocs = @($pdfDocs | Sort-Object { _SSS-GetDocName $_ })
+
+    $lines = @()
+    $pairedSheets = @()
+    foreach ($p in $pdfDocs) {
+        $pn = _SSS-GetDocName $p
+        $stemKey = ([System.IO.Path]::GetFileNameWithoutExtension($pn)).ToLowerInvariant()
+        $mod = _SSS-GetDocLastModified $p
+        $modIso = if ($mod) { $mod.ToString('o') } else { '' }
+        $sz = _SSS-PWGetProp -Obj $p -Name 'FileSize'
+        if (-not $sz) { $sz = _SSS-PWGetProp -Obj $p -Name 'Size' }
+        $dirKey = ([string]$FolderPath).ToLowerInvariant()
+        $pairedSheets += @{ stem = $stemKey; dir = $dirKey; pdf = @{ name=$pn; lastWriteTimeUtc=$modIso; length=$sz } }
+        $lines += (@($stemKey, ([string]$sz), $modIso, $dirKey) -join '|')
+    }
+
+    $lines = @($lines | Sort-Object)
+    $stable = ($lines -join "`n")
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($stable)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $h = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    $hash = ([BitConverter]::ToString($h) -replace '-', '').ToLowerInvariant()
+    $pairedSheets = @($pairedSheets | Sort-Object -Property @{ Expression = { $_.dir } }, @{ Expression = { $_.stem } })
+    $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
+
+    return @{
+        folderStateHash = $hash
+        pairedCount = $pdfDocs.Count
+        pdfCount = $pdfDocs.Count
+        stableInput = $stable
+        orderKey = $orderKey
+        pairedSheets = $pairedSheets
+    }
+}
+
+function _SSS-FindStatusSetDocLegacy([string[]]$TryPaths, [string]$OutputName, [string[]]$DateCols) {
+    foreach ($tp in $TryPaths) {
+        try {
+            $doc = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $tp -JustThisFolder -DocumentName $OutputName -ColumnsToReturn $DateCols -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($doc) { return $doc }
+        } catch { }
+        try {
+            $doc2 = Get-PWDocumentsBySearch -FolderPath $tp -JustThisFolder -DocumentName $OutputName -PopulatePath -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($doc2) { return $doc2 }
+        } catch { }
+    }
+    return $null
+}
+
+function Invoke-StatusSetNativeJob {
+    <#
+    .SYNOPSIS
+    STATUS_SET_GEN implementation matching legacy/combine_status_set.ps1 method (one-shot).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Job,
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $ss = @{}
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet) {
+        $raw = $Config.statusSet
+        if ($raw -is [hashtable]) { $ss = $raw } elseif ($raw.PSObject) { foreach ($p in $raw.PSObject.Properties) { $ss[$p.Name] = $p.Value } }
+    }
+
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $qpdfExe = if ($ss.ContainsKey('qpdfExe') -and $ss.qpdfExe) { [string]$ss.qpdfExe } else { '' }
+    if (_SSS-IsNullOrWhiteSpace $qpdfExe) {
+        if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
+            $qc = $Config.qcPrepend
+            if ($qc -is [hashtable] -and $qc.ContainsKey('qpdfExePath')) { $qpdfExe = [string]$qc['qpdfExePath'] }
+            elseif ($qc.PSObject.Properties['qpdfExePath']) { $qpdfExe = [string]$qc.qpdfExePath }
+        }
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
+    _SSS-AssertCommand $qpdfExe
+
+    $forceRebuild = $false
+    if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    $writeBackToPW = $false
+    if ($ss.ContainsKey('writeBackToPW')) { try { $writeBackToPW = [bool]$ss.writeBackToPW } catch { $writeBackToPW = $false } }
+
+    $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
+    if (_SSS-IsNullOrWhiteSpace $sourceFolder) {
+        return New-QCFailureResult -Code 'STATUS_SET_MISSING_SOURCE_FOLDER' -Message 'Job.sourceFolder is required.' -Data @{ jobId = [string]$Job.id }
+    }
+
+    $pwCfg = @{}
+    if ($Config.ContainsKey('projectWise')) {
+        $p = $Config.projectWise
+        if ($p -is [hashtable]) { $pwCfg = $p } elseif ($p.PSObject) { foreach ($x in $p.PSObject.Properties) { $pwCfg[$x.Name] = $x.Value } }
+    }
+    $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+    $ds = if ($pwCfg.ContainsKey('datasourceName') -and $pwCfg.datasourceName) { [string]$pwCfg.datasourceName } else { 'typsa-us-pw.bentley.com:typsa-us-pw-03' }
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('candidate')) {
+        $cand = $Job.metadata.candidate
+        if ($cand -is [hashtable] -and $cand.ContainsKey('datasourceName') -and $cand.datasourceName) { $ds = [string]$cand.datasourceName }
+    }
+
+    $isDryRun = $false
+    if ($Config.ContainsKey('dryRun')) { try { $isDryRun = [bool]$Config.dryRun } catch { $isDryRun = $false } }
+
+    # Local-folder mode is supported (same merge + manifest, but without PW export).
+    $normRes = Normalize-QCPath -Path $sourceFolder
+    $norm = if ($normRes.IsSuccess) { [string]$normRes.Data.path } else { $sourceFolder }
+    $isPwLogical = $norm.StartsWith('documents\\', [System.StringComparison]::OrdinalIgnoreCase) -or ($sourceFolder -match '(?i)^pw:\\\\')
+    $useLocalFs = (-not $isPwLogical) -and (Test-Path -LiteralPath $sourceFolder -PathType Container)
+
+    $pwSheetsPath = if ($useLocalFs) { $sourceFolder } else { _SSS-GetPwFolderPath $sourceFolder }
+    $tryPaths = if ($useLocalFs) { @() } else { _SSS-GetPwSheetsTryPaths $sourceFolder }
+
+    $manifestPath = Get-StatusSetManifestPathLegacy -FolderPath $pwSheetsPath -LocalRoot $localRoot
+    $cacheDir = Get-StatusSetCacheDirLegacy -FolderPath $pwSheetsPath -LocalRoot $localRoot
+    _SSS-EnsureDir $cacheDir
+
+    # Per-folder + per-job temp dir so concurrent STATUS_SET_GEN workers never
+    # collide on the same _StatusSet.pdf or status_set_replace_*.pdf.
+    $tempSafe = (($pwSheetsPath -replace '[\\/:]', '_').Trim())
+    if (-not $tempSafe) { $tempSafe = 'default' }
+    $jobIdSafe = [string]$Job.id
+    if (-not $jobIdSafe) { $jobIdSafe = [guid]::NewGuid().ToString('N') }
+    $tempWorkDir = Join-Path $env:TEMP ("PW_QC_StatusSet\{0}_{1}" -f $tempSafe, $jobIdSafe)
+    _SSS-EnsureDir $tempWorkDir
+    $outPdf = Join-Path $tempWorkDir $script:StatusSetOutputName
+
+    $manifest = Read-StatusSetManifestLegacy -ManifestPath $manifestPath
+    $manifestSchemaStale = $false
+    if ($manifest) {
+        try {
+            $mv = $manifest.manifestSchemaVersion
+            if ($null -eq $mv -or [int]$mv -lt $script:StatusSetManifestSchemaVersion) {
+                $manifestSchemaStale = $true
+                $manifest = $null
+            }
+        } catch { $manifest = $null; $manifestSchemaStale = $true }
+    }
+    if ($forceRebuild) { $manifest = $null }
+
+    if ($useLocalFs) {
+        # Local: use all *.pdf not -qc + has matching *.dgn/*.dwg base (same pairing semantics).
+        $allFiles = @(Get-ChildItem -LiteralPath $sourceFolder -File -ErrorAction SilentlyContinue)
+        $hasCad = @{}
+        foreach ($f in $allFiles) {
+            $n = [string]$f.Name
+            if (-not $n) { continue }
+            if ($n -match '\.pdf$') { continue }
+            if ($n -match '\.(dgn|dwg)$') { $base = ($n -replace '\.(dgn|dwg)$','').ToLowerInvariant() } else { $base = ($n -replace '\.[^.]+$','').ToLowerInvariant() }
+            $hasCad[$base] = $true
+        }
+        $pdfs = @()
+        foreach ($f in $allFiles) {
+            $n = [string]$f.Name
+            if ($n -notmatch '\.pdf$') { continue }
+            if ($n -match '-qc\.pdf$') { continue }
+            $base = ($n -replace '\.pdf$','').ToLowerInvariant()
+            if (-not $hasCad[$base]) { continue }
+            $pdfs += $f.FullName
+        }
+        $localPdfPaths = @($pdfs | Sort-Object { [System.IO.Path]::GetFileName($_) })
+        if ($localPdfPaths.Count -eq 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_NO_PAIRS' -Message 'No matching PDF+DGN/DWG pairs found on disk.' -Data @{ folder = $sourceFolder }
+        }
+
+        $needsFullRebuild = $true
+        $changed = @()
+        $expectedTotalPages = 0
+        foreach ($lp in $localPdfPaths) { $expectedTotalPages += _SSS-GetPdfPageCount -Path $lp -QpdfExe $qpdfExe }
+
+        if (-not $forceRebuild -and $manifest -and $manifest.sources) {
+            try {
+                $manifestSources = @($manifest.sources)
+                if ($manifestSources.Count -eq $localPdfPaths.Count) {
+                    $needsFullRebuild = $false
+                    $pageEnd = 0
+                    for ($i = 0; $i -lt $localPdfPaths.Count; $i++) {
+                        $localPath = $localPdfPaths[$i]
+                        $name = [System.IO.Path]::GetFileName($localPath)
+                        $hash = _SSS-GetFileHashSha256 $localPath
+                        $pageCount = _SSS-GetPdfPageCount -Path $localPath -QpdfExe $qpdfExe
+                        $pageStart = $pageEnd + 1
+                        $pageEnd = $pageStart + $pageCount - 1
+                        $old = $manifestSources | Where-Object { $_.name -eq $name } | Select-Object -First 1
+                        if (-not $old -or $old.hash -ne $hash) { $changed += @{ Index=$i; Name=$name; PageStart=$pageStart; PageEnd=$pageEnd; LocalPath=$localPath } }
+                    }
+                }
+            } catch { $needsFullRebuild = $true }
+        }
+
+        if ($isDryRun) {
+            return New-QCSuccessResult -Code 'STATUS_SET_DRYRUN' -Message 'Dry-run: would build StatusSet (legacy method, local filesystem).' -Data @{ jobId=[string]$Job.id; outPdf=$outPdf; manifestPath=$manifestPath; cacheDir=$cacheDir; needsFullRebuild=$needsFullRebuild; changedCount=$changed.Count }
+        }
+
+        if ($needsFullRebuild) {
+            _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe
+        } elseif ($changed.Count -gt 0 -and (Test-Path -LiteralPath $outPdf)) {
+            $actualPages = _SSS-GetPdfPageCount -Path $outPdf -QpdfExe $qpdfExe
+            if ($actualPages -ne $expectedTotalPages) {
+                _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe
+                $needsFullRebuild = $true
+            } else {
+                $sorted = $changed | Sort-Object { $_.PageStart } -Descending
+                $workPdf = $outPdf
+                foreach ($ch in $sorted) {
+                    $tmpOut = Join-Path $tempWorkDir ("status_set_replace_{0}.pdf" -f [guid]::NewGuid().ToString('N').Substring(0,8))
+                    _SSS-ReplacePdfPages -CombinedPath $workPdf -NewPdfPath $ch.LocalPath -PageStart $ch.PageStart -PageEnd $ch.PageEnd -OutPath $tmpOut -QpdfExe $qpdfExe
+                    if ($workPdf -ne $outPdf) { Remove-Item -LiteralPath $workPdf -Force -ErrorAction SilentlyContinue }
+                    $workPdf = $tmpOut
+                }
+                if ($workPdf -ne $outPdf) { Move-Item -LiteralPath $workPdf -Destination $outPdf -Force }
+            }
+        } else {
+            if (-not (Test-Path -LiteralPath $outPdf)) { _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe }
+        }
+
+        # manifest update
+        if ($needsFullRebuild -or $changed.Count -gt 0 -or -not $manifest) {
+            $sources = @()
+            $pageEnd = 0
+            foreach ($lp in $localPdfPaths) {
+                $name = [System.IO.Path]::GetFileName($lp)
+                $hash = _SSS-GetFileHashSha256 $lp
+                $pageCount = _SSS-GetPdfPageCount -Path $lp -QpdfExe $qpdfExe
+                $pageStart = $pageEnd + 1
+                $pageEnd = $pageStart + $pageCount - 1
+                $sources += @{ name = $name; hash = $hash; pageStart = $pageStart; pageEnd = $pageEnd }
+            }
+            $manifestObj = @{ manifestSchemaVersion = $script:StatusSetManifestSchemaVersion; folderPath = $pwSheetsPath; pinnedStatusSetLastModified = $null; sources = $sources }
+            Write-StatusSetManifestLegacy -ManifestPath $manifestPath -ManifestObj $manifestObj
+        }
+
+        return New-QCSuccessResult -Code 'STATUS_SET_OK' -Message 'Status set generated (legacy method, local filesystem).' -Data @{ jobId=[string]$Job.id; outPdf=$outPdf; manifestPath=$manifestPath; cacheDir=$cacheDir; writeBackToPW=$false }
+    }
+
+    # --- ProjectWise legacy-method path ---
+    Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
+    $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+    if (-not $credRes.IsSuccess) { return $credRes }
+    $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+    if (-not $connRes.IsSuccess) { return $connRes }
+
+    try {
+        $dateCols = @('Name','DocumentID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date')
+        $allDocs = @()
+        $docSearchPath = $pwSheetsPath
+        foreach ($tp in $tryPaths) {
+            $allDocs = @(_SSS-PWListDocsInFolder -FolderPath $tp -DateCols $dateCols)
+            if ($allDocs.Count -gt 0) { $docSearchPath = $tp; break }
+        }
+        if ($allDocs.Count -eq 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_PW_NO_DOCS' -Message 'No documents returned from PW for sheets folder.' -Data @{ folder = $sourceFolder; tryPaths = $tryPaths }
+        }
+
+        $pdfDocs = @(_SSS-SelectPairedPdfDocsLegacy -AllDocs $allDocs)
+        if ($pdfDocs.Count -eq 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_NO_PAIRS' -Message 'No matching sheet PDFs (need paired DGN/DWG base name).' -Data @{ folder = $sourceFolder; docCount = $allDocs.Count }
+        }
+
+        # cutoff logic (PW StatusSet last modified or pinned manifest)
+        $statusSetDateCols = @($dateCols + @('FileUpdatedDate','FileUpdateDate')) | Select-Object -Unique
+        $statusSetDoc = _SSS-FindStatusSetDocLegacy -TryPaths $tryPaths -OutputName $script:StatusSetOutputName -DateCols $statusSetDateCols
+        $statusSetLastModified = if ($statusSetDoc) { _SSS-GetDocLastModified $statusSetDoc } else { $null }
+        $manifestPinnedCutoff = $null
+        if ($manifest -and $manifest.pinnedStatusSetLastModified) { $manifestPinnedCutoff = _SSS-ParseIsoDateTime ([string]$manifest.pinnedStatusSetLastModified) }
+        $exportCutoff = if ($statusSetLastModified) { $statusSetLastModified } else { $manifestPinnedCutoff }
+
+        # export loop with cache + manifest skip rules
+        $localPdfPaths = @()
+        $sourcePwLastModByName = @{}
+        foreach ($doc in $pdfDocs) {
+            $docName = _SSS-GetDocName $doc
+            $cachedPath = Join-Path $cacheDir $docName
+            $docLastMod = _SSS-GetDocLastModified $doc
+            $sourcePwLastModByName[$docName] = $docLastMod
+
+            $shouldExport = $true
+            if ($exportCutoff -and $docLastMod) {
+                if ($docLastMod -le $exportCutoff -and (Test-Path -LiteralPath $cachedPath)) { $shouldExport = $false }
+            }
+            if ($shouldExport -and $manifest -and $manifest.sources) {
+                $oldSrc = @($manifest.sources) | Where-Object { $_.name -eq $docName } | Select-Object -First 1
+                if ($oldSrc) {
+                    if ($oldSrc.pwLastModified) {
+                        $stored = _SSS-ParseIsoDateTime ([string]$oldSrc.pwLastModified)
+                        if ($stored -and $docLastMod -and ($docLastMod -le $stored) -and (Test-Path -LiteralPath $cachedPath)) { $shouldExport = $false }
+                    }
+                    if ($shouldExport -and $oldSrc.hash -and (Test-Path -LiteralPath $cachedPath)) {
+                        $h = _SSS-GetFileHashSha256 $cachedPath
+                        if ($h -eq $oldSrc.hash) {
+                            $stored = $null
+                            if ($oldSrc.pwLastModified) { $stored = _SSS-ParseIsoDateTime ([string]$oldSrc.pwLastModified) }
+                            if ($docLastMod -and $stored -and ($docLastMod -gt $stored)) {
+                                # refresh from PW
+                            } else {
+                                $shouldExport = $false
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ($shouldExport) {
+                if ($isDryRun) {
+                    # no-op
+                } else {
+                    Export-PWDocumentsSimple -InputDocuments $doc -TargetFolder $cacheDir -ErrorAction Stop | Out-Null
+                    Start-Sleep -Milliseconds 400
+                }
+            }
+
+            $localPath = $cachedPath
+            $copied = _SSS-PWGetProp -Obj $doc -Name 'CopiedOutLocalFileName'
+            if (-not (Test-Path -LiteralPath $localPath) -and $copied -and (Test-Path -LiteralPath $copied)) {
+                Copy-Item -LiteralPath $copied -Destination $localPath -Force -ErrorAction SilentlyContinue
+            }
+            if (-not (Test-Path -LiteralPath $localPath)) {
+                $found = Get-ChildItem -LiteralPath $cacheDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq $docName } | Select-Object -First 1
+                if ($found) {
+                    $localPath = [string]$found.FullName
+                    if ($localPath -ne $cachedPath) { Copy-Item -LiteralPath $localPath -Destination $cachedPath -Force -ErrorAction SilentlyContinue; $localPath = $cachedPath }
+                }
+            }
+            if (Test-Path -LiteralPath $localPath) { $localPdfPaths += $localPath }
+        }
+
+        if ($localPdfPaths.Count -eq 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_EXPORT_FAILED' -Message 'No PDFs were exported successfully.' -Data @{ cacheDir = $cacheDir }
+        }
+
+        $expectedTotalPages = 0
+        foreach ($lp in $localPdfPaths) { $expectedTotalPages += _SSS-GetPdfPageCount -Path $lp -QpdfExe $qpdfExe }
+
+        $needsFullRebuild = $forceRebuild
+        $changedIndices = @()
+
+        if (-not $needsFullRebuild -and (Test-Path -LiteralPath $manifestPath) -and -not $manifestSchemaStale) {
+            try {
+                $manifest2 = Read-StatusSetManifestLegacy -ManifestPath $manifestPath
+                $manifestSources = @($manifest2.sources)
+                if ($manifestSources.Count -ne $localPdfPaths.Count) { $needsFullRebuild = $true }
+                else {
+                    $pageEnd = 0
+                    for ($i = 0; $i -lt $localPdfPaths.Count; $i++) {
+                        $localPath = $localPdfPaths[$i]
+                        $name = [System.IO.Path]::GetFileName($localPath)
+                        $hash = _SSS-GetFileHashSha256 $localPath
+                        $pageCount = _SSS-GetPdfPageCount -Path $localPath -QpdfExe $qpdfExe
+                        $pageStart = $pageEnd + 1
+                        $pageEnd = $pageStart + $pageCount - 1
+                        $old = $manifestSources | Where-Object { $_.name -eq $name } | Select-Object -First 1
+                        if (-not $old -or $old.hash -ne $hash) { $changedIndices += @{ Index=$i; Name=$name; PageStart=$pageStart; PageEnd=$pageEnd; LocalPath=$localPath } }
+                    }
+                }
+            } catch { $needsFullRebuild = $true }
+        } else { $needsFullRebuild = $true }
+
+        if ($isDryRun) {
+            return New-QCSuccessResult -Code 'STATUS_SET_DRYRUN' -Message 'Dry-run: would build StatusSet (legacy method, ProjectWise).' -Data @{
+                jobId = [string]$Job.id
+                manifestPath = $manifestPath
+                cacheDir = $cacheDir
+                docSearchPath = $docSearchPath
+                outPdf = $outPdf
+                needsFullRebuild = $needsFullRebuild
+                changedCount = $changedIndices.Count
+                wouldWriteBack = $writeBackToPW
+            }
+        }
+
+        if ($needsFullRebuild) {
+            _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe
+        } elseif ($changedIndices.Count -gt 0 -and (Test-Path -LiteralPath $outPdf)) {
+            $actualPages = _SSS-GetPdfPageCount -Path $outPdf -QpdfExe $qpdfExe
+            if ($actualPages -ne $expectedTotalPages) {
+                _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe
+                $needsFullRebuild = $true
+            } else {
+                $sorted = $changedIndices | Sort-Object { $_.PageStart } -Descending
+                $workPdf = $outPdf
+                foreach ($ch in $sorted) {
+                    $tmpOut = Join-Path $tempWorkDir ("status_set_replace_{0}.pdf" -f [guid]::NewGuid().ToString('N').Substring(0,8))
+                    _SSS-ReplacePdfPages -CombinedPath $workPdf -NewPdfPath $ch.LocalPath -PageStart $ch.PageStart -PageEnd $ch.PageEnd -OutPath $tmpOut -QpdfExe $qpdfExe
+                    if ($workPdf -ne $outPdf) { Remove-Item -LiteralPath $workPdf -Force -ErrorAction SilentlyContinue }
+                    $workPdf = $tmpOut
+                }
+                if ($workPdf -ne $outPdf) { Move-Item -LiteralPath $workPdf -Destination $outPdf -Force }
+            }
+        } else {
+            if (-not (Test-Path -LiteralPath $outPdf)) { _SSS-MergePdfs -PdfPaths $localPdfPaths -OutPath $outPdf -QpdfExe $qpdfExe }
+        }
+
+        # update manifest after rebuild/exchange
+        if ($needsFullRebuild -or $changedIndices.Count -gt 0) {
+            $sources = @()
+            $pageEnd = 0
+            foreach ($lp in $localPdfPaths) {
+                $name = [System.IO.Path]::GetFileName($lp)
+                $hash = _SSS-GetFileHashSha256 $lp
+                $pageCount = _SSS-GetPdfPageCount -Path $lp -QpdfExe $qpdfExe
+                $pageStart = $pageEnd + 1
+                $pageEnd = $pageStart + $pageCount - 1
+                $row = @{ name = $name; hash = $hash; pageStart = $pageStart; pageEnd = $pageEnd }
+                $dlm = $sourcePwLastModByName[$name]
+                if ($dlm) { $row.pwLastModified = $dlm.ToUniversalTime().ToString('o') }
+                $sources += $row
+            }
+            $pinned = $null
+            if ($statusSetLastModified) { $pinned = $statusSetLastModified.ToUniversalTime().ToString('o') }
+            elseif ($manifest2 -and $manifest2.pinnedStatusSetLastModified) { $pinned = [string]$manifest2.pinnedStatusSetLastModified }
+            $manifestObj = @{
+                manifestSchemaVersion       = $script:StatusSetManifestSchemaVersion
+                folderPath                  = $pwSheetsPath
+                pinnedStatusSetLastModified = $pinned
+                sources                     = $sources
+            }
+            Write-StatusSetManifestLegacy -ManifestPath $manifestPath -ManifestObj $manifestObj
+        }
+
+        # write-back if requested (same decision as legacy)
+        $existingDoc = Get-PWDocumentsBySearch -FolderPath $docSearchPath -JustThisFolder -DocumentName $script:StatusSetOutputName -PopulatePath -ErrorAction SilentlyContinue
+        $shouldWriteBack = $writeBackToPW -and (Test-Path -LiteralPath $outPdf) -and (($needsFullRebuild -or $changedIndices.Count -gt 0) -or -not $existingDoc)
+        $pwUpload = $null
+        $pwUploadError = $null
+        if ($shouldWriteBack) {
+            try {
+                if ($existingDoc) {
+                    _SSS-UpdatePWDocumentFileFromDisk -InputDocument $existingDoc -LocalFilePath $outPdf
+                    $pwUpload = 'UPDATED'
+                } else {
+                    New-PWDocument -FolderPath $docSearchPath -FilePath $outPdf -DocumentName $script:StatusSetOutputName -ErrorAction Stop | Out-Null
+                    $pwUpload = 'CREATED'
+                }
+                # refresh pinned date after write-back
+                try {
+                    $sd2 = _SSS-FindStatusSetDocLegacy -TryPaths $tryPaths -OutputName $script:StatusSetOutputName -DateCols $statusSetDateCols
+                    if ($sd2) {
+                        $dt2 = _SSS-GetDocLastModified $sd2
+                        if ($dt2 -and (Test-Path -LiteralPath $manifestPath)) {
+                            $m2 = Read-StatusSetManifestLegacy -ManifestPath $manifestPath
+                            if ($m2) {
+                                $m2.pinnedStatusSetLastModified = $dt2.ToUniversalTime().ToString('o')
+                                $m2 | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+                            }
+                        }
+                    }
+                } catch { }
+            } catch {
+                $pwUpload = 'FAILED'
+                $pwUploadError = [string]$_.Exception.Message
+            }
+        }
+
+        # If writeback was requested AND attempted AND threw, do NOT report success.
+        # The local PDF was generated but the user's intent ("upload to PW") was not
+        # met; treating this as success would silently strand the result and the job
+        # would never be retried. Return a structured failure so the worker can move
+        # the job to pending\ for another attempt (or to failed\ after maxAttempts).
+        if ($pwUpload -eq 'FAILED') {
+            return New-QCFailureResult -Code 'STATUS_SET_PW_UPLOAD_FAILED' -Message ('PW write-back failed: ' + $pwUploadError) -Data @{
+                jobId            = [string]$Job.id
+                outPdf           = $outPdf
+                manifestPath     = $manifestPath
+                cacheDir         = $cacheDir
+                docSearchPath    = $docSearchPath
+                needsFullRebuild = $needsFullRebuild
+                changedCount     = $changedIndices.Count
+                writeBackToPW    = $writeBackToPW
+                pwUpload         = $pwUpload
+                error            = $pwUploadError
+            }
+        }
+
+        return New-QCSuccessResult -Code 'STATUS_SET_OK' -Message 'Status set generated (legacy method, ProjectWise).' -Data @{
+            jobId = [string]$Job.id
+            outPdf = $outPdf
+            manifestPath = $manifestPath
+            cacheDir = $cacheDir
+            docSearchPath = $docSearchPath
+            needsFullRebuild = $needsFullRebuild
+            changedCount = $changedIndices.Count
+            writeBackToPW = $writeBackToPW
+            pwUpload = $pwUpload
+        }
+    } finally {
+        try { Disconnect-PW | Out-Null } catch { }
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Get-StatusSetManifestPathLegacy',
+    'Get-StatusSetCacheDirLegacy',
+    'Read-StatusSetManifestLegacy',
+    'Write-StatusSetManifestLegacy',
+    'Get-StatusSetLocalFolderState',
+    'Get-StatusSetPWFolderState',
+    'Invoke-StatusSetNativeJob'
+)
+
+function _SSS-BuildPWStatusSetState {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [Parameter(Mandatory)]
+        [bool]$OneLevelDeep,
+        [Parameter(Mandatory)]
+        [bool]$IncludeOrderedPdfDocuments
+    )
+
+    $paths = @([string]$FolderPath)
+    if ($OneLevelDeep) {
+        try {
+            $kids = @(Get-PWFoldersImmediateChildren -FolderPath $FolderPath -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+            foreach ($k in $kids) {
+                $kp = _SSS-PWGetProp -Obj $k -Name 'FolderPath'
+                if ($kp) { $paths += [string]$kp }
+            }
+        } catch { }
+    }
+
+    $docs = @()
+    foreach ($p in @($paths | Select-Object -Unique)) {
+        $docs += @(_SSS-PWListDocsInFolder -FolderPath $p)
+    }
+    $pdfs = @()
+    $dgns = @()
+    foreach ($d in @($docs)) {
+        $name = _SSS-PWGetDocName -Doc $d
+        if (-not $name) { continue }
+        if ($name -match '(?i)-qc\.pdf$') { continue }
+        if ($name -match '(?i)_statusset\.pdf$') { continue }
+        if ($name -match '(?i)\.pdf$') { $pdfs += $d; continue }
+        if ($name -match '(?i)\.dgn$') { $dgns += $d; continue }
+    }
+
+    $dgnByStem = @{}
+    foreach ($d in $dgns) {
+        $n = _SSS-PWGetDocName -Doc $d
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($n)
+        if ($stem) { $dgnByStem[$stem.ToLowerInvariant()] = $d }
+    }
+
+    $lines = @()
+    $pairRows = @()
+    foreach ($p in $pdfs) {
+        $pn = _SSS-PWGetDocName -Doc $p
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($pn)
+        if (-not $stem) { continue }
+        $stemKey = $stem.ToLowerInvariant()
+        if (-not $dgnByStem.ContainsKey($stemKey)) { continue }
+        $d = $dgnByStem[$stemKey]
+        $dgnName = _SSS-PWGetDocName -Doc $d
+
+        $pdfMod = _SSS-PWGetDocLastModifiedUtcIso -Doc $p
+        $dgnMod = _SSS-PWGetDocLastModifiedUtcIso -Doc $d
+        $pdfSize = _SSS-PWGetProp -Obj $p -Name 'FileSize'
+        if (-not $pdfSize) { $pdfSize = _SSS-PWGetProp -Obj $p -Name 'Size' }
+        $dgnSize = _SSS-PWGetProp -Obj $d -Name 'FileSize'
+        if (-not $dgnSize) { $dgnSize = _SSS-PWGetProp -Obj $d -Name 'Size' }
+        $pdfDocId = _SSS-PWGetProp -Obj $p -Name 'DocumentID'
+        $dgnDocId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
+
+        $dirKey = ([string]$FolderPath).ToLowerInvariant()
+        $pairRows += [pscustomobject]@{
+            Stem = $stemKey
+            Dir = $dirKey
+            PdfDoc = $p
+            PdfName = $pn
+            PdfMod = $pdfMod
+            PdfSize = $pdfSize
+            DgnMod = $dgnMod
+            DgnSize = $dgnSize
+            PdfDocumentId = $pdfDocId
+            DgnDocumentId = $dgnDocId
+            DgnName = $dgnName
+        }
+        # Hash identity for dedupe + manifest: sizes and PW document IDs only. PW "last modified"
+        # fields are unstable across listings/API paths and caused spurious new dedupeKeys after restart.
+        $pdfIdStr = if ($null -ne $pdfDocId -and -not [string]::IsNullOrWhiteSpace([string]$pdfDocId)) { [string]$pdfDocId } else { '' }
+        $dgnIdStr = if ($null -ne $dgnDocId -and -not [string]::IsNullOrWhiteSpace([string]$dgnDocId)) { [string]$dgnDocId } else { '' }
+        $lines += (@($stemKey, ([string]$pdfSize), ([string]$dgnSize), $pdfIdStr, $dgnIdStr, $dirKey) -join '|')
+    }
+
+    $lines = @($lines | Sort-Object)
+    $stable = ($lines -join "`n")
+    $hash = _SSS-Sha256TextHex -Text $stable
+
+    $sortedRows = @($pairRows | Sort-Object -Property Dir, Stem)
+    $pairedSheets = foreach ($r in $sortedRows) {
+        @{
+            stem = $r.Stem
+            dir = $r.Dir
+            pdf = @{
+                name = [string]$r.PdfName
+                lastWriteTimeUtc = [string]$r.PdfMod
+                length = $r.PdfSize
+                documentId = $r.PdfDocumentId
+            }
+            dgn = @{
+                name = [string]$r.DgnName
+                lastWriteTimeUtc = [string]$r.DgnMod
+                length = $r.DgnSize
+                documentId = $r.DgnDocumentId
+            }
+        }
+    }
+    $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
+    $orderedPdfDocs = if ($IncludeOrderedPdfDocuments) { @($sortedRows | ForEach-Object { $_.PdfDoc }) } else { @() }
+
+    return @{
+        folderStateHash = $hash
+        pairedCount = $sortedRows.Count
+        pdfCount = $pdfs.Count
+        dgnCount = $dgns.Count
+        stableInput = $stable
+        orderKey = $orderKey
+        pairedSheets = $pairedSheets
+        orderedPdfDocuments = $orderedPdfDocs
+    }
+}
+
+function Get-StatusSetPWFolderState {
+    <#
+    .SYNOPSIS
+    Same pairing rules as local state, using PW document listings (optionally one level of subfolders).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [Parameter(Mandatory)]
+        [bool]$OneLevelDeep
+    )
+    return _SSS-BuildPWStatusSetState -FolderPath $FolderPath -OneLevelDeep $OneLevelDeep -IncludeOrderedPdfDocuments:$false
+}
+
+function Test-StatusSetSheetPdfTimestampMatch {
+    <#
+    .SYNOPSIS
+    True when manifest sheet row and current paired row have the same PDF file size and PW lastWriteTimeUtc (UTC).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$ManifestSheetRow,
+        [Parameter(Mandatory)]
+        [object]$CurrentPairedRow
+    )
+    return _SSS-SheetPdfTimestampMatches -ManifestRow $ManifestSheetRow -CurrentRow $CurrentPairedRow
+}
+
+function Get-StatusSetPairedSheetSignature {
+    <#
+    .SYNOPSIS
+    Fingerprint for one manifest or pairedSheets row (documentId+size when available).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Row
+    )
+    return _SSS-GetPairedSheetSignature -Row $Row
+}
+
+function Get-StatusSetWorkspaceDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LocalRoot,
+        [Parameter(Mandatory)]
+        [string]$SheetsFolderPath
+    )
+
+    if (_SSS-IsNullOrWhiteSpace $LocalRoot) {
+        return New-QCFailureResult -Code 'STATUS_SET_LOCAL_ROOT_EMPTY' -Message 'LocalRoot is required.' -Data @{}
+    }
+    $h = _SSS-Sha256HexOfPath -Path $SheetsFolderPath
+    if (-not $h) {
+        return New-QCFailureResult -Code 'STATUS_SET_PATH_NORMALIZE_FAILED' -Message 'Failed to normalize SheetsFolderPath.' -Data @{ sheetsFolderPath = $SheetsFolderPath }
+    }
+    $key = $h.Substring(0, 16)
+    $dir = Join-Path $LocalRoot $key
+    return New-QCSuccessResult -Code 'STATUS_SET_WORKSPACE_OK' -Message 'Workspace directory resolved.' -Data @{
+        workspaceDir = $dir
+        folderKey = $key
+        sheetsFolderNormalizedHash = $h
+    }
+}
+
+function Get-StatusSetManifestPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceDir,
+        [Parameter(Mandatory = $false)]
+        [string]$ManifestFileName = '_statusset.manifest.json'
+    )
+    return Join-Path $WorkspaceDir $ManifestFileName
+}
+
+function Read-StatusSetManifestFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_MISSING' -Message 'Manifest file not found.' -Data @{ manifest = $null; path = $Path }
+    }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $h = @{}
+        if ($obj.PSObject -and $obj.PSObject.Properties) {
+            foreach ($p in $obj.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        }
+        return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_READ' -Message 'Manifest loaded.' -Data @{ manifest = $h; path = $Path }
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_MANIFEST_READ_FAILED' -Message 'Failed to read manifest JSON.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
+    }
+}
+
+function New-StatusSetManifestObject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$State,
+        [Parameter(Mandatory)]
+        [string]$SheetsFolderDisplay
+    )
+    $sheets = @()
+    foreach ($row in @([array]$State.pairedSheets)) {
+        $key = ([string]$row.dir + '|' + [string]$row.stem).ToLowerInvariant()
+        $dgnSide = $null
+        if ($row -is [hashtable]) {
+            if ($row.ContainsKey('dgn') -and $row['dgn']) { $dgnSide = $row['dgn'] }
+            elseif ($row.ContainsKey('cad') -and $row['cad']) { $dgnSide = $row['cad'] }
+        } elseif ($row -and $row.PSObject) {
+            $pDgn = $row.PSObject.Properties['dgn']
+            $pCad = $row.PSObject.Properties['cad']
+            if ($pDgn -and $pDgn.Value) { $dgnSide = $pDgn.Value }
+            elseif ($pCad -and $pCad.Value) { $dgnSide = $pCad.Value }
+        }
+        $sheets += @{
+            key = $key
+            stem = [string]$row.stem
+            folderKey = [string]$row.dir
+            pdf = $row.pdf
+            dgn = $dgnSide
+        }
+    }
+    $man = @{
+        version = 1
+        sheetsFolder = $SheetsFolderDisplay
+        folderStateHash = [string]$State.folderStateHash
+        generatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        sheetCount = [int]$State.pairedCount
+        sheets = $sheets
+    }
+    return $man
+}
+
+function Write-StatusSetManifestFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [hashtable]$Manifest
+    )
+    try {
+        $dir = Split-Path -Parent $Path
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $json = $Manifest | ConvertTo-Json -Depth 12
+        Set-Content -LiteralPath $Path -Value $json -Encoding UTF8 -ErrorAction Stop
+        return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_WRITTEN' -Message 'Manifest written.' -Data @{ path = $Path }
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_MANIFEST_WRITE_FAILED' -Message 'Failed to write manifest.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
+    }
+}
+
+function _SSS-GetPairedSheetSignature {
+    <#
+    .SYNOPSIS
+    Stable fingerprint for one paired sheet row (manifest sheet or CurrentState.pairedSheets item).
+    Aligns with Test-StatusSetRebuildNeeded: prefer PW documentId + file sizes; else timestamps.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Row
+    )
+    $pdf = $null
+    $dgn = $null
+    if ($Row -is [hashtable]) {
+        if ($Row.ContainsKey('pdf')) { $pdf = $Row['pdf'] }
+        if ($Row.ContainsKey('dgn')) { $dgn = $Row['dgn'] }
+        elseif ($Row.ContainsKey('cad')) { $dgn = $Row['cad'] }
+    } elseif ($Row -and $Row.PSObject) {
+        try { $pdf = $Row.pdf } catch { }
+        try {
+            if ($Row.PSObject.Properties.Match('dgn').Count -gt 0) { $dgn = $Row.dgn }
+            elseif ($Row.PSObject.Properties.Match('cad').Count -gt 0) { $dgn = $Row.cad }
+        } catch { }
+    }
+    function _PartDoc([object]$Doc) {
+        $pl = ''; $pm = ''; $pid = ''
+        if ($Doc -is [hashtable]) {
+            if ($Doc.ContainsKey('length')) { $pl = [string]$Doc['length'] }
+            if ($Doc.ContainsKey('lastWriteTimeUtc')) { $pm = [string]$Doc['lastWriteTimeUtc'] }
+            if ($Doc.ContainsKey('documentId')) { $pid = [string]$Doc['documentId'] }
+        } elseif ($Doc -and $Doc.PSObject) {
+            $pl = [string]($Doc | Select-Object -ExpandProperty length -ErrorAction SilentlyContinue)
+            $pm = [string]($Doc | Select-Object -ExpandProperty lastWriteTimeUtc -ErrorAction SilentlyContinue)
+            $pid = [string]($Doc | Select-Object -ExpandProperty documentId -ErrorAction SilentlyContinue)
+        }
+        return @{ pl = $pl; pm = $pm; pid = $pid }
+    }
+    $pp = _PartDoc -Doc $pdf
+    $dp = _PartDoc -Doc $dgn
+    if (-not [string]::IsNullOrWhiteSpace($pp.pid) -and -not [string]::IsNullOrWhiteSpace($dp.pid)) {
+        return ($pp.pid + '|' + $pp.pl + '|' + $dp.pid + '|' + $dp.pl)
+    }
+    return ($pp.pl + '|' + $pp.pm + '|' + $dp.pl + '|' + $dp.pm)
+}
+
+function _SSS-SheetPdfTimestampMatches([object]$ManifestRow, [object]$CurrentRow) {
+    $mp = $null
+    $cp = $null
+    if ($ManifestRow -is [hashtable] -and $ManifestRow.ContainsKey('pdf')) { $mp = $ManifestRow['pdf'] }
+    elseif ($ManifestRow.PSObject) { try { $mp = $ManifestRow.pdf } catch { } }
+    if ($CurrentRow -is [hashtable] -and $CurrentRow.ContainsKey('pdf')) { $cp = $CurrentRow['pdf'] }
+    elseif ($CurrentRow.PSObject) { try { $cp = $CurrentRow.pdf } catch { } }
+    if (-not $mp -or -not $cp) { return $false }
+    function _Len([object]$Pdf) {
+        if ($Pdf -is [hashtable] -and $Pdf.ContainsKey('length')) { return [string]$Pdf['length'] }
+        if ($Pdf.PSObject) { return [string]($Pdf | Select-Object -ExpandProperty length -ErrorAction SilentlyContinue) }
+        return ''
+    }
+    function _Mod([object]$Pdf) {
+        if ($Pdf -is [hashtable] -and $Pdf.ContainsKey('lastWriteTimeUtc')) { return [string]$Pdf['lastWriteTimeUtc'] }
+        if ($Pdf.PSObject) { return [string]($Pdf | Select-Object -ExpandProperty lastWriteTimeUtc -ErrorAction SilentlyContinue) }
+        return ''
+    }
+    $l1 = _Len $mp
+    $l2 = _Len $cp
+    if ($l1 -ne $l2 -or [string]::IsNullOrWhiteSpace($l1)) { return $false }
+    $t1 = _SSS-ParseIsoDateTime -Value (_Mod $mp)
+    $t2 = _SSS-ParseIsoDateTime -Value (_Mod $cp)
+    if ($null -eq $t1 -or $null -eq $t2) { return $false }
+    return ($t1 -eq $t2)
+}
+
+function _SSS-StatusSetSheetCachePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceDir,
+        [Parameter(Mandatory)]
+        [string]$SheetKey
+    )
+    $cacheRoot = Join-Path $WorkspaceDir '_sheet_cache'
+    $h = _SSS-Sha256TextHex -Text (($SheetKey -as [string]).ToLowerInvariant())
+    return (Join-Path $cacheRoot ($h + '.pdf'))
+}
+
+function _SSS-MaxPairedSheetPdfWriteUtc {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$CurrentState
+    )
+    $max = $null
+    foreach ($row in @([array]$CurrentState['pairedSheets'])) {
+        if (-not $row) { continue }
+        $pdf = $null
+        if ($row -is [hashtable] -and $row.ContainsKey('pdf')) { $pdf = $row['pdf'] }
+        elseif ($row.PSObject) { try { $pdf = $row.pdf } catch { } }
+        if (-not $pdf) { continue }
+        $pm = $null
+        if ($pdf -is [hashtable] -and $pdf.ContainsKey('lastWriteTimeUtc')) { $pm = $pdf['lastWriteTimeUtc'] }
+        elseif ($pdf.PSObject) { $pm = $pdf | Select-Object -ExpandProperty lastWriteTimeUtc -ErrorAction SilentlyContinue }
+        $dt = _SSS-ParseIsoDateTime -Value $pm
+        if ($dt) {
+            if ($null -eq $max -or $dt -gt $max) { $max = $dt }
+        }
+    }
+    return $max
+}
+
+function Test-StatusSetRebuildNeeded {
+    <#
+    .SYNOPSIS
+    Compares last-written manifest to current folder state (hash + per-sheet signatures).
+    .DESCRIPTION
+    When StatusSetPdfPath points to an existing workspace _statusset.pdf and paired sheet PDF
+    timestamps are available, a rebuild is forced if that PDF is older than the newest paired
+    sheet PDF. If structure/signatures match and the status PDF is not older, hash-only drift
+    is ignored (skips rebuild) — mirrors "sheets unchanged since last merge" intent.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $Manifest,
+        [Parameter(Mandatory)]
+        [hashtable]$CurrentState,
+        [Parameter(Mandatory = $false)]
+        [switch]$ForceRebuild,
+        [Parameter(Mandatory = $false)]
+        [string]$StatusSetPdfPath
+    )
+
+    if ($ForceRebuild) {
+        return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'Rebuild forced.' -Data @{
+            needsRebuild = $true
+            reasons = @('ForceRebuild')
+            onlyInManifest = @()
+            onlyInFolder = @()
+            signatureMismatches = @()
+            manifestHash = $null
+            currentHash = [string]$CurrentState.folderStateHash
+        }
+    }
+
+    if ($null -eq $Manifest) {
+        return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'No manifest: rebuild needed.' -Data @{
+            needsRebuild = $true
+            reasons = @('NO_MANIFEST')
+            onlyInManifest = @()
+            onlyInFolder = @()
+            signatureMismatches = @()
+            manifestHash = $null
+            currentHash = [string]$CurrentState.folderStateHash
+        }
+    }
+
+    $m = $Manifest
+    if ($m -isnot [hashtable]) {
+        if ($m.PSObject -and $m.PSObject.Properties) {
+            $mh = @{}
+            foreach ($p in $m.PSObject.Properties) { $mh[$p.Name] = $p.Value }
+            $m = $mh
+        }
+    }
+
+    $mh = if ($m.ContainsKey('folderStateHash')) { [string]$m['folderStateHash'] } else { '' }
+    $ch = [string]$CurrentState.folderStateHash
+    if ($mh -and $ch -eq $mh) {
+        if (-not [string]::IsNullOrWhiteSpace($StatusSetPdfPath) -and (Test-Path -LiteralPath $StatusSetPdfPath)) {
+            $maxEarly = _SSS-MaxPairedSheetPdfWriteUtc -CurrentState $CurrentState
+            if ($null -ne $maxEarly) {
+                try {
+                    $outEarly = (Get-Item -LiteralPath $StatusSetPdfPath -ErrorAction Stop).LastWriteTimeUtc
+                    if ($outEarly -lt $maxEarly) {
+                        return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'Manifest hash matches but status set PDF is older than a paired sheet PDF; rebuild.' -Data @{
+                            needsRebuild = $true
+                            reasons = @('STATUS_SET_PDF_OLDER_THAN_SHEET_PDF')
+                            onlyInManifest = @()
+                            onlyInFolder = @()
+                            signatureMismatches = @()
+                            manifestHash = $mh
+                            currentHash = $ch
+                            statusSetPdfPath = $StatusSetPdfPath
+                            statusSetPdfUtc = $outEarly
+                            newestPairedSheetPdfUtc = $maxEarly
+                            usedStatusSetPdfMtimeRule = $true
+                        }
+                    }
+                } catch { }
+            }
+        }
+        return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'folderStateHash matches manifest; skip rebuild.' -Data @{
+            needsRebuild = $false
+            reasons = @()
+            onlyInManifest = @()
+            onlyInFolder = @()
+            signatureMismatches = @()
+            manifestHash = $mh
+            currentHash = $ch
+        }
+    }
+
+    $manifestKeys = @{}
+    foreach ($s in @([array]$m['sheets'])) {
+        $key = $null
+        if ($s -is [hashtable] -and $s.ContainsKey('key')) { $key = [string]$s['key'] }
+        elseif ($s.PSObject.Properties['key']) { $key = [string]$s.key }
+        if ($key) {
+            $manifestKeys[$key.ToLowerInvariant()] = $s
+        }
+    }
+
+    $folderKeys = @{}
+    foreach ($s in @([array]$CurrentState.pairedSheets)) {
+        $k = ([string]$s.dir + '|' + [string]$s.stem).ToLowerInvariant()
+        $folderKeys[$k] = $s
+    }
+
+    $onlyM = @()
+    $onlyF = @()
+    foreach ($k in $manifestKeys.Keys) {
+        if (-not $folderKeys.ContainsKey($k)) { $onlyM += $k }
+    }
+    foreach ($k in $folderKeys.Keys) {
+        if (-not $manifestKeys.ContainsKey($k)) { $onlyF += $k }
+    }
+
+    $sigMismatch = @()
+    foreach ($k in $manifestKeys.Keys) {
+        if (-not $folderKeys.ContainsKey($k)) { continue }
+        $sm = _SSS-GetPairedSheetSignature -Row $manifestKeys[$k]
+        $sf = _SSS-GetPairedSheetSignature -Row $folderKeys[$k]
+        if ($sm -ne $sf) { $sigMismatch += $k }
+    }
+
+    $structuralDrift = ($onlyM.Count -gt 0) -or ($onlyF.Count -gt 0) -or ($sigMismatch.Count -gt 0)
+
+    $maxSheetPdfUtc = _SSS-MaxPairedSheetPdfWriteUtc -CurrentState $CurrentState
+    $statusSetPdfUtc = $null
+    $staleVsSheetPdfs = $false
+    $usedStatusSetPdfMtimeRule = $false
+    if (-not [string]::IsNullOrWhiteSpace($StatusSetPdfPath) -and (Test-Path -LiteralPath $StatusSetPdfPath) -and ($null -ne $maxSheetPdfUtc)) {
+        try {
+            $statusSetPdfUtc = (Get-Item -LiteralPath $StatusSetPdfPath -ErrorAction Stop).LastWriteTimeUtc
+            $usedStatusSetPdfMtimeRule = $true
+            if ($statusSetPdfUtc -lt $maxSheetPdfUtc) { $staleVsSheetPdfs = $true }
+        } catch {
+            $usedStatusSetPdfMtimeRule = $false
+            $statusSetPdfUtc = $null
+        }
+    }
+
+    if ((-not $structuralDrift) -and $usedStatusSetPdfMtimeRule -and -not $staleVsSheetPdfs) {
+        return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'Status set PDF is newer than all paired sheet PDFs; skip rebuild.' -Data @{
+            needsRebuild = $false
+            reasons = @()
+            onlyInManifest = $onlyM
+            onlyInFolder = $onlyF
+            signatureMismatches = $sigMismatch
+            manifestHash = $mh
+            currentHash = $ch
+            statusSetPdfPath = $StatusSetPdfPath
+            statusSetPdfUtc = $statusSetPdfUtc
+            newestPairedSheetPdfUtc = $maxSheetPdfUtc
+            usedStatusSetPdfMtimeRule = $true
+        }
+    }
+
+    $reasons = @()
+    if ($onlyM.Count -gt 0) { $reasons += 'SHEETS_REMOVED_FROM_FOLDER' }
+    if ($onlyF.Count -gt 0) { $reasons += 'SHEETS_ADDED_TO_FOLDER' }
+    if ($sigMismatch.Count -gt 0) { $reasons += 'SHEET_METADATA_CHANGED' }
+    if ($staleVsSheetPdfs) { $reasons += 'STATUS_SET_PDF_OLDER_THAN_SHEET_PDF' }
+    if ($mh -ne $ch) { $reasons += 'FOLDER_STATE_HASH_MISMATCH' }
+
+    $needs = $structuralDrift -or $staleVsSheetPdfs -or ($mh -ne $ch)
+
+    return New-QCSuccessResult -Code 'STATUS_SET_COMPARE' -Message 'Comparison complete.' -Data @{
+        needsRebuild = [bool]$needs
+        reasons = $reasons
+        onlyInManifest = $onlyM
+        onlyInFolder = $onlyF
+        signatureMismatches = $sigMismatch
+        manifestHash = $mh
+        currentHash = $ch
+        statusSetPdfPath = $StatusSetPdfPath
+        statusSetPdfUtc = $statusSetPdfUtc
+        newestPairedSheetPdfUtc = $maxSheetPdfUtc
+        usedStatusSetPdfMtimeRule = $usedStatusSetPdfMtimeRule
+    }
+}
+
+function Merge-StatusSetPdfWithQpdf {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$OrderedInputPdfPaths,
+        [Parameter(Mandatory)]
+        [string]$OutputPdf,
+        [Parameter(Mandatory)]
+        [string]$QpdfExe
+    )
+
+    # Delegate to the internal _SSS-MergePdfs helper so there is exactly one place
+    # that builds qpdf arguments. _SSS-MergePdfs mirrors legacy/combine_status_set.ps1:
+    #   - one '--empty --pages <files...> -- <out>' invocation per batch
+    #   - 1-file fast path uses Copy-Item
+    #   - >100 files chunks recursively to avoid the Windows ~32K command-line limit
+    # Returning rich Result objects is preserved for callers/diagnostics.
+
+    $missing = @($OrderedInputPdfPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if ($missing.Count -gt 0) {
+        return New-QCFailureResult -Code 'STATUS_SET_MERGE_INPUT_MISSING' -Message 'One or more input PDFs are missing on disk.' -Data @{ missing = $missing }
+    }
+    if (-not (Test-Path -LiteralPath $QpdfExe)) {
+        return New-QCFailureResult -Code 'STATUS_SET_QPDF_MISSING' -Message "qpdf not found: $QpdfExe" -Data @{ qpdfExe = $QpdfExe }
+    }
+
+    $outDir = Split-Path -Parent $OutputPdf
+    if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
+        New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+    }
+
+    try {
+        _SSS-MergePdfs -PdfPaths $OrderedInputPdfPaths -OutPath $OutputPdf -QpdfExe $QpdfExe
+    } catch {
+        $errMsg = [string]$_.Exception.Message
+        return New-QCFailureResult -Code 'STATUS_SET_QPDF_FAILED' -Message 'qpdf merge failed.' -Data @{
+            error      = $errMsg
+            inputCount = @($OrderedInputPdfPaths).Count
+            outputPdf  = $OutputPdf
+            qpdfExe    = $QpdfExe
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $OutputPdf)) {
+        return New-QCFailureResult -Code 'STATUS_SET_QPDF_FAILED' -Message 'qpdf produced no output.' -Data @{
+            inputCount = @($OrderedInputPdfPaths).Count
+            outputPdf  = $OutputPdf
+        }
+    }
+
+    return New-QCSuccessResult -Code 'STATUS_SET_MERGE_OK' -Message 'Merged PDF written.' -Data @{
+        outputPdf  = $OutputPdf
+        inputCount = @($OrderedInputPdfPaths).Count
+    }
+}
+
+function Export-StatusSetPdfToFolder {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $InputDocument,
+        [Parameter(Mandatory)]
+        [string]$TargetFolder
+    )
+
+    $cmd = Get-Command -Name Export-PWDocumentsSimple -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        return New-QCFailureResult -Code 'STATUS_SET_EXPORT_CMD_MISSING' -Message 'Export-PWDocumentsSimple not available (run in ProjectWise PowerShell).' -Data @{}
+    }
+    if (-not (Test-Path -LiteralPath $TargetFolder)) {
+        New-Item -ItemType Directory -Path $TargetFolder -Force | Out-Null
+    }
+    try {
+        Export-PWDocumentsSimple -InputDocuments $InputDocument -TargetFolder $TargetFolder -ErrorAction Stop | Out-Null
+        # Match legacy combine_status_set.ps1 line ~828: a brief sleep after every PW
+        # export gives Fortinet (and similar AV) time to scan the freshly-written
+        # PDF before we issue the next export. Without this, back-to-back exports
+        # can hit file-handle contention and produce partial/zero-byte PDFs.
+        _SSS-PwExportThrottle
+        $name = _SSS-PWGetDocName -Doc $InputDocument
+        $direct = Join-Path $TargetFolder $name
+        if (Test-Path -LiteralPath $direct) {
+            return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF.' -Data @{ localPath = $direct }
+        }
+        $cname = _SSS-PWGetProp -Obj $InputDocument -Name 'CopiedOutLocalFileName'
+        if ($cname) {
+            $alt = Join-Path $TargetFolder ([string]$cname)
+            if (Test-Path -LiteralPath $alt) {
+                return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF (CopiedOutLocalFileName).' -Data @{ localPath = $alt }
+            }
+        }
+        $newest = Get-ChildItem -LiteralPath $TargetFolder -File -Filter '*.pdf' -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        if ($newest) {
+            return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF (newest pdf in folder).' -Data @{ localPath = [string]$newest.FullName }
+        }
+        return New-QCFailureResult -Code 'STATUS_SET_EXPORT_RESOLVE_FAILED' -Message 'Export ran but local PDF path could not be resolved.' -Data @{ targetFolder = $TargetFolder; documentName = $name }
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_EXPORT_FAILED' -Message 'Export-PWDocumentsSimple failed.' -Data @{ errorMessage = $_.Exception.Message }
+    }
+}
+
+function Invoke-StatusSetNativeJob {
+    <#
+    .SYNOPSIS
+    Manifest compare vs live PW inventory; export paired PDFs; qpdf merge; write manifest; optional PW write-back of _statusset.pdf.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Job,
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    _SSS-ApplyFsThrottleConfig -Config $Config
+
+    $ss = @{}
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet) {
+        $raw = $Config.statusSet
+        if ($raw -is [hashtable]) { $ss = $raw } elseif ($raw.PSObject) {
+            foreach ($p in $raw.PSObject.Properties) { $ss[$p.Name] = $p.Value }
+        }
+    }
+
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $manifestName = if ($ss.ContainsKey('manifestFileName') -and $ss.manifestFileName) { [string]$ss.manifestFileName } else { '_statusset.manifest.json' }
+    $statusPdfName = if ($ss.ContainsKey('statusSetPdfName') -and $ss.statusSetPdfName) { [string]$ss.statusSetPdfName } else { '_statusset.pdf' }
+    $qpdfExe = if ($ss.ContainsKey('qpdfExe') -and $ss.qpdfExe) { [string]$ss.qpdfExe } else { '' }
+    if (_SSS-IsNullOrWhiteSpace $qpdfExe) {
+        if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
+            $qc = $Config.qcPrepend
+            if ($qc -is [hashtable] -and $qc.ContainsKey('qpdfExePath')) { $qpdfExe = [string]$qc['qpdfExePath'] }
+            elseif ($qc.PSObject.Properties['qpdfExePath']) { $qpdfExe = [string]$qc.qpdfExePath }
+        }
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
+
+    $forceRebuild = $false
+    if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    $writeBackToPW = $false
+    if ($ss.ContainsKey('writeBackToPW')) { try { $writeBackToPW = [bool]$ss.writeBackToPW } catch { $writeBackToPW = $false } }
+
+    $pwSheetCacheEnabled = $true
+    if ($ss.ContainsKey('pwSheetCache')) {
+        try { $pwSheetCacheEnabled = [bool]$ss.pwSheetCache } catch { $pwSheetCacheEnabled = $true }
+    }
+    $pwSheetReusePolicy = 'Signature'
+    if ($ss.ContainsKey('pwSheetReusePolicy') -and $ss.pwSheetReusePolicy) {
+        $pwSheetReusePolicy = ([string]$ss.pwSheetReusePolicy).Trim()
+    }
+
+    $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
+    if (_SSS-IsNullOrWhiteSpace $sourceFolder) {
+        return New-QCFailureResult -Code 'STATUS_SET_MISSING_SOURCE_FOLDER' -Message 'Job.sourceFolder is required.' -Data @{}
+    }
+
+    $oneLevelDeep = $true
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('candidate')) {
+        $cand = $Job.metadata.candidate
+        if ($cand -is [hashtable] -and $cand.ContainsKey('oneLevelDeep')) {
+            try { $oneLevelDeep = [bool]$cand.oneLevelDeep } catch { $oneLevelDeep = $true }
+        }
+    }
+
+    $pwPath = $sourceFolder -replace '^Documents\\', ''
+
+    $pathNormRes = Normalize-QCPath -Path $sourceFolder
+    $normForDetect = if ($pathNormRes.IsSuccess) { [string]$pathNormRes.Data.path } else { $sourceFolder }
+    $isPwLogicalPath = $normForDetect.StartsWith('documents\', [System.StringComparison]::OrdinalIgnoreCase) -or ($sourceFolder -match '(?i)^pw:\\')
+    $useLocalFs = (-not $isPwLogicalPath) -and (Test-Path -LiteralPath $sourceFolder -PathType Container)
+
+    $wsRes = Get-StatusSetWorkspaceDirectory -LocalRoot $localRoot -SheetsFolderPath $sourceFolder
+    if (-not $wsRes.IsSuccess) { return $wsRes }
+    $workspace = [string]$wsRes.Data.workspaceDir
+    $manifestPath = Get-StatusSetManifestPath -WorkspaceDir $workspace -ManifestFileName $manifestName
+    $outPdf = Join-Path $workspace $statusPdfName
+
+    $isDryRun = $false
+    if ($Config.ContainsKey('dryRun')) { try { $isDryRun = [bool]$Config.dryRun } catch { $isDryRun = $false } }
+
+    $pwCfg = @{}
+    if ($Config.ContainsKey('projectWise')) {
+        $p = $Config.projectWise
+        if ($p -is [hashtable]) { $pwCfg = $p }
+        elseif ($p.PSObject) { foreach ($x in $p.PSObject.Properties) { $pwCfg[$x.Name] = $x.Value } }
+    }
+    $credPath = if ($pwCfg.ContainsKey('credentialPath')) { [string]$pwCfg['credentialPath'] } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+    $ds = if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('candidate')) {
+        $c = $Job.metadata.candidate
+        if ($c -is [hashtable] -and $c.ContainsKey('datasourceName')) { [string]$c['datasourceName'] }
+        else { '' }
+    } else { '' }
+    if (_SSS-IsNullOrWhiteSpace $ds) {
+        $ds = if ($pwCfg.ContainsKey('datasourceName')) { [string]$pwCfg['datasourceName'] } else { 'typsa-us-pw.bentley.com:typsa-us-pw-03' }
+    }
+
+    $pwConnected = $false
+    if (-not $useLocalFs) {
+        Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
+        $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+        if (-not $credRes.IsSuccess) { return $credRes }
+        $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+        if (-not $connRes.IsSuccess) { return $connRes }
+        $pwConnected = $true
+    }
+
+    try {
+        if ($useLocalFs) {
+            $ls = Get-StatusSetLocalFolderState -RootFolder $sourceFolder
+            $fullState = @{
+                folderStateHash = $ls.folderStateHash
+                pairedCount = $ls.pairedCount
+                pairedSheets = $ls.pairedSheets
+                stableInput = $ls.stableInput
+                orderKey = $ls.orderKey
+                pdfCount = 0
+                dgnCount = 0
+                orderedPdfDocuments = @()
+            }
+        } else {
+            $fullState = _SSS-BuildPWStatusSetState -FolderPath $pwPath -OneLevelDeep $oneLevelDeep -IncludeOrderedPdfDocuments:$true
+        }
+
+        if ([int]$fullState.pairedCount -le 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_NO_PAIRS' -Message 'No PDF/DGN pairs found for status set.' -Data @{ folder = $sourceFolder; oneLevelDeep = $oneLevelDeep; useLocalFs = $useLocalFs }
+        }
+
+        $readM = Read-StatusSetManifestFile -Path $manifestPath
+        if (-not $readM.IsSuccess) { return $readM }
+        $manifest = $readM.Data.manifest
+
+        $cmp = Test-StatusSetRebuildNeeded -Manifest $manifest -CurrentState $fullState -ForceRebuild:$forceRebuild -StatusSetPdfPath $outPdf
+        if (-not $cmp.IsSuccess) { return $cmp }
+
+        if (-not [bool]$cmp.Data.needsRebuild) {
+            return New-QCSuccessResult -Code 'STATUS_SET_UP_TO_DATE' -Message 'Status set manifest matches folder state; no rebuild.' -Data @{
+                jobId = [string]$Job.id
+                workspaceDir = $workspace
+                manifestPath = $manifestPath
+                folderStateHash = [string]$fullState.folderStateHash
+                useLocalFs = $useLocalFs
+            }
+        }
+
+        if ($isDryRun) {
+            return New-QCSuccessResult -Code 'STATUS_SET_DRYRUN_REBUILD' -Message 'Dry-run: would rebuild status set PDF (manifest drift detected).' -Data @{
+                jobId = [string]$Job.id
+                compare = $cmp.Data
+                workspaceDir = $workspace
+                qpdfExe = $qpdfExe
+                useLocalFs = $useLocalFs
+            }
+        }
+
+        $orderedPaths = @()
+        $pwExportReuseCount = 0
+        $pwExportFreshCount = 0
+        if ($useLocalFs) {
+            $sortedPairs = @($fullState.pairedSheets | Sort-Object @{ Expression = { $_.dir } }, @{ Expression = { $_.stem } })
+            foreach ($row in $sortedPairs) {
+                if ($row.pdf -is [hashtable] -and $row.pdf.ContainsKey('fullName')) {
+                    $orderedPaths += [string]$row.pdf['fullName']
+                }
+            }
+        } else {
+            _SSS-EnsureDir (Join-Path $workspace '_sheet_cache')
+            $manByKey = @{}
+            if ($pwSheetCacheEnabled -and (-not $forceRebuild) -and $manifest) {
+                $mht = $manifest
+                if ($mht -isnot [hashtable] -and $mht.PSObject) {
+                    $mht = @{}
+                    foreach ($p in $manifest.PSObject.Properties) { $mht[$p.Name] = $p.Value }
+                }
+                if ($mht -is [hashtable] -and $mht['sheets']) {
+                    foreach ($s in @([array]$mht['sheets'])) {
+                        $sk = $null
+                        if ($s -is [hashtable] -and $s['key']) { $sk = [string]$s['key'] }
+                        elseif ($s.PSObject.Properties['key']) { $sk = [string]$s.key }
+                        if ($sk) { $manByKey[$sk.ToLowerInvariant()] = $s }
+                    }
+                }
+            }
+
+            $pairList = @([array]$fullState.pairedSheets)
+            $docsList = @([array]$fullState.orderedPdfDocuments)
+            if ($pairList.Count -ne $docsList.Count) {
+                return New-QCFailureResult -Code 'STATUS_SET_STATE_MISMATCH' -Message 'pairedSheets and orderedPdfDocuments counts differ.' -Data @{ paired = $pairList.Count; docs = $docsList.Count }
+            }
+
+            $policyNorm = $pwSheetReusePolicy
+            if ([string]::IsNullOrWhiteSpace($policyNorm)) { $policyNorm = 'Signature' }
+
+            for ($i = 0; $i -lt $docsList.Count; $i++) {
+                $doc = $docsList[$i]
+                $pairRow = $pairList[$i]
+                $key = ([string]$pairRow.dir + '|' + [string]$pairRow.stem).ToLowerInvariant()
+                $cachePath = _SSS-StatusSetSheetCachePath -WorkspaceDir $workspace -SheetKey $key
+
+                $reuseOk = $false
+                if ($pwSheetCacheEnabled -and $manByKey.ContainsKey($key)) {
+                    $manRow = $manByKey[$key]
+                    if ($policyNorm.Equals('PdfTimestamp', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $reuseOk = _SSS-SheetPdfTimestampMatches -ManifestRow $manRow -CurrentRow $pairRow
+                    } else {
+                        $sigM = _SSS-GetPairedSheetSignature -Row $manRow
+                        $sigC = _SSS-GetPairedSheetSignature -Row $pairRow
+                        $reuseOk = ($sigM -eq $sigC)
+                    }
+                }
+
+                if ($reuseOk -and (Test-Path -LiteralPath $cachePath)) {
+                    try {
+                        if ((Get-Item -LiteralPath $cachePath -ErrorAction Stop).Length -le 0) { $reuseOk = $false }
+                    } catch { $reuseOk = $false }
+                } else {
+                    $reuseOk = $false
+                }
+
+                if ($reuseOk) {
+                    $orderedPaths += $cachePath
+                    $pwExportReuseCount++
+                    continue
+                }
+
+                $idx = $i + 1
+                $sub = Join-Path $workspace ('_export_' + $idx.ToString('000') + '_' + ([string]$idx))
+                New-Item -ItemType Directory -Path $sub -Force | Out-Null
+                $ex = Export-StatusSetPdfToFolder -InputDocument $doc -TargetFolder $sub
+                if (-not $ex.IsSuccess) { return $ex }
+                $localPath = [string]$ex.Data.localPath
+                $orderedPaths += $localPath
+                $pwExportFreshCount++
+                try {
+                    Copy-Item -LiteralPath $localPath -Destination $cachePath -Force -ErrorAction Stop
+                } catch { }
+            }
+        }
+
+        $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $outPdf -QpdfExe $qpdfExe
+        if (-not $merge.IsSuccess) { return $merge }
+
+        # Batch-delete all _export_* subdirs as a single burst, then throttle once.
+        # Throttling per-subdir costs N x throttle for N sheets; once is enough since AV
+        # only flags rapid back-to-back deletes within a short window.
+        $exportSubs = @(Get-ChildItem -LiteralPath $workspace -Directory -Filter '_export_*' -ErrorAction SilentlyContinue)
+        foreach ($sub in $exportSubs) {
+            Remove-Item -LiteralPath $sub.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($exportSubs.Count -gt 0) { _SSS-FsThrottle }
+
+        $manObj = New-StatusSetManifestObject -State $fullState -SheetsFolderDisplay $sourceFolder
+        $mw = Write-StatusSetManifestFile -Path $manifestPath -Manifest $manObj
+        if (-not $mw.IsSuccess) { return $mw }
+
+        $uploadNote = $null
+        $uploadError = $null
+        if ($writeBackToPW) {
+            if ($useLocalFs) {
+                $uploadNote = 'SKIPPED_LOCAL_SOURCE_FOLDER'
+            } elseif ($pwConnected) {
+                $up = Get-Command -Name Update-PWDocumentFile -ErrorAction SilentlyContinue
+                $find = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
+                if ($up -and $find) {
+                    try {
+                        $existing = Get-PWDocumentsBySearch -FolderPath $pwPath -JustThisFolder -DocumentName $statusPdfName -PopulatePath -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($existing) {
+                            # PW upload is a single-file write to the server, not a local
+                            # delete/move; AV throttle does not apply here.
+                            _SSS-UpdatePWDocumentFileFromDisk -InputDocument $existing -LocalFilePath $outPdf
+                            $uploadNote = 'UPDATED'
+                        } else {
+                            $newCmd = Get-Command -Name New-PWDocument -ErrorAction SilentlyContinue
+                            if ($newCmd) {
+                                New-PWDocument -FolderPath $pwPath -FilePath $outPdf -DocumentName $statusPdfName -ErrorAction Stop | Out-Null
+                                $uploadNote = 'CREATED'
+                            } else {
+                                $uploadNote = 'SKIPPED_NO_New-PWDocument'
+                            }
+                        }
+                    } catch {
+                        $uploadNote = 'FAILED'
+                        $uploadError = [string]$_.Exception.Message
+                    }
+                } else {
+                    $uploadNote = 'SKIPPED_MISSING_CMDLETS'
+                }
+            } else {
+                $uploadNote = 'SKIPPED_PW_DISCONNECTED'
+            }
+        }
+
+        # If writeBackToPW=true and the upload was attempted-and-threw, fail the
+        # job. Returning success with pwUpload='FAILED' silently strands the
+        # work: the local _StatusSet.pdf exists but PW never got it, and the
+        # job moves to succeeded\ where the watcher would never re-enqueue it.
+        # By failing, the worker re-enqueues to pending\ (or to failed\ at
+        # maxAttempts) and the dashboard surfaces the actual cause.
+        if ($uploadNote -eq 'FAILED') {
+            return New-QCFailureResult -Code 'STATUS_SET_PW_UPLOAD_FAILED' -Message ('PW write-back failed: ' + $uploadError) -Data @{
+                jobId        = [string]$Job.id
+                workspaceDir = $workspace
+                outputPdf    = $outPdf
+                manifestPath = $manifestPath
+                mergedInputs = $orderedPaths.Count
+                writeBackToPW= $writeBackToPW
+                pwUpload     = $uploadNote
+                error        = $uploadError
+                pwFolder     = $pwPath
+                useLocalFs   = $useLocalFs
+            }
+        }
+
+        return New-QCSuccessResult -Code 'STATUS_SET_OK' -Message 'Status set PDF regenerated.' -Data @{
+            jobId = [string]$Job.id
+            workspaceDir = $workspace
+            outputPdf = $outPdf
+            manifestPath = $manifestPath
+            mergedInputs = $orderedPaths.Count
+            writeBackToPW = $writeBackToPW
+            pwUpload = $uploadNote
+            compare = $cmp.Data
+            useLocalFs = $useLocalFs
+            pwExportReuseCount = $pwExportReuseCount
+            pwExportFreshCount = $pwExportFreshCount
+            pwSheetReusePolicy = $pwSheetReusePolicy
+        }
+    } finally {
+        if ($pwConnected) {
+            try { Disconnect-PW | Out-Null } catch { }
+        }
+    }
+}
+
+function Get-StatusSetWorkspaceManifests {
+    <#
+    .SYNOPSIS
+    Walk a status-set localRoot and return one record per workspace that contains
+    both a manifest and a local _StatusSet.pdf.
+    .DESCRIPTION
+    The active processor stores each per-folder workspace as a 16-char-hex
+    directory under localRoot, containing the manifest JSON and the merged
+    _StatusSet.pdf. The reconcile pass needs to enumerate these workspaces to
+    decide which ones still need to be uploaded to ProjectWise.
+    .PARAMETER LocalRoot
+    The statusSet.localRoot from appsettings.json.
+    .PARAMETER ManifestFileName
+    Manifest filename inside each workspace. Defaults to '_statusset.manifest.json'.
+    .PARAMETER StatusSetPdfName
+    Local merged PDF filename. Defaults to '_StatusSet.pdf' to match appsettings.json.
+    .OUTPUTS
+    Array of hashtables: { workspaceDir; manifestPath; outputPdf; manifest;
+                            sheetsFolder; pwPath; outputPdfLastWriteUtc }.
+    Workspaces missing either the manifest or the PDF are skipped and reported
+    in Data.skipped (with reason).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LocalRoot,
+        [Parameter(Mandatory = $false)]
+        [string]$ManifestFileName = '_statusset.manifest.json',
+        [Parameter(Mandatory = $false)]
+        [string]$StatusSetPdfName = '_StatusSet.pdf'
+    )
+
+    $records = @()
+    $skipped = @()
+
+    if (_SSS-IsNullOrWhiteSpace $LocalRoot) {
+        return New-QCFailureResult -Code 'STATUS_SET_LOCAL_ROOT_EMPTY' -Message 'LocalRoot is required.' -Data @{}
+    }
+    if (-not (Test-Path -LiteralPath $LocalRoot -PathType Container)) {
+        return New-QCSuccessResult -Code 'STATUS_SET_LOCAL_ROOT_MISSING' -Message 'LocalRoot does not exist.' -Data @{
+            localRoot = $LocalRoot; records = @(); skipped = @()
+        }
+    }
+
+    foreach ($d in @(Get-ChildItem -LiteralPath $LocalRoot -Directory -ErrorAction SilentlyContinue)) {
+        $manifestPath = Join-Path $d.FullName $ManifestFileName
+        $outPdf = Join-Path $d.FullName $StatusSetPdfName
+        if (-not (Test-Path -LiteralPath $manifestPath)) {
+            $skipped += @{ workspaceDir = $d.FullName; reason = 'NO_MANIFEST' }
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $outPdf)) {
+            $skipped += @{ workspaceDir = $d.FullName; reason = 'NO_LOCAL_PDF' }
+            continue
+        }
+        $r = Read-StatusSetManifestFile -Path $manifestPath
+        if (-not $r.IsSuccess -or -not $r.Data.manifest) {
+            $skipped += @{ workspaceDir = $d.FullName; reason = 'MANIFEST_UNREADABLE' }
+            continue
+        }
+        $man = $r.Data.manifest
+        $sheetsFolder = ''
+        try { if ($man.ContainsKey('sheetsFolder')) { $sheetsFolder = [string]$man.sheetsFolder } } catch { }
+        if (_SSS-IsNullOrWhiteSpace $sheetsFolder) {
+            $skipped += @{ workspaceDir = $d.FullName; reason = 'MANIFEST_MISSING_SHEETS_FOLDER' }
+            continue
+        }
+        $pwPath = $sheetsFolder -replace '^Documents\\', ''
+        $pdfInfo = Get-Item -LiteralPath $outPdf -ErrorAction SilentlyContinue
+        $localMtime = if ($pdfInfo) { $pdfInfo.LastWriteTimeUtc } else { $null }
+
+        $records += @{
+            workspaceDir          = $d.FullName
+            manifestPath          = $manifestPath
+            outputPdf             = $outPdf
+            manifest              = $man
+            sheetsFolder          = $sheetsFolder
+            pwPath                = $pwPath
+            outputPdfLastWriteUtc = $localMtime
+            outputPdfSize         = if ($pdfInfo) { [long]$pdfInfo.Length } else { 0 }
+        }
+    }
+
+    return New-QCSuccessResult -Code 'STATUS_SET_WORKSPACES_OK' -Message 'Walked status set workspaces.' -Data @{
+        localRoot   = $LocalRoot
+        records     = $records
+        skipped     = $skipped
+        recordCount = $records.Count
+        skipCount   = $skipped.Count
+    }
+}
+
+function Sync-StatusSetWorkspaceToPw {
+    <#
+    .SYNOPSIS
+    Reconcile a single status-set workspace's _StatusSet.pdf against ProjectWise.
+    .DESCRIPTION
+    Compares the local _StatusSet.pdf against the PW copy in the manifest's
+    folder. Decision matrix:
+      - PW has no _StatusSet.pdf and local PDF exists  -> CREATED  (New-PWDocument)
+      - PW has it and local PDF mtime > PW lastModified -> UPDATED (Update-PWDocumentFile)
+      - PW has it and is the same/newer                 -> IN_SYNC (no-op)
+    Caller is responsible for opening/closing the PW connection.
+    .PARAMETER WorkspaceRecord
+    A record produced by Get-StatusSetWorkspaceManifests.
+    .PARAMETER StatusSetPdfName
+    Defaults to '_StatusSet.pdf'.
+    .PARAMETER MtimeSkewSeconds
+    PW timestamps are second-precision; local file timestamps are sub-second.
+    Differences smaller than this are treated as "same". Default 60.
+    .OUTPUTS
+    Result with Code in:
+      STATUS_SET_RECONCILE_IN_SYNC, STATUS_SET_RECONCILE_UPDATED,
+      STATUS_SET_RECONCILE_CREATED, STATUS_SET_RECONCILE_SKIPPED,
+      STATUS_SET_RECONCILE_FAILED.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$WorkspaceRecord,
+        [Parameter(Mandatory = $false)]
+        [string]$StatusSetPdfName = '_StatusSet.pdf',
+        [Parameter(Mandatory = $false)]
+        [int]$MtimeSkewSeconds = 60
+    )
+
+    $pwPath = [string]$WorkspaceRecord.pwPath
+    $outPdf = [string]$WorkspaceRecord.outputPdf
+    $sheetsFolder = [string]$WorkspaceRecord.sheetsFolder
+
+    if (-not (Test-Path -LiteralPath $outPdf)) {
+        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message 'Local _StatusSet.pdf not found.' -Data @{
+            workspaceDir = [string]$WorkspaceRecord.workspaceDir; outputPdf = $outPdf
+        }
+    }
+    $find = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
+    $up   = Get-Command -Name Update-PWDocumentFile  -ErrorAction SilentlyContinue
+    $newC = Get-Command -Name New-PWDocument         -ErrorAction SilentlyContinue
+    if (-not $find -or -not $up) {
+        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message 'pwps_dab cmdlets not loaded.' -Data @{
+            haveFind = [bool]$find; haveUpdate = [bool]$up; haveNew = [bool]$newC
+        }
+    }
+
+    $existing = $null
+    try {
+        $existing = Get-PWDocumentsBySearch -FolderPath $pwPath -JustThisFolder -DocumentName $StatusSetPdfName -PopulatePath -ErrorAction SilentlyContinue | Select-Object -First 1
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message ('PW search failed: ' + $_.Exception.Message) -Data @{
+            workspaceDir = [string]$WorkspaceRecord.workspaceDir; pwFolder = $pwPath
+        }
+    }
+
+    $pdfInfo = Get-Item -LiteralPath $outPdf -ErrorAction SilentlyContinue
+    $localMtime = if ($pdfInfo) { $pdfInfo.LastWriteTimeUtc } else { $null }
+
+    if (-not $existing) {
+        if (-not $newC) {
+            return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message 'PW has no _StatusSet.pdf and New-PWDocument cmdlet is missing.' -Data @{
+                workspaceDir = [string]$WorkspaceRecord.workspaceDir; pwFolder = $pwPath
+            }
+        }
+        try {
+            New-PWDocument -FolderPath $pwPath -FilePath $outPdf -DocumentName $StatusSetPdfName -ErrorAction Stop | Out-Null
+        } catch {
+            return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message ('New-PWDocument failed: ' + $_.Exception.Message) -Data @{
+                workspaceDir = [string]$WorkspaceRecord.workspaceDir; pwFolder = $pwPath; outputPdf = $outPdf
+            }
+        }
+        return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_CREATED' -Message 'Uploaded missing _StatusSet.pdf to PW.' -Data @{
+            workspaceDir = [string]$WorkspaceRecord.workspaceDir
+            pwFolder = $pwPath; sheetsFolder = $sheetsFolder
+            outputPdf = $outPdf; localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
+            action = 'CREATED'
+        }
+    }
+
+    $pwMtime = _SSS-GetDocLastModified $existing
+    $needsUpdate = $true
+    if ($pwMtime -and $localMtime) {
+        $delta = ($localMtime - $pwMtime).TotalSeconds
+        if ($delta -le $MtimeSkewSeconds) { $needsUpdate = $false }
+    }
+    if (-not $needsUpdate) {
+        return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_IN_SYNC' -Message 'PW _StatusSet.pdf is up-to-date.' -Data @{
+            workspaceDir = [string]$WorkspaceRecord.workspaceDir
+            pwFolder = $pwPath; sheetsFolder = $sheetsFolder
+            outputPdf = $outPdf
+            localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
+            pwMtime    = if ($pwMtime)    { $pwMtime.ToString('o')    } else { $null }
+            action = 'IN_SYNC'
+        }
+    }
+
+    try {
+        _SSS-UpdatePWDocumentFileFromDisk -InputDocument $existing -LocalFilePath $outPdf
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message ('Update-PWDocumentFile failed: ' + $_.Exception.Message) -Data @{
+            workspaceDir = [string]$WorkspaceRecord.workspaceDir; pwFolder = $pwPath; outputPdf = $outPdf
+        }
+    }
+    return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_UPDATED' -Message 'PW _StatusSet.pdf updated to match local copy.' -Data @{
+        workspaceDir = [string]$WorkspaceRecord.workspaceDir
+        pwFolder = $pwPath; sheetsFolder = $sheetsFolder
+        outputPdf = $outPdf
+        localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
+        pwMtime    = if ($pwMtime)    { $pwMtime.ToString('o')    } else { $null }
+        action = 'UPDATED'
+    }
+}
+
+function Invoke-StatusSetReconcile {
+    <#
+    .SYNOPSIS
+    On startup, sync every locally-built _StatusSet.pdf back to ProjectWise.
+    .DESCRIPTION
+    Walks statusSet.localRoot for workspaces that have both a manifest and a
+    local _StatusSet.pdf. For each, compares to the PW copy and uploads when
+    out-of-sync (legacy parity: every restart re-checks every manifest). Caller
+    is responsible for opening/closing the PW connection so this can be wired
+    into Watch-QCTrigger or run as a standalone script.
+    .PARAMETER Config
+    Loaded appsettings hashtable.
+    .PARAMETER LogCallback
+    Optional ScriptBlock invoked once per workspace with a hashtable describing
+    the action taken. Lets callers stream structured events to dashboards/logs.
+    .OUTPUTS
+    Result with aggregate counts: created, updated, inSync, failed, skipped.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [Parameter(Mandatory = $false)]
+        [scriptblock]$LogCallback
+    )
+
+    $ss = @{}
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet) {
+        $raw = $Config.statusSet
+        if ($raw -is [hashtable]) { $ss = $raw } elseif ($raw.PSObject) {
+            foreach ($p in $raw.PSObject.Properties) { $ss[$p.Name] = $p.Value }
+        }
+    }
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $manifestName = if ($ss.ContainsKey('manifestFileName') -and $ss.manifestFileName) { [string]$ss.manifestFileName } else { '_statusset.manifest.json' }
+    $statusPdfName = if ($ss.ContainsKey('statusSetPdfName') -and $ss.statusSetPdfName) { [string]$ss.statusSetPdfName } else { '_StatusSet.pdf' }
+
+    $walk = Get-StatusSetWorkspaceManifests -LocalRoot $localRoot -ManifestFileName $manifestName -StatusSetPdfName $statusPdfName
+    if (-not $walk.IsSuccess) { return $walk }
+
+    $records = @($walk.Data.records)
+    $counts = [ordered]@{
+        considered = $records.Count
+        created    = 0
+        updated    = 0
+        inSync     = 0
+        failed     = 0
+        skipped    = [int]$walk.Data.skipCount
+    }
+    $failures = @()
+    foreach ($rec in $records) {
+        $r = Sync-StatusSetWorkspaceToPw -WorkspaceRecord $rec -StatusSetPdfName $statusPdfName
+        switch ($r.Code) {
+            'STATUS_SET_RECONCILE_CREATED' { $counts.created++ }
+            'STATUS_SET_RECONCILE_UPDATED' { $counts.updated++ }
+            'STATUS_SET_RECONCILE_IN_SYNC' { $counts.inSync++ }
+            default {
+                $counts.failed++
+                $failures += @{
+                    workspaceDir = [string]$rec.workspaceDir
+                    pwFolder     = [string]$rec.pwPath
+                    code         = [string]$r.Code
+                    message      = [string]$r.Message
+                }
+            }
+        }
+        if ($LogCallback) {
+            try {
+                $payload = @{
+                    code         = [string]$r.Code
+                    isSuccess    = [bool]$r.IsSuccess
+                    message      = [string]$r.Message
+                    workspaceDir = [string]$rec.workspaceDir
+                    pwFolder     = [string]$rec.pwPath
+                    sheetsFolder = [string]$rec.sheetsFolder
+                    outputPdf    = [string]$rec.outputPdf
+                    data         = $r.Data
+                }
+                & $LogCallback $payload
+            } catch { }
+        }
+    }
+    return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_DONE' -Message 'Status set reconciliation completed.' -Data @{
+        localRoot = $localRoot
+        counts    = $counts
+        failures  = $failures
+        skipped   = $walk.Data.skipped
+    }
+}
+
+function Test-StatusSetWatcherShouldEnqueue {
+    <#
+    .SYNOPSIS
+    Watch-QCTrigger gate: enqueue STATUS_SET_GEN only if work is needed vs local manifest + _statusset.pdf.
+    .DESCRIPTION
+    Uses the same Test-StatusSetRebuildNeeded rules as Invoke-StatusSetNativeJob (hash, sheet drift,
+    _statusset.pdf vs newest paired sheet PDF). When shouldEnqueue is $false, the watcher should not
+    call Add-QCQueueJob so the worker is not bothered with STATUS_SET_UP_TO_DATE jobs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [Parameter(Mandatory)]
+        [string]$SourceFolder,
+        [Parameter(Mandatory)]
+        [hashtable]$FolderState
+    )
+
+    $ss = @{}
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet) {
+        $raw = $Config.statusSet
+        if ($raw -is [hashtable]) { $ss = $raw } elseif ($raw.PSObject) {
+            foreach ($p in $raw.PSObject.Properties) { $ss[$p.Name] = $p.Value }
+        }
+    }
+
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $manifestName = if ($ss.ContainsKey('manifestFileName') -and $ss.manifestFileName) { [string]$ss.manifestFileName } else { '_statusset.manifest.json' }
+    $statusPdfName = if ($ss.ContainsKey('statusSetPdfName') -and $ss.statusSetPdfName) { [string]$ss.statusSetPdfName } else { '_statusset.pdf' }
+    $forceRebuild = $false
+    if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+
+    try {
+        $pc = [int]$FolderState.pairedCount
+    } catch {
+        $pc = 0
+    }
+    if ($pc -le 0) {
+        return New-QCSuccessResult -Code 'WATCH_STATUS_SET_GATE' -Message 'No paired sheets in folder state.' -Data @{
+            shouldEnqueue = $false
+            gateReason = 'NO_PAIRS'
+        }
+    }
+
+    $wsRes = Get-StatusSetWorkspaceDirectory -LocalRoot $localRoot -SheetsFolderPath $SourceFolder
+    if (-not $wsRes.IsSuccess) {
+        return New-QCSuccessResult -Code 'WATCH_STATUS_SET_GATE' -Message 'Could not resolve workspace; allow enqueue.' -Data @{
+            shouldEnqueue = $true
+            gateReason = 'WORKSPACE_PATH_FAILED'
+            workspaceError = [string]$wsRes.Message
+        }
+    }
+
+    $workspace = [string]$wsRes.Data.workspaceDir
+    $manifestPath = Get-StatusSetManifestPath -WorkspaceDir $workspace -ManifestFileName $manifestName
+    $outPdf = Join-Path $workspace $statusPdfName
+
+    $readM = Read-StatusSetManifestFile -Path $manifestPath
+    if (-not $readM.IsSuccess) {
+        return New-QCSuccessResult -Code 'WATCH_STATUS_SET_GATE' -Message 'Manifest read error; allow enqueue.' -Data @{
+            shouldEnqueue = $true
+            gateReason = 'MANIFEST_READ_FAILED'
+            workspaceDir = $workspace
+            manifestPath = $manifestPath
+            readCode = [string]$readM.Code
+        }
+    }
+
+    $manifest = $readM.Data.manifest
+
+    $cmp = Test-StatusSetRebuildNeeded -Manifest $manifest -CurrentState $FolderState -ForceRebuild:$forceRebuild -StatusSetPdfPath $outPdf
+    if (-not $cmp.IsSuccess) {
+        return New-QCSuccessResult -Code 'WATCH_STATUS_SET_GATE' -Message 'Compare failed; allow enqueue.' -Data @{
+            shouldEnqueue = $true
+            gateReason = 'COMPARE_FAILED'
+            compareError = [string]$cmp.Message
+            workspaceDir = $workspace
+        }
+    }
+
+    $needs = [bool]$cmp.Data.needsRebuild
+    return New-QCSuccessResult -Code 'WATCH_STATUS_SET_GATE' -Message $(if ($needs) { 'Enqueue: rebuild needed.' } else { 'Skip enqueue: already current.' }) -Data @{
+        shouldEnqueue = $needs
+        gateReason = if ($needs) { 'WORK_NEEDED' } else { 'ALREADY_CURRENT' }
+        workspaceDir = $workspace
+        manifestPath = $manifestPath
+        statusSetPdfPath = $outPdf
+        compare = $cmp.Data
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Get-StatusSetLocalFolderState',
+    'Get-StatusSetPWFolderState',
+    'Get-StatusSetWorkspaceDirectory',
+    'Get-StatusSetManifestPath',
+    'Read-StatusSetManifestFile',
+    'Write-StatusSetManifestFile',
+    'New-StatusSetManifestObject',
+    'Test-StatusSetRebuildNeeded',
+    'Test-StatusSetSheetPdfTimestampMatch',
+    'Get-StatusSetPairedSheetSignature',
+    'Test-StatusSetWatcherShouldEnqueue',
+    'Merge-StatusSetPdfWithQpdf',
+    'Export-StatusSetPdfToFolder',
+    'Invoke-StatusSetNativeJob',
+    'Get-StatusSetWorkspaceManifests',
+    'Sync-StatusSetWorkspaceToPw',
+    'Invoke-StatusSetReconcile'
+)

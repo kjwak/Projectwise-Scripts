@@ -1,0 +1,77 @@
+<#
+.SYNOPSIS
+Terminal-friendly QC status snapshot.
+
+.DESCRIPTION
+Reads appsettings.json and prints queue stats + recent jobs (no mutations).
+This is a first building block for a richer dashboard later.
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$AppSettingsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'appsettings.json'),
+
+    [Parameter(Mandatory = $false)]
+    [int]$Recent = 15
+)
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
+Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
+
+function _ToHashtable([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return $Value }
+    if ($Value -is [System.ValueType]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $out = @()
+        foreach ($i in $Value) { $out += (_ToHashtable $i) }
+        return $out
+    }
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }
+        return $h
+    }
+    return $Value
+}
+
+if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
+    throw "appsettings.json not found: $AppSettingsPath"
+}
+$raw = Get-Content -LiteralPath $AppSettingsPath -Raw -ErrorAction Stop
+$config = [hashtable](_ToHashtable ($raw | ConvertFrom-Json -ErrorAction Stop))
+
+$stats = Get-QCQueueStats -Config $config
+if (-not $stats.IsSuccess) { throw $stats.Message }
+
+$root = [string]$stats.Data.root
+$states = $stats.Data.states
+$locks = $stats.Data.locks
+
+Write-Host ""
+Write-Host "QC Queue Root: $root" -ForegroundColor Cyan
+Write-Host ("Pending:   {0,6}" -f [int]$states.pending)
+Write-Host ("Running:   {0,6}" -f [int]$states.running)
+Write-Host ("Succeeded: {0,6}" -f [int]$states.succeeded)
+Write-Host ("Failed:    {0,6}" -f [int]$states.failed)
+Write-Host ("Locks:     {0,6}" -f [int]$locks.count)
+
+$recentRes = Get-QCRecentJobs -Config $config -Limit $Recent
+if (-not $recentRes.IsSuccess) { throw $recentRes.Message }
+
+Write-Host ""
+Write-Host "Recent jobs (newest first):" -ForegroundColor Cyan
+foreach ($j in @($recentRes.Data.jobs)) {
+    $id = [string]$j.id
+    $state = [string]$j.state
+    $typ = [string]$j.type
+    $ts = [string]$j.lastWriteTimeUtc
+    Write-Host ("{0}  {1,-9}  {2,-12}  {3}" -f $ts, $state, $typ, $id)
+}
+Write-Host ""
+

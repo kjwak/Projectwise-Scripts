@@ -27,6 +27,16 @@ function _QCJF-Sha256Hex([string]$Text) {
     return -join ($hash | ForEach-Object { $_.ToString('x2') })
 }
 
+function _QCJF-GetLocalRootId([string]$Path) {
+    try {
+        $root = [System.IO.Path]::GetPathRoot($Path)
+        if ([string]::IsNullOrWhiteSpace($root)) { return '' }
+        return $root.TrimEnd('\').ToLowerInvariant()
+    } catch {
+        return ''
+    }
+}
+
 function New-QCJobId {
     <#
     .SYNOPSIS
@@ -87,13 +97,21 @@ function New-QCJobId {
     $sourceName = [string]$Candidate.fileName
     if (_QCJF-IsNullOrWhiteSpace $sourceName) { $sourceName = [System.IO.Path]::GetFileName($sourcePath) }
 
-    $stable = @(
+    $stableParts = @(
         'jobIdV1'
         ('type=' + $jobType)
         ('rule=' + $ruleId)
         ('path=' + $sourcePath)
         ('name=' + $sourceName)
-    ) -join '|'
+    )
+
+    # For folder-level STATUS_SET_GEN, job ids must change when the folder content changes.
+    # The watcher provides Candidate.folderStateHash; include it when present.
+    if ($jobType -eq 'STATUS_SET_GEN' -and $Candidate.ContainsKey('folderStateHash') -and -not (_QCJF-IsNullOrWhiteSpace $Candidate.folderStateHash)) {
+        $stableParts += ('folderStateHash=' + [string]$Candidate.folderStateHash)
+    }
+
+    $stable = ($stableParts -join '|')
 
     $hex = _QCJF-Sha256Hex -Text $stable
     $short = $hex.Substring(0, 16)
@@ -178,6 +196,23 @@ function New-QCJobObject {
         id = $ruleId
         jobType = $jobType
         triggerType = [string]$Rule.triggerType
+        grouping = $Rule.grouping
+    }
+
+    $sourceFolder = $null
+    if ($Candidate.ContainsKey('sourceFolder') -and $Candidate.sourceFolder) {
+        $sourceFolder = [string]$Candidate.sourceFolder
+    } else {
+        try { $sourceFolder = [System.IO.Path]::GetDirectoryName($sourcePath) } catch { $sourceFolder = $null }
+    }
+    if ($sourceFolder) {
+        $sf = Normalize-QCPath -Path $sourceFolder
+        if ($sf.IsSuccess) { $sourceFolder = [string]$sf.Data.path }
+    }
+
+    $groupKey = $null
+    if ($Candidate.ContainsKey('groupKey') -and $Candidate.groupKey) {
+        $groupKey = [string]$Candidate.groupKey
     }
 
     $job = @{
@@ -185,6 +220,8 @@ function New-QCJobObject {
         type        = $jobType
         sourcePath  = $sourcePath
         sourceName  = $sourceName
+        sourceFolder = $sourceFolder
+        groupKey    = $groupKey
         triggerRule = $triggerRule
         dedupeKey   = $null
         status      = 'queued'
@@ -292,13 +329,79 @@ function Get-QCDedupeKey {
         return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_TRIGGER_RULE' -Message 'Job.triggerRule.id is required to compute dedupe key.' -Data @{ job = $Job }
     }
 
-    # Deterministic "same job" identity: type + normalized source path + trigger rule id.
-    $stable = @(
-        'dedupeV1'
-        ('type=' + $type)
-        ('rule=' + $ruleId)
-        ('path=' + $path)
-    ) -join '|'
+    $groupingEnabled = $false
+    $groupBy = $null
+    if ($Job.ContainsKey('triggerRule') -and $Job.triggerRule -is [hashtable] -and $Job.triggerRule.ContainsKey('grouping') -and $Job.triggerRule.grouping) {
+        $g = $Job.triggerRule.grouping
+        try { $groupingEnabled = [bool]$g.enabled } catch { $groupingEnabled = $false }
+        if ($g.ContainsKey('groupBy')) { $groupBy = [string]$g.groupBy }
+    }
+    if ($groupBy) { $groupBy = $groupBy.Trim().ToLowerInvariant() }
+
+    if ($groupingEnabled -and $groupBy -eq 'folder' -and $type -eq 'STATUS_SET_GEN') {
+        $sourceFolder = $null
+        if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { $sourceFolder = [string]$Job.sourceFolder }
+        if (_QCJF-IsNullOrWhiteSpace $sourceFolder) {
+            try { $sourceFolder = [System.IO.Path]::GetDirectoryName($path) } catch { $sourceFolder = $null }
+        }
+        if (_QCJF-IsNullOrWhiteSpace $sourceFolder) {
+            return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_SOURCE_FOLDER' -Message 'Job.sourceFolder is required for grouped folder dedupe.' -Data @{ job = $Job }
+        }
+
+        $rootId = ''
+        if ($Job.ContainsKey('datasource') -and $Job.datasource) { $rootId = [string]$Job.datasource }
+        if (_QCJF-IsNullOrWhiteSpace $rootId -and $Job.ContainsKey('metadata') -and $Job.metadata -and $Job.metadata.ContainsKey('candidate') -and $Job.metadata.candidate) {
+            $cand = $Job.metadata.candidate
+            if ($cand -is [hashtable] -and $cand.ContainsKey('datasourceName') -and $cand.datasourceName) { $rootId = [string]$cand.datasourceName }
+        }
+        if (_QCJF-IsNullOrWhiteSpace $rootId) {
+            $rootId = _QCJF-GetLocalRootId -Path $path
+        }
+
+        $stableParts = @(
+            'dedupeV2_group_folder'
+            ('type=' + $type)
+            ('root=' + $rootId)
+            ('folder=' + $sourceFolder)
+        )
+
+        $folderStateHash = $null
+        if ($Job.ContainsKey('metadata') -and $Job.metadata -and $Job.metadata.ContainsKey('candidate') -and $Job.metadata.candidate) {
+            $cand = $Job.metadata.candidate
+            if ($cand -is [hashtable] -and $cand.ContainsKey('folderStateHash') -and $cand.folderStateHash) {
+                $folderStateHash = [string]$cand.folderStateHash
+            }
+        }
+        if (-not (_QCJF-IsNullOrWhiteSpace $folderStateHash)) {
+            $stableParts += ('folderStateHash=' + $folderStateHash)
+        }
+
+        $stable = ($stableParts -join '|')
+    } else {
+        # File-level identity:
+        # - QC_PREPEND: include file hash when available.
+        # - default: type + rule + path.
+        $fileHash = $null
+        if ($Job.ContainsKey('metadata') -and $Job.metadata -and $Job.metadata.ContainsKey('fileHash') -and $Job.metadata.fileHash) {
+            $fileHash = [string]$Job.metadata.fileHash
+        } elseif ($Job.ContainsKey('metadata') -and $Job.metadata -and $Job.metadata.ContainsKey('candidate') -and $Job.metadata.candidate) {
+            $cand = $Job.metadata.candidate
+            if ($cand -is [hashtable] -and $cand.ContainsKey('file') -and $cand.file -is [hashtable] -and $cand.file.ContainsKey('sha256') -and $cand.file.sha256) {
+                $fileHash = [string]$cand.file.sha256
+            }
+        }
+
+        $stableParts = @(
+            'dedupeV2_file'
+            ('type=' + $type)
+            ('rule=' + $ruleId)
+            ('path=' + $path)
+        )
+        if ($type -eq 'QC_PREPEND' -and -not (_QCJF-IsNullOrWhiteSpace $fileHash)) {
+            $stableParts += ('fileHash=' + $fileHash)
+        }
+        $stable = ($stableParts -join '|')
+    }
 
     $hex = _QCJF-Sha256Hex -Text $stable
     $short = $hex.Substring(0, 24)

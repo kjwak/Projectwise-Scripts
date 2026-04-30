@@ -19,10 +19,17 @@ $r = Normalize-QCPath -Path ' Documents//AZDOT 2024\\ProjA\\ '
 Assert-True $r.IsSuccess 'Normalize-QCPath should succeed'
 Assert-True ($r.Data.path -eq 'documents\azdot 2024\proja') 'Normalize-QCPath should normalize separators/case/trim'
 
-# ProjectWise-style path normalization
+# ProjectWise-style path normalization: a pw: URI must collapse to the "Documents\..."
+# segment so that blacklist/whitelist entries written as pw:\\ds\Documents\... match
+# candidate paths produced as plain "Documents\...".
 $pw = Normalize-QCPath -Path 'pw:/Server:Ds/Documents/Folder/Sub/'
 Assert-True $pw.IsSuccess 'ProjectWise-style path should normalize'
-Assert-True ($pw.Data.path -eq 'pw:\server:ds\documents\folder\sub') 'ProjectWise-style path normalization mismatch'
+Assert-True ($pw.Data.path -eq 'documents\folder\sub') "ProjectWise-style path normalization mismatch (got '$($pw.Data.path)')"
+
+# Same path written with double-backslashes (after JSON decode) must normalize identically.
+$pw2 = Normalize-QCPath -Path 'pw:\\Server:Ds\Documents\Folder\Sub\'
+Assert-True $pw2.IsSuccess 'ProjectWise-style path (\\\\) should normalize'
+Assert-True ($pw2.Data.path -eq 'documents\folder\sub') "PW URI with double-backslashes should normalize identically (got '$($pw2.Data.path)')"
 
 # Test-PathUnderRoot should be case-insensitive and slash-agnostic
 $ur = Test-PathUnderRoot -Path 'Documents/AZDOT 2024/ProjA/CADD' -Root 'documents\azdot 2024\proja'

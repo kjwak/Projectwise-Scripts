@@ -1,0 +1,32 @@
+$job1 = @{
+  id           = "f0548dv206"
+  type         = "QC_PREPEND"
+  sourcePath   = "C:\QC_E2E_RealRun\incoming\f0548dv206_v1.pdf"
+  sourceName   = "f0548dv206.pdf"                 # force same history filename across runs
+  sourceFolder = "C:\QC_E2E_RealRun\incoming" # drives deterministic folderKey
+  triggerRule  = @{ id="qc-prepend-local-any-pdf"; jobType="QC_PREPEND"; grouping=@{enabled=$false;groupBy="file"} }
+  dedupeKey    = "dq_realrun_1"
+  status       = "queued"
+  createdAt    = (Get-Date).ToUniversalTime().ToString("o")
+  attempts     = 0
+  metadata     = @{}
+}
+
+Add-QCQueueJob -Job $job1 -Config $cfg | ConvertTo-Json -Depth 6
+
+
+$job2 = @{
+  id           = "f0548dv206_2"
+  type         = "QC_PREPEND"
+  sourcePath   = "C:\QC_E2E_RealRun\incoming\f0548dv206_v2.pdf"
+  sourceName   = "f0548dv206.pdf"
+  sourceFolder = "C:\QC_E2E_RealRun\incoming"
+  triggerRule  = @{ id="qc-prepend-local-any-pdf"; jobType="QC_PREPEND"; grouping=@{enabled=$false;groupBy="file"} }
+  dedupeKey    = "dq_realrun_2"
+  status       = "queued"
+  createdAt    = (Get-Date).ToUniversalTime().ToString("o")
+  attempts     = 0
+  metadata     = @{}
+}
+
+Add-QCQueueJob -Job $job2 -Config $cfg | ConvertTo-Json -Depth 6

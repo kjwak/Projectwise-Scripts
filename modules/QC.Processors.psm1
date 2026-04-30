@@ -1,6 +1,177 @@
 # QC.Processors.psm1
 # Responsibility: Processor readiness checks and job-type-based dispatch.
 
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+
+# Per-process throttle (milliseconds) inserted between PDF/cache file ops
+# (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
+# churn. Default 2000 ms; override via top-level Config.fileOpThrottleMs.
+# Set to 0 to disable.
+$script:_QCP_FsThrottleMs = 2000
+
+function _QCP-FsThrottle {
+    if ($script:_QCP_FsThrottleMs -and $script:_QCP_FsThrottleMs -gt 0) {
+        Start-Sleep -Milliseconds $script:_QCP_FsThrottleMs
+    }
+}
+
+function _QCP-ApplyFsThrottleConfig([hashtable]$Config) {
+    if (-not $Config) { return }
+    try {
+        if ($Config.ContainsKey('fileOpThrottleMs') -and $null -ne $Config['fileOpThrottleMs']) {
+            $script:_QCP_FsThrottleMs = [int]$Config['fileOpThrottleMs']
+        }
+    } catch { }
+}
+
+function _QCP-IsNullOrWhiteSpace([object]$Value) {
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }
+    return $false
+}
+
+function _QCP-ToHashtable([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value }
+    if ($Value -is [string] -or $Value -is [System.ValueType]) { return @{ value = $Value } }
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    }
+    return $null
+}
+
+function _QCP-GetRepoRoot() {
+    return (Split-Path -Parent $PSScriptRoot)
+}
+
+function _QCP-EnsureDir([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function _QCP-Sha256Hex([string]$Text) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    return -join ($hash | ForEach-Object { $_.ToString('x2') })
+}
+
+function _QCP-ResolveSourcePdf([hashtable]$Job) {
+    if ($Job.ContainsKey('source') -and $Job.source -is [hashtable] -and $Job.source.ContainsKey('localPath') -and $Job.source.localPath) {
+        return [string]$Job.source.localPath
+    }
+    if ($Job.ContainsKey('sourcePath') -and $Job.sourcePath) {
+        return [string]$Job.sourcePath
+    }
+    return $null
+}
+
+function _QCP-GetQpdfExePath([hashtable]$Config) {
+    if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
+        $qc = _QCP-ToHashtable $Config.qcPrepend
+        if ($qc -and $qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { return [string]$qc.qpdfExePath }
+    }
+    $default = Join-Path (_QCP-GetRepoRoot) 'tools\qpdf\bin\qpdf.exe'
+    return $default
+}
+
+function _QCP-ResolveHistoryPath([hashtable]$Job, [hashtable]$Config) {
+    $qc = $null
+    if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) { $qc = _QCP-ToHashtable $Config.qcPrepend }
+    $historyRoot = if ($qc -and $qc.historyRoot) { [string]$qc.historyRoot } else { $null }
+    if (_QCP-IsNullOrWhiteSpace $historyRoot) { return New-QCFailureResult -Code 'QC_PREPEND_CONFIG_MISSING_HISTORY_ROOT' -Message 'qcPrepend.historyRoot is required.' -Data @{} }
+
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('historyPdfPath') -and $Job.metadata.historyPdfPath) {
+        return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from job metadata.' -Data @{ historyPdf = [string]$Job.metadata.historyPdfPath }
+    }
+
+    $sourceName = if ($Job.ContainsKey('sourceName') -and $Job.sourceName) { [string]$Job.sourceName } else { ([System.IO.Path]::GetFileName([string]$Job.sourcePath)) }
+    if (_QCP-IsNullOrWhiteSpace $sourceName) { $sourceName = ([string]$Job.id + '.pdf') }
+
+    $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
+    $folderKey = if (_QCP-IsNullOrWhiteSpace $sourceFolder) { 'root' } else { (_QCP-Sha256Hex -Text $sourceFolder).Substring(0, 8) }
+
+    $destDir = Join-Path $historyRoot $folderKey
+    $historyPdf = Join-Path $destDir $sourceName
+    return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from config.' -Data @{ historyPdf = $historyPdf; historyDir = $destDir; folderKey = $folderKey }
+}
+
+function _QCP-RunQpdfPrepend([string]$QpdfExe, [string]$SourcePdf, [string]$HistoryPdf, [string]$OutPdf) {
+    # Prepend by concatenating pages: source + history
+    $args = @('--empty', '--pages', $SourcePdf, $HistoryPdf, '--', $OutPdf)
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $QpdfExe -ArgumentList $args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        return @{ exitCode = $p.ExitCode; stdout = $stdout; stderr = $stderr; args = $args }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function _QCP-RunOverlayExe([string]$ExePath, [string[]]$OverlayArgs, [string]$WorkingDirectory) {
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        # Start-Process rejects null/empty items in -ArgumentList (and some callers can accidentally pass them).
+        $cleanArgs = @()
+        foreach ($a in @($OverlayArgs)) {
+            if ($null -eq $a) { continue }
+            $s = [string]$a
+            if ($s.Trim().Length -eq 0) { continue }
+            $cleanArgs += $s
+        }
+
+        # Windows PowerShell can be picky about string[] ArgumentList. Use a single arg line string.
+        $argLine = (($cleanArgs | ForEach-Object {
+            $t = [string]$_
+            if ($t -match '[\\s\"]') { return ('"' + ($t -replace '"', '\\"') + '"') }
+            return $t
+        }) -join ' ')
+
+        if ($null -ne $WorkingDirectory -and ([string]$WorkingDirectory).Trim().Length -gt 0) {
+            $p = Start-Process -FilePath $ExePath -ArgumentList $argLine -WorkingDirectory $WorkingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        } else {
+            $p = Start-Process -FilePath $ExePath -ArgumentList $argLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        }
+        $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        return @{ exitCode = $p.ExitCode; stdout = $stdout; stderr = $stderr; args = $cleanArgs; argLine = $argLine }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function _QCP-TokenizeArgs([string]$CommandLine) {
+    # Minimal quoted-string tokenizer.
+    $args = @()
+    $cur = ''
+    $inQuote = $false
+    for ($i = 0; $i -lt $CommandLine.Length; $i++) {
+        $ch = $CommandLine[$i]
+        if ($ch -eq '"') { $inQuote = -not $inQuote; continue }
+        if (-not $inQuote -and [char]::IsWhiteSpace($ch)) {
+            if ($cur.Length -gt 0) { $args += $cur; $cur = '' }
+            continue
+        }
+        $cur += $ch
+    }
+    if ($cur.Length -gt 0) { $args += $cur }
+    return $args
+}
+
 function Test-QCJobReady {
     <#
     .SYNOPSIS
@@ -23,6 +194,16 @@ function Test-QCJobReady {
         [Parameter(Mandatory)]
         [hashtable]$Config
     )
+
+    $missing = @()
+    foreach ($k in @('id', 'type', 'sourcePath', 'dedupeKey')) {
+        if (-not $Job.ContainsKey($k) -or (_QCP-IsNullOrWhiteSpace $Job[$k])) { $missing += $k }
+    }
+    if ($missing.Count -gt 0) {
+        return New-QCFailureResult -Code 'PROCESSOR_JOB_NOT_READY' -Message 'Job is missing required fields for processing.' -Data @{ missing = $missing; jobId = [string]$Job.id }
+    }
+
+    return New-QCSuccessResult -Code 'PROCESSOR_JOB_READY' -Message 'Job is ready for processing.' -Data @{ jobId = [string]$Job.id }
 }
 
 function Invoke-QCProcessorByType {
@@ -47,6 +228,63 @@ function Invoke-QCProcessorByType {
         [Parameter(Mandatory)]
         [hashtable]$Config
     )
+
+    $ready = Test-QCJobReady -Job $Job -Config $Config
+    if (-not $ready.IsSuccess) { return $ready }
+
+    $jobType = [string]$Job.type
+    if (_QCP-IsNullOrWhiteSpace $jobType) {
+        return New-QCFailureResult -Code 'PROCESSOR_MISSING_JOB_TYPE' -Message 'Job.type is required for dispatch.' -Data @{ jobId = [string]$Job.id }
+    }
+
+    $map = $null
+    if ($Config.ContainsKey('processors') -and $Config.processors -and $Config.processors.ContainsKey('processorMap')) {
+        $map = $Config.processors.processorMap
+    } elseif ($Config.ContainsKey('processorMap')) {
+        $map = $Config.processorMap
+    }
+
+    $handlerName = $null
+    if ($map -is [hashtable] -and $map.ContainsKey($jobType)) {
+        $handlerName = [string]$map[$jobType]
+    }
+    if (_QCP-IsNullOrWhiteSpace $handlerName) {
+        # Default mapping for initial rollout.
+        if ($jobType -eq 'QC_PREPEND') { $handlerName = 'Invoke-QCPrependProcessor' }
+        elseif ($jobType -eq 'STATUS_SET_GEN') { $handlerName = 'Invoke-StatusSetProcessor' }
+    }
+
+    if (_QCP-IsNullOrWhiteSpace $handlerName) {
+        return New-QCFailureResult -Code 'PROCESSOR_NO_HANDLER' -Message "No processor handler mapped for job type: $jobType" -Data @{ jobId = [string]$Job.id; jobType = $jobType }
+    }
+
+    $cmd = Get-Command -Name $handlerName -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        return New-QCFailureResult -Code 'PROCESSOR_HANDLER_NOT_FOUND' -Message "Mapped processor handler not found: $handlerName" -Data @{ jobId = [string]$Job.id; jobType = $jobType; handler = $handlerName }
+    }
+
+    try {
+        $r = & $handlerName -Job $Job -Config $Config
+        # Handlers must return a single QCResult. In Windows PowerShell, any stray pipeline output
+        # turns the return into an object[]; recover by selecting the last QCResult-like item.
+        if ($r -is [object[]]) {
+            $qcLike = @($r | Where-Object { $_ -ne $null -and $_.PSObject -and ($_.PSObject.Properties.Name -contains 'IsSuccess') })
+            if ($qcLike.Count -gt 0) {
+                $r = $qcLike[-1]
+            }
+        }
+        if ($null -eq $r -or -not ($r.PSObject.Properties.Name -contains 'IsSuccess')) {
+            $types = @()
+            try {
+                if ($r -is [object[]]) { $types = @($r | ForEach-Object { if ($_ -eq $null) { '<null>' } else { $_.GetType().FullName } } | Select-Object -First 10) }
+                elseif ($null -ne $r) { $types = @($r.GetType().FullName) }
+            } catch { }
+            return New-QCFailureResult -Code 'PROCESSOR_INVALID_RESULT' -Message "Handler did not return a QCResult: $handlerName" -Data @{ jobId = [string]$Job.id; jobType = $jobType; handler = $handlerName; returnTypes = $types }
+        }
+        return $r
+    } catch {
+        return New-QCFailureResult -Code 'PROCESSOR_HANDLER_THROW' -Message "Handler threw: $handlerName" -Data @{ jobId = [string]$Job.id; jobType = $jobType; handler = $handlerName; error = $_.Exception.Message }
+    }
 }
 
 function Invoke-QCPrependProcessor {
@@ -71,6 +309,358 @@ function Invoke-QCPrependProcessor {
         [Parameter(Mandatory)]
         [hashtable]$Config
     )
+
+    _QCP-ApplyFsThrottleConfig -Config $Config
+
+    $qc = @{}
+    if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
+        $qcNorm = _QCP-ToHashtable $Config.qcPrepend
+        if ($qcNorm) { $qc = $qcNorm }
+    }
+
+    $mode = 'local'
+    if ($qc.ContainsKey('mode') -and $qc.mode) { $mode = ([string]$qc.mode).Trim().ToLowerInvariant() }
+
+    $isDryRun = $false
+    if ($Config.ContainsKey('dryRun')) { $isDryRun = [bool]$Config.dryRun }
+
+    # ProjectWise-triggered QC_PREPEND: use legacy prepend_qc.ps1 adapter (does PW export + overlay + history).
+    if ($mode -eq 'legacypw') {
+        $repoRoot = _QCP-GetRepoRoot
+        $legacyPrepend = if ($qc.ContainsKey('legacyScriptPath') -and $qc.legacyScriptPath) { [string]$qc.legacyScriptPath } else { (Join-Path $repoRoot 'legacy\prepend_qc.ps1') }
+        if (-not (Test-Path -LiteralPath $legacyPrepend)) {
+            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_SCRIPT_MISSING' -Message "Legacy prepend_qc.ps1 not found: $legacyPrepend" -Data @{ script = $legacyPrepend }
+        }
+
+        $pwCfg = @{}
+        if ($Config.ContainsKey('projectWise') -and $Config.projectWise) {
+            $pwNorm = _QCP-ToHashtable $Config.projectWise
+            if ($pwNorm) { $pwCfg = $pwNorm }
+        }
+        $ds = if ($pwCfg.ContainsKey('datasourceName') -and $pwCfg.datasourceName) { [string]$pwCfg.datasourceName } else { '' }
+        if (_QCP-IsNullOrWhiteSpace $ds) { $ds = 'typsa-us-pw.bentley.com:typsa-us-pw-03' }
+
+        $incomingFolder = ''
+        # Prefer the original PW folder path from watcher metadata (preserves casing / Documents\ prefix).
+        try {
+            if ($Job.ContainsKey('metadata') -and $Job.metadata -and $Job.metadata.ContainsKey('candidate') -and $Job.metadata.candidate) {
+                $cand = _QCP-ToHashtable $Job.metadata.candidate
+                if ($cand -is [hashtable] -and $cand.ContainsKey('sourceFolder') -and $cand.sourceFolder) {
+                    $incomingFolder = [string]$cand.sourceFolder
+                }
+            }
+        } catch { }
+        if (_QCP-IsNullOrWhiteSpace $incomingFolder) {
+            if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { $incomingFolder = [string]$Job.sourceFolder }
+        }
+        # pwps_dab cmdlets generally expect FolderPath without the leading "Documents\".
+        if ($incomingFolder -match '^(?i)Documents\\') {
+            $incomingFolder = ($incomingFolder -replace '^(?i)Documents\\', '')
+        }
+        $incomingDocName = if ($Job.ContainsKey('sourceName') -and $Job.sourceName) { [string]$Job.sourceName } else { '' }
+        if (_QCP-IsNullOrWhiteSpace $incomingDocName) {
+            $incomingDocName = [System.IO.Path]::GetFileName([string]$Job.sourcePath)
+        }
+
+        if (_QCP-IsNullOrWhiteSpace $incomingFolder -or _QCP-IsNullOrWhiteSpace $incomingDocName) {
+            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_MISSING_INPUTS' -Message 'Legacy PW prepend requires Job.sourceFolder and Job.sourceName.' -Data @{ jobId = [string]$Job.id; sourceFolder = [string]$Job.sourceFolder; sourceName = [string]$Job.sourceName; sourcePath = [string]$Job.sourcePath }
+        }
+
+        $localRoot = if ($qc.ContainsKey('localRoot') -and $qc.localRoot) { [string]$qc.localRoot } else { 'C:\PW_QC_LOCAL' }
+        $logDir = if ($qc.ContainsKey('logDir') -and $qc.logDir) { [string]$qc.logDir } else { '' }
+
+        $qpdfExe = $null
+        if ($qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { $qpdfExe = [string]$qc.qpdfExePath }
+        if (_QCP-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
+        $overlayExe = $null
+        if ($qc.ContainsKey('overlayExePath') -and $qc.overlayExePath) { $overlayExe = [string]$qc.overlayExePath }
+        if (_QCP-IsNullOrWhiteSpace $overlayExe) { $overlayExe = Join-Path $repoRoot 'dist\qc_overlay_prepend\qc_overlay_prepend.exe' }
+
+        $ovOldFromHistoryOnly = $true
+        if ($qc.ContainsKey('overlayOldFromHistoryOnly')) { try { $ovOldFromHistoryOnly = [bool]$qc.overlayOldFromHistoryOnly } catch { $ovOldFromHistoryOnly = $true } }
+        $ovSheetWorkDir = $true
+        if ($qc.ContainsKey('overlaySheetWorkDir')) { try { $ovSheetWorkDir = [bool]$qc.overlaySheetWorkDir } catch { $ovSheetWorkDir = $true } }
+
+        if ($isDryRun) {
+            return New-QCSuccessResult -Code 'QC_PREPEND_DRYRUN' -Message 'Dry-run: would run legacy prepend_qc.ps1 for ProjectWise job.' -Data @{
+                jobId = [string]$Job.id
+                datasourceName = $ds
+                incomingFolderPath = $incomingFolder
+                incomingDocName = $incomingDocName
+                legacyScript = $legacyPrepend
+                localRoot = $localRoot
+                qpdfExe = $qpdfExe
+                overlayExe = $overlayExe
+            }
+        }
+
+        $args = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $legacyPrepend,
+            '-IncomingFolderPath', $incomingFolder,
+            '-IncomingDocName', $incomingDocName,
+            '-DatasourceName', $ds,
+            '-LocalRoot', $localRoot
+        )
+        if (-not (_QCP-IsNullOrWhiteSpace $logDir)) { $args += @('-LogDir', $logDir) }
+        if (Test-Path -LiteralPath $qpdfExe) { $args += @('-QpdfExe', $qpdfExe) }
+        if (Test-Path -LiteralPath $overlayExe) { $args += @('-QcOverlayExe', $overlayExe) }
+        $args += @('-OverlayOldFromHistoryOnly', ([string]$ovOldFromHistoryOnly), '-OverlaySheetWorkDir', ([string]$ovSheetWorkDir))
+
+        $stdoutPath = [System.IO.Path]::GetTempFileName()
+        $stderrPath = [System.IO.Path]::GetTempFileName()
+        try {
+            # Windows PowerShell can mis-handle string[] -ArgumentList when paths contain spaces.
+            # Use a single quoted arg line (same approach as _QCP-RunOverlayExe).
+            $cleanArgs = @('-MTA') + @($args)
+            $argLine = (($cleanArgs | ForEach-Object {
+                $t = [string]$_
+                if ($t -match '[\s"]') { return ('"' + ($t -replace '"', '\\"') + '"') }
+                return $t
+            }) -join ' ')
+
+            $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
+            $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+            if ($p.ExitCode -ne 0) {
+                return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_FAILED' -Message 'Legacy prepend_qc.ps1 failed.' -Data @{ exitCode = [int]$p.ExitCode; stdout = $stdout; stderr = $stderr; args = $args; argLine = $argLine; legacyScript = $legacyPrepend }
+            }
+
+            $tagCleared = $null
+            $tagClearError = $null
+            $clearTag = $true
+            if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
+            if ($clearTag) {
+                try {
+                    $repoRoot = _QCP-GetRepoRoot
+                    $pwConnMod = Join-Path $repoRoot 'modules\PW.Connection.psm1'
+                    if (Test-Path -LiteralPath $pwConnMod) { Import-Module $pwConnMod -Force -ErrorAction SilentlyContinue | Out-Null }
+
+                    $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+                    $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+                    if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+                    $connRes2 = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+                    if (-not $connRes2.IsSuccess) { throw ($connRes2.Code + ': ' + $connRes2.Message) }
+
+                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction SilentlyContinue
+                    if ($doc) {
+                        $currentDesc = $doc.Description
+                        if ($null -eq $currentDesc -and $doc.PSObject.Properties['Description']) { $currentDesc = $doc.Description }
+                        if ($null -eq $currentDesc) { $currentDesc = '' }
+                        $newDesc = ([string]$currentDesc -replace [regex]::Escape('QC_Archivist'), '').Trim()
+                        $doc.Description = $newDesc
+                        Update-PWDocumentProperties $doc -ErrorAction Stop
+                        $tagCleared = $true
+                    } else {
+                        $tagCleared = $false
+                        $tagClearError = 'Could not re-find document to clear trigger tag.'
+                    }
+                } catch {
+                    $tagCleared = $false
+                    $tagClearError = [string]$_.Exception.Message
+                } finally {
+                    try { Disconnect-PW | Out-Null } catch { }
+                }
+            }
+
+            return New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
+                exitCode = [int]$p.ExitCode
+                stdout = $stdout
+                stderr = $stderr
+                legacyScript = $legacyPrepend
+                incomingFolderPath = $incomingFolder
+                incomingDocName = $incomingDocName
+                triggerTagCleared = $tagCleared
+                triggerTagClearError = $tagClearError
+            }
+        } finally {
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $sourcePdf = _QCP-ResolveSourcePdf -Job $Job
+    if (_QCP-IsNullOrWhiteSpace $sourcePdf) {
+        return New-QCFailureResult -Code 'QC_PREPEND_SOURCE_MISSING' -Message 'Job does not include a source PDF path.' -Data @{ jobId = [string]$Job.id }
+    }
+    if (-not (Test-Path -LiteralPath $sourcePdf)) {
+        return New-QCFailureResult -Code 'QC_PREPEND_SOURCE_NOT_FOUND' -Message "Source PDF not found: $sourcePdf" -Data @{ jobId = [string]$Job.id; sourcePdf = $sourcePdf }
+    }
+
+    $histRes = _QCP-ResolveHistoryPath -Job $Job -Config $Config
+    if (-not $histRes.IsSuccess) { return $histRes }
+    $historyPdf = [string]$histRes.Data.historyPdf
+    $historyDir = Split-Path -Parent $historyPdf
+
+    $enableOverlay = $false
+    if ($qc.ContainsKey('enableOverlay')) { $enableOverlay = [bool]$qc.enableOverlay }
+    $overlayExePath = if ($qc.ContainsKey('overlayExePath') -and $qc.overlayExePath) { [string]$qc.overlayExePath } else { (Join-Path (_QCP-GetRepoRoot) 'dist\qc_overlay_prepend\qc_overlay_prepend.exe') }
+
+    # Output path for overlay results (optional)
+    $outputRoot = if ($qc.ContainsKey('outputRoot') -and $qc.outputRoot) { [string]$qc.outputRoot } else { '' }
+    $tempRoot = if ($qc.ContainsKey('tempRoot') -and $qc.tempRoot) { [string]$qc.tempRoot } else { (Join-Path ([System.IO.Path]::GetTempPath()) 'qc_prepend') }
+    _QCP-EnsureDir -Path $tempRoot
+
+    $overlayOutPdf = $null
+    if (-not (_QCP-IsNullOrWhiteSpace $outputRoot)) {
+        _QCP-EnsureDir -Path $outputRoot
+        $base = [System.IO.Path]::GetFileNameWithoutExtension([string]$Job.sourceName)
+        if (_QCP-IsNullOrWhiteSpace $base) { $base = [string]$Job.id }
+        $folderKey = 'root'
+        if ($histRes.Data -and ($histRes.Data -is [hashtable]) -and $histRes.Data.ContainsKey('folderKey') -and $histRes.Data.folderKey) {
+            $folderKey = [string]$histRes.Data.folderKey
+        }
+        $outDir = Join-Path $outputRoot $folderKey
+        _QCP-EnsureDir -Path $outDir
+        # Primary QC deliverable naming: <base>-qc.pdf
+        $overlayOutPdf = Join-Path $outDir ($base + '-qc.pdf')
+    }
+
+    $overlayTemplate = if ($qc.ContainsKey('overlayArgumentsTemplate') -and $qc.overlayArgumentsTemplate) { [string]$qc.overlayArgumentsTemplate } else { '' }
+    $overlayCmdWouldRun = $null
+    if ($enableOverlay) {
+        $overlayCmdWouldRun = @{
+            exe = $overlayExePath
+            argsTemplate = $overlayTemplate
+            outputPdf = $overlayOutPdf
+            historyPdf = $historyPdf
+            sourcePdf = $sourcePdf
+        }
+    }
+
+    if ($isDryRun) {
+        return New-QCSuccessResult -Code 'QC_PREPEND_DRYRUN' -Message 'Dry-run: QC_PREPEND would update history and optionally run overlay.' -Data @{
+            jobId = [string]$Job.id
+            sourcePdf = $sourcePdf
+            targetHistoryPdf = $historyPdf
+            historyExists = (Test-Path -LiteralPath $historyPdf)
+            overlayEnabled = $enableOverlay
+            overlayCommandWouldRun = $overlayCmdWouldRun
+            qcOutputPdf = $overlayOutPdf
+        }
+    }
+
+    $qpdfExe = _QCP-GetQpdfExePath -Config $Config
+    if (-not (Test-Path -LiteralPath $qpdfExe)) {
+        return New-QCFailureResult -Code 'PDF_MERGE_TOOL_MISSING' -Message "qpdf.exe not found: $qpdfExe" -Data @{ qpdfExe = $qpdfExe }
+    }
+
+    _QCP-EnsureDir -Path $historyDir
+
+    $tmpHistory = Join-Path $tempRoot ([string]$Job.id + '.history.tmp.' + ([guid]::NewGuid().ToString('N')) + '.pdf')
+    $tmpQcOut = Join-Path $tempRoot ([string]$Job.id + '.qc.tmp.' + ([guid]::NewGuid().ToString('N')) + '.pdf')
+
+    try {
+        $historyExists = Test-Path -LiteralPath $historyPdf
+
+        # 1) If overlay enabled, build QC output first:
+        #    qc.pdf = overlay(source vs page1(history)) + history tail pages
+        #    Use overlay/qc_overlay_prepend's contract directly: incoming + qc_history -> merged QC output.
+        if ($enableOverlay) {
+            if (-not (Test-Path -LiteralPath $overlayExePath)) {
+                return New-QCFailureResult -Code 'QC_OVERLAY_EXE_MISSING' -Message "Overlay exe missing: $overlayExePath" -Data @{ overlayExePath = $overlayExePath }
+            }
+            if (_QCP-IsNullOrWhiteSpace $overlayOutPdf) {
+                return New-QCFailureResult -Code 'QC_OVERLAY_OUTPUT_MISSING' -Message 'qcPrepend.outputRoot is required to produce QC output when overlay is enabled.' -Data @{}
+            }
+
+            $overlayArgs = @(
+                $sourcePdf,
+                $historyPdf,
+                '-o',
+                $tmpQcOut
+            )
+
+            # Pass through selected overlay engine options if present in config.
+            # Mirrors overlay/qc_overlay_prepend.py CLI.
+            if ($qc.ContainsKey('overlayAlpha') -and $qc.overlayAlpha -ne $null -and ([string]$qc.overlayAlpha).Trim().Length -gt 0) {
+                $overlayArgs += @('--alpha', [string]$qc.overlayAlpha)
+            }
+            if ($qc.ContainsKey('overlayFit') -and [bool]$qc.overlayFit) {
+                $overlayArgs += @('--fit')
+            }
+            if ($qc.ContainsKey('overlayVerbose') -and [bool]$qc.overlayVerbose) {
+                $overlayArgs += @('--verbose')
+            }
+            if ($qc.ContainsKey('overlayKeepTemp') -and [bool]$qc.overlayKeepTemp) {
+                $overlayArgs += @('--keep-temp')
+            }
+            if ($qc.ContainsKey('overlayNoFlattenSources') -and [bool]$qc.overlayNoFlattenSources) {
+                $overlayArgs += @('--no-flatten-sources')
+            }
+            if ($qc.ContainsKey('overlayFlattenRaster') -and [bool]$qc.overlayFlattenRaster) {
+                $overlayArgs += @('--flatten-raster')
+            }
+            if ($qc.ContainsKey('overlayFlattenDpi') -and $qc.overlayFlattenDpi -ne $null -and ([string]$qc.overlayFlattenDpi).Trim().Length -gt 0) {
+                $overlayArgs += @('--flatten-dpi', [string]$qc.overlayFlattenDpi)
+            }
+            if ($qc.ContainsKey('overlayCurrentMasterPath') -and $qc.overlayCurrentMasterPath) {
+                $overlayArgs += @('--current-master', [string]$qc.overlayCurrentMasterPath)
+            }
+            if ($qc.ContainsKey('overlaySheetWorkDir') -and $qc.overlaySheetWorkDir) {
+                $overlayArgs += @('--sheet-work-dir', [string]$qc.overlaySheetWorkDir)
+            }
+
+            $overlayRes = $null
+            try {
+                $overlayRes = _QCP-RunOverlayExe -ExePath $overlayExePath -OverlayArgs $overlayArgs -WorkingDirectory (Split-Path -Parent $sourcePdf)
+            } catch {
+                return New-QCFailureResult -Code 'QC_OVERLAY_LAUNCH_FAILED' -Message 'Failed to launch overlay exe.' -Data @{ exe = $overlayExePath; errorMessage = $_.Exception.Message; args = $overlayArgs }
+            }
+            if ([int]$overlayRes.exitCode -ne 0) {
+                return New-QCFailureResult -Code 'QC_OVERLAY_FAILED' -Message 'Overlay exe failed.' -Data @{ exitCode = $overlayRes.exitCode; stderr = $overlayRes.stderr; stdout = $overlayRes.stdout; args = $overlayRes.args; argLine = $overlayRes.argLine; exe = $overlayExePath }
+            }
+
+            try {
+                Move-Item -LiteralPath $tmpQcOut -Destination $overlayOutPdf -Force -ErrorAction Stop
+                _QCP-FsThrottle
+            } catch {
+                return New-QCFailureResult -Code 'QC_PREPEND_QC_WRITE_FAILED' -Message 'Failed to write QC output PDF.' -Data @{ tmpQcOut = $tmpQcOut; qcOutputPdf = $overlayOutPdf; errorMessage = $_.Exception.Message }
+            }
+        }
+
+        # 2) Update history:
+        #    history.pdf = source + oldHistory  (or init from source)
+        if (-not $historyExists) {
+            try {
+                Copy-Item -LiteralPath $sourcePdf -Destination $tmpHistory -Force -ErrorAction Stop
+                _QCP-FsThrottle
+            } catch {
+                return New-QCFailureResult -Code 'QC_PREPEND_HISTORY_INIT_FAILED' -Message 'Failed to create initial history PDF (copy failed).' -Data @{ sourcePdf = $sourcePdf; tmpHistory = $tmpHistory; errorMessage = $_.Exception.Message }
+            }
+        } else {
+            $merge = _QCP-RunQpdfPrepend -QpdfExe $qpdfExe -SourcePdf $sourcePdf -HistoryPdf $historyPdf -OutPdf $tmpHistory
+            if ([int]$merge.exitCode -ne 0) {
+                return New-QCFailureResult -Code 'QC_PREPEND_MERGE_FAILED' -Message 'qpdf prepend/merge failed.' -Data @{ exitCode = $merge.exitCode; stderr = $merge.stderr; stdout = $merge.stdout; args = $merge.args }
+            }
+        }
+
+        try {
+            Move-Item -LiteralPath $tmpHistory -Destination $historyPdf -Force -ErrorAction Stop
+            _QCP-FsThrottle
+        } catch {
+            return New-QCFailureResult -Code 'QC_PREPEND_HISTORY_WRITE_FAILED' -Message 'Failed to write updated history PDF (move/replace failed).' -Data @{ tmpHistory = $tmpHistory; targetHistoryPdf = $historyPdf; errorMessage = $_.Exception.Message }
+        }
+
+        return New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND history updated.' -Data @{
+            jobId = [string]$Job.id
+            sourcePdf = $sourcePdf
+            targetHistoryPdf = $historyPdf
+            overlayEnabled = $enableOverlay
+            overlayExe = if ($enableOverlay) { $overlayExePath } else { $null }
+            qcOutputPdf = $overlayOutPdf
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tmpHistory) {
+            Remove-Item -LiteralPath $tmpHistory -Force -ErrorAction SilentlyContinue
+            _QCP-FsThrottle
+        }
+        if (Test-Path -LiteralPath $tmpQcOut) {
+            Remove-Item -LiteralPath $tmpQcOut -Force -ErrorAction SilentlyContinue
+            _QCP-FsThrottle
+        }
+    }
 }
 
 function Invoke-StatusSetProcessor {
@@ -86,7 +676,7 @@ function Invoke-StatusSetProcessor {
     .OUTPUTS
     PSCustomObject with shape: IsSuccess [bool], Code [string], Message [string], Data [object].
     .NOTES
-    Side effects: local processing actions only (no ProjectWise write operations in this stub).
+    Side effects: depends on statusSet.mode (stub, native: manifest + PW, legacy: external script).
     #>
     [CmdletBinding()]
     param(
@@ -95,5 +685,130 @@ function Invoke-StatusSetProcessor {
         [Parameter(Mandatory)]
         [hashtable]$Config
     )
+
+    $isDryRun = $false
+    if ($Config.ContainsKey('dryRun')) { $isDryRun = [bool]$Config.dryRun }
+
+    $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
+    if (_QCP-IsNullOrWhiteSpace $sourceFolder) {
+        return New-QCFailureResult -Code 'STATUS_SET_MISSING_SOURCE_FOLDER' -Message 'STATUS_SET_GEN requires Job.sourceFolder (target folder / sheets folder).' -Data @{ jobId = [string]$Job.id }
+    }
+
+    $ss = @{}
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet) {
+        $ssNorm = _QCP-ToHashtable $Config.statusSet
+        if ($ssNorm) { $ss = $ssNorm }
+    }
+
+    # Default to the supported native implementation (QC.StatusSet.psm1). The previous
+    # default was 'stub', which returned SUCCESS without doing any work whenever the
+    # config lacked a statusSet block - jobs appeared to succeed in <1s while PW was
+    # never updated and no PDF was written. Misconfigured/unknown modes now fail loudly
+    # instead of silently succeeding.
+    $mode = 'native'
+    if ($ss.ContainsKey('mode') -and $ss.mode) { $mode = ([string]$ss.mode).Trim().ToLowerInvariant() }
+
+    if ($mode -eq 'native') {
+        $ssMod = Join-Path (_QCP-GetRepoRoot) 'modules\QC.StatusSet.psm1'
+        if (-not (Test-Path -LiteralPath $ssMod)) {
+            return New-QCFailureResult -Code 'STATUS_SET_MODULE_MISSING' -Message "QC.StatusSet.psm1 not found: $ssMod" -Data @{ path = $ssMod }
+        }
+        Import-Module $ssMod -Force
+        return Invoke-StatusSetNativeJob -Job $Job -Config $Config
+    }
+
+    if ($mode -eq 'stub') {
+        return New-QCSuccessResult -Code 'STATUS_SET_STUB_OK' -Message 'STATUS_SET_GEN explicitly configured as stub (statusSet.mode = "stub"); no work performed.' -Data @{
+            jobId = [string]$Job.id
+            jobType = [string]$Job.type
+            sourceFolder = $sourceFolder
+            mode = $mode
+        }
+    }
+
+    if ($mode -ne 'legacy') {
+        return New-QCFailureResult -Code 'STATUS_SET_UNKNOWN_MODE' -Message ("statusSet.mode '{0}' is not recognized. Valid values: native, legacy, stub." -f $mode) -Data @{
+            jobId = [string]$Job.id
+            jobType = [string]$Job.type
+            sourceFolder = $sourceFolder
+            mode = $mode
+        }
+    }
+
+    if ($isDryRun) {
+        return New-QCSuccessResult -Code 'STATUS_SET_DRYRUN' -Message 'Dry-run: would invoke legacy combine_status_set.ps1.' -Data @{
+            jobId = [string]$Job.id
+            jobType = [string]$Job.type
+            sourceFolder = $sourceFolder
+            mode = $mode
+        }
+    }
+
+    $repoRoot = _QCP-GetRepoRoot
+    $combineScript = if ($ss.ContainsKey('legacyScriptPath') -and $ss.legacyScriptPath) { [string]$ss.legacyScriptPath } else { (Join-Path $repoRoot 'legacy\combine_status_set.ps1') }
+    if (-not (Test-Path -LiteralPath $combineScript)) {
+        return New-QCFailureResult -Code 'STATUS_SET_LEGACY_SCRIPT_MISSING' -Message "Legacy combine_status_set.ps1 not found: $combineScript" -Data @{ script = $combineScript }
+    }
+
+    $datasource = if ($ss.ContainsKey('datasourceName') -and $ss.datasourceName) { [string]$ss.datasourceName } else { 'typsa-us-pw.bentley.com:typsa-us-pw-03' }
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $logDir = if ($ss.ContainsKey('logDir') -and $ss.logDir) { [string]$ss.logDir } else { '' }
+    $qpdfExe = if ($ss.ContainsKey('qpdfExe') -and $ss.qpdfExe) { [string]$ss.qpdfExe } else { 'qpdf' }
+    $forceRebuild = $false
+    if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    $promptForCredential = $false
+    if ($ss.ContainsKey('promptForCredential')) { try { $promptForCredential = [bool]$ss.promptForCredential } catch { $promptForCredential = $false } }
+    $writeBackToPW = $false
+    if ($ss.ContainsKey('writeBackToPW')) { try { $writeBackToPW = [bool]$ss.writeBackToPW } catch { $writeBackToPW = $false } }
+
+    $args = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $combineScript,
+        '-SheetsFolderPath', $sourceFolder,
+        '-DatasourceName', $datasource,
+        '-LocalRoot', $localRoot,
+        '-QpdfExe', $qpdfExe,
+        '-PollIntervalSeconds', '0',
+        '-RunOnce'
+    )
+    if (-not (_QCP-IsNullOrWhiteSpace $logDir)) { $args += @('-LogDir', $logDir) }
+    if ($writeBackToPW) { $args += @('-WriteBackToPW') }
+    if ($forceRebuild) { $args += @('-ForceRebuild') }
+    if ($promptForCredential) { $args += @('-PromptForCredential') }
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        # combine_status_set.ps1 re-launches itself in MTA if needed; but call powershell.exe -MTA anyway.
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList (@('-MTA') + $args) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+
+        if ($p.ExitCode -ne 0) {
+            return New-QCFailureResult -Code 'STATUS_SET_LEGACY_FAILED' -Message 'Legacy combine_status_set.ps1 failed.' -Data @{
+                jobId = [string]$Job.id
+                exitCode = [int]$p.ExitCode
+                stdout = $stdout
+                stderr = $stderr
+                script = $combineScript
+                args = $args
+                writeBackToPW = $writeBackToPW
+            }
+        }
+
+        return New-QCSuccessResult -Code 'STATUS_SET_OK' -Message 'STATUS_SET_GEN completed via legacy combine_status_set.ps1.' -Data @{
+            jobId = [string]$Job.id
+            exitCode = [int]$p.ExitCode
+            stdout = $stdout
+            stderr = $stderr
+            script = $combineScript
+            args = $args
+            writeBackToPW = $writeBackToPW
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
 }
 Export-ModuleMember -Function *

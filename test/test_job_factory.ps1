@@ -30,6 +30,7 @@ $rule = @{
     id = 'rule-1'
     jobType = 'QC_PREPEND'
     triggerType = 'desc'
+    grouping = @{ enabled = $false; groupBy = 'file' }
 }
 
 # deterministic job id
@@ -43,13 +44,50 @@ Assert-Eq $id1.Data.id $id2.Data.id 'JobId should be deterministic for same inpu
 $jobSeed = @{
     type = 'QC_PREPEND'
     sourcePath = $candidate.path
-    triggerRule = @{ id = $rule.id }
+    triggerRule = @{ id = $rule.id; grouping = $rule.grouping }
+    metadata = @{ fileHash = 'aaa' }
 }
 $d1 = Get-QCDedupeKey -Job $jobSeed -Config $config
 Assert-True $d1.IsSuccess 'Get-QCDedupeKey should succeed'
 $d2 = Get-QCDedupeKey -Job $jobSeed -Config $config
 Assert-True $d2.IsSuccess 'Get-QCDedupeKey should succeed (second call)'
 Assert-Eq $d1.Data.dedupeKey $d2.Data.dedupeKey 'DedupeKey should be deterministic for same inputs'
+
+# QC_PREPEND dedupe should change with file hash
+$jobSeed2 = @{
+    type = 'QC_PREPEND'
+    sourcePath = $candidate.path
+    triggerRule = @{ id = $rule.id; grouping = $rule.grouping }
+    metadata = @{ fileHash = 'bbb' }
+}
+$d3 = Get-QCDedupeKey -Job $jobSeed2 -Config $config
+Assert-True $d3.IsSuccess 'Get-QCDedupeKey should succeed with different file hash'
+Assert-True ($d1.Data.dedupeKey -ne $d3.Data.dedupeKey) 'QC_PREPEND dedupe should differ when file hash differs'
+
+# STATUS_SET_GEN grouped-by-folder dedupe should be same for different triggering files in same folder
+$ruleStatus = @{
+    id = 'status-rule'
+    jobType = 'STATUS_SET_GEN'
+    triggerType = 'fs'
+    grouping = @{ enabled = $true; groupBy = 'folder' }
+}
+$cand1 = @{ path = 'C:\\Work\\Proj\\CADD\\Sheets\\A101.pdf'; fileName = 'A101.pdf'; sourceFolder = 'C:\\Work\\Proj\\CADD\\Sheets' }
+$cand2 = @{ path = 'C:\\Work\\Proj\\CADD\\Sheets\\B202.pdf'; fileName = 'B202.pdf'; sourceFolder = 'C:\\Work\\Proj\\CADD\\Sheets' }
+$j1 = New-QCJobObject -Candidate $cand1 -Rule $ruleStatus -Config $config
+Assert-True $j1.IsSuccess 'STATUS_SET_GEN job creation should succeed'
+$j2 = New-QCJobObject -Candidate $cand2 -Rule $ruleStatus -Config $config
+Assert-True $j2.IsSuccess 'STATUS_SET_GEN job creation should succeed (second file)'
+Assert-Eq $j1.Data.job.dedupeKey $j2.Data.job.dedupeKey 'STATUS_SET_GEN grouped dedupe should match for same folder'
+
+# STATUS_SET_GEN should re-run when folder state changes (jobId + dedupeKey incorporate folderStateHash)
+$candH1 = @{ path = 'C:\\Work\\Proj\\CADD\\Sheets'; fileName = '_folder_'; sourceFolder = 'C:\\Work\\Proj\\CADD\\Sheets'; groupKey = 'status_set_gen|c:\\work\\proj\\cadd\\sheets'; folderStateHash = 'aaa' }
+$candH2 = @{ path = 'C:\\Work\\Proj\\CADD\\Sheets'; fileName = '_folder_'; sourceFolder = 'C:\\Work\\Proj\\CADD\\Sheets'; groupKey = 'status_set_gen|c:\\work\\proj\\cadd\\sheets'; folderStateHash = 'bbb' }
+$h1 = New-QCJobObject -Candidate $candH1 -Rule $ruleStatus -Config $config
+Assert-True $h1.IsSuccess 'STATUS_SET_GEN folder job creation should succeed (hash a)'
+$h2 = New-QCJobObject -Candidate $candH2 -Rule $ruleStatus -Config $config
+Assert-True $h2.IsSuccess 'STATUS_SET_GEN folder job creation should succeed (hash b)'
+Assert-True ($h1.Data.job.id -ne $h2.Data.job.id) 'STATUS_SET_GEN jobId should change when folderStateHash changes'
+Assert-True ($h1.Data.job.dedupeKey -ne $h2.Data.job.dedupeKey) 'STATUS_SET_GEN dedupeKey should change when folderStateHash changes'
 
 # required field validation: clean failure on missing type
 $badJob = @{

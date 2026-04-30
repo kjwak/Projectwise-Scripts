@@ -1,6 +1,14 @@
 {
   "roots": [
     {
+      "path": "Documents\\AZDOT 2024",
+      "sheetsPathFromProject": "CADD\\Sheets"
+    },
+    {
+      "path": "Documents\\AZDOT",
+      "sheetsPathFromProject": "CADD\\Sheets"
+    },
+    {
       "path": "Documents\\Caltrans",
       "sheetsPathFromProject": "CADD\\Sheets"
     }

@@ -18,6 +18,22 @@ function Normalize-QCPath {
     $normalized = $normalized -replace '/', '\\'
     $normalized = $normalized -replace '\\{2,}', '\'
 
+    # Accept ProjectWise URI-ish paths like:
+    #   pw:\\datasource\Documents\Project\...
+    #   pw:\datasource\Documents\Project\...   (post-collapse form)
+    # Normalize them to a "Documents\..." form so filters/triggers can match consistently.
+    # The match is intentionally lenient: any "pw:" prefix (one or more backslashes after
+    # the colon) is accepted, because the preceding "\\{2,}" collapse rewrites "pw:\\" to
+    # "pw:\" and a stricter "^pw:\\\\" check would silently fail to strip the prefix
+    # (the original cause of blacklist entries like
+    # "pw:\\\\datasource\\Documents\\..." not matching candidate paths).
+    if ($normalized -match '^(?i)pw:\\') {
+        $idx = $normalized.IndexOf('\Documents\', [System.StringComparison]::OrdinalIgnoreCase)
+        if ($idx -ge 0) {
+            $normalized = $normalized.Substring($idx + 1) # keep "Documents\..."
+        }
+    }
+
     if ($normalized.Length -gt 1 -and $normalized.EndsWith('\')) {
         $normalized = $normalized.TrimEnd('\\')
     }
