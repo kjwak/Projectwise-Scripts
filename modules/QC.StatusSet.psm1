@@ -7,10 +7,11 @@ Native StatusSet implementation that matches legacy/combine_status_set.ps1 metho
   - manifest schema:        v2 (bump to invalidate old logic)
   - pairing:                PDF must have matching DGN/DWG (or CAD doc without extension) base name in same folder listing
   - ordering:               alphabetical by PDF filename (same as legacy)
-  - native PW rebuild:     reuse `_sheet_cache\\*.pdf` when manifest row matches
-                             (`pwSheetReusePolicy`: `Signature` = id+size like rebuild compare;
-                             `PdfTimestamp` = same PDF length + PW last-modified instant);
-                             otherwise export that sheet only and refresh cache
+  - native PW exports:     one `_export_<jobId>\\` folder; each PDF renamed to
+                             `NNN_<originalname>.pdf` after export so names stay
+                             unique without one folder per sheet; scratch cleanup
+                             deletes files first then the directory (AV-friendlier
+                             than `Remove-Item -Recurse` on many trees)
   - write-back:             optional _SSS-UpdatePWDocumentFileFromDisk (pwps_dab 24+: -InputDocuments/-NewFilePathName) / New-PWDocument
 #>
 
@@ -70,6 +71,13 @@ function _SSS-ApplyFsThrottleConfig([hashtable]$Config) {
     try {
         if ($Config.ContainsKey('fileOpThrottleMs') -and $null -ne $Config['fileOpThrottleMs']) {
             $script:_SSS_FsThrottleMs = [int]$Config['fileOpThrottleMs']
+        } elseif ($Config.ContainsKey('projectWise') -and $Config['projectWise']) {
+            $pw = $Config['projectWise']
+            if ($pw -is [hashtable] -and $pw.ContainsKey('fileOpThrottleMs') -and $null -ne $pw['fileOpThrottleMs']) {
+                $script:_SSS_FsThrottleMs = [int]$pw['fileOpThrottleMs']
+            } elseif ($pw.PSObject -and $pw.PSObject.Properties['fileOpThrottleMs'] -and $null -ne $pw.PSObject.Properties['fileOpThrottleMs'].Value) {
+                $script:_SSS_FsThrottleMs = [int]$pw.PSObject.Properties['fileOpThrottleMs'].Value
+            }
         }
         if ($Config.ContainsKey('pwExportThrottleMs') -and $null -ne $Config['pwExportThrottleMs']) {
             $script:_SSS_PwExportThrottleMs = [int]$Config['pwExportThrottleMs']
@@ -97,6 +105,68 @@ function _SSS-IsNullOrWhiteSpace([object]$Value) {
 function _SSS-EnsureDir([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function _SSS-RemoveExportDirContentsFileFirst {
+    <#
+    .SYNOPSIS
+    Delete files inside an export scratch dir one-by-one (friendlier to AV than -Recurse on trees).
+    Optionally removes the now-empty directory; failures are non-terminating.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$DirPath,
+        [Parameter(Mandatory = $false)]
+        [bool]$RemoveEmptyDir = $true
+    )
+    if (-not (Test-Path -LiteralPath $DirPath)) { return }
+    try {
+        $files = @(Get-ChildItem -LiteralPath $DirPath -File -ErrorAction SilentlyContinue)
+        $n = 0
+        foreach ($file in $files) {
+            try {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            } catch { }
+            $n++
+            if ($script:_SSS_FsThrottleMs -gt 0 -and (($n % 2) -eq 0)) {
+                Start-Sleep -Milliseconds ([Math]::Min(2000, $script:_SSS_FsThrottleMs))
+            }
+        }
+        if ($RemoveEmptyDir) {
+            Start-Sleep -Milliseconds 150
+            try {
+                Remove-Item -LiteralPath $DirPath -Force -ErrorAction Stop
+            } catch {
+                try {
+                    Get-ChildItem -LiteralPath $DirPath -Recurse -Force -ErrorAction SilentlyContinue |
+                        Remove-Item -Force -ErrorAction SilentlyContinue
+                } catch { }
+            }
+        }
+    } catch { }
+}
+
+function _SSS-CleanAllExportScratchDirsInWorkspace {
+    <#
+    .SYNOPSIS
+    Removes every workspace\_export_* directory using file-first cleanup (handles legacy
+    per-sheet subdirs and the newer single-folder layout).
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceDir
+    )
+    if (-not (Test-Path -LiteralPath $WorkspaceDir)) { return }
+    $dirs = @(Get-ChildItem -LiteralPath $WorkspaceDir -Directory -Filter '_export_*' -ErrorAction SilentlyContinue)
+    foreach ($d in $dirs) {
+        # Legacy layout: nested _export_* subdirs under a parent _export_* 
+        $nested = @(Get-ChildItem -LiteralPath $d.FullName -Directory -Filter '_export_*' -ErrorAction SilentlyContinue)
+        foreach ($nd in $nested) {
+            _SSS-RemoveExportDirContentsFileFirst -DirPath $nd.FullName -RemoveEmptyDir $true
+        }
+        _SSS-RemoveExportDirContentsFileFirst -DirPath $d.FullName -RemoveEmptyDir $true
+        if ($script:_SSS_FsThrottleMs -gt 0) { _SSS-FsThrottle }
     }
 }
 
@@ -1252,14 +1322,45 @@ function Write-StatusSetManifestFile {
         [Parameter(Mandatory)]
         [hashtable]$Manifest
     )
+    $tmp = $null
     try {
         $dir = Split-Path -Parent $Path
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $json = $Manifest | ConvertTo-Json -Depth 12
-        Set-Content -LiteralPath $Path -Value $json -Encoding UTF8 -ErrorAction Stop
-        return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_WRITTEN' -Message 'Manifest written.' -Data @{ path = $Path }
+        $tmpRoot = [System.IO.Path]::GetTempPath()
+        $tmp = Join-Path $tmpRoot ('qc_statusset_man_' + [guid]::NewGuid().ToString('N') + '.json')
+        $enc = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($tmp, $json, $enc)
+        $pauseMs = [int]$script:_SSS_FsThrottleMs
+        if ($pauseMs -lt 600) { $pauseMs = 600 }
+        Start-Sleep -Milliseconds $pauseMs
+        $lastEx = $null
+        for ($a = 1; $a -le 22; $a++) {
+            try {
+                Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+                $tmp = $null
+                return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_WRITTEN' -Message 'Manifest written.' -Data @{ path = $Path }
+            } catch {
+                $lastEx = $_
+            }
+            try {
+                Copy-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop
+                $tmp = $null
+                return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_WRITTEN' -Message 'Manifest written.' -Data @{ path = $Path }
+            } catch {
+                $lastEx = $_
+            }
+            if ($a -ge 22) { break }
+            Start-Sleep -Milliseconds ([Math]::Min(3000, 200 + ($a * 150)))
+        }
+        throw $lastEx
     } catch {
         return New-QCFailureResult -Code 'STATUS_SET_MANIFEST_WRITE_FAILED' -Message 'Failed to write manifest.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
+    } finally {
+        if ($tmp -and (Test-Path -LiteralPath $tmp)) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -1819,6 +1920,18 @@ function Invoke-StatusSetNativeJob {
             }
         } else {
             _SSS-EnsureDir (Join-Path $workspace '_sheet_cache')
+            $exportJobTag = [string]$Job['id']
+            if (_SSS-IsNullOrWhiteSpace $exportJobTag) { $exportJobTag = [guid]::NewGuid().ToString('N') }
+            $exportJobTag = ($exportJobTag -replace '[^a-zA-Z0-9._-]', '_')
+            if ($exportJobTag.Length -gt 72) { $exportJobTag = $exportJobTag.Substring(0, 72) }
+            # One scratch folder per job: fewer directory trees for AV to flag than per-sheet folders.
+            # Basename collisions (same PDF name from two subfolders) are avoided by renaming after each export.
+            $exportWorkDir = Join-Path $workspace ('_export_' + $exportJobTag)
+            if (Test-Path -LiteralPath $exportWorkDir) {
+                _SSS-RemoveExportDirContentsFileFirst -DirPath $exportWorkDir -RemoveEmptyDir $true
+            }
+            _SSS-EnsureDir $exportWorkDir
+
             $manByKey = @{}
             if ($pwSheetCacheEnabled -and (-not $forceRebuild) -and $manifest) {
                 $mht = $manifest
@@ -1878,11 +1991,25 @@ function Invoke-StatusSetNativeJob {
                 }
 
                 $idx = $i + 1
-                $sub = Join-Path $workspace ('_export_' + $idx.ToString('000') + '_' + ([string]$idx))
-                New-Item -ItemType Directory -Path $sub -Force | Out-Null
-                $ex = Export-StatusSetPdfToFolder -InputDocument $doc -TargetFolder $sub
+                $ex = Export-StatusSetPdfToFolder -InputDocument $doc -TargetFolder $exportWorkDir
                 if (-not $ex.IsSuccess) { return $ex }
                 $localPath = [string]$ex.Data.localPath
+                $leaf = [System.IO.Path]::GetFileName($localPath)
+                $uniqueLeaf = ('{0:000}_{1}' -f $idx, $leaf)
+                $uniquePath = Join-Path $exportWorkDir $uniqueLeaf
+                if ($localPath -ne $uniquePath) {
+                    if (Test-Path -LiteralPath $uniquePath) { Remove-Item -LiteralPath $uniquePath -Force -ErrorAction SilentlyContinue }
+                    try {
+                        Move-Item -LiteralPath $localPath -Destination $uniquePath -Force -ErrorAction Stop
+                        $localPath = $uniquePath
+                    } catch {
+                        return New-QCFailureResult -Code 'STATUS_SET_EXPORT_RENAME_FAILED' -Message 'Could not move exported PDF to unique name in export folder.' -Data @{
+                            from = $localPath
+                            to = $uniquePath
+                            errorMessage = $_.Exception.Message
+                        }
+                    }
+                }
                 $orderedPaths += $localPath
                 $pwExportFreshCount++
                 try {
@@ -1894,14 +2021,14 @@ function Invoke-StatusSetNativeJob {
         $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $outPdf -QpdfExe $qpdfExe
         if (-not $merge.IsSuccess) { return $merge }
 
-        # Batch-delete all _export_* subdirs as a single burst, then throttle once.
-        # Throttling per-subdir costs N x throttle for N sheets; once is enough since AV
-        # only flags rapid back-to-back deletes within a short window.
-        $exportSubs = @(Get-ChildItem -LiteralPath $workspace -Directory -Filter '_export_*' -ErrorAction SilentlyContinue)
-        foreach ($sub in $exportSubs) {
-            Remove-Item -LiteralPath $sub.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if ($exportSubs.Count -gt 0) { _SSS-FsThrottle }
+        # File-first cleanup: Fortinet and similar AV often block rapid recursive folder deletes.
+        try {
+            _SSS-CleanAllExportScratchDirsInWorkspace -WorkspaceDir $workspace
+        } catch { }
+        if ($script:_SSS_FsThrottleMs -gt 0) { _SSS-FsThrottle }
+
+        # Pause before manifest replace: AV often scans the merged PDF in the same folder.
+        _SSS-FsThrottle
 
         $manObj = New-StatusSetManifestObject -State $fullState -SheetsFolderDisplay $sourceFolder
         $mw = Write-StatusSetManifestFile -Path $manifestPath -Manifest $manObj

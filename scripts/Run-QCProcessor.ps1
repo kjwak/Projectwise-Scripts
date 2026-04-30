@@ -132,6 +132,27 @@ function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     return ''
 }
 
+function _Move-QCJobWithLockRetries {
+    param(
+        [string]$JobId,
+        [string]$FromState,
+        [string]$ToState,
+        [hashtable]$Config,
+        [hashtable]$Job,
+        [int]$MaxTries = 8,
+        [int]$SleepMs = 3000
+    )
+    $last = $null
+    for ($t = 1; $t -le $MaxTries; $t++) {
+        $last = Move-QCJob -JobId $JobId -FromState $FromState -ToState $ToState -Config $Config -Job $Job
+        if ($last.IsSuccess) { return $last }
+        if ([string]$last.Code -ne 'QUEUE_LOCK_TIMEOUT') { return $last }
+        if ($t -ge $MaxTries) { return $last }
+        Start-Sleep -Milliseconds $SleepMs
+    }
+    return $last
+}
+
 function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, [bool]$IsDryRun, [bool]$DryRunAllowStateChange, [bool]$DryRunInvokeHandler, [int]$MaxAttempts) {
     # Returns hashtable: @{ Outcome = 'succeeded'|'failed'|'requeued'|'skipped_locked'|'dryrun_noop'; ExitOk = [bool]; SkipId = [string] }
     $jobId = [string]$Job['id']
@@ -217,7 +238,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
             # write lock twice in a row, doubling contention and producing
             # spurious WORKER_MOVE_FAILED / QUEUE_LOCK_TIMEOUT under load.
-            $mv = Move-QCJob -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
+            $mv = _Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
                 try { if ($mv.Data -and $mv.Data.error) { $innerErr = [string]$mv.Data.error } } catch { }
@@ -257,7 +278,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock
         # cycle, in-memory job preserved with attempts/lastError stamped on disk).
-        $fmv = Move-QCJob -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
+        $fmv = _Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
         if (-not $fmv.IsSuccess) {
             $innerErr = ''
             try { if ($fmv.Data -and $fmv.Data.error) { $innerErr = [string]$fmv.Data.error } } catch { }
