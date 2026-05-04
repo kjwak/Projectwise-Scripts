@@ -2277,12 +2277,35 @@ function Sync-StatusSetWorkspaceToPw {
             workspaceDir = [string]$WorkspaceRecord.workspaceDir; outputPdf = $outPdf
         }
     }
+
+    function _SSS-TryImportPWModules {
+        # Reconcile can run in -NoProfile child PowerShell on servers/services.
+        # Import pwps_dab/pwps explicitly before checking for cmdlets.
+        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        foreach ($name in @('pwps_dab', 'pwps')) {
+            try { Import-Module $name -Force -ErrorAction Stop | Out-Null } catch { }
+            if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        }
+        $pwpsPath = 'C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1'
+        if (Test-Path -LiteralPath $pwpsPath) {
+            try { Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null } catch { }
+            if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        }
+        return $false
+    }
+
+    $null = _SSS-TryImportPWModules
+
     $find = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
     $up   = Get-Command -Name Update-PWDocumentFile  -ErrorAction SilentlyContinue
     $newC = Get-Command -Name New-PWDocument         -ErrorAction SilentlyContinue
     if (-not $find -or -not $up) {
-        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message 'pwps_dab cmdlets not loaded.' -Data @{
-            haveFind = [bool]$find; haveUpdate = [bool]$up; haveNew = [bool]$newC
+        return New-QCFailureResult -Code 'STATUS_SET_RECONCILE_FAILED' -Message 'pwps_dab/pwps cmdlets not loaded in this PowerShell process.' -Data @{
+            haveFind     = [bool]$find
+            haveUpdate   = [bool]$up
+            haveNew      = [bool]$newC
+            psModulePath = [string]$env:PSModulePath
+            is64Bit      = [Environment]::Is64BitProcess
         }
     }
 
