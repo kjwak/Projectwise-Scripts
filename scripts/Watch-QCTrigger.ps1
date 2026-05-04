@@ -139,10 +139,21 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
 
     function _PwFolderExists([string]$DocsFolderPath) {
         # Best-effort: returns $true if we can view the folder, otherwise $false.
-        # Some PW cmdlet builds accept paths without "Documents\"; others require it. Try both.
-        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        # Some PW cmdlet builds accept paths without "Documents\"; others require it.
+        # IMPORTANT: do not build "Documents\<apiPath>" when <apiPath> was derived by stripping an
+        # already-present Documents\ prefix — that yields Documents\Documents\... and false negatives.
+        $internal = ($DocsFolderPath -as [string]).Trim().TrimEnd('\')
+        if ([string]::IsNullOrWhiteSpace($internal)) { return $false }
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $internal
         if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
-        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
+
+        $candidates = New-Object System.Collections.Generic.List[string]
+        if ($internal -match '^(?i)Documents\\') { [void]$candidates.Add($internal) }
+        [void]$candidates.Add($apiPath)
+        if ($internal -notmatch '^(?i)Documents\\') { [void]$candidates.Add(('Documents\' + $apiPath)) }
+
+        foreach ($p in ($candidates | Select-Object -Unique)) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
             try {
                 $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                 return $true
@@ -157,11 +168,19 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
     }
 
     function _ListChildNames([string]$DocsFolderPath) {
-        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        $internal = ($DocsFolderPath -as [string]).Trim().TrimEnd('\')
+        if ([string]::IsNullOrWhiteSpace($internal)) { return @() }
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $internal
         if ([string]::IsNullOrWhiteSpace($apiPath)) { return @() }
         $names = @()
 
-        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
+        $candidates = New-Object System.Collections.Generic.List[string]
+        if ($internal -match '^(?i)Documents\\') { [void]$candidates.Add($internal) }
+        [void]$candidates.Add($apiPath)
+        if ($internal -notmatch '^(?i)Documents\\') { [void]$candidates.Add(('Documents\' + $apiPath)) }
+
+        foreach ($p in ($candidates | Select-Object -Unique)) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
             try {
                 $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                 if ($view.Children) {
