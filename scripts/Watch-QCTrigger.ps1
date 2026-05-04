@@ -45,7 +45,11 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
+$pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
+if (-not (Test-Path -LiteralPath $pwConnPath)) {
+    throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
+}
+Import-Module $pwConnPath -Force | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
 
 function _Sha256FileHex([string]$Path) {
@@ -115,51 +119,134 @@ function _PW-GetDocLastModifiedUtcIso([object]$Doc) {
     return ''
 }
 
-function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSuffix, [string]$DatasourceName) {
-    # Ported (simplified) from legacy/combine_status_set.ps1
+function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSuffix, [string]$DatasourceName, [int]$ProjectDepth = 1) {
+    # Discovers Sheets folders under a root by walking N levels of "project folders".
+    # Depth=1 (default) matches legacy behavior: Root\<Project>\SheetsSuffix
+    # Depth=2: Root\<Area>\<Project>\SheetsSuffix, etc.
     $rootPathRaw = ($RootPath -as [string]).Trim().TrimEnd('\')
-    $hadDocuments = $rootPathRaw -match '^Documents\\'
-    $rootPath = $rootPathRaw -replace '^Documents\\', ''
-    $childNames = @()
-    try {
-        $view = Get-PWFolderView -FolderPath $rootPath -ErrorAction Stop
-        if ($view.Children) {
-            foreach ($c in $view.Children) {
-                $name = _PW-GetProp -Obj $c -Name 'Name'
-                if (-not $name) {
-                    $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                    if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
-                }
-                if ($name) { $childNames += [string]$name }
-            }
-        }
-        if ($childNames.Count -eq 0 -and $view.Folders) {
-            foreach ($f in $view.Folders) {
-                $name = _PW-GetProp -Obj $f -Name 'Name'
-                if ($name) { $childNames += [string]$name }
-            }
-        }
-    } catch {
+    if ([string]::IsNullOrWhiteSpace($rootPathRaw)) { return @() }
+
+    $suffix = ($SheetsSuffix -as [string]).Trim().TrimStart('\')
+    if ([string]::IsNullOrWhiteSpace($suffix)) { $suffix = 'CADD\Sheets' }
+
+    $depth = $ProjectDepth
+    if ($depth -lt 1) { $depth = 1 }
+    if ($depth -gt 5) { $depth = 5 } # hard cap to avoid runaway scans
+
+    # Maintain internal paths as "Documents\..." so downstream filtering stays consistent.
+    $rootDocs = $rootPathRaw
+    if ($rootDocs -notmatch '^(?i)Documents\\') { $rootDocs = ('Documents\' + $rootDocs.TrimStart('\')) }
+
+    function _PwFolderExists([string]$DocsFolderPath) {
+        # Best-effort: returns $true if we can view the folder, otherwise $false.
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
         try {
-            $children = Get-PWFoldersImmediateChildren -FolderPath $rootPath -WarningAction SilentlyContinue -ErrorAction Stop
-            foreach ($c in @($children)) {
-                $name = _PW-GetProp -Obj $c -Name 'Name'
-                if (-not $name) {
-                    $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                    if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
-                }
-                if ($name) { $childNames += [string]$name }
-            }
+            $null = Get-PWFolderView -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
+            return $true
         } catch {
-            return @()
+            try {
+                $f = Get-PWFolders -FolderPath $apiPath -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                return [bool]$f
+            } catch {
+                return $false
+            }
         }
     }
 
-    $suffix = ($SheetsSuffix -as [string]).Trim().TrimStart('\')
+    function _ListChildNames([string]$DocsFolderPath) {
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        $names = @()
+        try {
+            $view = Get-PWFolderView -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
+            if ($view.Children) {
+                foreach ($c in $view.Children) {
+                    $name = _PW-GetProp -Obj $c -Name 'Name'
+                    if (-not $name) {
+                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                        if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                    }
+                    if ($name) { $names += [string]$name }
+                }
+            }
+            if ($names.Count -eq 0 -and $view.Folders) {
+                foreach ($f in $view.Folders) {
+                    $name = _PW-GetProp -Obj $f -Name 'Name'
+                    if ($name) { $names += [string]$name }
+                }
+            }
+        } catch {
+            try {
+                $children = Get-PWFoldersImmediateChildren -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
+                foreach ($c in @($children)) {
+                    $name = _PW-GetProp -Obj $c -Name 'Name'
+                    if (-not $name) {
+                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                        if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                    }
+                    if ($name) { $names += [string]$name }
+                }
+            } catch {
+                return @()
+            }
+        }
+        return @($names | Where-Object { $_ } | Select-Object -Unique)
+    }
+
+    # Two modes:
+    #  1) If RootPath\SheetsSuffix exists, treat RootPath as the *project* and walk
+    #     depth under the Sheets folder (e.g. CADD\Sheets\01-Title\...).
+    #  2) Otherwise, treat RootPath as a *portfolio root* and discover project folders
+    #     under it (legacy), then append SheetsSuffix.
+    $rootSheets = (($rootDocs.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
+    if (_PwFolderExists -DocsFolderPath $rootSheets) {
+        # In "project has a Sheets folder" mode, interpret depth as the overall depth
+        # from the project root:
+        #   depth=1 => <project>\CADD\Sheets
+        #   depth=2 => <project>\CADD\Sheets\<child>
+        #   depth=3 => <project>\CADD\Sheets\<child>\<grandchild>
+        # So the number of levels to walk under the Sheets folder is (depth - 1).
+        $walkDepth = ($depth - 1)
+        if ($walkDepth -lt 0) { $walkDepth = 0 }
+
+        $all = @($rootSheets)
+        $current = @($rootSheets)
+        for ($i = 1; $i -le $walkDepth; $i++) {
+            $next = @()
+            foreach ($p in @($current)) {
+                foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
+                    $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
+                }
+            }
+            $current = @($next | Select-Object -Unique)
+            if ($current.Count -eq 0) { break }
+            $all += $current
+        }
+
+        $list = @()
+        foreach ($sPath in @($all | Select-Object -Unique)) {
+            $list += @{ DatasourceName = $DatasourceName; FolderPath = $sPath; OneLevelDeep = $true }
+        }
+        return $list
+    }
+
+    # Legacy: Build all project folder paths at the requested depth (under RootPath),
+    # then append SheetsSuffix.
+    $levelProjects = @($rootDocs)
+    for ($i = 1; $i -le $depth; $i++) {
+        $next = @()
+        foreach ($p in @($levelProjects)) {
+            foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
+                $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
+            }
+        }
+        $levelProjects = @($next | Select-Object -Unique)
+        if ($levelProjects.Count -eq 0) { break }
+    }
+
     $list = @()
-    foreach ($name in $childNames) {
-        $folderPath = if ($hadDocuments) { "Documents\$rootPath\$name\$suffix" } else { ($rootPath.TrimEnd('\') + '\' + $name + '\' + $suffix) }
-        # Default to one-level-deep for Sheets folders (discipline subfolders are common).
+    foreach ($projPath in @($levelProjects)) {
+        $folderPath = (($projPath.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
         $list += @{ DatasourceName = $DatasourceName; FolderPath = $folderPath; OneLevelDeep = $true }
     }
     return $list
@@ -349,6 +436,8 @@ if ($statusSetRules.Count -ge 0) {
             $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
             $watchList = _ToHashtable $pwCfg.watchList
 
+            # Re-import here to avoid any odd module/session state where exports are not visible.
+            Import-Module $pwConnPath -Force | Out-Null
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
             _Log -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
@@ -403,11 +492,15 @@ if ($statusSetRules.Count -ge 0) {
                     if (-not ($rh -is [hashtable])) { continue }
                     $rootPath = [string]$rh.path
                     $suffix = if ($rh.ContainsKey('sheetsPathFromProject') -and $rh.sheetsPathFromProject) { [string]$rh.sheetsPathFromProject } else { 'CADD\Sheets' }
+                    $projectDepth = 1
+                    if ($rh.ContainsKey('projectDepth') -and $null -ne $rh.projectDepth) {
+                        try { $projectDepth = [int]$rh.projectDepth } catch { $projectDepth = 1 }
+                    }
                     $enableQcPrepend = $false
                     if ($rh.ContainsKey('enableQcPrepend')) { try { $enableQcPrepend = [bool]$rh.enableQcPrepend } catch { $enableQcPrepend = $false } }
                     $enableStatusSet = $false
                     if ($rh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$rh.enableStatusSet } catch { $enableStatusSet = $false } }
-                    $discovered = @(_PW-DiscoverSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds)
+                    $discovered = @(_PW-DiscoverSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
                     foreach ($d in $discovered) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
                         $d['EnableStatusSet'] = $enableStatusSet
@@ -494,7 +587,7 @@ if ($statusSetRules.Count -ge 0) {
             foreach ($entry in @($pwFolders)) {
                 try {
                     $fp = [string]$entry.FolderPath
-                    if (_PWC-IsNullOrWhiteSpace $fp) { continue }
+                    if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
                     $oneLevelDeep = $false
                     $enableQcPrepend = $false
@@ -781,8 +874,19 @@ if ($statusSetRules.Count -ge 0) {
 
             # use the highest-priority rule (lowest priority number wins; our triggers use higher=more important, but
             # this keeps deterministic selection if multiple rules exist)
-            $ruleObj = @($statusSetRules | Sort-Object -Property priority | Select-Object -First 1)
+            # NOTE: Select-Object -First 1 already returns a single hashtable (or $null).
+            # Avoid @() which forces object[] and can break downstream Rule property access.
+            $ruleObj = ($statusSetRules | Sort-Object -Property priority | Select-Object -First 1)
             $jobType = 'STATUS_SET_GEN'
+
+            if (-not $ruleObj) {
+                _Log -Level 'Warning' -Code 'WATCH_FS_STATUSSET_RULE_MISSING' -Message 'STATUS_SET_GEN rule not found/enabled; skipping folder status-set enqueue.' -Data @{
+                    folder = $folder
+                    normFolder = $normFolder
+                    pairedCount = [int]$state.pairedCount
+                }
+                continue
+            }
 
             $gateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $normFolder -FolderState $state
             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)

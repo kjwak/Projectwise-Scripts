@@ -9,6 +9,8 @@ while rendering a constantly-updating dashboard with color coding.
 Architecture:
 - Single stable renderer prints the full layout every frame (no conditional partial renders).
 - Watcher/worker stdout is ingested into shared state; render only reads state.
+- After each Watch-QCTrigger run exits, the dashboard respawns it (inter-pass delay: -PollSeconds or 500ms for PW)
+  while worker processes keep dequeuing jobs; the next scan does not wait for an empty queue.
 #>
 
 [CmdletBinding()]
@@ -32,7 +34,15 @@ param(
     [int]$Workers = 0,
 
     [Parameter(Mandatory = $false)]
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipReconcileStatusSetsFirst,
+
+    # Bypass the singleton lock (normally only one dashboard per queue root). Use when
+    # the lock file is wrong/stale or you intentionally need a second instance.
+    [Parameter(Mandatory = $false)]
+    [switch]$IgnoreSingletonLock
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +50,17 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+
+function _Pause-IfInteractiveConsole {
+    # Double-click / powershell.exe -File closes the window as soon as the script exits.
+    # Pause only for the real console host so automation is not blocked.
+    if ($Host.Name -ne 'ConsoleHost') { return }
+    try {
+        Write-Host ''
+        Write-Host 'Press Enter to close this window...' -ForegroundColor Yellow
+        $null = Read-Host
+    } catch { }
+}
 
 function _Resolve-AppSettingsPath([string]$ProvidedPath) {
     if (-not [string]::IsNullOrWhiteSpace($ProvidedPath)) {
@@ -109,10 +130,6 @@ function _ColorForLevel([string]$Level) {
     }
 }
 
-function _Draw-Bar([string]$Label, [int]$Value, [string]$Color) {
-    Write-Host ("{0,-10} {1,6}" -f $Label, $Value) -ForegroundColor $Color
-}
-
 function _Get-TerminalWidth {
     try { return [int]$Host.UI.RawUI.WindowSize.Width } catch { return 120 }
 }
@@ -122,7 +139,8 @@ function _Trunc([string]$Text, [int]$Max) {
     $t = [string]$Text
     if ($Max -lt 4) { return $t }
     if ($t.Length -le $Max) { return $t }
-    return ($t.Substring(0, $Max - 1) + '…')
+    if ($Max -le 3) { return $t.Substring(0, $Max) }
+    return ($t.Substring(0, $Max - 3) + '...')
 }
 
 function _Parse-UtcIso([string]$Value) {
@@ -151,28 +169,89 @@ function _SafeAscii([string]$Text) {
     return ([regex]::Replace([string]$Text, '[^\u0020-\u007E]', '?'))
 }
 
-function _FormatJobLine([object]$Job, [int]$ColWidth) {
-    if (-not $Job) { return '' }
-    $ts = _Format-UiTs -IsoOrNull ([string]$Job.lastWriteTimeUtc)
-    $state = [string]$Job.state
-    $id = [string]$Job.id
+# Returns @(segment1, segment2) immediately after a "Documents" path segment (PW-style roots).
+function _Get-DocumentsAreaTwoSegments([string]$AnyPath) {
+    if ([string]::IsNullOrWhiteSpace($AnyPath)) { return $null }
+    $norm = ([string]$AnyPath).Trim() -replace '/', '\'
+    $parts = @($norm -split '\\' | Where-Object { $_ -ne '' })
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        if ($parts[$i].Equals('documents', [StringComparison]::OrdinalIgnoreCase)) {
+            if ($i + 2 -lt $parts.Count) {
+                return @($parts[$i + 1], $parts[$i + 2])
+            }
+            return $null
+        }
+    }
+    return $null
+}
+
+function _Format-QCPrependJobLine([object]$Entry, [int]$ColWidth) {
+    if (-not $Entry) { return '' }
+    $ts = _Format-UiTs -IsoOrNull ([string]$Entry.lastWriteTimeUtc)
+    $state = [string]$Entry.state
     $name = ''
     $path = ''
+    $id = ''
     try {
-        if ($Job.job) {
-            $j = $Job.job
+        if ($Entry.job) {
+            $j = $Entry.job
+            $id = [string]$j.id
             if ($j.sourceName) { $name = [string]$j.sourceName }
             elseif ($j.sourcePath) { $name = [System.IO.Path]::GetFileName([string]$j.sourcePath) }
             if ($j.sourcePath) { $path = [string]$j.sourcePath }
-            elseif ($j.sourceFolder -and $name) { $path = ([string]$j.sourceFolder).TrimEnd('\') + '\' + $name }
+            elseif ($j.sourceFolder -and $name) {
+                $sf = ([string]$j.sourceFolder) -replace '[\\/]+$', ''
+                $path = $sf + '\' + $name
+            }
         }
     } catch { }
-    $detail = ''
-    if ($name -and $path) { $detail = "$name  $path" }
-    elseif ($path) { $detail = $path }
-    elseif ($name) { $detail = $name }
-    else { $detail = $id }
-    return _Trunc -Text ("{0}  {1,-9}  {2}" -f $ts, $state, (_SafeAscii $detail)) -Max $ColWidth
+    $name = _SafeAscii $name
+    $path = _SafeAscii $path
+    $segs = _Get-DocumentsAreaTwoSegments $path
+    $root = if ($segs) { '\' + $segs[0] + '\' + $segs[1] } else { '' }
+    if (-not $root -and $path) {
+        try { $root = _SafeAscii ([System.IO.Path]::GetDirectoryName($path)) } catch { $root = '' }
+    }
+    if (-not $name -and $path) {
+        try { $name = _SafeAscii ([System.IO.Path]::GetFileName($path)) } catch { }
+    }
+    $tail = ("{0,-9} {1}" -f $state, $ts)
+    if ($ColWidth -le ($tail.Length + 2)) { return _Trunc -Text $tail -Max $ColWidth }
+    $headBudget = $ColWidth - $tail.Length - 1
+    $headRaw = if ($root -and $name) { "$root $name" } elseif ($name) { $name } elseif ($root) { $root } elseif ($id) { $id } else { '-' }
+    $head = _Trunc -Text $headRaw -Max $headBudget
+    return _Trunc -Text ("$head $tail") -Max $ColWidth
+}
+
+function _Format-StatusSetJobLine([object]$Entry, [int]$ColWidth) {
+    if (-not $Entry) { return '' }
+    $ts = _Format-UiTs -IsoOrNull ([string]$Entry.lastWriteTimeUtc)
+    $state = [string]$Entry.state
+    $folder = ''
+    $id = ''
+    try {
+        if ($Entry.job) {
+            $j = $Entry.job
+            $id = [string]$j.id
+            if ($j.sourceFolder) { $folder = [string]$j.sourceFolder }
+            elseif ($j.sourcePath) { $folder = _SafeAscii ([System.IO.Path]::GetDirectoryName([string]$j.sourcePath)) }
+        }
+    } catch { }
+    $folder = _SafeAscii $folder
+    $segs = _Get-DocumentsAreaTwoSegments $folder
+    $dir = if ($segs) { ($segs[0] + '/' + $segs[1]) } else { '' }
+    if (-not $dir -and $folder) {
+        $norm = $folder.Trim() -replace '\\', '/'
+        $parts = @($norm -split '/' | Where-Object { $_ -ne '' })
+        if ($parts.Count -ge 2) { $dir = $parts[$parts.Count - 2] + '/' + $parts[$parts.Count - 1] }
+        else { $dir = $norm }
+    }
+    $prefix = ("{0,-9} {1} " -f $state, $ts)
+    if ($ColWidth -le ($prefix.Length + 2)) { return _Trunc -Text $prefix.TrimEnd() -Max $ColWidth }
+    $dirBudget = $ColWidth - $prefix.Length
+    $dirDisp = _Trunc -Text $dir -Max $dirBudget
+    if (-not $dirDisp -and $id) { $dirDisp = _Trunc -Text $id -Max $dirBudget }
+    return _Trunc -Text ($prefix + $dirDisp) -Max $ColWidth
 }
 
 function _Write-TwoColumns([string]$Left, [string]$LeftColor, [string]$Right, [string]$RightColor, [int]$ColWidth) {
@@ -194,8 +273,14 @@ $state = @{
     phase = 'starting'
     lastError = $null
     lastHeartbeatUtc = $null
+    # True after the dashboard has started its main poll loop (watcher respawns while this stays true).
+    passPipelineActive = $false
+    watcherPid = 0
+    # True only in the brief window after a pass begins and before Watch-QCTrigger is spawned (avoids bogus "Idle").
+    awaitingWatcherSpawn = $false
     hasSeenPwScan = $false
     pwConnectOkSeen = $false
+    pwFoldersPreparedSeen = $false
     passCount = 0
     passStartedAtUtc = $null
     lastPassDurationMs = $null
@@ -216,6 +301,8 @@ $state = @{
     lastWorkerEvent = $null
     workers = @{}
     workerSlotMax = 0
+    # Updated each poll tick for status text (worker child processes still alive).
+    activeWorkerSlots = 0
     errors = New-Object System.Collections.Generic.List[object]
 }
 
@@ -250,6 +337,109 @@ function _State-SetScanContext([string]$FolderPath) {
     } catch { }
 }
 
+function _Test-HasPwWatchList([hashtable]$Cfg) {
+    if (-not $Cfg) { return $false }
+    try {
+        if (-not ($Cfg.ContainsKey('projectWise') -and $Cfg.projectWise)) { return $false }
+        $pw = $Cfg.projectWise
+        if (-not ($pw -is [hashtable])) { return $false }
+        return [bool]($pw.ContainsKey('watchList') -and $pw.watchList)
+    } catch {
+        return $false
+    }
+}
+
+function _Get-PwSessionIndicator([hashtable]$Cfg) {
+    if (-not (_Test-HasPwWatchList -Cfg $Cfg)) { return $null }
+    $pipe = $false
+    try { $pipe = [bool]$state.passPipelineActive } catch { $pipe = $false }
+    $alive = $false
+    try { $alive = [bool]$state.watcherAlive } catch { $alive = $false }
+    $ok = $false
+    try { $ok = [bool]$state.pwConnectOkSeen } catch { $ok = $false }
+    $pidTxt = ''
+    try { if ([int]$state.watcherPid -gt 0) { $pidTxt = (' pid=' + [int]$state.watcherPid) } } catch { }
+
+    if (-not $pipe -and -not $alive) {
+        return @{ text = ('NOT RUNNING (between passes)'); color = 'DarkGray' }
+    }
+    if ($alive -and -not $ok) {
+        return @{ text = ('CONNECTING' + $pidTxt); color = 'Yellow' }
+    }
+    if ($alive -and $ok) {
+        return @{ text = ('SESSION ACTIVE' + $pidTxt); color = 'Green' }
+    }
+    # Pipeline still draining after watcher exit — not an active PW API session.
+    return @{ text = ('INACTIVE (watcher ended' + $pidTxt + ')'); color = 'Red' }
+}
+
+function _Get-ActivityStatusText([hashtable]$Cfg) {
+    $hasPw = _Test-HasPwWatchList -Cfg $Cfg
+    $max = [Math]::Max(48, (_Get-TerminalWidth) - 4)
+
+    if ($state.lastError) { return _Trunc -Text ('ERROR: ' + [string]$state.lastError) -Max $max }
+
+    $awaitSpawn = $false
+    try { $awaitSpawn = [bool]$state.awaitingWatcherSpawn } catch { $awaitSpawn = $false }
+    if ($awaitSpawn) {
+        if ($hasPw) { return _Trunc -Text 'Spawning watcher; next step is ProjectWise connect…' -Max $max }
+        return _Trunc -Text 'Spawning file watcher…' -Max $max
+    }
+
+    $pipe = $false
+    try { $pipe = [bool]$state.passPipelineActive } catch { $pipe = $false }
+    $watcherAlive = $false
+    try { $watcherAlive = [bool]$state.watcherAlive } catch { $watcherAlive = $false }
+
+    $stage = ''
+    try { $stage = ([string]$state.currentScanStage).Trim() } catch { $stage = '' }
+    if ($stage -eq 'watch pass completed') { $stage = '' }
+
+    $pend = 0; $run = 0
+    try {
+        if ($state.queueStats -and $state.queueStats.states) {
+            $pend = [int]$state.queueStats.states.pending
+            $run = [int]$state.queueStats.states.running
+        }
+    } catch { }
+
+    $slots = 0
+    try { $slots = [int]$state.activeWorkerSlots } catch { $slots = 0 }
+
+    if ($pipe) {
+        if ($hasPw -and -not $watcherAlive) {
+            $busy = ($slots -gt 0) -or ($pend -gt 0) -or ($run -gt 0)
+            if ($busy) {
+                return _Trunc -Text ("Watcher pass finished; workers/queue active (workers={0} pend={1} run={2}); next watch pass starts automatically." -f $slots, $pend, $run) -Max $max
+            }
+            return _Trunc -Text ("Watcher pass finished; starting next watch pass (queue pend={0} run={1})…" -f $pend, $run) -Max $max
+        }
+        if ($stage -and $stage -ne 'watcher starting') {
+            return _Trunc -Text $stage -Max $max
+        }
+        if ($hasPw) {
+            if ($watcherAlive -and -not [bool]$state.pwConnectOkSeen) {
+                return _Trunc -Text 'ProjectWise: opening session (see _logs if this stalls)…' -Max $max
+            }
+            if ($watcherAlive -and [bool]$state.pwConnectOkSeen -and -not [bool]$state.pwFoldersPreparedSeen) {
+                return _Trunc -Text 'ProjectWise: building folder list from watchList…' -Max $max
+            }
+            if ($watcherAlive) {
+                return _Trunc -Text 'ProjectWise: scanning watch folders…' -Max $max
+            }
+        }
+        if ($watcherAlive) {
+            return _Trunc -Text ($(if ($stage) { $stage } else { 'Watcher running…' })) -Max $max
+        }
+        if ($slots -gt 0 -or $pend -gt 0 -or $run -gt 0) {
+            return _Trunc -Text ("Watcher pass finished; workers/queue active (workers={0} pend={1} run={2}); next watch pass starts automatically." -f $slots, $pend, $run) -Max $max
+        }
+        return _Trunc -Text ("Finishing pipeline (queue pend={0} run={1})…" -f $pend, $run) -Max $max
+    }
+
+    return _Trunc -Text 'Idle - ready for next pass' -Max $max
+}
+
 function _MaybeRefreshQueue([hashtable]$Cfg, [int]$MinIntervalMs = 1500) {
     try {
         $now = Get-Date
@@ -259,10 +449,16 @@ function _MaybeRefreshQueue([hashtable]$Cfg, [int]$MinIntervalMs = 1500) {
         }
         $stats = Get-QCQueueStats -Config $Cfg
         if ($stats.IsSuccess) { $state.queueStats = $stats.Data }
-        $recent = Get-QCRecentJobs -Config $Cfg -Limit ([Math]::Max(5, $RecentJobs))
+        # Fetch a larger window so each column can show the last N jobs of that type (queue API returns a single mixed list).
+        $recentLimit = [Math]::Max(80, [int]$RecentJobs * 20)
+        $recent = Get-QCRecentJobs -Config $Cfg -Limit $recentLimit
         if ($recent.IsSuccess) { $state.recentJobs = @($recent.Data.jobs) }
         $state.lastQueueRefreshUtc = (Get-Date).ToUniversalTime().ToString('o')
     } catch { }
+}
+
+function _Compute-PhaseText([hashtable]$Cfg) {
+    return (_Get-ActivityStatusText -Cfg $Cfg)
 }
 
 function _Render-Workers() {
@@ -301,17 +497,17 @@ function _Render-RecentJobsTwoCol([object[]]$Jobs, [int]$Limit) {
     $width = _Get-TerminalWidth
     $colWidth = [int][Math]::Max(44, [Math]::Floor(($width - 6) / 2))
 
-    $jobs = @($Jobs | Select-Object -First ($Limit * 2))
+    $jobs = @($Jobs)
     # Get-QCRecentJobs returns entries shaped like: @{ state; job; lastWriteTimeUtc } (job is nested).
-    $qcJobs = @($jobs | Where-Object { $_ -and $_.job -and ([string]$_.job.type) -ne 'STATUS_SET_GEN' } | Select-Object -First $Limit)
+    $qcJobs = @($jobs | Where-Object { $_ -and $_.job -and ([string]$_.job.type) -eq 'QC_PREPEND' } | Select-Object -First $Limit)
     $stJobs = @($jobs | Where-Object { $_ -and $_.job -and ([string]$_.job.type) -eq 'STATUS_SET_GEN' } | Select-Object -First $Limit)
 
     _Write-TwoColumns -Left 'QC (QC_PREPEND)' -LeftColor 'White' -Right 'Status (STATUS_SET_GEN)' -RightColor 'White' -ColWidth $colWidth
     for ($i = 0; $i -lt [Math]::Max($qcJobs.Count, $stJobs.Count); $i++) {
         $lJob = if ($i -lt $qcJobs.Count) { $qcJobs[$i] } else { $null }
         $rJob = if ($i -lt $stJobs.Count) { $stJobs[$i] } else { $null }
-        $lText = _FormatJobLine -Job $lJob -ColWidth $colWidth
-        $rText = _FormatJobLine -Job $rJob -ColWidth $colWidth
+        $lText = _Format-QCPrependJobLine -Entry $lJob -ColWidth $colWidth
+        $rText = _Format-StatusSetJobLine -Entry $rJob -ColWidth $colWidth
         $lColor = if ($lJob) { _ColorForState -State ([string]$lJob.state) } else { 'Gray' }
         $rColor = if ($rJob) { _ColorForState -State ([string]$rJob.state) } else { 'Gray' }
         _Write-TwoColumns -Left $lText -LeftColor $lColor -Right $rText -RightColor $rColor -ColWidth $colWidth
@@ -326,7 +522,31 @@ function _Render-Full([hashtable]$Cfg) {
 
     Write-Host ("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry) -ForegroundColor Cyan
     Write-Host ("Config: {0}" -f $AppSettingsPath) -ForegroundColor DarkGray
-    Write-Host ("Status: {0}" -f [string]$state.phase) -ForegroundColor Yellow
+    $phaseText = _Compute-PhaseText -Cfg $Cfg
+    Write-Host 'Status: ' -NoNewline -ForegroundColor Yellow
+    Write-Host $phaseText -NoNewline -ForegroundColor Yellow
+    if ($state.queueStats) {
+        $st = $state.queueStats.states
+        $p = [int]$st.pending; $ru = [int]$st.running; $su = [int]$st.succeeded; $fa = [int]$st.failed
+        $lk = [int]$state.queueStats.locks.count
+        Write-Host '     ' -NoNewline
+        Write-Host 'Pend ' -NoNewline -ForegroundColor DarkGray
+        Write-Host $p -NoNewline -ForegroundColor Yellow
+        Write-Host '  Run ' -NoNewline -ForegroundColor DarkGray
+        Write-Host $ru -NoNewline -ForegroundColor Cyan
+        Write-Host '  OK ' -NoNewline -ForegroundColor DarkGray
+        Write-Host $su -NoNewline -ForegroundColor Green
+        Write-Host '  Fail ' -NoNewline -ForegroundColor DarkGray
+        Write-Host $fa -NoNewline -ForegroundColor Red
+        Write-Host ('  Locks ' + $lk) -ForegroundColor DarkGray
+    } else {
+        Write-Host ''
+    }
+    $pwInd = _Get-PwSessionIndicator -Cfg $Cfg
+    if ($pwInd) {
+        Write-Host 'ProjectWise: ' -NoNewline -ForegroundColor DarkGray
+        Write-Host $pwInd.text -ForegroundColor $pwInd.color
+    }
     Write-Host ("Root:   {0}" -f $(if ($state.scanRoot) { $state.scanRoot } else { '-' })) -ForegroundColor DarkGray
     Write-Host ("Proj:   {0}" -f $(if ($state.scanProject) { $state.scanProject } else { '-' })) -ForegroundColor DarkGray
     Write-Host ("Path:   {0}" -f (_Trunc -Text ($(if ($state.scanPath) { $state.scanPath } else { '-' })) -Max 170)) -ForegroundColor DarkGray
@@ -354,19 +574,6 @@ function _Render-Full([hashtable]$Cfg) {
         Write-Host ("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max 170)) -ForegroundColor DarkGray
     }
     if ($state.lastHeartbeatUtc) { Write-Host ("Heartbeat: {0}" -f (_Format-UiTs -IsoOrNull ([string]$state.lastHeartbeatUtc))) -ForegroundColor DarkGray }
-    Write-Host ""
-
-    Write-Host "Queue" -ForegroundColor White
-    if ($state.queueStats) {
-        $st = $state.queueStats.states
-        _Draw-Bar -Label 'Pending'   -Value ([int]$st.pending)   -Color 'Yellow'
-        _Draw-Bar -Label 'Running'   -Value ([int]$st.running)   -Color 'Cyan'
-        _Draw-Bar -Label 'Succeeded' -Value ([int]$st.succeeded) -Color 'Green'
-        _Draw-Bar -Label 'Failed'    -Value ([int]$st.failed)    -Color 'Red'
-        Write-Host ("Locks: {0}" -f [int]$state.queueStats.locks.count) -ForegroundColor DarkGray
-    } else {
-        Write-Host "  (queue stats unavailable yet)" -ForegroundColor DarkGray
-    }
     Write-Host ""
 
     _Render-Workers
@@ -434,15 +641,6 @@ function _Get-WorkersConfig([hashtable]$Cfg) {
     return $w
 }
 
-function _Build-ArgLine([string]$ScriptPath, [string[]]$ScriptArgs) {
-    $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + @($ScriptArgs)
-    return (($childArgs | ForEach-Object {
-        $t = [string]$_
-        if ($t -match '[\s"]') { return ('"' + ($t -replace '"', '\\"') + '"') }
-        return $t
-    }) -join ' ')
-}
-
 function _Get-ChildLogDir() {
     # Persistent log dir under the queue root so logs survive child-process death.
     # Used to diagnose AV-induced kills where workers vanish without a failure record.
@@ -459,6 +657,23 @@ function _Get-ChildLogDir() {
     return $logDir
 }
 
+function _CmdLineEscapeDoubleQuotes([string]$Value) {
+    if ($null -eq $Value) { return '' }
+    return ([string]$Value).Replace('"', '""')
+}
+
+function _Append-CmdLineArg([System.Text.StringBuilder]$Sb, [string]$Value) {
+    if ($null -eq $Value) { return }
+    $s = [string]$Value
+    if ($s -match '[\s"]') {
+        [void]$Sb.Append('"')
+        [void]$Sb.Append((_CmdLineEscapeDoubleQuotes $s))
+        [void]$Sb.Append('"')
+    } else {
+        [void]$Sb.Append($s)
+    }
+}
+
 function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs) {
     # Persist child stdout/stderr under queue\_logs\ so we can read what a killed
     # process did/said even after the dashboard reaps it. Files are named with a
@@ -468,13 +683,23 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs) {
     $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss_fff')
     $stdoutPath = Join-Path $logDir ("${stamp}_${tag}.out.log")
     $stderrPath = Join-Path $logDir ("${stamp}_${tag}.err.log")
-    $argLine = _Build-ArgLine -ScriptPath $ScriptPath -ScriptArgs $ScriptArgs
-    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argLine -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    # Windows: Start-Process -ArgumentList @(...) joins arguments in a way that breaks paths
+    # containing spaces (e.g. OneDrive - TYPSA). Pass one ArgumentList string with cmd-style quoting.
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('-NoProfile -ExecutionPolicy Bypass -File ')
+    _Append-CmdLineArg -Sb $sb -Value $ScriptPath
+    foreach ($a in @($ScriptArgs)) {
+        [void]$sb.Append(' ')
+        _Append-CmdLineArg -Sb $sb -Value ([string]$a)
+    }
+    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $sb.ToString() -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     return @{
         process = $p
         stdoutPath = $stdoutPath
         stderrPath = $stderrPath
         lastStdoutLen = 0
+        # Incomplete tail of stdout (JSON split across reads) — kept until a full line arrives.
+        stdoutTail = ''
         lastHeartbeatAt = (Get-Date)
         scriptPath = $ScriptPath
     }
@@ -492,11 +717,34 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
 
     $cur = ''
     try { $cur = [string](Get-Content -LiteralPath $Child.stdoutPath -Raw -ErrorAction SilentlyContinue) } catch { $cur = '' }
+    if ($null -eq $Child.stdoutTail) { $Child.stdoutTail = '' }
+    if ($cur.Length -lt $Child.lastStdoutLen) {
+        $Child.lastStdoutLen = 0
+        $Child.stdoutTail = ''
+    }
     if ($cur.Length -gt $Child.lastStdoutLen) {
         $delta = $cur.Substring($Child.lastStdoutLen)
         $Child.lastStdoutLen = $cur.Length
+        $buffer = ([string]$Child.stdoutTail) + $delta
 
-        foreach ($line in ($delta -split "(`r`n|`n|`r)")) {
+        $lines = New-Object System.Collections.Generic.List[string]
+        $segStart = 0
+        for ($i = 0; $i -lt $buffer.Length; $i++) {
+            $ch = $buffer[$i]
+            if ($ch -eq "`n") {
+                $ln = $buffer.Substring($segStart, $i - $segStart)
+                if ($ln.Length -gt 0 -and $ln[$ln.Length - 1] -eq "`r") { $ln = $ln.Substring(0, $ln.Length - 1) }
+                $lines.Add($ln)
+                $segStart = $i + 1
+            }
+        }
+        if ($segStart -lt $buffer.Length) {
+            $Child.stdoutTail = $buffer.Substring($segStart)
+        } else {
+            $Child.stdoutTail = ''
+        }
+
+        foreach ($line in $lines) {
             $t = ($line -as [string]).Trim()
             if (-not $t) { continue }
             if ($t.StartsWith('{')) {
@@ -572,9 +820,16 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                         }
                     }
                     if ($o.code -eq 'WATCH_PW_CONNECT_OK') {
-                        $state.phase = 'Scanning folders...'
-                        $state.currentScanStage = 'connected; preparing folders'
+                        $state.currentScanStage = 'connected; preparing watch list'
                         $state.pwConnectOkSeen = $true
+                    }
+                    if ($o.code -eq 'WATCH_PW_ERROR') {
+                        $em = ''
+                        try { if ($o.data -and $o.data.errorMessage) { $em = [string]$o.data.errorMessage } } catch { }
+                        $state.currentScanStage = if ($em) { "ProjectWise watch error: $em" } else { 'ProjectWise watch error (see watcher log)' }
+                    }
+                    if ($o.code -eq 'WATCH_PW_FOLDERS') {
+                        $state.pwFoldersPreparedSeen = $true
                     }
                     if ($o.code -eq 'WATCH_PW_SCAN_START' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') { $state.phase = 'Scanning folders...' }
                     if ($o.code -eq 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS') {
@@ -584,7 +839,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             $inProg = $false
                             try { $inProg = [bool]$o.data.inProgress } catch { $inProg = $false }
                             if ($inProg) {
-                                $state.currentScanStage = if ($folder) { "listing discipline subfolders: $folder…" } else { 'listing discipline subfolders (Sheets)…' }
+                                $state.currentScanStage = if ($folder) { "listing discipline subfolders: $folder..." } else { 'listing discipline subfolders (Sheets)...' }
                             } elseif ($folder) {
                                 $cn = 0
                                 try { $cn = [int]$o.data.childCount } catch { $cn = 0 }
@@ -596,8 +851,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             $state.currentScanStage = 'listing discipline subfolders (Sheets)'
                         }
                     }
-                    if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.phase = 'Searching' }
-                    if ($o.code -eq 'WATCH_ACCEPTED') { $state.phase = 'Searching' }
+                    # (phase is derived in renderer; keep these events for stage/context only)
 
                     # Pass tracking + progress
                     if ($o.code -eq 'WATCH_START') {
@@ -608,6 +862,9 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                         $state.pwFolderTotal = 0
                         $state.pwFolderIndex = 0
                         $state.currentScanStage = 'watcher starting'
+                        # Fresh PW session indicators each pass so status line progresses Connect → Folders → Scan again.
+                        $state.pwConnectOkSeen = $false
+                        $state.pwFoldersPreparedSeen = $false
                         try { $state.recentScanFolders.Clear() } catch { }
                         # Do not override phase here; watcher may still be connecting.
                     }
@@ -676,67 +933,125 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
     }
 }
 
-# Singleton guard: refuse to start if another dashboard is already running. Multiple
-# concurrent dashboards multiply the watcher + worker process count and overwhelm
-# Fortinet (which then kills processes mid-job, leaving orphan running\ jobs and
-# empty output dirs). Use scripts\Stop-QCPipeline.ps1 to clean up stale instances.
-$bootCfg = _Read-AppSettings -Path $AppSettingsPath
-$queueRoot = $null
+# Singleton guard + boot config: any failure here used to kill the process before the
+# main loop, which makes a double-clicked console window vanish in ~1 second.
 try {
-    if ($bootCfg.queue -and $bootCfg.queue.rootDir) { $queueRoot = [string]$bootCfg.queue.rootDir }
-    elseif ($bootCfg.queue -and $bootCfg.queue.root) { $queueRoot = [string]$bootCfg.queue.root }
-} catch { }
-if (-not $queueRoot) { $queueRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'queue' }
-if (-not (Test-Path -LiteralPath $queueRoot)) { New-Item -ItemType Directory -Path $queueRoot -Force | Out-Null }
-
-$dashLock = Join-Path $queueRoot '_dashboard.lock'
-$alreadyRunning = $false
-if (Test-Path -LiteralPath $dashLock) {
+    $bootCfg = _Read-AppSettings -Path $AppSettingsPath
+    $queueRoot = $null
     try {
-        $pl = Get-Content -LiteralPath $dashLock -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
-        if ($pl -and $pl.pid) {
-            $existing = Get-Process -Id ([int]$pl.pid) -ErrorAction SilentlyContinue
-            if ($existing) { $alreadyRunning = $true }
-        }
+        if ($bootCfg.queue -and $bootCfg.queue.rootDir) { $queueRoot = [string]$bootCfg.queue.rootDir }
+        elseif ($bootCfg.queue -and $bootCfg.queue.root) { $queueRoot = [string]$bootCfg.queue.root }
     } catch { }
-}
-if ($alreadyRunning) {
-    Write-Host "Another dashboard is already running (see $dashLock)." -ForegroundColor Red
-    Write-Host "Stop it first with: .\scripts\Stop-QCPipeline.ps1" -ForegroundColor Yellow
-    exit 2
-}
-@{ pid = $PID; startedAtUtc = ([DateTime]::UtcNow.ToString('o')); host = $env:COMPUTERNAME } |
-    ConvertTo-Json -Compress |
-    Set-Content -LiteralPath $dashLock -Encoding utf8 -Force
+    if (-not $queueRoot) { $queueRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'queue' }
+    if (-not (Test-Path -LiteralPath $queueRoot)) { New-Item -ItemType Directory -Path $queueRoot -Force | Out-Null }
 
-# Best-effort cleanup of the singleton lock when this dashboard exits.
-$script:_QCDashLockPath = $dashLock
-[System.AppDomain]::CurrentDomain.add_ProcessExit({
-    try { if ($script:_QCDashLockPath -and (Test-Path -LiteralPath $script:_QCDashLockPath)) { Remove-Item -LiteralPath $script:_QCDashLockPath -Force -ErrorAction SilentlyContinue } } catch { }
-})
-
-# One-time stale-job recovery: requeue or fail-over any orphan running\ jobs from a
-# prior crashed dashboard/worker session. Safe (per-job lock files used).
-# Also clear any stale watcher-active flag left over from older builds that used
-# the global gate; current build processes STATUS_SET_GEN as soon as enqueued.
-try {
-    $rec = Recover-QCStaleJobs -Config $bootCfg
-    if ($rec -and $rec.IsSuccess -and $rec.Data) {
-        $state.lastWorkerEvent = [pscustomobject]@{
-            ts = (Get-Date).ToUniversalTime().ToString('o')
-            level = 'Information'
-            code = 'WORKER_RECOVERY'
-            message = ("Stale recovery: requeued={0} failed={1}" -f [int]$rec.Data.recoveredToPending, [int]$rec.Data.recoveredToFailed)
-            data = $rec.Data
+    # Singleton guard: refuse to start if another dashboard is already running. Multiple
+    # concurrent dashboards multiply the watcher + worker process count and overwhelm
+    # Fortinet (which then kills processes mid-job, leaving orphan running\ jobs and
+    # empty output dirs). Use scripts\Stop-QCPipeline.ps1 to clean up stale instances.
+    $dashLock = Join-Path $queueRoot '_dashboard.lock'
+    $alreadyRunning = $false
+    if (-not $IgnoreSingletonLock.IsPresent) {
+        if (Test-Path -LiteralPath $dashLock) {
+            try {
+                $pl = Get-Content -LiteralPath $dashLock -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($pl -and $pl.pid) {
+                    # IMPORTANT: PID reuse is common on Windows. Validate that the PID is
+                    # actually a PowerShell process running THIS dashboard script, not
+                    # an unrelated process that happened to reuse the same PID.
+                    $existing = Get-Process -Id ([int]$pl.pid) -ErrorAction SilentlyContinue
+                    if (-not $existing) {
+                        # Stale lock (process gone); remove so we can start.
+                        try { Remove-Item -LiteralPath $dashLock -Force -ErrorAction SilentlyContinue } catch { }
+                    } else {
+                        $isPw = ($existing.ProcessName -in @('powershell', 'pwsh'))
+                        $cmdOk = $false
+                        if ($isPw) {
+                            try {
+                                $p2 = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f ([int]$pl.pid)) -ErrorAction SilentlyContinue
+                                if ($p2 -and $p2.CommandLine) {
+                                    $cmd = [string]$p2.CommandLine
+                                    if ($cmd -match '(?i)Start-QCPipelineDashboard\.ps1') { $cmdOk = $true }
+                                }
+                            } catch { }
+                        }
+                        if ($isPw -and $cmdOk) {
+                            $alreadyRunning = $true
+                        } elseif ($isPw) {
+                            # Live PowerShell but we could not confirm the command line (WMI/CIM flakey): assume it is the
+                            # dashboard instance rather than deleting the lock and risking two writers to the same queue.
+                            $alreadyRunning = $true
+                        } else {
+                            # PID reuse: lock points at a non-PowerShell process; treat lock as stale.
+                            try { Remove-Item -LiteralPath $dashLock -Force -ErrorAction SilentlyContinue } catch { }
+                        }
+                    }
+                } else {
+                    try { Remove-Item -LiteralPath $dashLock -Force -ErrorAction SilentlyContinue } catch { }
+                }
+            } catch {
+                try { Remove-Item -LiteralPath $dashLock -Force -ErrorAction SilentlyContinue } catch { }
+            }
         }
+    } else {
+        try { if (Test-Path -LiteralPath $dashLock) { Remove-Item -LiteralPath $dashLock -Force -ErrorAction SilentlyContinue } } catch { }
     }
-    Clear-QCWatcherActive -Config $bootCfg | Out-Null
-} catch { }
+    if ($alreadyRunning) {
+        Write-Host "Another dashboard is already running (see $dashLock)." -ForegroundColor Red
+        Write-Host "Stop it first with: .\scripts\Stop-QCPipeline.ps1" -ForegroundColor Yellow
+        Write-Host "Or override with: -IgnoreSingletonLock (not recommended if a real instance is running)" -ForegroundColor Yellow
+        _Pause-IfInteractiveConsole
+        exit 2
+    }
+    @{
+        pid          = $PID
+        startedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+        host         = $env:COMPUTERNAME
+        scriptPath   = $MyInvocation.MyCommand.Path
+        queueRoot    = $queueRoot
+    } |
+        ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $dashLock -Encoding utf8 -Force
+
+    # Best-effort cleanup of the singleton lock when this dashboard exits.
+    $script:_QCDashLockPath = $dashLock
+    [System.AppDomain]::CurrentDomain.add_ProcessExit({
+        try { if ($script:_QCDashLockPath -and (Test-Path -LiteralPath $script:_QCDashLockPath)) { Remove-Item -LiteralPath $script:_QCDashLockPath -Force -ErrorAction SilentlyContinue } } catch { }
+    })
+
+    # One-time stale-job recovery: requeue or fail-over any orphan running\ jobs from a
+    # prior crashed dashboard/worker session. Safe (per-job lock files used).
+    # Also clear any stale watcher-active flag left over from older builds that used
+    # the global gate; current build processes STATUS_SET_GEN as soon as enqueued.
+    try {
+        $rec = Recover-QCStaleJobs -Config $bootCfg
+        if ($rec -and $rec.IsSuccess -and $rec.Data) {
+            $state.lastWorkerEvent = [pscustomobject]@{
+                ts = (Get-Date).ToUniversalTime().ToString('o')
+                level = 'Information'
+                code = 'WORKER_RECOVERY'
+                message = ("Stale recovery: requeued={0} failed={1}" -f [int]$rec.Data.recoveredToPending, [int]$rec.Data.recoveredToFailed)
+                data = $rec.Data
+            }
+        }
+        Clear-QCWatcherActive -Config $bootCfg | Out-Null
+    } catch { }
+} catch {
+    Write-Host ''
+    Write-Host 'Dashboard startup failed (before main loop):' -ForegroundColor Red
+    Write-Host ("  {0}" -f $_.Exception.Message) -ForegroundColor Red
+    try { if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray } } catch { }
+    _Pause-IfInteractiveConsole
+    exit 1
+}
 
 $workerSlots = @{}
 $nextWorkerIndex = 1
 $lastSpawnAt = [DateTime]::MinValue
 $lastRecoveryAt = [DateTime]::UtcNow
+$watcherChild = $null
+# Reconcile-on-first-watcher only (same as prior single outer-pass behavior).
+$watcherReconcileNext = -not $SkipReconcileStatusSetsFirst.IsPresent
 
 function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
     $xArgs = @(
@@ -774,8 +1089,7 @@ while ($true) {
         $wc = _Get-WorkersConfig -Cfg $cfg
         $state.workerSlotMax = [int]$wc.maxParallel
 
-        $hasPw = $false
-        try { $hasPw = ($cfg.ContainsKey('projectWise') -and $cfg.projectWise -and $cfg.projectWise.ContainsKey('watchList') -and $cfg.projectWise.watchList) } catch { $hasPw = $false }
+        $hasPw = _Test-HasPwWatchList -Cfg $cfg
 
         if ($hasPw -and (-not $state.scanPath -or -not $state.scanRoot)) {
             try {
@@ -793,122 +1107,139 @@ while ($true) {
             } catch { }
         }
 
-        if ($hasPw -and -not [bool]$state.hasSeenPwScan -and -not $state.passStartedAtUtc) {
-            $state.phase = 'Connecting to ProjectWise...'
-        } elseif (-not $hasPw) {
-            $state.phase = 'Searching'
-        } elseif ($state.phase -match 'Connecting') {
-            $state.phase = 'Scanning folders...'
-        }
+        # Phase is derived in _Compute-PhaseText to avoid flicker from competing writers.
         $state.lastError = $null
 
-        _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 0
-        _Render-Full -Cfg $cfg
-
-        $wArgs = @('-AppSettingsPath', $AppSettingsPath)
-        if ([bool]$cfg.dryRun) { $wArgs += '-DryRun' }
-
-        $watcherChild = _Start-Child -ScriptPath $watcher -ScriptArgs $wArgs
-
-        # Unified poll loop: watcher and worker pool run concurrently.
-        # STATUS_SET_GEN and QC_PREPEND are both processed as soon as they're
-        # enqueued. Per-folder STATUS_SET_GEN jobs only land in the queue after the
-        # watcher has finished analyzing that folder, so picking them up immediately
-        # is safe. Continue until watcher exited AND pool empty AND queue drained.
-        while ($true) {
-            $watcherAlive = $false
-            try { $watcherAlive = -not $watcherChild.process.HasExited } catch { $watcherAlive = $false }
-            if ($watcherAlive) {
-                _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher'
+        # --- Watcher: when the previous run exits, wait (inter-pass throttle) and spawn another.
+        # Workers keep running; we no longer wait for an empty queue before the next watch pass.
+        if ($watcherChild) {
+            $watcherProcExited = $false
+            try {
+                $null = $watcherChild.process.Refresh()
+                $watcherProcExited = [bool]$watcherChild.process.HasExited
+            } catch {
+                $watcherProcExited = $true
             }
-
-            $deadLabels = @()
-            foreach ($lbl in @($workerSlots.Keys)) {
-                $wch = $workerSlots[$lbl]
-                $alive = $false
-                try { $alive = -not $wch.process.HasExited } catch { $alive = $false }
-                if ($alive) {
-                    _Poll-Child -Child $wch -Cfg $cfg -Kind 'worker'
-                } else {
-                    try { _Poll-Child -Child $wch -Cfg $cfg -Kind 'worker' } catch { }
-                    _Stop-Child -Child $wch
-                    # Drop reaped worker from the panel; only currently-spawned workers
-                    # are shown. Sequential labels (W1, W2, ...) still appear in logs for
-                    # cross-reference.
-                    if ($state.workers.ContainsKey($lbl)) {
-                        $state.workers.Remove($lbl) | Out-Null
-                    }
-                    $deadLabels += $lbl
-                }
-            }
-            foreach ($lbl in $deadLabels) { $workerSlots.Remove($lbl) | Out-Null }
-
-            _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 1500
-
-            # Periodic stale-job recovery: every 30s, look for orphaned running\ jobs whose
-            # owner-PID is dead (or has no lock file) and immediately requeue them. This
-            # unsticks the queue without requiring a dashboard restart.
-            if (([DateTime]::UtcNow - $lastRecoveryAt).TotalSeconds -ge 30) {
-                $lastRecoveryAt = [DateTime]::UtcNow
+            if ($watcherProcExited) {
+                try { _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher' } catch { }
+                $exit = 0
                 try {
-                    $rec = Recover-QCStaleJobs -Config $cfg
-                    if ($rec -and $rec.IsSuccess -and $rec.Data) {
-                        $orph = 0; $req = 0; $fai = 0
-                        try { $orph = [int]$rec.Data.recoveredOrphan } catch { }
-                        try { $req  = [int]$rec.Data.recoveredToPending } catch { }
-                        try { $fai  = [int]$rec.Data.recoveredToFailed } catch { }
-                        if (($orph + $req + $fai) -gt 0) {
-                            $state.lastWorkerEvent = [pscustomobject]@{
-                                ts = (Get-Date).ToUniversalTime().ToString('o')
-                                level = 'Information'
-                                code = 'WORKER_RECOVERY'
-                                message = ("Stale recovery: orphans={0} requeued={1} failed={2}" -f $orph, $req, $fai)
-                                data = $rec.Data
-                            }
-                        }
-                    }
-                } catch { }
-            }
-
-            $pending = 0
-            $running = 0
-            try { $pending = [int]$state.queueStats.states.pending } catch { $pending = 0 }
-            try { $running = [int]$state.queueStats.states.running } catch { $running = 0 }
-
-            if ($workerSlots.Count -lt [int]$wc.maxParallel -and ($pending -gt 0)) {
-                $now = Get-Date
-                if (($now - $lastSpawnAt).TotalMilliseconds -ge [int]$wc.spawnStaggerMs) {
-                    $label = "W$nextWorkerIndex"
-                    $nextWorkerIndex++
-                    try {
-                        $newWorker = _Spawn-Worker -Cfg $cfg -WC $wc -Label $label
-                        $workerSlots[$label] = $newWorker
-                        $lastSpawnAt = $now
-                    } catch {
-                        $state.lastError = "Failed to spawn worker '$label': $($_.Exception.Message)"
-                    }
+                    if ($watcherChild.process) { $exit = [int]$watcherChild.process.ExitCode }
+                } catch { $exit = 1 }
+                _Stop-Child -Child $watcherChild
+                if ($exit -ne 0) {
+                    $watcherChild = $null
+                    throw "Watcher failed with exit code $exit"
                 }
+                $watcherChild = $null
+                $state.watcherAlive = $false
+                $state.watcherPid = 0
+                if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
+                elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
             }
-
-            $watcherDone = -not $watcherAlive
-            if ($watcherDone -and $workerSlots.Count -eq 0 -and $pending -le 0 -and $running -le 0) {
-                break
-            }
-
-            Start-Sleep -Milliseconds 200
         }
 
-        $exit = 0
-        try { $exit = [int]$watcherChild.process.ExitCode } catch { $exit = 0 }
-        _Stop-Child -Child $watcherChild
-        if ($exit -ne 0) { throw "Watcher failed with exit code $exit" }
+        if (-not $watcherChild) {
+            $state.awaitingWatcherSpawn = $true
+            $state.watcherAlive = $false
+            $state.watcherPid = 0
+            $state.currentScanStage = ''
+            $state.pwConnectOkSeen = $false
+            $state.pwFoldersPreparedSeen = $false
+            _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 0
+            _Render-Full -Cfg $cfg
 
-        $state.phase = 'Idle — ready for next pass'
-        _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 0
-        _Render-Full -Cfg $cfg
-        if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
-        elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
+            $wArgs = @('-AppSettingsPath', $AppSettingsPath)
+            if ([bool]$cfg.dryRun) { $wArgs += '-DryRun' }
+            if ($watcherReconcileNext) {
+                $wArgs += '-ReconcileStatusSetsFirst'
+                $watcherReconcileNext = $false
+            }
+
+            $watcherChild = _Start-Child -ScriptPath $watcher -ScriptArgs $wArgs
+            $state.awaitingWatcherSpawn = $false
+            $state.watcherAlive = $true
+            $state.passPipelineActive = $true
+            try { $state.watcherPid = [int]$watcherChild.process.Id } catch { $state.watcherPid = 0 }
+            _Render-Full -Cfg $cfg
+        }
+
+        $watcherAlive = $false
+        try { $watcherAlive = -not $watcherChild.process.HasExited } catch { $watcherAlive = $false }
+        $state.watcherAlive = $watcherAlive
+        if ($watcherAlive) {
+            _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher'
+        } else {
+            try { _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher' } catch { }
+        }
+
+        $state.activeWorkerSlots = $workerSlots.Count
+
+        $deadLabels = @()
+        foreach ($lbl in @($workerSlots.Keys)) {
+            $wch = $workerSlots[$lbl]
+            $alive = $false
+            try { $alive = -not $wch.process.HasExited } catch { $alive = $false }
+            if ($alive) {
+                _Poll-Child -Child $wch -Cfg $cfg -Kind 'worker'
+            } else {
+                try { _Poll-Child -Child $wch -Cfg $cfg -Kind 'worker' } catch { }
+                _Stop-Child -Child $wch
+                if ($state.workers.ContainsKey($lbl)) {
+                    $state.workers.Remove($lbl) | Out-Null
+                }
+                $deadLabels += $lbl
+            }
+        }
+        foreach ($lbl in $deadLabels) { $workerSlots.Remove($lbl) | Out-Null }
+
+        _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 1500
+
+        if (([DateTime]::UtcNow - $lastRecoveryAt).TotalSeconds -ge 30) {
+            $lastRecoveryAt = [DateTime]::UtcNow
+            try {
+                $rec = Recover-QCStaleJobs -Config $cfg
+                if ($rec -and $rec.IsSuccess -and $rec.Data) {
+                    $orph = 0; $req = 0; $fai = 0
+                    try { $orph = [int]$rec.Data.recoveredOrphan } catch { }
+                    try { $req  = [int]$rec.Data.recoveredToPending } catch { }
+                    try { $fai  = [int]$rec.Data.recoveredToFailed } catch { }
+                    if (($orph + $req + $fai) -gt 0) {
+                        $state.lastWorkerEvent = [pscustomobject]@{
+                            ts = (Get-Date).ToUniversalTime().ToString('o')
+                            level = 'Information'
+                            code = 'WORKER_RECOVERY'
+                            message = ("Stale recovery: orphans={0} requeued={1} failed={2}" -f $orph, $req, $fai)
+                            data = $rec.Data
+                        }
+                    }
+                }
+            } catch { }
+        }
+
+        $pending = 0
+        $running = 0
+        try { $pending = [int]$state.queueStats.states.pending } catch { $pending = 0 }
+        try { $running = [int]$state.queueStats.states.running } catch { $running = 0 }
+
+        if ($workerSlots.Count -lt [int]$wc.maxParallel -and ($pending -gt 0)) {
+            $now = Get-Date
+            if (($now - $lastSpawnAt).TotalMilliseconds -ge [int]$wc.spawnStaggerMs) {
+                $label = "W$nextWorkerIndex"
+                $nextWorkerIndex++
+                try {
+                    $newWorker = _Spawn-Worker -Cfg $cfg -WC $wc -Label $label
+                    $workerSlots[$label] = $newWorker
+                    $lastSpawnAt = $now
+                } catch {
+                    $state.lastError = "Failed to spawn worker '$label': $($_.Exception.Message)"
+                }
+            }
+        }
+
+        Start-Sleep -Milliseconds 200
     } catch {
+        $state.passPipelineActive = $false
         $state.lastError = [string]$_.Exception.Message
         $state.phase = 'ERROR (will retry)'
         try {
@@ -917,7 +1248,12 @@ while ($true) {
             $cfg = @{ dryRun = $false }
         }
         _Render-Full -Cfg $cfg
-        if ($PollSeconds -gt 0) { Start-Sleep -Seconds ([Math]::Max(2, $PollSeconds)) }
+        if ($PollSeconds -gt 0) {
+            Start-Sleep -Seconds ([Math]::Max(2, $PollSeconds))
+        } else {
+            # Default PollSeconds=0 otherwise tight-spins on repeated failures (watcher exit, spawn errors, etc.).
+            Start-Sleep -Milliseconds 1500
+        }
     }
 }
 

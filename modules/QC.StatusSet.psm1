@@ -184,6 +184,25 @@ function _SSS-ParseIsoDateTime([object]$Value) {
     }
 }
 
+function _SSS-NormalizeFileSize([object]$Value) {
+    if ($null -eq $Value) { return '' }
+    try {
+        if ($Value -is [int] -or $Value -is [long]) { return ([int64]$Value).ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+        if ($Value -is [double] -or $Value -is [decimal]) { return ([int64][math]::Round([double]$Value)).ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+        $s = ([string]$Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($s)) { return '' }
+        # PW sometimes returns sizes formatted as "12,345" or "12345.0"
+        $s2 = ($s -replace '[,\\s]', '')
+        $n = 0L
+        if ([int64]::TryParse($s2, [ref]$n)) { return $n.ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+        $d = 0.0
+        if ([double]::TryParse($s2, [ref]$d)) { return ([int64][math]::Round($d)).ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+        return $s2
+    } catch {
+        return ''
+    }
+}
+
 function _SSS-Sha256TextHex([string]$Text) {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -562,6 +581,7 @@ function Get-StatusSetPWFolderState {
         $modIso = if ($mod) { $mod.ToString('o') } else { '' }
         $sz = _SSS-PWGetProp -Obj $p -Name 'FileSize'
         if (-not $sz) { $sz = _SSS-PWGetProp -Obj $p -Name 'Size' }
+        $sz = _SSS-NormalizeFileSize $sz
         $dirKey = ([string]$FolderPath).ToLowerInvariant()
         $pairedSheets += @{ stem = $stemKey; dir = $dirKey; pdf = @{ name=$pn; lastWriteTimeUtc=$modIso; length=$sz } }
         $lines += (@($stemKey, ([string]$sz), $modIso, $dirKey) -join '|')
@@ -1390,22 +1410,22 @@ function _SSS-GetPairedSheetSignature {
         } catch { }
     }
     function _PartDoc([object]$Doc) {
-        $pl = ''; $pm = ''; $pid = ''
+        $pl = ''; $pm = ''; $docId = ''
         if ($Doc -is [hashtable]) {
             if ($Doc.ContainsKey('length')) { $pl = [string]$Doc['length'] }
             if ($Doc.ContainsKey('lastWriteTimeUtc')) { $pm = [string]$Doc['lastWriteTimeUtc'] }
-            if ($Doc.ContainsKey('documentId')) { $pid = [string]$Doc['documentId'] }
+            if ($Doc.ContainsKey('documentId')) { $docId = [string]$Doc['documentId'] }
         } elseif ($Doc -and $Doc.PSObject) {
             $pl = [string]($Doc | Select-Object -ExpandProperty length -ErrorAction SilentlyContinue)
             $pm = [string]($Doc | Select-Object -ExpandProperty lastWriteTimeUtc -ErrorAction SilentlyContinue)
-            $pid = [string]($Doc | Select-Object -ExpandProperty documentId -ErrorAction SilentlyContinue)
+            $docId = [string]($Doc | Select-Object -ExpandProperty documentId -ErrorAction SilentlyContinue)
         }
-        return @{ pl = $pl; pm = $pm; pid = $pid }
+        return @{ pl = $pl; pm = $pm; docId = $docId }
     }
     $pp = _PartDoc -Doc $pdf
     $dp = _PartDoc -Doc $dgn
-    if (-not [string]::IsNullOrWhiteSpace($pp.pid) -and -not [string]::IsNullOrWhiteSpace($dp.pid)) {
-        return ($pp.pid + '|' + $pp.pl + '|' + $dp.pid + '|' + $dp.pl)
+    if (-not [string]::IsNullOrWhiteSpace($pp.docId) -and -not [string]::IsNullOrWhiteSpace($dp.docId)) {
+        return ($pp.docId + '|' + $pp.pl + '|' + $dp.docId + '|' + $dp.pl)
     }
     return ($pp.pl + '|' + $pp.pm + '|' + $dp.pl + '|' + $dp.pm)
 }
@@ -1419,8 +1439,8 @@ function _SSS-SheetPdfTimestampMatches([object]$ManifestRow, [object]$CurrentRow
     elseif ($CurrentRow.PSObject) { try { $cp = $CurrentRow.pdf } catch { } }
     if (-not $mp -or -not $cp) { return $false }
     function _Len([object]$Pdf) {
-        if ($Pdf -is [hashtable] -and $Pdf.ContainsKey('length')) { return [string]$Pdf['length'] }
-        if ($Pdf.PSObject) { return [string]($Pdf | Select-Object -ExpandProperty length -ErrorAction SilentlyContinue) }
+        if ($Pdf -is [hashtable] -and $Pdf.ContainsKey('length')) { return (_SSS-NormalizeFileSize $Pdf['length']) }
+        if ($Pdf.PSObject) { return (_SSS-NormalizeFileSize ($Pdf | Select-Object -ExpandProperty length -ErrorAction SilentlyContinue)) }
         return ''
     }
     function _Mod([object]$Pdf) {
@@ -1430,7 +1450,15 @@ function _SSS-SheetPdfTimestampMatches([object]$ManifestRow, [object]$CurrentRow
     }
     $l1 = _Len $mp
     $l2 = _Len $cp
-    if ($l1 -ne $l2 -or [string]::IsNullOrWhiteSpace($l1)) { return $false }
+    # Some PW APIs/configs do not reliably return file length, causing length-only drift and
+    # forcing a full re-export every time. If either side lacks length, fall back to timestamp-only.
+    if ([string]::IsNullOrWhiteSpace($l1) -or [string]::IsNullOrWhiteSpace($l2)) {
+        $t1 = _SSS-ParseIsoDateTime -Value (_Mod $mp)
+        $t2 = _SSS-ParseIsoDateTime -Value (_Mod $cp)
+        if ($null -eq $t1 -or $null -eq $t2) { return $false }
+        return ($t1 -eq $t2)
+    }
+    if ($l1 -ne $l2) { return $false }
     $t1 = _SSS-ParseIsoDateTime -Value (_Mod $mp)
     $t2 = _SSS-ParseIsoDateTime -Value (_Mod $cp)
     if ($null -eq $t1 -or $null -eq $t2) { return $false }

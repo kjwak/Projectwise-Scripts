@@ -156,8 +156,6 @@ function Get-PWImmediateChildFolders {
     }
 }
 
-Export-ModuleMember -Function *
-
 # PW.Connection.psm1
 # Responsibility: ProjectWise connection health and reconnect logic wrappers.
 
@@ -201,4 +199,12 @@ function Connect-PWIfNeeded {
     )
 }
 
-Export-ModuleMember -Function *
+Export-ModuleMember -Function @(
+    # Public API (used by watcher/worker/status-set)
+    'Get-PWCredentialFromFile',
+    'Connect-PW',
+    'Disconnect-PW',
+    'Get-PWImmediateChildFolders',
+    'Test-PWLoginHealth',
+    'Connect-PWIfNeeded'
+)
