@@ -2279,19 +2279,23 @@ function Sync-StatusSetWorkspaceToPw {
     }
 
     function _SSS-TryImportPWModules {
-        # Reconcile can run in -NoProfile child PowerShell on servers/services.
-        # Import pwps_dab/pwps explicitly before checking for cmdlets.
-        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        # Reconcile needs pwps_dab cmdlets (Get-PWDocumentsBySearch/Update-PWDocumentFile/New-PWDocument).
+        # A process can have Open-PWConnection (pwps) loaded but still be missing pwps_dab.
+        if (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue) { return $true }
+
+        # Prefer pwps_dab first (it may auto-load pwps as a dependency).
         foreach ($name in @('pwps_dab', 'pwps')) {
             try { Import-Module $name -Force -ErrorAction Stop | Out-Null } catch { }
-            if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+            if (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue) { return $true }
         }
+
+        # Common explicit path (Bentley install) if modules aren't in PSModulePath.
         $pwpsPath = 'C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1'
         if (Test-Path -LiteralPath $pwpsPath) {
             try { Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null } catch { }
-            if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
         }
-        return $false
+        # After pwps.psd1 import, pwps_dab may still not be present; we still check the cmdlet.
+        return [bool](Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)
     }
 
     $null = _SSS-TryImportPWModules
