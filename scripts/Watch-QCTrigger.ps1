@@ -119,48 +119,6 @@ function _PW-GetDocLastModifiedUtcIso([object]$Doc) {
     return ''
 }
 
-function _PW-EnumeratePwFolderPathCandidates([string]$InternalFolderPath) {
-    # ProjectWise folder APIs on some datasources are path-case sensitive; manifests and
-    # reconcile logs often use lowercase (e.g. documents\azdot\cadd\sheets) while appsettings
-    # may use mixed case. Try configured casing plus a full-string lowercase variant per candidate.
-    $internal = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
-    if ([string]::IsNullOrWhiteSpace($internal)) { return @() }
-    $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $internal
-    if ([string]::IsNullOrWhiteSpace($apiPath)) { return @() }
-
-    $raw = New-Object System.Collections.Generic.List[string]
-    if ($internal -match '^(?i)Documents\\') { [void]$raw.Add($internal) }
-    [void]$raw.Add($apiPath)
-    if ($internal -notmatch '^(?i)Documents\\') { [void]$raw.Add(('Documents\' + $apiPath)) }
-
-    $uniq = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    foreach ($p in ($raw | Select-Object -Unique)) {
-        if ([string]::IsNullOrWhiteSpace($p)) { continue }
-        [void]$uniq.Add($p)
-        [void]$uniq.Add($p.ToLowerInvariant())
-    }
-    return @($uniq)
-}
-
-function _PW-TryResolvePwFolderPath([string]$InternalFolderPath) {
-    # Returns the first folder-path string that successfully opens in PW, or $null.
-    $internal = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
-    if ([string]::IsNullOrWhiteSpace($internal)) { return $null }
-    foreach ($p in (_PW-EnumeratePwFolderPathCandidates -InternalFolderPath $internal)) {
-        if ([string]::IsNullOrWhiteSpace($p)) { continue }
-        try {
-            $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
-            return $p
-        } catch {
-            try {
-                $f = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-                if ($f) { return $p }
-            } catch { }
-        }
-    }
-    return $null
-}
-
 function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSuffix, [string]$DatasourceName, [int]$ProjectDepth = 1) {
     # Discovers Sheets folders under a root by walking N levels of "project folders".
     # Depth=1 (default) matches legacy behavior: Root\<Project>\SheetsSuffix
@@ -179,83 +137,67 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
     $rootDocs = $rootPathRaw
     if ($rootDocs -notmatch '^(?i)Documents\\') { $rootDocs = ('Documents\' + $rootDocs.TrimStart('\')) }
 
-    $rootDocsResolved = _PW-TryResolvePwFolderPath -InternalFolderPath $rootDocs
-    if ($rootDocsResolved) { $rootDocs = $rootDocsResolved }
-
     function _PwFolderExists([string]$DocsFolderPath) {
-        $internal = ($DocsFolderPath -as [string]).Trim().TrimEnd('\')
-        if ([string]::IsNullOrWhiteSpace($internal)) { return $false }
-        return ($null -ne (_PW-TryResolvePwFolderPath -InternalFolderPath $internal))
+        # Best-effort: returns $true if we can view the folder, otherwise $false.
+        # Some PW cmdlet builds accept paths without "Documents\"; others require it. Try both.
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
+        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
+            try {
+                $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                return $true
+            } catch {
+                try {
+                    $f = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    if ($f) { return $true }
+                } catch { }
+            }
+        }
+        return $false
     }
 
     function _ListChildNames([string]$DocsFolderPath) {
-        $internal = ($DocsFolderPath -as [string]).Trim().TrimEnd('\')
-        if ([string]::IsNullOrWhiteSpace($internal)) { return @() }
-        $candidates = @(_PW-EnumeratePwFolderPathCandidates -InternalFolderPath $internal)
-        if ($candidates.Count -eq 0) { return @() }
-        $paths = New-Object System.Collections.Generic.List[string]
+        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { return @() }
+        $names = @()
 
-        foreach ($p in $candidates) {
-            if ([string]::IsNullOrWhiteSpace($p)) { continue }
-            $view = $null
+        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
             try {
                 $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                 if ($view.Children) {
                     foreach ($c in $view.Children) {
-                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                        if ($fp) {
-                            $canon = _PW-CanonicalDocumentsFolderPath -FolderPathProperty ([string]$fp)
-                            if ($canon) { [void]$paths.Add($canon.TrimEnd('\')); continue }
-                        }
                         $name = _PW-GetProp -Obj $c -Name 'Name'
                         if (-not $name) {
-                            $fp2 = _PW-GetProp -Obj $c -Name 'FolderPath'
-                            if ($fp2) { $name = [System.IO.Path]::GetFileName(([string]$fp2).TrimEnd('\')) }
+                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
                         }
-                        if ($name) { [void]$paths.Add((($p.TrimEnd('\') + '\' + [string]$name).TrimEnd('\'))) }
+                        if ($name) { $names += [string]$name }
                     }
                 }
-                if ($paths.Count -eq 0 -and $view.Folders) {
+                if ($names.Count -eq 0 -and $view.Folders) {
                     foreach ($f in $view.Folders) {
-                        $fp = _PW-GetProp -Obj $f -Name 'FolderPath'
-                        if ($fp) {
-                            $canon = _PW-CanonicalDocumentsFolderPath -FolderPathProperty ([string]$fp)
-                            if ($canon) { [void]$paths.Add($canon.TrimEnd('\')); continue }
-                        }
                         $name = _PW-GetProp -Obj $f -Name 'Name'
-                        if ($name) { [void]$paths.Add((($p.TrimEnd('\') + '\' + [string]$name).TrimEnd('\'))) }
+                        if ($name) { $names += [string]$name }
                     }
                 }
             } catch {
-                $view = $null
-            }
-
-            # Some PW builds return an openable folder view with no Children/Folders populated; only
-            # Get-PWFoldersImmediateChildren returns subfolders. Previously we only called it in catch,
-            # so a "successful" empty view yielded discoveryCount 0 everywhere.
-            if ($paths.Count -eq 0) {
                 try {
                     $children = Get-PWFoldersImmediateChildren -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                     foreach ($c in @($children)) {
-                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                        if ($fp) {
-                            $canon = _PW-CanonicalDocumentsFolderPath -FolderPathProperty ([string]$fp)
-                            if ($canon) { [void]$paths.Add($canon.TrimEnd('\')); continue }
-                        }
                         $name = _PW-GetProp -Obj $c -Name 'Name'
                         if (-not $name) {
-                            $fp2 = _PW-GetProp -Obj $c -Name 'FolderPath'
-                            if ($fp2) { $name = [System.IO.Path]::GetFileName(([string]$fp2).TrimEnd('\')) }
+                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
                         }
-                        if ($name) { [void]$paths.Add((($p.TrimEnd('\') + '\' + [string]$name).TrimEnd('\'))) }
+                        if ($name) { $names += [string]$name }
                     }
                 } catch { }
             }
 
-            if ($paths.Count -gt 0) { break }
+            if ($names.Count -gt 0) { break }
         }
 
-        return @($paths | Where-Object { $_ } | Select-Object -Unique)
+        return @($names | Where-Object { $_ } | Select-Object -Unique)
     }
 
     # Two modes:
@@ -264,9 +206,7 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
     #  2) Otherwise, treat RootPath as a *portfolio root* and discover project folders
     #     under it (legacy), then append SheetsSuffix.
     $rootSheets = (($rootDocs.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
-    $rootSheetsResolved = _PW-TryResolvePwFolderPath -InternalFolderPath $rootSheets
-    if ($rootSheetsResolved) {
-        $rootSheets = $rootSheetsResolved
+    if (_PwFolderExists -DocsFolderPath $rootSheets) {
         # In "project has a Sheets folder" mode, interpret depth as the overall depth
         # from the project root:
         #   depth=1 => <project>\CADD\Sheets
@@ -282,7 +222,7 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
             $next = @()
             foreach ($p in @($current)) {
                 foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
-                    if (-not [string]::IsNullOrWhiteSpace($n)) { $next += $n.TrimEnd('\') }
+                    $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
                 }
             }
             $current = @($next | Select-Object -Unique)
@@ -304,7 +244,7 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
         $next = @()
         foreach ($p in @($levelProjects)) {
             foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
-                if (-not [string]::IsNullOrWhiteSpace($n)) { $next += $n.TrimEnd('\') }
+                $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
             }
         }
         $levelProjects = @($next | Select-Object -Unique)
@@ -554,9 +494,6 @@ if ($statusSetRules.Count -ge 0) {
 
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
-                _Log -Level 'Information' -Code 'WATCH_PW_WATCHLIST_ROOTS' -Message 'ProjectWise watchList.roots discovered in config (pre-expansion).' -Data @{
-                    rootsCount = [int]@($watchList.roots).Count
-                }
                 foreach ($r in @($watchList.roots)) {
                     $rh = _ToHashtable $r
                     if (-not ($rh -is [hashtable])) { continue }
@@ -571,14 +508,6 @@ if ($statusSetRules.Count -ge 0) {
                     $enableStatusSet = $false
                     if ($rh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$rh.enableStatusSet } catch { $enableStatusSet = $false } }
                     $discovered = @(_PW-DiscoverSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
-                    _Log -Level 'Information' -Code 'WATCH_PW_ROOT_SHEETS_DISCOVERY' -Message 'Resolved Sheets folder candidates for a watchList root.' -Data @{
-                        rootPath = $rootPath
-                        sheetsPathFromProject = $suffix
-                        projectDepth = $projectDepth
-                        discoveredCount = [int]@($discovered).Count
-                        enableQcPrepend = $enableQcPrepend
-                        enableStatusSet = $enableStatusSet
-                    }
                     foreach ($d in $discovered) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
                         $d['EnableStatusSet'] = $enableStatusSet
@@ -607,11 +536,6 @@ if ($statusSetRules.Count -ge 0) {
                         EnableStatusSet = $enableStatusSet
                     })
                 }
-            }
-
-            _Log -Level 'Information' -Code 'WATCH_PW_FOLDERS_PREEXPAND' -Message 'ProjectWise watch folder list before oneLevelDeep expansion.' -Data @{
-                folderCount = [int]$pwFolders.Count
-                sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
 
             # Expand oneLevelDeep for explicit folders
