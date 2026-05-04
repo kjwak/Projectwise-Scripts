@@ -514,6 +514,9 @@ if ($statusSetRules.Count -ge 0) {
 
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
+                _Log -Level 'Information' -Code 'WATCH_PW_WATCHLIST_ROOTS' -Message 'ProjectWise watchList.roots discovered in config (pre-expansion).' -Data @{
+                    rootsCount = [int]@($watchList.roots).Count
+                }
                 foreach ($r in @($watchList.roots)) {
                     $rh = _ToHashtable $r
                     if (-not ($rh -is [hashtable])) { continue }
@@ -528,6 +531,14 @@ if ($statusSetRules.Count -ge 0) {
                     $enableStatusSet = $false
                     if ($rh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$rh.enableStatusSet } catch { $enableStatusSet = $false } }
                     $discovered = @(_PW-DiscoverSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
+                    _Log -Level 'Information' -Code 'WATCH_PW_ROOT_SHEETS_DISCOVERY' -Message 'Resolved Sheets folder candidates for a watchList root.' -Data @{
+                        rootPath = $rootPath
+                        sheetsPathFromProject = $suffix
+                        projectDepth = $projectDepth
+                        discoveredCount = [int]@($discovered).Count
+                        enableQcPrepend = $enableQcPrepend
+                        enableStatusSet = $enableStatusSet
+                    }
                     foreach ($d in $discovered) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
                         $d['EnableStatusSet'] = $enableStatusSet
@@ -556,6 +567,11 @@ if ($statusSetRules.Count -ge 0) {
                         EnableStatusSet = $enableStatusSet
                     })
                 }
+            }
+
+            _Log -Level 'Information' -Code 'WATCH_PW_FOLDERS_PREEXPAND' -Message 'ProjectWise watch folder list before oneLevelDeep expansion.' -Data @{
+                folderCount = [int]$pwFolders.Count
+                sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
 
             # Expand oneLevelDeep for explicit folders
