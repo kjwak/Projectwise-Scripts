@@ -181,6 +181,7 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
 
         foreach ($p in ($candidates | Select-Object -Unique)) {
             if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            $view = $null
             try {
                 $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                 if ($view.Children) {
