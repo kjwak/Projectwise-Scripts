@@ -139,57 +139,64 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
 
     function _PwFolderExists([string]$DocsFolderPath) {
         # Best-effort: returns $true if we can view the folder, otherwise $false.
+        # Some PW cmdlet builds accept paths without "Documents\"; others require it. Try both.
         $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
         if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
-        try {
-            $null = Get-PWFolderView -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
-            return $true
-        } catch {
+        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
             try {
-                $f = Get-PWFolders -FolderPath $apiPath -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-                return [bool]$f
+                $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                return $true
             } catch {
-                return $false
+                try {
+                    $f = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    if ($f) { return $true }
+                } catch { }
             }
         }
+        return $false
     }
 
     function _ListChildNames([string]$DocsFolderPath) {
         $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { return @() }
         $names = @()
-        try {
-            $view = Get-PWFolderView -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
-            if ($view.Children) {
-                foreach ($c in $view.Children) {
-                    $name = _PW-GetProp -Obj $c -Name 'Name'
-                    if (-not $name) {
-                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                        if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
-                    }
-                    if ($name) { $names += [string]$name }
-                }
-            }
-            if ($names.Count -eq 0 -and $view.Folders) {
-                foreach ($f in $view.Folders) {
-                    $name = _PW-GetProp -Obj $f -Name 'Name'
-                    if ($name) { $names += [string]$name }
-                }
-            }
-        } catch {
+
+        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
             try {
-                $children = Get-PWFoldersImmediateChildren -FolderPath $apiPath -WarningAction SilentlyContinue -ErrorAction Stop
-                foreach ($c in @($children)) {
-                    $name = _PW-GetProp -Obj $c -Name 'Name'
-                    if (-not $name) {
-                        $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                        if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                if ($view.Children) {
+                    foreach ($c in $view.Children) {
+                        $name = _PW-GetProp -Obj $c -Name 'Name'
+                        if (-not $name) {
+                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                        }
+                        if ($name) { $names += [string]$name }
                     }
-                    if ($name) { $names += [string]$name }
+                }
+                if ($names.Count -eq 0 -and $view.Folders) {
+                    foreach ($f in $view.Folders) {
+                        $name = _PW-GetProp -Obj $f -Name 'Name'
+                        if ($name) { $names += [string]$name }
+                    }
                 }
             } catch {
-                return @()
+                try {
+                    $children = Get-PWFoldersImmediateChildren -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                    foreach ($c in @($children)) {
+                        $name = _PW-GetProp -Obj $c -Name 'Name'
+                        if (-not $name) {
+                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
+                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                        }
+                        if ($name) { $names += [string]$name }
+                    }
+                } catch { }
             }
+
+            if ($names.Count -gt 0) { break }
         }
+
         return @($names | Where-Object { $_ } | Select-Object -Unique)
     }
 
