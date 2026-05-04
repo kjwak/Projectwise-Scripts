@@ -227,6 +227,13 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
                     }
                 }
             } catch {
+                $view = $null
+            }
+
+            # Some PW builds return an openable folder view with no Children/Folders populated; only
+            # Get-PWFoldersImmediateChildren returns subfolders. Previously we only called it in catch,
+            # so a "successful" empty view yielded discoveryCount 0 everywhere.
+            if ($paths.Count -eq 0) {
                 try {
                     $children = Get-PWFoldersImmediateChildren -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
                     foreach ($c in @($children)) {
