@@ -674,7 +674,7 @@ function _Append-CmdLineArg([System.Text.StringBuilder]$Sb, [string]$Value) {
     }
 }
 
-function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs) {
+function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) {
     # Persist child stdout/stderr under queue\_logs\ so we can read what a killed
     # process did/said even after the dashboard reaps it. Files are named with a
     # timestamp + script tag + PID-placeholder; PID is rewritten after spawn.
@@ -686,7 +686,9 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs) {
     # Windows: Start-Process -ArgumentList @(...) joins arguments in a way that breaks paths
     # containing spaces (e.g. OneDrive - TYPSA). Pass one ArgumentList string with cmd-style quoting.
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append('-NoProfile -ExecutionPolicy Bypass -File ')
+    [void]$sb.Append('-NoProfile -ExecutionPolicy Bypass ')
+    if ($Mta.IsPresent) { [void]$sb.Append('-MTA ') }
+    [void]$sb.Append('-File ')
     _Append-CmdLineArg -Sb $sb -Value $ScriptPath
     foreach ($a in @($ScriptArgs)) {
         [void]$sb.Append(' ')
@@ -1062,7 +1064,7 @@ function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
         '-WorkerLabel', $Label
     )
     if ([bool]$Cfg.dryRun) { $xArgs += '-DryRun' }
-    $newChild = _Start-Child -ScriptPath $worker -ScriptArgs $xArgs
+    $newChild = _Start-Child -ScriptPath $worker -ScriptArgs $xArgs -Mta
     $newChild['label'] = $Label
     if (-not $state.workers.ContainsKey($Label)) {
         $state.workers[$Label] = @{
@@ -1156,7 +1158,7 @@ while ($true) {
                 $watcherReconcileNext = $false
             }
 
-            $watcherChild = _Start-Child -ScriptPath $watcher -ScriptArgs $wArgs
+            $watcherChild = _Start-Child -ScriptPath $watcher -ScriptArgs $wArgs -Mta
             $state.awaitingWatcherSpawn = $false
             $state.watcherAlive = $true
             $state.passPipelineActive = $true

@@ -3,6 +3,43 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
+function _PWC-TryImportPWModules {
+    <#
+    .SYNOPSIS
+    Best-effort loader for ProjectWise PowerShell cmdlets (pwps / pwps_dab).
+    .DESCRIPTION
+    Dashboard/watcher runs with -NoProfile on some hosts (servers, services), so modules that
+    used to be present via user profile are missing. Try to import modules explicitly and
+    provide actionable diagnostics if unavailable.
+    #>
+    [CmdletBinding()]
+    param()
+
+    # If Open-PWConnection is already available, we're good.
+    if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+
+    $imported = $false
+    foreach ($name in @('pwps_dab','pwps')) {
+        try {
+            Import-Module $name -Force -ErrorAction Stop | Out-Null
+            $imported = $true
+        } catch { }
+        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+    }
+
+    # Common explicit path (Bentley install) if modules aren't in PSModulePath.
+    $pwpsPath = 'C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1'
+    if (Test-Path -LiteralPath $pwpsPath) {
+        try {
+            Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null
+            $imported = $true
+        } catch { }
+        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+    }
+
+    return $false
+}
+
 function _PWC-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
     if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }
@@ -48,9 +85,10 @@ function Connect-PW {
         [pscredential]$Credential
     )
 
-    $cmd = Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue
-    if (-not $cmd) {
-        return New-QCFailureResult -Code 'PW_MISSING_MODULE' -Message 'Open-PWConnection not found. Run from ProjectWise PowerShell (pwps) so pwps_dab is loaded.' -Data @{}
+    if (-not (_PWC-TryImportPWModules)) {
+        $psmp = $env:PSModulePath
+        $msg = 'ProjectWise cmdlets not loaded (Open-PWConnection missing). Import pwps_dab/pwps or run under ProjectWise PowerShell. If pwps_dab is installed but still missing, ensure the watcher/worker runs in MTA (pwps_dab requires -MTA).'
+        return New-QCFailureResult -Code 'PW_MISSING_MODULE' -Message $msg -Data @{ psModulePath = $psmp }
     }
 
     try {
@@ -65,9 +103,10 @@ function Disconnect-PW {
     [CmdletBinding()]
     param()
 
-    $cmd = Get-Command -Name Close-PWConnection -ErrorAction SilentlyContinue
-    if (-not $cmd) {
-        return New-QCFailureResult -Code 'PW_MISSING_MODULE' -Message 'Close-PWConnection not found. Run from ProjectWise PowerShell (pwps) so pwps_dab is loaded.' -Data @{}
+    if (-not (_PWC-TryImportPWModules)) {
+        $psmp = $env:PSModulePath
+        $msg = 'ProjectWise cmdlets not loaded (Close-PWConnection missing). Import pwps_dab/pwps or run under ProjectWise PowerShell. If pwps_dab is installed but still missing, ensure the watcher/worker runs in MTA (pwps_dab requires -MTA).'
+        return New-QCFailureResult -Code 'PW_MISSING_MODULE' -Message $msg -Data @{ psModulePath = $psmp }
     }
 
     try {
@@ -94,6 +133,10 @@ function Get-PWImmediateChildFolders {
         [Parameter(Mandatory)]
         [string]$FolderPath
     )
+
+    if (-not (_PWC-TryImportPWModules)) {
+        return @()
+    }
 
     function _PwcPwProp([object]$Obj, [string]$Name) {
         try {
