@@ -78,6 +78,84 @@ function Disconnect-PW {
     }
 }
 
+function Get-PWImmediateChildFolders {
+    <#
+    .SYNOPSIS
+    Returns immediate child folder objects under a ProjectWise folder (read-only).
+
+    .DESCRIPTION
+    pwps_dab varies by path: Get-PWFoldersImmediateChildren often returns nothing under CADD\Sheets while
+    Get-PWFolderView lists discipline subfolders. This aligns oneLevelDeep expansion with Sheets discovery.
+
+    FolderPath MUST use the pw cmdlet convention: without a leading Documents\ segment.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    function _PwcPwProp([object]$Obj, [string]$Name) {
+        try {
+            if ($null -eq $Obj -or -not $Obj.PSObject -or -not $Obj.PSObject.Properties[$Name]) { return $null }
+            return $Obj.$Name
+        } catch { return $null }
+    }
+
+    $normalized = (($FolderPath -as [string]).Trim()).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return @()
+    }
+
+    $collected = [System.Collections.Generic.List[object]]::new()
+
+    $view = $null
+    try {
+        $view = Get-PWFolderView -FolderPath $normalized -ErrorAction Stop
+    } catch {
+        try {
+            $folderObj = Get-PWFolders -FolderPath $normalized -JustOne -ErrorAction SilentlyContinue
+            if ($folderObj) {
+                $view = $folderObj | Get-PWFolderView -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+
+    if ($view -and $view.Folders) {
+        foreach ($f in @($view.Folders)) {
+            if ($f) { [void]$collected.Add($f) }
+        }
+    }
+
+    if ($collected.Count -eq 0 -and $view -and $view.Children) {
+        foreach ($c in @($view.Children)) {
+            if (-not $c) { continue }
+            $docId = _PwcPwProp $c 'DocumentID'
+            if (-not ([string]::IsNullOrWhiteSpace([string]$docId))) {
+                continue
+            }
+            if (-not (_PwcPwProp $c 'FolderPath')) {
+                continue
+            }
+            [void]$collected.Add($c)
+        }
+    }
+
+    if ($collected.Count -gt 0) {
+        return @($collected.ToArray())
+    }
+
+    try {
+        return @(Get-PWFoldersImmediateChildren -FolderPath $normalized -WarningAction SilentlyContinue -ErrorAction Stop)
+    } catch {
+        try {
+            return @(Get-PWFoldersImmediateChildren -FolderPath $normalized -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+        } catch {
+            return @()
+        }
+    }
+}
+
 Export-ModuleMember -Function *
 
 # PW.Connection.psm1

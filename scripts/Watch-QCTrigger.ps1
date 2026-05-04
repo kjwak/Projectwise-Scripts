@@ -165,6 +165,21 @@ function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSu
     return $list
 }
 
+# Watch list keeps "Documents\..." paths; PW cmdlets expect the same logical path WITHOUT a leading Documents\ segment.
+# Also collapse accidental "Documents\Documents\..." (e.g. oneLevelDeep merge when PW already returns FolderPath with Documents).
+function _PW-ToPwCmdletFolderPath([string]$InternalFolderPath) {
+    $s = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
+    while ($s -match '^(?i)Documents\\') { $s = $s -replace '^(?i)Documents\\', '' }
+    return $s
+}
+
+function _PW-CanonicalDocumentsFolderPath([string]$FolderPathProperty) {
+    $t = ($FolderPathProperty -as [string]).Trim().TrimStart('\').TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+    if ($t -match '^(?i)documents\\') { return $t }
+    return ('Documents\' + $t)
+}
+
 function _PW-ListDocsInFolder([string]$FolderPath) {
     # Read-only doc listing; mirror legacy prepend_qc_on_trigger.ps1 behavior so Description is populated.
     try {
@@ -430,13 +445,31 @@ if ($statusSetRules.Count -ge 0) {
                 try {
                     if ($e.OneLevelDeep) {
                         $fp = [string]$e.FolderPath
-                        $kids = @(Get-PWFoldersImmediateChildren -FolderPath ($fp -replace '^Documents\\', '') -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+                        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $fp
+                        _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Querying ProjectWise for discipline subfolders under Sheets.' -Data @{
+                            folder = $fp
+                            inProgress = $true
+                        }
+                        $kids = @(Get-PWImmediateChildFolders -FolderPath $apiPath)
+                        _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
+                            folder = $fp
+                            inProgress = $false
+                            childCount = [int]@($kids).Count
+                        }
+                        if (@($kids).Count -eq 0) {
+                            _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; only this folder will be scanned (normal for flat Sheets or empty areas).' -Data @{
+                                folder = $fp
+                                apiPath = $apiPath
+                            }
+                        }
                         foreach ($k in $kids) {
                             $kp = _PW-GetProp -Obj $k -Name 'FolderPath'
                             if ($kp) {
+                                $canonical = _PW-CanonicalDocumentsFolderPath -FolderPathProperty ([string]$kp)
+                                if (-not $canonical) { continue }
                                 $expanded += @{
                                     DatasourceName = $ds
-                                    FolderPath = ('Documents\' + ([string]$kp).TrimStart('\'))
+                                    FolderPath = $canonical
                                     OneLevelDeep = $false
                                     EnableQcPrepend = [bool]$e.EnableQcPrepend
                                     EnableStatusSet = [bool]$e.EnableStatusSet
@@ -444,7 +477,11 @@ if ($statusSetRules.Count -ge 0) {
                             }
                         }
                     }
-                } catch { }
+                } catch {
+                    _Log -Level 'Warning' -Code 'WATCH_PW_ONELEVEL_EXPAND_FAILED' -Message ('oneLevelDeep expansion failed: ' + $_.Exception.Message) -Data @{
+                        folder = [string]$e.FolderPath
+                    }
+                }
             }
             $pwFolders = $expanded
             _Log -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
@@ -493,7 +530,7 @@ if ($statusSetRules.Count -ge 0) {
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                         }
-                        $state = Get-StatusSetPWFolderState -FolderPath ($fp -replace '^Documents\\', '') -OneLevelDeep:$oneLevelDeep
+                        $state = Get-StatusSetPWFolderState -FolderPath (_PW-ToPwCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
                         _Log -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
@@ -588,7 +625,7 @@ if ($statusSetRules.Count -ge 0) {
                         _Log -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
                             folder = $fp
                         }
-                        $docs = _PW-ListDocsInFolder -FolderPath ($fp -replace '^Documents\\', '')
+                        $docs = _PW-ListDocsInFolder -FolderPath (_PW-ToPwCmdletFolderPath -InternalFolderPath $fp)
                         $pdfDocs = @()
                         $withDesc = @()
                         $tagged = @()

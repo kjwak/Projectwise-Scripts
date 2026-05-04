@@ -195,6 +195,7 @@ $state = @{
     lastError = $null
     lastHeartbeatUtc = $null
     hasSeenPwScan = $false
+    pwConnectOkSeen = $false
     passCount = 0
     passStartedAtUtc = $null
     lastPassDurationMs = $null
@@ -562,14 +563,39 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                     # Phase transitions (keep it simple + monotonic enough to avoid "stuck connecting")
                     if (($o.code -as [string]) -match '^WATCH_PW_') { $state.hasSeenPwScan = $true }
                     if ($o.code -eq 'WATCH_PW_CONNECT_START') {
-                        $state.phase = 'Connecting to ProjectWise...'
-                        $state.currentScanStage = 'connecting to ProjectWise'
+                        if ([bool]$state.pwConnectOkSeen) {
+                            $state.phase = 'Scanning folders...'
+                            $state.currentScanStage = 'establishing PW session'
+                        } else {
+                            $state.phase = 'Connecting to ProjectWise...'
+                            $state.currentScanStage = 'connecting to ProjectWise'
+                        }
                     }
                     if ($o.code -eq 'WATCH_PW_CONNECT_OK') {
                         $state.phase = 'Scanning folders...'
                         $state.currentScanStage = 'connected; preparing folders'
+                        $state.pwConnectOkSeen = $true
                     }
                     if ($o.code -eq 'WATCH_PW_SCAN_START' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') { $state.phase = 'Scanning folders...' }
+                    if ($o.code -eq 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS') {
+                        $state.phase = 'Scanning folders...'
+                        try {
+                            $folder = if ($o.data.folder) { [string]$o.data.folder } else { '' }
+                            $inProg = $false
+                            try { $inProg = [bool]$o.data.inProgress } catch { $inProg = $false }
+                            if ($inProg) {
+                                $state.currentScanStage = if ($folder) { "listing discipline subfolders: $folder…" } else { 'listing discipline subfolders (Sheets)…' }
+                            } elseif ($folder) {
+                                $cn = 0
+                                try { $cn = [int]$o.data.childCount } catch { $cn = 0 }
+                                $state.currentScanStage = "listing discipline subfolders: $folder ($cn found)"
+                            } else {
+                                $state.currentScanStage = 'listing discipline subfolders (Sheets)'
+                            }
+                        } catch {
+                            $state.currentScanStage = 'listing discipline subfolders (Sheets)'
+                        }
+                    }
                     if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.phase = 'Searching' }
                     if ($o.code -eq 'WATCH_ACCEPTED') { $state.phase = 'Searching' }
 
@@ -772,7 +798,7 @@ while ($true) {
         } elseif (-not $hasPw) {
             $state.phase = 'Searching'
         } elseif ($state.phase -match 'Connecting') {
-            $state.phase = 'Searching'
+            $state.phase = 'Scanning folders...'
         }
         $state.lastError = $null
 
@@ -877,10 +903,11 @@ while ($true) {
         _Stop-Child -Child $watcherChild
         if ($exit -ne 0) { throw "Watcher failed with exit code $exit" }
 
-        $state.phase = 'Searching'
+        $state.phase = 'Idle — ready for next pass'
         _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 0
         _Render-Full -Cfg $cfg
         if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
+        elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
     } catch {
         $state.lastError = [string]$_.Exception.Message
         $state.phase = 'ERROR (will retry)'

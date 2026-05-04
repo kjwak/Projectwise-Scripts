@@ -17,6 +17,7 @@ Native StatusSet implementation that matches legacy/combine_status_set.ps1 metho
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
 
 $script:StatusSetManifestSchemaVersion = 2
 $script:StatusSetOutputName = '_StatusSet.pdf'
@@ -516,7 +517,7 @@ function Get-StatusSetPWFolderState {
     $paths = @([string]$FolderPath)
     if ($OneLevelDeep) {
         try {
-            $kids = @(Get-PWFoldersImmediateChildren -FolderPath $FolderPath -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+            $kids = @(Get-PWImmediateChildFolders -FolderPath $FolderPath)
             foreach ($k in $kids) {
                 $kp = _SSS-PWGetProp -Obj $k -Name 'FolderPath'
                 if ($kp) { $paths += [string]$kp }
@@ -1064,7 +1065,7 @@ function _SSS-BuildPWStatusSetState {
     $paths = @([string]$FolderPath)
     if ($OneLevelDeep) {
         try {
-            $kids = @(Get-PWFoldersImmediateChildren -FolderPath $FolderPath -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
+            $kids = @(Get-PWImmediateChildFolders -FolderPath $FolderPath)
             foreach ($k in $kids) {
                 $kp = _SSS-PWGetProp -Obj $k -Name 'FolderPath'
                 if ($kp) { $paths += [string]$kp }

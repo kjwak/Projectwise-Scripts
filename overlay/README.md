@@ -1,3 +1,18 @@
+# `overlay/` — QC overlay implementation (Python)
+
+This folder contains the Python implementation used to generate the QC overlay output.
+
+## How it’s used
+
+- The pipeline can run an overlay step via the packaged executable:
+  - `dist/qc_overlay_prepend/qc_overlay_prepend.exe`
+- `modules/QC.Processors.psm1` builds an argument list and launches the overlay exe when `qcPrepend.enableOverlay = true`.
+
+## Build artifacts
+
+- Built outputs and dependencies live under `dist/` (runtime) and `build/` (intermediate).
+- The PyInstaller build definition is `qc_overlay_prepend.spec` in the repo root.
+
 # PDF Overlay – Old/New Comparison Layers
 
 Creates a PDF with three toggleable layers: **Old** (red), **New** (green), **Current** (original color). Uses PyMuPDF + pikepdf for vector preservation and OCG support.
