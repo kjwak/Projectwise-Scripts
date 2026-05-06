@@ -32,33 +32,16 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1')   -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
 
-function _ToHashtable($v) {
-    if ($null -eq $v) { return @{} }
-    if ($v -is [hashtable]) { return $v }
-    if ($v.PSObject) { $h = @{}; foreach ($p in $v.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }; return $h }
-    return $v
-}
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
+if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
+$config = [hashtable]$cfgRes.Data.config
 
-function _Log([string]$Level, [string]$Code, [string]$Message, [hashtable]$Data) {
-    if (-not $Data) { $Data = @{} }
-    $payload = @{
-        ts = [DateTime]::UtcNow.ToString('o')
-        level = $Level; code = $Code; message = $Message; data = $Data
-    } | ConvertTo-Json -Depth 12 -Compress
-    Write-Host $payload
-}
-
-if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
-    throw "appsettings.json not found: $AppSettingsPath"
-}
-$cfgRaw = Get-Content -LiteralPath $AppSettingsPath -Raw | ConvertFrom-Json
-$config = [hashtable](_ToHashtable $cfgRaw)
-
-_Log 'Information' 'RECONCILE_START' 'Status set reconciliation started.' @{
+Write-QCJsonLog 'Information' 'RECONCILE_START' 'Status set reconciliation started.' @{
     appSettingsPath = $AppSettingsPath
     dryRun          = [bool]$DryRun.IsPresent
 }
@@ -76,7 +59,7 @@ if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
 
 $conn = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
 if (-not $conn.IsSuccess) { throw ($conn.Code + ': ' + $conn.Message) }
-_Log 'Information' 'RECONCILE_PW_CONNECT_OK' 'Connected to ProjectWise.' @{ datasourceName = $ds }
+Write-QCJsonLog 'Information' 'RECONCILE_PW_CONNECT_OK' 'Connected to ProjectWise.' @{ datasourceName = $ds }
 
 try {
     if ($DryRun.IsPresent) {
@@ -93,14 +76,14 @@ try {
         $walk = Get-StatusSetWorkspaceManifests -LocalRoot $localRoot -ManifestFileName $manifestName -StatusSetPdfName $statusPdfName
         if (-not $walk.IsSuccess) { throw ($walk.Code + ': ' + $walk.Message) }
         foreach ($rec in @($walk.Data.records)) {
-            _Log 'Information' 'RECONCILE_DRYRUN_CANDIDATE' 'Would reconcile.' @{
+            Write-QCJsonLog 'Information' 'RECONCILE_DRYRUN_CANDIDATE' 'Would reconcile.' @{
                 workspaceDir = [string]$rec.workspaceDir
                 pwFolder     = [string]$rec.pwPath
                 outputPdf    = [string]$rec.outputPdf
                 localMtime   = if ($rec.outputPdfLastWriteUtc) { ([datetime]$rec.outputPdfLastWriteUtc).ToString('o') } else { $null }
             }
         }
-        _Log 'Information' 'RECONCILE_DRYRUN_DONE' 'Dry-run reconciliation completed.' @{
+        Write-QCJsonLog 'Information' 'RECONCILE_DRYRUN_DONE' 'Dry-run reconciliation completed.' @{
             considered = [int]$walk.Data.recordCount
             skipped    = [int]$walk.Data.skipCount
         }
@@ -109,7 +92,7 @@ try {
             param($evt)
             $level = if ([bool]$evt.isSuccess) { 'Information' } else { 'Warning' }
             $code = "RECONCILE_$([string]$evt.code -replace '^STATUS_SET_RECONCILE_','' )"
-            _Log $level $code ([string]$evt.message) @{
+            Write-QCJsonLog $level $code ([string]$evt.message) @{
                 workspaceDir = [string]$evt.workspaceDir
                 pwFolder     = [string]$evt.pwFolder
                 sheetsFolder = [string]$evt.sheetsFolder
@@ -119,7 +102,7 @@ try {
         }
         $res = Invoke-StatusSetReconcile -Config $config -LogCallback $cb
         if (-not $res.IsSuccess) { throw ($res.Code + ': ' + $res.Message) }
-        _Log 'Information' 'RECONCILE_DONE' 'Status set reconciliation completed.' @{
+        Write-QCJsonLog 'Information' 'RECONCILE_DONE' 'Status set reconciliation completed.' @{
             counts   = $res.Data.counts
             failures = $res.Data.failures
             skipped  = $res.Data.skipped

@@ -76,34 +76,8 @@ if (-not $NoDashboard) {
 }
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
-
-function _ToHashtable([object]$Value) {
-  if ($null -eq $Value) { return $null }
-  if ($Value -is [string]) { return $Value }
-  if ($Value -is [System.ValueType]) { return $Value }
-  if ($Value -is [System.Collections.IDictionary]) { return $Value }
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-    $out = @()
-    foreach ($i in $Value) { $out += (_ToHashtable $i) }
-    return $out
-  }
-  if ($Value.PSObject -and $Value.PSObject.Properties) {
-    $h = @{}
-    foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }
-    return $h
-  }
-  return $Value
-}
-
-function _Read-AppSettings([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "appsettings.json not found: $Path"
-  }
-  $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-  $obj = $raw | ConvertFrom-Json -ErrorAction Stop
-  return [hashtable](_ToHashtable $obj)
-}
 
 $watcher = Join-Path $PSScriptRoot 'Watch-QCTrigger.ps1'
 $worker = Join-Path $PSScriptRoot 'Run-QCProcessor.ps1'
@@ -114,7 +88,7 @@ while ($true) {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # 2) process queue until empty (bounded per poll)
-  $cfg = _Read-AppSettings -Path $AppSettingsPath
+  $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath
   $processed = 0
   while ($processed -lt $MaxJobsPerPoll) {
     $stats = Get-QCQueueStats -Config $cfg

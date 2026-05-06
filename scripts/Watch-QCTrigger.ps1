@@ -40,11 +40,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
@@ -52,324 +55,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
 
-function _Sha256FileHex([string]$Path) {
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try {
-            $hash = $sha.ComputeHash($fs)
-        } finally {
-            $fs.Dispose()
-        }
-    } finally {
-        $sha.Dispose()
-    }
-    return -join ($hash | ForEach-Object { $_.ToString('x2') })
-}
-
-function _Sha256TextHex([string]$Text) {
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $hash = $sha.ComputeHash($bytes)
-    } finally {
-        $sha.Dispose()
-    }
-    return -join ($hash | ForEach-Object { $_.ToString('x2') })
-}
-
-function _PW-GetProp([object]$Obj, [string]$Name) {
-    try {
-        if ($null -eq $Obj) { return $null }
-        if ($Obj.PSObject -and $Obj.PSObject.Properties[$Name]) { return $Obj.$Name }
-    } catch { }
-    return $null
-}
-
-function _PW-GetDocName([object]$Doc) {
-    foreach ($n in @('Name', 'DocumentName')) {
-        $v = _PW-GetProp -Obj $Doc -Name $n
-        if ($v) { return [string]$v }
-    }
-    return ''
-}
-
-function _PW-GetDocDescription([object]$Doc) {
-    foreach ($n in @('Description', 'DocumentDescription')) {
-        $v = _PW-GetProp -Obj $Doc -Name $n
-        if ($null -ne $v) { return [string]$v }
-    }
-    return ''
-}
-
-function _PW-GetDocLastModifiedUtcIso([object]$Doc) {
-    foreach ($n in @('FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date')) {
-        $v = _PW-GetProp -Obj $Doc -Name $n
-        if ($v) {
-            try {
-                if ($v -is [DateTime]) { return $v.ToUniversalTime().ToString('o') }
-                if ($v -is [DateTimeOffset]) { return $v.UtcDateTime.ToString('o') }
-                $dt = [DateTime]::Parse([string]$v, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
-                return $dt.ToUniversalTime().ToString('o')
-            } catch {
-                try { return ([string]$v).Trim() } catch { }
-            }
-        }
-    }
-    return ''
-}
-
-function _PW-DiscoverSheetsFoldersUnderRoot([string]$RootPath, [string]$SheetsSuffix, [string]$DatasourceName, [int]$ProjectDepth = 1) {
-    # Discovers Sheets folders under a root by walking N levels of "project folders".
-    # Depth=1 (default) matches legacy behavior: Root\<Project>\SheetsSuffix
-    # Depth=2: Root\<Area>\<Project>\SheetsSuffix, etc.
-    $rootPathRaw = ($RootPath -as [string]).Trim().TrimEnd('\')
-    if ([string]::IsNullOrWhiteSpace($rootPathRaw)) { return @() }
-
-    $suffix = ($SheetsSuffix -as [string]).Trim().TrimStart('\')
-    if ([string]::IsNullOrWhiteSpace($suffix)) { $suffix = 'CADD\Sheets' }
-
-    $depth = $ProjectDepth
-    if ($depth -lt 1) { $depth = 1 }
-    if ($depth -gt 5) { $depth = 5 } # hard cap to avoid runaway scans
-
-    # Maintain internal paths as "Documents\..." so downstream filtering stays consistent.
-    $rootDocs = $rootPathRaw
-    if ($rootDocs -notmatch '^(?i)Documents\\') { $rootDocs = ('Documents\' + $rootDocs.TrimStart('\')) }
-
-    function _PwFolderExists([string]$DocsFolderPath) {
-        # Best-effort: returns $true if we can view the folder, otherwise $false.
-        # Some PW cmdlet builds accept paths without "Documents\"; others require it. Try both.
-        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
-        if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
-        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
-            try {
-                $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
-                return $true
-            } catch {
-                try {
-                    $f = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-                    if ($f) { return $true }
-                } catch { }
-            }
-        }
-        return $false
-    }
-
-    function _ListChildNames([string]$DocsFolderPath) {
-        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $DocsFolderPath
-        if ([string]::IsNullOrWhiteSpace($apiPath)) { return @() }
-        $names = @()
-
-        foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
-            try {
-                $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
-                if ($view.Children) {
-                    foreach ($c in $view.Children) {
-                        $name = _PW-GetProp -Obj $c -Name 'Name'
-                        if (-not $name) {
-                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
-                        }
-                        if ($name) { $names += [string]$name }
-                    }
-                }
-                if ($names.Count -eq 0 -and $view.Folders) {
-                    foreach ($f in $view.Folders) {
-                        $name = _PW-GetProp -Obj $f -Name 'Name'
-                        if ($name) { $names += [string]$name }
-                    }
-                }
-            } catch {
-                try {
-                    $children = Get-PWFoldersImmediateChildren -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
-                    foreach ($c in @($children)) {
-                        $name = _PW-GetProp -Obj $c -Name 'Name'
-                        if (-not $name) {
-                            $fp = _PW-GetProp -Obj $c -Name 'FolderPath'
-                            if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
-                        }
-                        if ($name) { $names += [string]$name }
-                    }
-                } catch { }
-            }
-
-            if ($names.Count -gt 0) { break }
-        }
-
-        return @($names | Where-Object { $_ } | Select-Object -Unique)
-    }
-
-    # Two modes:
-    #  1) If RootPath\SheetsSuffix exists, treat RootPath as the *project* and walk
-    #     depth under the Sheets folder (e.g. CADD\Sheets\01-Title\...).
-    #  2) Otherwise, treat RootPath as a *portfolio root* and discover project folders
-    #     under it (legacy), then append SheetsSuffix.
-    $rootSheets = (($rootDocs.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
-    if (_PwFolderExists -DocsFolderPath $rootSheets) {
-        # In "project has a Sheets folder" mode, interpret depth as the overall depth
-        # from the project root:
-        #   depth=1 => <project>\CADD\Sheets
-        #   depth=2 => <project>\CADD\Sheets\<child>
-        #   depth=3 => <project>\CADD\Sheets\<child>\<grandchild>
-        # So the number of levels to walk under the Sheets folder is (depth - 1).
-        $walkDepth = ($depth - 1)
-        if ($walkDepth -lt 0) { $walkDepth = 0 }
-
-        $all = @($rootSheets)
-        $current = @($rootSheets)
-        for ($i = 1; $i -le $walkDepth; $i++) {
-            $next = @()
-            foreach ($p in @($current)) {
-                foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
-                    $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
-                }
-            }
-            $current = @($next | Select-Object -Unique)
-            if ($current.Count -eq 0) { break }
-            $all += $current
-        }
-
-        $list = @()
-        foreach ($sPath in @($all | Select-Object -Unique)) {
-            $list += @{ DatasourceName = $DatasourceName; FolderPath = $sPath; OneLevelDeep = $true }
-        }
-        return $list
-    }
-
-    # Legacy: Build all project folder paths at the requested depth (under RootPath),
-    # then append SheetsSuffix.
-    $levelProjects = @($rootDocs)
-    for ($i = 1; $i -le $depth; $i++) {
-        $next = @()
-        foreach ($p in @($levelProjects)) {
-            foreach ($n in @(_ListChildNames -DocsFolderPath $p)) {
-                $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
-            }
-        }
-        $levelProjects = @($next | Select-Object -Unique)
-        if ($levelProjects.Count -eq 0) { break }
-    }
-
-    $list = @()
-    foreach ($projPath in @($levelProjects)) {
-        $folderPath = (($projPath.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
-        $list += @{ DatasourceName = $DatasourceName; FolderPath = $folderPath; OneLevelDeep = $true }
-    }
-    return $list
-}
-
-# Watch list keeps "Documents\..." paths; PW cmdlets expect the same logical path WITHOUT a leading Documents\ segment.
-# Also collapse accidental "Documents\Documents\..." (e.g. oneLevelDeep merge when PW already returns FolderPath with Documents).
-function _PW-ToPwCmdletFolderPath([string]$InternalFolderPath) {
-    $s = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
-    while ($s -match '^(?i)Documents\\') { $s = $s -replace '^(?i)Documents\\', '' }
-    return $s
-}
-
-function _PW-CanonicalDocumentsFolderPath([string]$FolderPathProperty) {
-    $t = ($FolderPathProperty -as [string]).Trim().TrimStart('\').TrimEnd('\')
-    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
-    if ($t -match '^(?i)documents\\') { return $t }
-    return ('Documents\' + $t)
-}
-
-function _PW-ListDocsInFolder([string]$FolderPath) {
-    # Read-only doc listing; mirror legacy prepend_qc_on_trigger.ps1 behavior so Description is populated.
-    try {
-        $allDocs = @()
-
-        $view = $null
-        try { $view = Get-PWFolderView -FolderPath $FolderPath -ErrorAction Stop } catch { }
-        if ($view -and $view.Documents) {
-            $allDocs = @($view.Documents)
-        } elseif ($view -and $view.Children) {
-            $allDocs = @($view.Children | Where-Object { $_.DocumentID -or $_.Name })
-        }
-
-        if ($allDocs.Count -eq 0) {
-            try {
-                $allDocs = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -PopulatePath -ErrorAction Stop)
-            } catch {
-                $cmd = Get-Command -Name Get-PWDocumentsBySearchWithReturnColumns -ErrorAction SilentlyContinue
-                if ($cmd) {
-                    $returnColsParam = if ($cmd.Parameters.ContainsKey('ReturnColumns')) { 'ReturnColumns' } elseif ($cmd.Parameters.ContainsKey('ColumnsToReturn')) { 'ColumnsToReturn' } else { $null }
-                    if ($returnColsParam) {
-                        $cols = @('Description', 'Name', 'DocumentID')
-                        if ($returnColsParam -eq 'ReturnColumns') {
-                            $withCols = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $FolderPath -JustThisFolder -ReturnColumns $cols -ErrorAction SilentlyContinue
-                        } else {
-                            $withCols = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $FolderPath -JustThisFolder -ColumnsToReturn $cols -ErrorAction SilentlyContinue
-                        }
-                        if ($withCols) { $allDocs = @($withCols) }
-                    }
-                }
-            }
-        }
-
-        return @($allDocs)
-    } catch {
-        # Fallback: folder view (can be limited)
-        try {
-            $folder = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction SilentlyContinue
-            if ($folder) {
-                $view = $folder | Get-PWFolderView -ErrorAction SilentlyContinue
-                if ($view -and $view.Documents) { return @($view.Documents) }
-            }
-        } catch { }
-    }
-    return @()
-}
-
-function _ToHashtable([object]$Value) {
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [string]) { return $Value }
-    if ($Value -is [System.ValueType]) { return $Value }
-    if ($Value -is [System.Collections.IDictionary]) { return $Value }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $out = @()
-        foreach ($i in $Value) { $out += (_ToHashtable $i) }
-        return $out
-    }
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) {
-            $h[$p.Name] = (_ToHashtable $p.Value)
-        }
-        return $h
-    }
-    return $Value
-}
-
-function _Read-AppSettingsJson([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return New-QCFailureResult -Code 'CONFIG_MISSING_FILE' -Message "appsettings.json not found: $Path" -Data @{ path = $Path }
-    }
-    try {
-        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
-        $cfg = _ToHashtable $obj
-        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = $cfg; path = $Path }
-    } catch {
-        return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{ path = $Path; error = $_ }
-    }
-}
-
-function _Log([string]$Level, [string]$Code, [string]$Message, [hashtable]$Data) {
-    $ts = [DateTime]::UtcNow.ToString('o')
-    $payload = @{
-        ts = $ts
-        level = $Level
-        code = $Code
-        message = $Message
-        data = $Data
-    } | ConvertTo-Json -Depth 20 -Compress
-    # IMPORTANT: write + flush stdout so dashboard redirection can ingest progress live.
-    [Console]::Out.WriteLine($payload)
-    [Console]::Out.Flush()
-}
-
-$cfgRes = _Read-AppSettingsJson -Path $AppSettingsPath
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
 
@@ -391,7 +77,7 @@ $watchFolders = @($config.watchFolders | ForEach-Object { ($_ -as [string]).Trim
 $hasPwWatchList = ($config.ContainsKey('projectWise') -and $config.projectWise -and ($config.projectWise.ContainsKey('watchList') -and $config.projectWise.watchList))
 if ($watchFolders.Count -eq 0 -and -not $hasPwWatchList) { throw "watchFolders is empty and projectWise.watchList not configured." }
 
-_Log -Level 'Information' -Code 'WATCH_START' -Message 'Watch run started.' -Data @{
+Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch run started.' -Data @{
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
     watchFolderCount = $watchFolders.Count
@@ -412,12 +98,12 @@ $statusSetRules = @()
 try {
     if ($config.ContainsKey('triggers') -and $config.triggers -and $config.triggers.ContainsKey('rules') -and $config.triggers.rules) {
         foreach ($r in @($config.triggers.rules)) {
-            $rh = _ToHashtable $r
+            $rh = ConvertTo-HashtableDeep -Value $r
             if (-not ($rh -is [hashtable])) { continue }
             if (-not ($rh.ContainsKey('enabled'))) { $rh['enabled'] = $true }
             if (-not [bool]$rh.enabled) { continue }
             if (($rh.ContainsKey('jobType') -and ([string]$rh.jobType) -eq 'STATUS_SET_GEN') -and $rh.ContainsKey('grouping') -and $rh.grouping) {
-                $g = _ToHashtable $rh.grouping
+                $g = ConvertTo-HashtableDeep -Value $rh.grouping
                 if ($g -is [hashtable]) {
                     $gEnabled = $false
                     try { $gEnabled = [bool]$g.enabled } catch { $gEnabled = $false }
@@ -438,22 +124,22 @@ if ($statusSetRules.Count -ge 0) {
     # ProjectWise sources (watchList) — read-only.
     if ($hasPwWatchList) {
         try {
-            $pwCfg = _ToHashtable $config.projectWise
+            $pwCfg = ConvertTo-HashtableDeep -Value $config.projectWise
             $ds = if ($pwCfg.ContainsKey('datasourceName') -and $pwCfg.datasourceName) { [string]$pwCfg.datasourceName } else { '' }
             $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
-            $watchList = _ToHashtable $pwCfg.watchList
+            $watchList = ConvertTo-HashtableDeep -Value $pwCfg.watchList
 
             # Re-import here to avoid any odd module/session state where exports are not visible.
             Import-Module $pwConnPath -Force | Out-Null
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
-            _Log -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
                 datasourceName = $ds
                 credentialPath = $credPath
             }
             $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
             if (-not $connRes.IsSuccess) { throw ($connRes.Code + ': ' + $connRes.Message) }
-            _Log -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
                 datasourceName = $ds
                 userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
             }
@@ -463,13 +149,13 @@ if ($statusSetRules.Count -ge 0) {
             # Gated by -ReconcileStatusSetsFirst so it runs once per restart,
             # not on every watcher tick (and never blocks normal triggering).
             if ($ReconcileStatusSetsFirst.IsPresent) {
-                _Log -Level 'Information' -Code 'WATCH_RECONCILE_START' -Message 'Reconciling local status sets to ProjectWise.' -Data @{}
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_START' -Message 'Reconciling local status sets to ProjectWise.' -Data @{}
                 try {
                     $cb = {
                         param($evt)
                         $level = if ([bool]$evt.isSuccess) { 'Information' } else { 'Warning' }
                         $code  = "WATCH_RECONCILE_$([string]$evt.code -replace '^STATUS_SET_RECONCILE_','')"
-                        _Log -Level $level -Code $code -Message ([string]$evt.message) -Data @{
+                        Write-QCJsonLog -Flush -Level $level -Code $code -Message ([string]$evt.message) -Data @{
                             workspaceDir = [string]$evt.workspaceDir
                             pwFolder     = [string]$evt.pwFolder
                             sheetsFolder = [string]$evt.sheetsFolder
@@ -479,23 +165,23 @@ if ($statusSetRules.Count -ge 0) {
                     }
                     $rec = Invoke-StatusSetReconcile -Config $config -LogCallback $cb
                     if ($rec.IsSuccess) {
-                        _Log -Level 'Information' -Code 'WATCH_RECONCILE_DONE' -Message 'Reconciliation completed.' -Data @{
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_DONE' -Message 'Reconciliation completed.' -Data @{
                             counts   = $rec.Data.counts
                             failures = $rec.Data.failures
                             skipped  = $rec.Data.skipped
                         }
                     } else {
-                        _Log -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ([string]$rec.Message) -Data @{ code = [string]$rec.Code }
+                        Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ([string]$rec.Message) -Data @{ code = [string]$rec.Code }
                     }
                 } catch {
-                    _Log -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ('Reconciliation threw: ' + $_.Exception.Message) -Data @{}
+                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ('Reconciliation threw: ' + $_.Exception.Message) -Data @{}
                 }
             }
 
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
                 foreach ($r in @($watchList.roots)) {
-                    $rh = _ToHashtable $r
+                    $rh = ConvertTo-HashtableDeep -Value $r
                     if (-not ($rh -is [hashtable])) { continue }
                     $rootPath = [string]$rh.path
                     $suffix = if ($rh.ContainsKey('sheetsPathFromProject') -and $rh.sheetsPathFromProject) { [string]$rh.sheetsPathFromProject } else { 'CADD\Sheets' }
@@ -507,7 +193,7 @@ if ($statusSetRules.Count -ge 0) {
                     if ($rh.ContainsKey('enableQcPrepend')) { try { $enableQcPrepend = [bool]$rh.enableQcPrepend } catch { $enableQcPrepend = $false } }
                     $enableStatusSet = $false
                     if ($rh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$rh.enableStatusSet } catch { $enableStatusSet = $false } }
-                    $discovered = @(_PW-DiscoverSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
+                    $discovered = @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
                     foreach ($d in $discovered) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
                         $d['EnableStatusSet'] = $enableStatusSet
@@ -517,7 +203,7 @@ if ($statusSetRules.Count -ge 0) {
             }
             if ($watchList -and $watchList.ContainsKey('folders') -and $watchList.folders) {
                 foreach ($f in @($watchList.folders)) {
-                    $fh = _ToHashtable $f
+                    $fh = ConvertTo-HashtableDeep -Value $f
                     if (-not ($fh -is [hashtable])) { continue }
                     $root = [string]$fh.root
                     $path = [string]$fh.path
@@ -545,27 +231,27 @@ if ($statusSetRules.Count -ge 0) {
                 try {
                     if ($e.OneLevelDeep) {
                         $fp = [string]$e.FolderPath
-                        $apiPath = _PW-ToPwCmdletFolderPath -InternalFolderPath $fp
-                        _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Querying ProjectWise for discipline subfolders under Sheets.' -Data @{
+                        $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Querying ProjectWise for discipline subfolders under Sheets.' -Data @{
                             folder = $fp
                             inProgress = $true
                         }
                         $kids = @(Get-PWImmediateChildFolders -FolderPath $apiPath)
-                        _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
                             folder = $fp
                             inProgress = $false
                             childCount = [int]@($kids).Count
                         }
                         if (@($kids).Count -eq 0) {
-                            _Log -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; only this folder will be scanned (normal for flat Sheets or empty areas).' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; only this folder will be scanned (normal for flat Sheets or empty areas).' -Data @{
                                 folder = $fp
                                 apiPath = $apiPath
                             }
                         }
                         foreach ($k in $kids) {
-                            $kp = _PW-GetProp -Obj $k -Name 'FolderPath'
+                            $kp = Get-PWObjectPropertyValue -Object $k -Name 'FolderPath'
                             if ($kp) {
-                                $canonical = _PW-CanonicalDocumentsFolderPath -FolderPathProperty ([string]$kp)
+                                $canonical = ConvertTo-PWCanonicalDocumentsFolderPath -FolderPathProperty ([string]$kp)
                                 if (-not $canonical) { continue }
                                 $expanded += @{
                                     DatasourceName = $ds
@@ -578,13 +264,13 @@ if ($statusSetRules.Count -ge 0) {
                         }
                     }
                 } catch {
-                    _Log -Level 'Warning' -Code 'WATCH_PW_ONELEVEL_EXPAND_FAILED' -Message ('oneLevelDeep expansion failed: ' + $_.Exception.Message) -Data @{
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_ONELEVEL_EXPAND_FAILED' -Message ('oneLevelDeep expansion failed: ' + $_.Exception.Message) -Data @{
                         folder = [string]$e.FolderPath
                     }
                 }
             }
             $pwFolders = $expanded
-            _Log -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
                 folderCount = [int]$pwFolders.Count
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
@@ -604,7 +290,7 @@ if ($statusSetRules.Count -ge 0) {
                     try { $enableStatusSet = [bool]$entry.EnableStatusSet } catch { $enableStatusSet = $false }
 
                     # Emit a "scan start" event even if filters later skip the folder.
-                    _Log -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
                         folder = $fp
                         oneLevelDeep = $oneLevelDeep
                         enableQcPrepend = $enableQcPrepend
@@ -617,7 +303,7 @@ if ($statusSetRules.Count -ge 0) {
                         if (-not $allowRes.IsSuccess) { throw $allowRes.Message }
                         if (-not [bool]$allowRes.Data.allowed) {
                             $filtered++
-                            _Log -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
                                 folder = $fp
                                 reason = 'filtered'
                                 enableQcPrepend = $enableQcPrepend
@@ -626,12 +312,12 @@ if ($statusSetRules.Count -ge 0) {
                             continue
                         }
 
-                        _Log -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                         }
-                        $state = Get-StatusSetPWFolderState -FolderPath (_PW-ToPwCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
-                        _Log -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
+                        $state = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                             pdfCount = [int]$state.pdfCount
@@ -643,7 +329,7 @@ if ($statusSetRules.Count -ge 0) {
                             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)
                             if ($skipUpToDate) {
                                 $skippedStatusSetCurrent++
-                                _Log -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_CURRENT' -Message 'PW folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_CURRENT' -Message 'PW folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
                                     gateReason = [string]$gateRes.Data.gateReason
@@ -687,7 +373,7 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                                 elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                                _Log -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']
@@ -711,7 +397,7 @@ if ($statusSetRules.Count -ge 0) {
                                 } elseif ($wouldDedupe) { $duplicates++ }
                             }
                         } elseif ([int]$state.pdfCount -gt 0 -or [int]$state.dgnCount -gt 0) {
-                            _Log -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found.' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found.' -Data @{
                                 folder = $fp
                                 oneLevelDeep = $oneLevelDeep
                                 pdfCount = [int]$state.pdfCount
@@ -722,18 +408,18 @@ if ($statusSetRules.Count -ge 0) {
 
                     # QC_PREPEND (description tag)
                     if ([bool]$entry.EnableQcPrepend) {
-                        _Log -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
                             folder = $fp
                         }
-                        $docs = _PW-ListDocsInFolder -FolderPath (_PW-ToPwCmdletFolderPath -InternalFolderPath $fp)
+                        $docs = Get-PWDocumentsInFolder -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp)
                         $pdfDocs = @()
                         $withDesc = @()
                         $tagged = @()
                         foreach ($d in @($docs)) {
-                            $n = _PW-GetDocName -Doc $d
+                            $n = Get-PWDocName -Doc $d
                             if (-not $n -or -not ($n -match '(?i)\.pdf$')) { continue }
                             $pdfDocs += $d
-                            $dd = _PW-GetDocDescription -Doc $d
+                            $dd = Get-PWDocDescription -Doc $d
                             if (-not [string]::IsNullOrWhiteSpace($dd)) {
                                 $withDesc += $d
                                 if ($dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
@@ -743,12 +429,12 @@ if ($statusSetRules.Count -ge 0) {
                         }
                         $sample = @()
                         foreach ($d in @($withDesc | Select-Object -First 2)) {
-                            $sn = _PW-GetDocName -Doc $d
-                            $sd = _PW-GetDocDescription -Doc $d
+                            $sn = Get-PWDocName -Doc $d
+                            $sd = Get-PWDocDescription -Doc $d
                             if ($sd -and $sd.Length -gt 160) { $sd = $sd.Substring(0, 160) }
                             $sample += (@{ name = $sn; description = $sd })
                         }
-                        _Log -Level 'Information' -Code 'WATCH_PW_DOC_SCAN' -Message 'PW folder doc scan completed.' -Data @{
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN' -Message 'PW folder doc scan completed.' -Data @{
                             folder = $fp
                             docCount = [int](@($docs).Count)
                             pdfCount = [int](@($pdfDocs).Count)
@@ -758,22 +444,22 @@ if ($statusSetRules.Count -ge 0) {
                             propertyNamesSample = if (@($docs).Count -gt 0) { @($docs[0].PSObject.Properties | Select-Object -First 30 | ForEach-Object { $_.Name }) } else { @() }
                         }
                         foreach ($doc in @($docs)) {
-                            $docName = _PW-GetDocName -Doc $doc
+                            $docName = Get-PWDocName -Doc $doc
                             if (-not $docName -or -not ($docName -match '(?i)\.pdf$')) { continue }
-                            $desc = _PW-GetDocDescription -Doc $doc
+                            $desc = Get-PWDocDescription -Doc $doc
                             if ([string]::IsNullOrWhiteSpace($desc)) { continue }
                             if ($desc.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
 
-                            _Log -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
                                 folder = $fp
                                 fileName = $docName
                                 description = $desc
                             }
 
-                            $mod = _PW-GetDocLastModifiedUtcIso -Doc $doc
-                            $sz = _PW-GetProp -Obj $doc -Name 'FileSize'
-                            if (-not $sz) { $sz = _PW-GetProp -Obj $doc -Name 'Size' }
-                            $pseudo = _Sha256TextHex -Text (([string]$docName) + '|' + ([string]$mod) + '|' + ([string]$sz) + '|' + ([string]$fp))
+                            $mod = Get-PWDocLastModifiedUtc -Doc $doc
+                            $sz = Get-PWObjectPropertyValue -Object $doc -Name 'FileSize'
+                            if (-not $sz) { $sz = Get-PWObjectPropertyValue -Object $doc -Name 'Size' }
+                            $pseudo = Get-Sha256TextHex -Text (([string]$docName) + '|' + ([string]$mod) + '|' + ([string]$sz) + '|' + ([string]$fp))
 
                             $candidate = @{
                                 path = ($fp.TrimEnd('\') + '\' + $docName)
@@ -800,7 +486,7 @@ if ($statusSetRules.Count -ge 0) {
                             $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config
                             if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
                             if (-not [bool]$matchRes.Data.matched) {
-                                _Log -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any trigger rule.' -Data @{
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any trigger rule.' -Data @{
                                     path = [string]$candidate.path
                                     fileName = [string]$candidate.fileName
                                     ruleReason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { '' }
@@ -824,7 +510,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                            _Log -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
                                 jobId = [string]$job['id']
                                 jobType = [string]$job['type']
                                 dedupeKey = [string]$job['dedupeKey']
@@ -845,7 +531,7 @@ if ($statusSetRules.Count -ge 0) {
                             } elseif ($wouldDedupe) { $duplicates++ }
                         }
                     }
-                    _Log -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
                         folder = $fp
                         enableQcPrepend = $enableQcPrepend
                         enableStatusSet = $enableStatusSet
@@ -853,7 +539,7 @@ if ($statusSetRules.Count -ge 0) {
                 } catch {
                     $errors++
                     $ex = $_.Exception
-                    _Log -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW folder for STATUS_SET_GEN.' -Data @{
+                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW folder for STATUS_SET_GEN.' -Data @{
                         folder = [string]$entry.FolderPath
                         errorMessage = [string]$_.Exception.Message
                         errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
@@ -865,7 +551,7 @@ if ($statusSetRules.Count -ge 0) {
             Disconnect-PW | Out-Null
         } catch {
             $errors++
-            _Log -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{ errorMessage = [string]$_.Exception.Message; scriptStackTrace = [string]$_.ScriptStackTrace }
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{ errorMessage = [string]$_.Exception.Message; scriptStackTrace = [string]$_.ScriptStackTrace }
         }
     }
 
@@ -887,7 +573,7 @@ if ($statusSetRules.Count -ge 0) {
             $jobType = 'STATUS_SET_GEN'
 
             if (-not $ruleObj) {
-                _Log -Level 'Warning' -Code 'WATCH_FS_STATUSSET_RULE_MISSING' -Message 'STATUS_SET_GEN rule not found/enabled; skipping folder status-set enqueue.' -Data @{
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FS_STATUSSET_RULE_MISSING' -Message 'STATUS_SET_GEN rule not found/enabled; skipping folder status-set enqueue.' -Data @{
                     folder = $folder
                     normFolder = $normFolder
                     pairedCount = [int]$state.pairedCount
@@ -899,7 +585,7 @@ if ($statusSetRules.Count -ge 0) {
             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)
             if ($skipUpToDate) {
                 $skippedStatusSetCurrent++
-                _Log -Level 'Information' -Code 'WATCH_FS_STATUSSET_SKIP_CURRENT' -Message 'Local folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_FS_STATUSSET_SKIP_CURRENT' -Message 'Local folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
                     folder = $folder
                     normFolder = $normFolder
                     pairedCount = [int]$state.pairedCount
@@ -943,7 +629,7 @@ if ($statusSetRules.Count -ge 0) {
             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-            _Log -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                 jobId = [string]$job['id']
                 jobType = [string]$job['type']
                 dedupeKey = [string]$job['dedupeKey']
@@ -971,7 +657,7 @@ if ($statusSetRules.Count -ge 0) {
         } catch {
             $errors++
             $ex = $_.Exception
-            _Log -Level 'Error' -Code 'WATCH_FOLDER_ERROR' -Message 'Error processing folder for STATUS_SET_GEN.' -Data @{
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_FOLDER_ERROR' -Message 'Error processing folder for STATUS_SET_GEN.' -Data @{
                 folder = $folder
                 errorMessage = [string]$_.Exception.Message
                 errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
@@ -984,7 +670,7 @@ if ($statusSetRules.Count -ge 0) {
 $fileItems = @()
 foreach ($folder in $watchFolders) {
     if (-not (Test-Path -LiteralPath $folder)) {
-        _Log -Level 'Warning' -Code 'WATCH_FOLDER_MISSING' -Message 'Watch folder missing.' -Data @{ folder = $folder }
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FOLDER_MISSING' -Message 'Watch folder missing.' -Data @{ folder = $folder }
         continue
     }
     $fileItems += Get-ChildItem -LiteralPath $folder -File -Recurse -ErrorAction SilentlyContinue
@@ -1025,7 +711,7 @@ foreach ($fi in $fileItems) {
         if (-not [bool]$matchRes.Data.matched) {
             $ignored++
             if (($ignored % $ignoreSampleEvery) -eq 0) {
-                _Log -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no trigger match).' -Data @{
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no trigger match).' -Data @{
                     path = $normPath
                     fileName = $candidate.fileName
                     ignoredCount = $ignored
@@ -1042,7 +728,7 @@ foreach ($fi in $fileItems) {
         $groupingEnabled = $false
         $groupBy = $null
         $grouping = $null
-        if ($ruleObj -and $ruleObj.grouping) { $grouping = _ToHashtable $ruleObj.grouping }
+        if ($ruleObj -and $ruleObj.grouping) { $grouping = ConvertTo-HashtableDeep -Value $ruleObj.grouping }
         if ($grouping -is [hashtable]) {
             try { $groupingEnabled = [bool]$grouping.enabled } catch { $groupingEnabled = $false }
             if ($grouping.ContainsKey('groupBy') -and $grouping.groupBy) { $groupBy = ([string]$grouping.groupBy).Trim().ToLowerInvariant() }
@@ -1050,7 +736,7 @@ foreach ($fi in $fileItems) {
 
         if (-not $groupingEnabled -or $groupBy -ne 'folder' -or $jobType -ne 'STATUS_SET_GEN') {
             # file-level workflows: compute a stable file hash for dedupe (read-only).
-            $candidate.file.sha256 = _Sha256FileHex -Path ([string]$fi.FullName)
+            $candidate.file.sha256 = Get-Sha256FileHex -Path ([string]$fi.FullName)
         } else {
             # grouped folder workflow: establish groupKey = jobType + sourceFolder
             $candidate.groupKey = ($jobType + '|' + [string]$candidate.sourceFolder).ToLowerInvariant()
@@ -1072,7 +758,7 @@ foreach ($fi in $fileItems) {
             $enqueueSkippedReason = 'dryRun'
         }
 
-        _Log -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
             jobId = [string]$job['id']
             jobType = [string]$job['type']
             dedupeKey = [string]$job['dedupeKey']
@@ -1100,7 +786,7 @@ foreach ($fi in $fileItems) {
     } catch {
         $errors++
         $ex = $_.Exception
-        _Log -Level 'Error' -Code 'WATCH_FILE_ERROR' -Message 'Error processing file.' -Data @{
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_FILE_ERROR' -Message 'Error processing file.' -Data @{
             file = [string]$fi.FullName
             errorMessage = [string]$_.Exception.Message
             errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
@@ -1109,7 +795,7 @@ foreach ($fi in $fileItems) {
     }
 }
 
-_Log -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch run completed.' -Data @{
+Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch run completed.' -Data @{
     dryRun = $isDryRun
     scanned = $fileItems.Count
     filtered = $filtered

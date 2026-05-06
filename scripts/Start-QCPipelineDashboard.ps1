@@ -48,7 +48,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
 
 function _Pause-IfInteractiveConsole {
@@ -80,34 +81,6 @@ function _Resolve-AppSettingsPath([string]$ProvidedPath) {
     }
 
     throw "appsettings.json not found. Looked in: $($candidates -join ', ')"
-}
-
-function _ToHashtable([object]$Value) {
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [string]) { return $Value }
-    if ($Value -is [System.ValueType]) { return $Value }
-    if ($Value -is [System.Collections.IDictionary]) { return $Value }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $out = @()
-        foreach ($i in $Value) { $out += (_ToHashtable $i) }
-        return $out
-    }
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }
-        return $h
-    }
-    return $Value
-}
-
-function _Read-AppSettings([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { throw "appsettings.json not found: $Path" }
-    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-    $obj = $raw | ConvertFrom-Json -ErrorAction Stop
-    $cfg = [hashtable](_ToHashtable $obj)
-    if (-not $cfg.ContainsKey('dryRun')) { $cfg['dryRun'] = $false }
-    if ($DryRun.IsPresent) { $cfg['dryRun'] = $true }
-    return $cfg
 }
 
 function _ColorForState([string]$State) {
@@ -938,7 +911,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
 # Singleton guard + boot config: any failure here used to kill the process before the
 # main loop, which makes a double-clicked console window vanish in ~1 second.
 try {
-    $bootCfg = _Read-AppSettings -Path $AppSettingsPath
+    $bootCfg = Get-QCAppSettingsConfig -Path $AppSettingsPath -DryRun:$DryRun.IsPresent
     $queueRoot = $null
     try {
         if ($bootCfg.queue -and $bootCfg.queue.rootDir) { $queueRoot = [string]$bootCfg.queue.rootDir }
@@ -1087,7 +1060,7 @@ function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
 
 while ($true) {
     try {
-        $cfg = _Read-AppSettings -Path $AppSettingsPath
+        $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath -DryRun:$DryRun.IsPresent
         $wc = _Get-WorkersConfig -Cfg $cfg
         $state.workerSlotMax = [int]$wc.maxParallel
 
@@ -1245,7 +1218,7 @@ while ($true) {
         $state.lastError = [string]$_.Exception.Message
         $state.phase = 'ERROR (will retry)'
         try {
-            $cfg = _Read-AppSettings -Path $AppSettingsPath
+            $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath -DryRun:$DryRun.IsPresent
         } catch {
             $cfg = @{ dryRun = $false }
         }
