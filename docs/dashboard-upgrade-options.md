@@ -43,13 +43,19 @@ Valid if team prefers .NET and wants native terminal performance, but higher rep
 Best for remote/multi-operator observability, but heavier footprint than needed for local terminal UX only.
 
 ## Concrete implementation checklist (Phase 1)
-1. Add params to `Start-QCPipelineDashboard.ps1`:
+1. [x] Add params to `Start-QCPipelineDashboard.ps1`:
    - `-RenderMode FullRedraw|DiffAnsi`
    - `-MaxFps` (default 8)
-2. Refactor rendering to return full logical frame lines (no direct writes inside formatters).
-3. Add ANSI cursor + hide/show cursor wrappers.
-4. Diff previous/current frame and repaint changed rows only.
-5. Auto-fallback to `FullRedraw` when VT unsupported.
+2. [x] Refactor rendering to return full logical frame lines (no direct writes inside formatters).
+3. [x] Add ANSI cursor + hide/show cursor wrappers.
+4. [x] Diff previous/current frame and repaint changed rows only.
+5. [x] Auto-fallback to `FullRedraw` when VT unsupported.
+
+## Phase 1 implementation notes
+- `DiffAnsi` is now the default render mode; use `-RenderMode FullRedraw` to force the legacy clear-and-redraw behavior.
+- `-MaxFps` defaults to 8 and throttles dashboard paints independently of watcher/worker polling.
+- The first ANSI render initializes the screen, then subsequent frames repaint only changed rows and clear those rows with ANSI line-clear sequences.
+- Hosts that do not advertise VT/ANSI support are automatically downgraded to `FullRedraw`.
 
 ## Success criteria
 - No `Clear-Host` per frame in `DiffAnsi` mode.
