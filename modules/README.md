@@ -75,7 +75,7 @@ All modules primarily communicate via a shared result envelope from `Core.Result
   - workspace/manifest: `Get-StatusSetWorkspaceDirectory`, `Get-StatusSetManifestPath`, `Read-StatusSetManifestFile`, `Write-StatusSetManifestFile`, `New-StatusSetManifestObject`
   - decisions: `Test-StatusSetRebuildNeeded`, `Test-StatusSetWatcherShouldEnqueue`
   - operations: `Merge-StatusSetPdfWithQpdf`, `Export-StatusSetPdfToFolder`, `Invoke-StatusSetNativeJob`, `Sync-StatusSetWorkspaceToPw`, `Invoke-StatusSetReconcile`
-- **Operational constraints handled**: AV-friendly throttling for file ops and PW export; export scratch cleanup file-first.
+- **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; retention-based staging cleanup instead of per-job scratch deletion.
 
 ### `QC.Notifications.psm1`
 - **Purpose**: placeholder notification routing for job events.

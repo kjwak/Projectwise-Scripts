@@ -109,6 +109,140 @@ function _SSS-EnsureDir([string]$Path) {
     }
 }
 
+
+function _SSS-GetHashtableBool([hashtable]$Map, [string]$Name, [bool]$Default) {
+    if (-not $Map -or -not $Map.ContainsKey($Name) -or $null -eq $Map[$Name]) { return $Default }
+    try { return [bool]$Map[$Name] } catch { return $Default }
+}
+
+function _SSS-GetHashtableInt([hashtable]$Map, [string]$Name, [int]$Default) {
+    if (-not $Map -or -not $Map.ContainsKey($Name) -or $null -eq $Map[$Name]) { return $Default }
+    try { return [int]$Map[$Name] } catch { return $Default }
+}
+
+function _SSS-NewStatusSetOperationReport {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceDir,
+        [Parameter(Mandatory)]
+        [string]$OutputPdf,
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [hashtable]$Options
+    )
+    return [ordered]@{
+        workspaceDir = $WorkspaceDir
+        outputPdf = $OutputPdf
+        manifestPath = $ManifestPath
+        options = $Options
+        downloads = @()
+        writes = @()
+        replaces = @()
+        deletes = @()
+        skips = @()
+    }
+}
+
+function _SSS-AddStatusSetOperation {
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Report,
+        [Parameter(Mandatory)]
+        [ValidateSet('downloads','writes','replaces','deletes','skips')]
+        [string]$Kind,
+        [Parameter(Mandatory)]
+        [hashtable]$Operation
+    )
+    $Report[$Kind] = @($Report[$Kind]) + @($Operation)
+}
+
+function _SSS-CleanupExpiredStatusSetStaging {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceDir,
+        [Parameter(Mandatory)]
+        [int]$RetentionDays,
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$OperationReport,
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun
+    )
+    if ($RetentionDays -lt 1) { $RetentionDays = 1 }
+    if (-not (Test-Path -LiteralPath $WorkspaceDir)) { return }
+    $cutoff = [DateTime]::UtcNow.AddDays(-1 * $RetentionDays)
+    $patterns = @('_export_*', '_render', '_render_*', '_pw_status_chunk_*.pdf', '*.next.*.pdf')
+    foreach ($pattern in $patterns) {
+        $items = @(Get-ChildItem -LiteralPath $WorkspaceDir -Filter $pattern -Force -ErrorAction SilentlyContinue)
+        foreach ($item in $items) {
+            $mtime = $item.LastWriteTimeUtc
+            if ($mtime -gt $cutoff) {
+                _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'skips' -Operation @{ action='retention-skip'; path=[string]$item.FullName; lastWriteTimeUtc=$mtime.ToString('o'); cutoffUtc=$cutoff.ToString('o') }
+                continue
+            }
+            _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'deletes' -Operation @{ action='retention-delete'; path=[string]$item.FullName; lastWriteTimeUtc=$mtime.ToString('o'); cutoffUtc=$cutoff.ToString('o') }
+            if (-not $DryRun) {
+                try {
+                    if ($item.PSIsContainer) { _SSS-RemoveExportDirContentsFileFirst -DirPath $item.FullName -RemoveEmptyDir $true }
+                    else { Remove-Item -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue }
+                } catch { }
+                _SSS-FsThrottle
+            }
+        }
+    }
+}
+
+function _SSS-InstallStatusSetPdf {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourcePdf,
+        [Parameter(Mandatory)]
+        [string]$OutputPdf,
+        [Parameter(Mandatory)]
+        [bool]$AtomicReplace,
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$OperationReport,
+        [Parameter(Mandatory = $false)]
+        [string]$HistoryDir = ''
+    )
+    if ($SourcePdf -eq $OutputPdf) {
+        _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'skips' -Operation @{ action='install-output'; reason='source-is-output'; path=$OutputPdf }
+        return New-QCSuccessResult -Code 'STATUS_SET_INSTALL_OK' -Message 'Output already written in place.' -Data @{ outputPdf=$OutputPdf; atomicReplace=$false }
+    }
+    _SSS-EnsureDir (Split-Path -Parent $OutputPdf)
+    $backupPath = $null
+    if (Test-Path -LiteralPath $OutputPdf) {
+        if (_SSS-IsNullOrWhiteSpace $HistoryDir) { $HistoryDir = Join-Path (Split-Path -Parent $OutputPdf) '_history' }
+        _SSS-EnsureDir $HistoryDir
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd_HHmmss')
+        $backupPath = Join-Path $HistoryDir (([System.IO.Path]::GetFileNameWithoutExtension($OutputPdf)) + '_' + $stamp + [System.IO.Path]::GetExtension($OutputPdf))
+    }
+    _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'replaces' -Operation @{ action='atomic-output-replace'; source=$SourcePdf; destination=$OutputPdf; backup=$backupPath; atomicReplace=$AtomicReplace }
+    try {
+        if ($AtomicReplace -and $backupPath -and (Test-Path -LiteralPath $OutputPdf)) {
+            try {
+                [System.IO.File]::Replace($SourcePdf, $OutputPdf, $backupPath, $true)
+            } catch {
+                # File.Replace is the least noisy path, but it can fail if staging and
+                # output are on different volumes. Preserve rollback and fall back to a
+                # throttled copy+move rather than deleting/recreating the final PDF.
+                Copy-Item -LiteralPath $OutputPdf -Destination $backupPath -Force -ErrorAction Stop
+                _SSS-FsThrottle
+                Move-Item -LiteralPath $SourcePdf -Destination $OutputPdf -Force -ErrorAction Stop
+            }
+        } elseif ($backupPath -and (Test-Path -LiteralPath $OutputPdf)) {
+            Copy-Item -LiteralPath $OutputPdf -Destination $backupPath -Force -ErrorAction Stop
+            _SSS-FsThrottle
+            Move-Item -LiteralPath $SourcePdf -Destination $OutputPdf -Force -ErrorAction Stop
+        } else {
+            Move-Item -LiteralPath $SourcePdf -Destination $OutputPdf -Force -ErrorAction Stop
+        }
+        return New-QCSuccessResult -Code 'STATUS_SET_INSTALL_OK' -Message 'Status set PDF installed.' -Data @{ outputPdf=$OutputPdf; backupPath=$backupPath; atomicReplace=$AtomicReplace }
+    } catch {
+        return New-QCFailureResult -Code 'STATUS_SET_INSTALL_FAILED' -Message 'Failed to install status set PDF.' -Data @{ source=$SourcePdf; outputPdf=$OutputPdf; backupPath=$backupPath; errorMessage=$_.Exception.Message }
+    }
+}
+
 function _SSS-RemoveExportDirContentsFileFirst {
     <#
     .SYNOPSIS
@@ -1834,6 +1968,15 @@ function Invoke-StatusSetNativeJob {
         $pwSheetReusePolicy = ([string]$ss.pwSheetReusePolicy).Trim()
     }
 
+    $incrementalMode = _SSS-GetHashtableBool -Map $ss -Name 'incrementalMode' -Default $true
+    if (-not $incrementalMode) { $forceRebuild = $true }
+    $stagingRoot = if ($ss.ContainsKey('stagingRoot') -and $ss.stagingRoot) { [string]$ss.stagingRoot } else { '' }
+    $retentionDays = _SSS-GetHashtableInt -Map $ss -Name 'retentionDays' -Default 14
+    $cleanupEnabled = _SSS-GetHashtableBool -Map $ss -Name 'cleanupEnabled' -Default $false
+    $cleanImmediateExportScratch = _SSS-GetHashtableBool -Map $ss -Name 'cleanImmediateExportScratch' -Default $false
+    $atomicReplaceEnabled = _SSS-GetHashtableBool -Map $ss -Name 'atomicReplaceEnabled' -Default $true
+    $dryRunOperationReport = _SSS-GetHashtableBool -Map $ss -Name 'dryRunOperationReport' -Default $true
+
     $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
     if (_SSS-IsNullOrWhiteSpace $sourceFolder) {
         return New-QCFailureResult -Code 'STATUS_SET_MISSING_SOURCE_FOLDER' -Message 'Job.sourceFolder is required.' -Data @{}
@@ -1859,9 +2002,27 @@ function Invoke-StatusSetNativeJob {
     $workspace = [string]$wsRes.Data.workspaceDir
     $manifestPath = Get-StatusSetManifestPath -WorkspaceDir $workspace -ManifestFileName $manifestName
     $outPdf = Join-Path $workspace $statusPdfName
+    $stagingBase = if (-not (_SSS-IsNullOrWhiteSpace $stagingRoot)) { Join-Path $stagingRoot ([string]$wsRes.Data.folderKey) } else { $workspace }
+    $operationReport = _SSS-NewStatusSetOperationReport -WorkspaceDir $workspace -OutputPdf $outPdf -ManifestPath $manifestPath -Options @{
+        incrementalMode = $incrementalMode
+        stagingRoot = $stagingBase
+        retentionDays = $retentionDays
+        cleanupEnabled = $cleanupEnabled
+        cleanImmediateExportScratch = $cleanImmediateExportScratch
+        atomicReplaceEnabled = $atomicReplaceEnabled
+        dryRunOperationReport = $dryRunOperationReport
+        pwSheetCache = $pwSheetCacheEnabled
+        pwSheetReusePolicy = $pwSheetReusePolicy
+    }
 
     $isDryRun = $false
     if ($Config.ContainsKey('dryRun')) { try { $isDryRun = [bool]$Config.dryRun } catch { $isDryRun = $false } }
+    if ($cleanupEnabled) {
+        _SSS-CleanupExpiredStatusSetStaging -WorkspaceDir $workspace -RetentionDays $retentionDays -OperationReport $operationReport -DryRun:$isDryRun
+        if ($stagingBase -ne $workspace) {
+            _SSS-CleanupExpiredStatusSetStaging -WorkspaceDir $stagingBase -RetentionDays $retentionDays -OperationReport $operationReport -DryRun:$isDryRun
+        }
+    }
 
     $pwCfg = @{}
     if ($Config.ContainsKey('projectWise')) {
@@ -1918,22 +2079,62 @@ function Invoke-StatusSetNativeJob {
         if (-not $cmp.IsSuccess) { return $cmp }
 
         if (-not [bool]$cmp.Data.needsRebuild) {
+            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='status-set-cycle'; reason='manifest-and-output-current'; outputPdf=$outPdf }
             return New-QCSuccessResult -Code 'STATUS_SET_UP_TO_DATE' -Message 'Status set manifest matches folder state; no rebuild.' -Data @{
                 jobId = [string]$Job.id
                 workspaceDir = $workspace
                 manifestPath = $manifestPath
                 folderStateHash = [string]$fullState.folderStateHash
                 useLocalFs = $useLocalFs
+                operationReport = if ($dryRunOperationReport) { $operationReport } else { $null }
             }
         }
 
         if ($isDryRun) {
+            $renderPdf = Join-Path (Join-Path $stagingBase '_render') ($statusPdfName + '.next.' + ([string]$Job.id -replace '[^a-zA-Z0-9._-]', '_') + '.pdf')
+            if ($useLocalFs) {
+                foreach ($row in @($fullState.pairedSheets)) {
+                    $pdfPath = $null
+                    try { $pdfPath = [string]$row.pdf.fullName } catch { }
+                    _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='download'; reason='local-filesystem-source'; source=$pdfPath }
+                }
+            } else {
+                $manByKeyDry = @{}
+                if ($pwSheetCacheEnabled -and (-not $forceRebuild) -and $manifest -and $manifest['sheets']) {
+                    foreach ($s in @([array]$manifest['sheets'])) {
+                        $sk = $null
+                        if ($s -is [hashtable] -and $s['key']) { $sk = [string]$s['key'] }
+                        elseif ($s.PSObject.Properties['key']) { $sk = [string]$s.key }
+                        if ($sk) { $manByKeyDry[$sk.ToLowerInvariant()] = $s }
+                    }
+                }
+                foreach ($pairRow in @([array]$fullState.pairedSheets)) {
+                    $key = ([string]$pairRow.dir + '|' + [string]$pairRow.stem).ToLowerInvariant()
+                    $cachePath = _SSS-StatusSetSheetCachePath -WorkspaceDir $workspace -SheetKey $key
+                    $reuseOk = $false
+                    if ($pwSheetCacheEnabled -and $manByKeyDry.ContainsKey($key)) {
+                        $manRow = $manByKeyDry[$key]
+                        if ($pwSheetReusePolicy.Equals('PdfTimestamp', [System.StringComparison]::OrdinalIgnoreCase)) { $reuseOk = _SSS-SheetPdfTimestampMatches -ManifestRow $manRow -CurrentRow $pairRow }
+                        else { $reuseOk = ((_SSS-GetPairedSheetSignature -Row $manRow) -eq (_SSS-GetPairedSheetSignature -Row $pairRow)) }
+                    }
+                    if ($reuseOk -and (Test-Path -LiteralPath $cachePath)) {
+                        _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='download'; reason='cache-current'; sheetKey=$key; cachePath=$cachePath }
+                    } else {
+                        _SSS-AddStatusSetOperation -Report $operationReport -Kind 'downloads' -Operation @{ action='projectwise-export'; sheetKey=$key; target='sheet-cache'; cachePath=$cachePath }
+                    }
+                }
+            }
+            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='qpdf-merge'; output=$renderPdf; inputCount=[int]$fullState.pairedCount }
+            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'replaces' -Operation @{ action='install-output'; destination=$outPdf; atomicReplace=$atomicReplaceEnabled; preserveHistory=$true }
+            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='write-manifest'; path=$manifestPath }
+            if ($writeBackToPW -and -not $useLocalFs) { _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='projectwise-upload'; folder=$pwPath; documentName=$statusPdfName } }
             return New-QCSuccessResult -Code 'STATUS_SET_DRYRUN_REBUILD' -Message 'Dry-run: would rebuild status set PDF (manifest drift detected).' -Data @{
                 jobId = [string]$Job.id
                 compare = $cmp.Data
                 workspaceDir = $workspace
                 qpdfExe = $qpdfExe
                 useLocalFs = $useLocalFs
+                operationReport = if ($dryRunOperationReport) { $operationReport } else { $null }
             }
         }
 
@@ -1944,21 +2145,23 @@ function Invoke-StatusSetNativeJob {
             $sortedPairs = @($fullState.pairedSheets | Sort-Object @{ Expression = { $_.dir } }, @{ Expression = { $_.stem } })
             foreach ($row in $sortedPairs) {
                 if ($row.pdf -is [hashtable] -and $row.pdf.ContainsKey('fullName')) {
-                    $orderedPaths += [string]$row.pdf['fullName']
+                    $localInput = [string]$row.pdf['fullName']
+                    $orderedPaths += $localInput
+                    _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='download'; reason='local-filesystem-source'; source=$localInput }
                 }
             }
         } else {
             _SSS-EnsureDir (Join-Path $workspace '_sheet_cache')
+            _SSS-EnsureDir $stagingBase
             $exportJobTag = [string]$Job['id']
             if (_SSS-IsNullOrWhiteSpace $exportJobTag) { $exportJobTag = [guid]::NewGuid().ToString('N') }
             $exportJobTag = ($exportJobTag -replace '[^a-zA-Z0-9._-]', '_')
             if ($exportJobTag.Length -gt 72) { $exportJobTag = $exportJobTag.Substring(0, 72) }
             # One scratch folder per job: fewer directory trees for AV to flag than per-sheet folders.
             # Basename collisions (same PDF name from two subfolders) are avoided by renaming after each export.
-            $exportWorkDir = Join-Path $workspace ('_export_' + $exportJobTag)
-            if (Test-Path -LiteralPath $exportWorkDir) {
-                _SSS-RemoveExportDirContentsFileFirst -DirPath $exportWorkDir -RemoveEmptyDir $true
-            }
+            $exportWorkDir = Join-Path $stagingBase ('_export_' + $exportJobTag)
+            # Do not aggressively delete/recreate staging at job start. Existing files
+            # are overwritten as needed and expired staging is handled by retention cleanup.
             _SSS-EnsureDir $exportWorkDir
 
             $manByKey = @{}
@@ -2016,10 +2219,12 @@ function Invoke-StatusSetNativeJob {
                 if ($reuseOk) {
                     $orderedPaths += $cachePath
                     $pwExportReuseCount++
+                    _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='download'; reason='cache-current'; sheetKey=$key; cachePath=$cachePath }
                     continue
                 }
 
                 $idx = $i + 1
+                _SSS-AddStatusSetOperation -Report $operationReport -Kind 'downloads' -Operation @{ action='projectwise-export'; sheetKey=$key; targetFolder=$exportWorkDir; cachePath=$cachePath }
                 $ex = Export-StatusSetPdfToFolder -InputDocument $doc -TargetFolder $exportWorkDir
                 if (-not $ex.IsSuccess) { return $ex }
                 $localPath = [string]$ex.Data.localPath
@@ -2027,7 +2232,6 @@ function Invoke-StatusSetNativeJob {
                 $uniqueLeaf = ('{0:000}_{1}' -f $idx, $leaf)
                 $uniquePath = Join-Path $exportWorkDir $uniqueLeaf
                 if ($localPath -ne $uniquePath) {
-                    if (Test-Path -LiteralPath $uniquePath) { Remove-Item -LiteralPath $uniquePath -Force -ErrorAction SilentlyContinue }
                     try {
                         Move-Item -LiteralPath $localPath -Destination $uniquePath -Force -ErrorAction Stop
                         $localPath = $uniquePath
@@ -2047,19 +2251,36 @@ function Invoke-StatusSetNativeJob {
             }
         }
 
-        $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $outPdf -QpdfExe $qpdfExe
+        $renderDir = Join-Path $stagingBase '_render'
+        _SSS-EnsureDir $renderDir
+        $renderTag = [string]$Job['id']
+        if (_SSS-IsNullOrWhiteSpace $renderTag) { $renderTag = [guid]::NewGuid().ToString('N') }
+        $renderTag = ($renderTag -replace '[^a-zA-Z0-9._-]', '_')
+        $renderStamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')
+        $renderPdf = if ($atomicReplaceEnabled) { Join-Path $renderDir ($statusPdfName + '.next.' + $renderTag + '.' + $renderStamp + '.pdf') } else { $outPdf }
+        _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='qpdf-merge'; output=$renderPdf; inputCount=$orderedPaths.Count }
+        $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $renderPdf -QpdfExe $qpdfExe
         if (-not $merge.IsSuccess) { return $merge }
 
-        # File-first cleanup: Fortinet and similar AV often block rapid recursive folder deletes.
-        try {
-            _SSS-CleanAllExportScratchDirsInWorkspace -WorkspaceDir $workspace
-        } catch { }
-        if ($script:_SSS_FsThrottleMs -gt 0) { _SSS-FsThrottle }
+        if ($atomicReplaceEnabled) {
+            $install = _SSS-InstallStatusSetPdf -SourcePdf $renderPdf -OutputPdf $outPdf -AtomicReplace:$true -OperationReport $operationReport -HistoryDir (Join-Path $workspace '_history')
+            if (-not $install.IsSuccess) { return $install }
+        }
+
+        if ($cleanImmediateExportScratch -and -not $useLocalFs) {
+            try { _SSS-RemoveExportDirContentsFileFirst -DirPath $exportWorkDir -RemoveEmptyDir $true } catch { }
+        } elseif ($cleanupEnabled) {
+            _SSS-CleanupExpiredStatusSetStaging -WorkspaceDir $workspace -RetentionDays $retentionDays -OperationReport $operationReport
+            if ($stagingBase -ne $workspace) { _SSS-CleanupExpiredStatusSetStaging -WorkspaceDir $stagingBase -RetentionDays $retentionDays -OperationReport $operationReport }
+        } else {
+            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='cleanup'; reason='cleanup-disabled'; stagingRoot=$stagingBase }
+        }
 
         # Pause before manifest replace: AV often scans the merged PDF in the same folder.
         _SSS-FsThrottle
 
         $manObj = New-StatusSetManifestObject -State $fullState -SheetsFolderDisplay $sourceFolder
+        _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='write-manifest'; path=$manifestPath }
         $mw = Write-StatusSetManifestFile -Path $manifestPath -Manifest $manObj
         if (-not $mw.IsSuccess) { return $mw }
 
@@ -2067,6 +2288,7 @@ function Invoke-StatusSetNativeJob {
         $uploadError = $null
         if ($writeBackToPW) {
             if ($useLocalFs) {
+                _SSS-AddStatusSetOperation -Report $operationReport -Kind 'skips' -Operation @{ action='projectwise-upload'; reason='local-filesystem-source'; documentName=$statusPdfName }
                 $uploadNote = 'SKIPPED_LOCAL_SOURCE_FOLDER'
             } elseif ($pwConnected) {
                 $up = Get-Command -Name Update-PWDocumentFile -ErrorAction SilentlyContinue
@@ -2075,6 +2297,7 @@ function Invoke-StatusSetNativeJob {
                     try {
                         $existing = Get-PWDocumentsBySearch -FolderPath $pwPath -JustThisFolder -DocumentName $statusPdfName -PopulatePath -ErrorAction SilentlyContinue | Select-Object -First 1
                         if ($existing) {
+                            _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='projectwise-upload'; mode='update'; folder=$pwPath; documentName=$statusPdfName }
                             # PW upload is a single-file write to the server, not a local
                             # delete/move; AV throttle does not apply here.
                             _SSS-UpdatePWDocumentFileFromDisk -InputDocument $existing -LocalFilePath $outPdf
@@ -2082,6 +2305,7 @@ function Invoke-StatusSetNativeJob {
                         } else {
                             $newCmd = Get-Command -Name New-PWDocument -ErrorAction SilentlyContinue
                             if ($newCmd) {
+                                _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='projectwise-upload'; mode='create'; folder=$pwPath; documentName=$statusPdfName }
                                 New-PWDocument -FolderPath $pwPath -FilePath $outPdf -DocumentName $statusPdfName -ErrorAction Stop | Out-Null
                                 $uploadNote = 'CREATED'
                             } else {
@@ -2118,6 +2342,7 @@ function Invoke-StatusSetNativeJob {
                 error        = $uploadError
                 pwFolder     = $pwPath
                 useLocalFs   = $useLocalFs
+                operationReport = if ($dryRunOperationReport) { $operationReport } else { $null }
             }
         }
 
@@ -2134,6 +2359,7 @@ function Invoke-StatusSetNativeJob {
             pwExportReuseCount = $pwExportReuseCount
             pwExportFreshCount = $pwExportFreshCount
             pwSheetReusePolicy = $pwSheetReusePolicy
+            operationReport = if ($dryRunOperationReport) { $operationReport } else { $null }
         }
     } finally {
         if ($pwConnected) {
