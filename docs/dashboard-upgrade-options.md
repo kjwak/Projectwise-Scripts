@@ -57,11 +57,6 @@ Best for remote/multi-operator observability, but heavier footprint than needed 
 - The first ANSI render initializes the screen, then subsequent frames repaint only changed rows and clear those rows with ANSI line-clear sequences.
 - Hosts that do not advertise VT/ANSI support are automatically downgraded to `FullRedraw`.
 
-## Phase 1 dashboard layout follow-up
-- Dashboard content is now grouped into bordered sections for at-a-glance scanning: summary, watcher/ProjectWise scan, workers, recent jobs, processor activity, and warnings/errors.
-- Status-oriented rows are colorized so failures/warnings, active work, completed work, and neutral frame chrome are visually distinct.
-- Workers now maintain a per-slot stage message from `WORKER_STAGE` events, making each worker show whether it is polling, locking, running a processor, moving results, or exiting.
-
 ## Success criteria
 - No `Clear-Host` per frame in `DiffAnsi` mode.
 - Stable layout with changed-line repaint only.

@@ -592,34 +592,29 @@ function _Get-RecentJobsTwoColLines([object[]]$Jobs, [int]$Limit) {
 
 function _Get-FrameLines([hashtable]$Cfg) {
     $lines = New-Object System.Collections.Generic.List[string]
-    $width = [Math]::Max(80, (_Get-TerminalWidth))
-    $boxWidth = [Math]::Min(180, [Math]::Max(80, $width - 1))
-    $inner = $boxWidth - 4
+    $width = _Get-TerminalWidth
+    $wideMax = [Math]::Max(48, $width - 2)
     $now = Get-Date
     $dry = $false
     try { $dry = [bool]$Cfg.dryRun } catch { $dry = $false }
 
-    $phaseText = _Compute-PhaseText -Cfg $Cfg
-    $queueLine = 'Queue: no stats yet'
+    $lines.Add(("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry)) | Out-Null
+    $lines.Add(("Config: {0}" -f $AppSettingsPath)) | Out-Null
+
+    $status = 'Status: ' + (_Compute-PhaseText -Cfg $Cfg)
     if ($state.queueStats) {
         $st = $state.queueStats.states
         $p = [int]$st.pending; $ru = [int]$st.running; $su = [int]$st.succeeded; $fa = [int]$st.failed
         $lk = [int]$state.queueStats.locks.count
-        $queueLine = ("Queue: Pend {0} | Run {1} | OK {2} | Fail {3} | Locks {4}" -f $p, $ru, $su, $fa, $lk)
+        $status += ("     Pend {0}  Run {1}  OK {2}  Fail {3}  Locks {4}" -f $p, $ru, $su, $fa, $lk)
     }
+    $lines.Add((_Trunc -Text $status -Max $wideMax)) | Out-Null
 
-    foreach ($line in @(_BoxLines -Title ("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry) -Width $boxWidth -Content @(
-        ('Status: ' + (_Trunc -Text $phaseText -Max ($inner - 8))),
-        $queueLine,
-        ("Config: {0}" -f (_Trunc -Text $AppSettingsPath -Max ($inner - 8)))
-    ))) { $lines.Add($line) | Out-Null }
-
-    $watcherRows = New-Object System.Collections.Generic.List[string]
     $pwInd = _Get-PwSessionIndicator -Cfg $Cfg
-    if ($pwInd) { $watcherRows.Add(('ProjectWise: ' + [string]$pwInd.text)) | Out-Null }
-    $watcherRows.Add(("Root:   {0}" -f $(if ($state.scanRoot) { $state.scanRoot } else { '-' }))) | Out-Null
-    $watcherRows.Add(("Proj:   {0}" -f $(if ($state.scanProject) { $state.scanProject } else { '-' }))) | Out-Null
-    $watcherRows.Add(("Path:   {0}" -f (_Trunc -Text ($(if ($state.scanPath) { $state.scanPath } else { '-' })) -Max ($inner - 8)))) | Out-Null
+    if ($pwInd) { $lines.Add(('ProjectWise: ' + [string]$pwInd.text)) | Out-Null }
+    $lines.Add(("Root:   {0}" -f $(if ($state.scanRoot) { $state.scanRoot } else { '-' }))) | Out-Null
+    $lines.Add(("Proj:   {0}" -f $(if ($state.scanProject) { $state.scanProject } else { '-' }))) | Out-Null
+    $lines.Add(("Path:   {0}" -f (_Trunc -Text ($(if ($state.scanPath) { $state.scanPath } else { '-' })) -Max ($wideMax - 8)))) | Out-Null
 
     $lastPass = ''
     if ($state.lastPassDurationMs) { $lastPass = ("Last pass: {0:0.0}s" -f ([double]$state.lastPassDurationMs / 1000.0)) }
@@ -630,63 +625,44 @@ function _Get-FrameLines([hashtable]$Cfg) {
             if ($start) { $elapsed = [int]((Get-Date).ToUniversalTime() - $start).TotalSeconds } else { $elapsed = 0 }
         } catch { $elapsed = 0 }
         $suffix = if ($lastPass) { "  $lastPass" } else { '' }
-        $watcherRows.Add(("Pass:   #{0}  Elapsed: {1}s{2}" -f [int]$state.passCount, $elapsed, $suffix)) | Out-Null
+        $lines.Add(("Pass:   #{0}  Elapsed: {1}s{2}" -f [int]$state.passCount, $elapsed, $suffix)) | Out-Null
     } elseif ($lastPass) {
-        $watcherRows.Add(("Pass:   #{0}  {1}" -f [int]$state.passCount, $lastPass)) | Out-Null
+        $lines.Add(("Pass:   #{0}  {1}" -f [int]$state.passCount, $lastPass)) | Out-Null
     }
     if ([int]$state.pwFolderTotal -gt 0) {
-        $bar = _Progress-Bar -Current ([int]$state.pwFolderIndex) -Total ([int]$state.pwFolderTotal) -Width 24
-        $watcherRows.Add(("PW:     {0} {1}/{2} folders" -f $bar, [int]$state.pwFolderIndex, [int]$state.pwFolderTotal)) | Out-Null
+        $lines.Add(("PW:     {0}/{1} folders" -f [int]$state.pwFolderIndex, [int]$state.pwFolderTotal)) | Out-Null
+    }
+    if ($state.currentScanStage) {
+        $lines.Add(("Stage:  {0}" -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
     }
     $watcherRows.Add(("Stage:  {0}" -f (_Trunc -Text ($(if ($state.currentScanStage) { [string]$state.currentScanStage } else { '-' })) -Max ($inner - 8)))) | Out-Null
     if ($state.recentScanFolders -and $state.recentScanFolders.Count -gt 0) {
         $tail = @($state.recentScanFolders | Select-Object -Last 3)
-        $watcherRows.Add(("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max ($inner - 8)))) | Out-Null
+        $lines.Add(("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max ($wideMax - 8)))) | Out-Null
     }
-    if ($state.lastHeartbeatUtc) { $watcherRows.Add(("Heartbeat: {0}" -f (_Format-UiTs -IsoOrNull ([string]$state.lastHeartbeatUtc)))) | Out-Null }
-    foreach ($line in @(_BoxLines -Title 'Watcher / ProjectWise scan' -Width $boxWidth -Content ([string[]]$watcherRows.ToArray()))) { $lines.Add($line) | Out-Null }
+    if ($state.lastHeartbeatUtc) { $lines.Add(("Heartbeat: {0}" -f (_Format-UiTs -IsoOrNull ([string]$state.lastHeartbeatUtc)))) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    $workerRows = New-Object System.Collections.Generic.List[string]
-    $maxWorkers = [int]$state.workerSlotMax
-    if ($maxWorkers -le 0) { $maxWorkers = $state.workers.Count }
-    if (-not $state.workers -or $state.workers.Count -eq 0) {
-        $workerRows.Add('No workers spawned yet.') | Out-Null
-    } else {
-        $workerRows.Add(('Slot  PID     Status    Job type        Stage / current step                         Job ID / elapsed')) | Out-Null
-        foreach ($w in @($state.workers.Values | Sort-Object -Property label)) {
-            $st = [string]$w.state
-            $elapsed = '-'
-            if ($w.startedAtUtc) {
-                try {
-                    $s = _Parse-UtcIso -Value ([string]$w.startedAtUtc)
-                    if ($s) { $elapsed = ("{0}s" -f [int]((Get-Date).ToUniversalTime() - $s).TotalSeconds) }
-                } catch { }
-            }
-            $jobId = if ($w.jobId) { [string]$w.jobId } else { '-' }
-            $jobType = if ($w.jobType) { [string]$w.jobType } else { '-' }
-            $stage = _Get-WorkerStageText -Worker $w
-            $workerRows.Add(("{0,-5} {1,-7} {2,-9} {3,-15} {4,-44} {5}" -f [string]$w.label, [int]$w.pid, $st, (_Trunc -Text $jobType -Max 15), (_Trunc -Text $stage -Max 44), (_Trunc -Text ("$jobId / $elapsed") -Max 46))) | Out-Null
-        }
-    }
-    foreach ($line in @(_BoxLines -Title ("Workers ({0}/{1} active slots)" -f [int]$state.activeWorkerSlots, $maxWorkers) -Width $boxWidth -Content ([string[]]$workerRows.ToArray()))) { $lines.Add($line) | Out-Null }
+    foreach ($line in @(_Get-WorkersLines)) { $lines.Add($line) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    $jobRows = New-Object System.Collections.Generic.List[string]
-    foreach ($line in @(_Get-RecentJobsTwoColLines -Jobs @($state.recentJobs) -Limit $RecentJobs)) { $jobRows.Add($line) | Out-Null }
-    foreach ($line in @(_BoxLines -Title ("Recent jobs (last {0} per column)" -f $RecentJobs) -Width $boxWidth -Content ([string[]]$jobRows.ToArray()))) { $lines.Add($line) | Out-Null }
+    $lines.Add(("Recent jobs (last {0} per column)" -f $RecentJobs)) | Out-Null
+    foreach ($line in @(_Get-RecentJobsTwoColLines -Jobs @($state.recentJobs) -Limit $RecentJobs)) { $lines.Add($line) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    $activityRows = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Processor activity') | Out-Null
     if ($state.lastWorkerEvent) {
         $evt = $state.lastWorkerEvent
-        $activityRows.Add(("{0} {1} - {2}" -f [string]$evt.code, [string]$evt.level, [string]$evt.message)) | Out-Null
+        $lines.Add(("  {0} {1} - {2}" -f [string]$evt.code, [string]$evt.level, [string]$evt.message)) | Out-Null
     } else {
-        $activityRows.Add('(no worker activity yet)') | Out-Null
+        $lines.Add('  (no worker activity yet)') | Out-Null
     }
-    foreach ($line in @(_BoxLines -Title 'Processor activity' -Width $boxWidth -Content ([string[]]$activityRows.ToArray()))) { $lines.Add($line) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    $errorRows = New-Object System.Collections.Generic.List[string]
+    $lines.Add(("Recent warnings/errors (last {0})" -f $RecentErrors)) | Out-Null
     $tail = @($state.errors | Select-Object -Last $RecentErrors)
     if ($tail.Count -eq 0) {
-        $errorRows.Add('(none)') | Out-Null
+        $lines.Add('  (none)') | Out-Null
     } else {
         foreach ($e in $tail) {
             $folder = ''
@@ -696,17 +672,16 @@ function _Get-FrameLines([hashtable]$Cfg) {
             $suffix = ''
             if (-not [string]::IsNullOrWhiteSpace($folder)) { $suffix += ('  [' + (_Trunc -Text $folder -Max 80) + ']') }
             if (-not [string]::IsNullOrWhiteSpace($errMsg)) { $suffix += ('  ' + (_Trunc -Text $errMsg -Max 110)) }
-            $errorRows.Add(("{0}  {1,-8}  {2}  {3}{4}" -f [string]$e.ts, [string]$e.level, [string]$e.code, [string]$e.message, $suffix)) | Out-Null
+            $lines.Add(("  {0}  {1,-8}  {2}  {3}{4}" -f [string]$e.ts, [string]$e.level, [string]$e.code, [string]$e.message, $suffix)) | Out-Null
         }
     }
     if ($state.lastError) {
-        $errorRows.Add('') | Out-Null
-        $errorRows.Add('Last fatal error (will retry):') | Out-Null
-        $errorRows.Add(("  {0}" -f [string]$state.lastError)) | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add('Last fatal error (will retry):') | Out-Null
+        $lines.Add(("  {0}" -f [string]$state.lastError)) | Out-Null
     }
-    foreach ($line in @(_BoxLines -Title ("Warnings / errors (last {0})" -f $RecentErrors) -Width $boxWidth -Content ([string[]]$errorRows.ToArray()))) { $lines.Add($line) | Out-Null }
 
-    return @($lines)
+    return @($lines | ForEach-Object { _Trunc -Text ([string]$_) -Max $wideMax })
 }
 
 function _Test-VtSupported() {
@@ -750,7 +725,7 @@ function _Show-Cursor() {
 function _Render-Full([hashtable]$Cfg) {
     Clear-Host
     foreach ($line in @(_Get-FrameLines -Cfg $Cfg)) {
-        Write-Host $line -ForegroundColor (_Get-LineColor -Line $line)
+        Write-Host $line
     }
     $script:_DashPrevFrame = $null
 }
@@ -761,9 +736,7 @@ function _Render-DiffAnsi([hashtable]$Cfg) {
     $frame = @(_Get-FrameLines -Cfg $Cfg)
     if ($null -eq $script:_DashPrevFrame) {
         _Write-Ansi ($esc + '[2J' + $esc + '[H')
-        if ($frame.Count -gt 0) {
-            _Write-Ansi (((@($frame | ForEach-Object { _Colorize-Line -Line ([string]$_) })) -join "`r`n") + "`r`n")
-        }
+        if ($frame.Count -gt 0) { _Write-Ansi (($frame -join "`r`n") + "`r`n") }
         $script:_DashPrevFrame = @($frame)
         return
     }
@@ -775,7 +748,7 @@ function _Render-DiffAnsi([hashtable]$Cfg) {
         $new = if ($i -lt $frame.Count) { [string]$frame[$i] } else { '' }
         if ($old -ne $new) {
             $row = $i + 1
-            _Write-Ansi ("{0}[{1};1H{0}[2K{2}" -f $esc, $row, (_Colorize-Line -Line $new))
+            _Write-Ansi ("{0}[{1};1H{0}[2K{2}" -f $esc, $row, $new)
         }
     }
     _Write-Ansi ("{0}[{1};1H" -f $esc, ([Math]::Max(1, $frame.Count + 1)))
