@@ -169,8 +169,12 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
-        if ($lock.Code -in @('QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT')) {
-            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Lost race for job lock; skipping.' -Data @{ jobId = $jobId; lockCode = [string]$lock.Code }
+        if ($lock.Code -in @('QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT', 'QUEUE_JOB_ALREADY_MOVED', 'QUEUE_JOB_NOT_FOUND')) {
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Lost race for job lock; skipping.' -Data @{
+                jobId = $jobId
+                lockCode = [string]$lock.Code
+                lockMessage = [string]$lock.Message
+            }
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
         throw $lock.Message
@@ -180,6 +184,16 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler
         $loaded = Get-QCJobById -JobId $jobId -Config $Config
         if (-not $loaded.IsSuccess -or -not $loaded.Data.found) { throw "Failed to load locked job: $jobId" }
+        # After a long wait to acquire the job lock, the job may have already
+        # been completed by another worker. Only process jobs that are truly in
+        # running\ after the lock/transition step.
+        if ([string]$loaded.Data.state -ne 'running') {
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Job was already moved to a terminal state; skipping.' -Data @{
+                jobId = $jobId
+                state = [string]$loaded.Data.state
+            }
+            return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
+        }
         $Job = [hashtable]$loaded.Data.job
 
         if ($IsDryRun) {

@@ -835,16 +835,29 @@ function Lock-QCJob {
             return New-QCFailureResult -Code 'QUEUE_LOCK_TIMEOUT' -Message 'Timed out acquiring queue write lock.' -Data @{ lockPath = $lockPath }
         }
         try {
+            # IMPORTANT: a worker may have "selected" this job from pending\, then
+            # lost the per-job lock race and only acquired the lock after the winner
+            # already moved the job to succeeded\ or failed\. In that case, treat the
+            # late lock acquisition as a no-op and release it immediately so we do
+            # not double-process the job.
+            $loc = _QCQJ-FindJobFile -Root $root -JobId $JobId
+            if (-not $loc) {
+                _QCQJ-ReleaseLockFile -LockPath $jobLock
+                return New-QCFailureResult -Code 'QUEUE_JOB_NOT_FOUND' -Message 'Job not found while acquiring lock.' -Data @{ jobId = $JobId }
+            }
+            if ($loc.state -ne 'pending') {
+                _QCQJ-ReleaseLockFile -LockPath $jobLock
+                return New-QCFailureResult -Code 'QUEUE_JOB_ALREADY_MOVED' -Message 'Job is no longer pending; skipping lock.' -Data @{ jobId = $JobId; state = $loc.state; path = $loc.path }
+            }
+
             $pending = _QCQJ-JobFilePath -Root $root -State 'pending' -JobId $JobId
             $running = _QCQJ-JobFilePath -Root $root -State 'running' -JobId $JobId
 
-            if (Test-Path -LiteralPath $pending) {
-                $job = _QCQJ-ReadJobFile -Path $pending
-                $job.status = 'running'
-                $job.startedAtUtc = ([DateTime]::UtcNow.ToString('o'))
-                _QCQJ-WriteJobFileAtomic -Path $pending -Job $job
-                Move-Item -LiteralPath $pending -Destination $running -Force -ErrorAction Stop
-            }
+            $job = _QCQJ-ReadJobFile -Path $pending
+            $job.status = 'running'
+            $job.startedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            _QCQJ-WriteJobFileAtomic -Path $pending -Job $job
+            Move-Item -LiteralPath $pending -Destination $running -Force -ErrorAction Stop
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
         }
