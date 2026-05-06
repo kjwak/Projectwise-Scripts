@@ -635,7 +635,6 @@ function _Get-FrameLines([hashtable]$Cfg) {
     if ($state.currentScanStage) {
         $lines.Add(("Stage:  {0}" -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
     }
-    $watcherRows.Add(("Stage:  {0}" -f (_Trunc -Text ($(if ($state.currentScanStage) { [string]$state.currentScanStage } else { '-' })) -Max ($inner - 8)))) | Out-Null
     if ($state.recentScanFolders -and $state.recentScanFolders.Count -gt 0) {
         $tail = @($state.recentScanFolders | Select-Object -Last 3)
         $lines.Add(("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max ($wideMax - 8)))) | Out-Null
