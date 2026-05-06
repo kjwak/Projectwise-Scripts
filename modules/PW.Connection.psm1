@@ -261,6 +261,161 @@ function Get-PWImmediateChildFolders {
 # PW.Connection.psm1
 # Responsibility: ProjectWise connection health and reconnect logic wrappers.
 
+
+function Invoke-PWAuthenticatedCommand {
+    <#
+    .SYNOPSIS
+    Runs a script block inside a ProjectWise session opened from a key/value credential file.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DatasourceName,
+        [Parameter(Mandatory)]
+        [string]$CredentialPath,
+        [Parameter(Mandatory)]
+        [scriptblock]$ScriptBlock
+    )
+
+    $credRes = Get-PWCredentialFromFile -CredentialPath $CredentialPath
+    if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+
+    $conn = Connect-PW -DatasourceName $DatasourceName -Credential ([pscredential]$credRes.Data.credential)
+    if (-not $conn.IsSuccess) { throw ($conn.Code + ': ' + $conn.Message) }
+
+    try {
+        return (& $ScriptBlock)
+    } finally {
+        [void](Disconnect-PW)
+    }
+}
+
+function Get-PWFolderViewCompat {
+    <#
+    .SYNOPSIS
+    Returns a ProjectWise folder view while handling pwps_dab parameter differences.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    if (-not (_PWC-TryImportPWModules)) {
+        throw 'ProjectWise cmdlets not loaded (Get-PWFolderView missing). Import pwps_dab/pwps or run under ProjectWise PowerShell.'
+    }
+
+    $folderViewCmd = Get-Command -Name Get-PWFolderView -ErrorAction Stop
+    if ($folderViewCmd.Parameters.ContainsKey('InputFolder')) {
+        $f = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction Stop
+        if (-not $f) { throw "Folder not found: $FolderPath" }
+        return ($f | Get-PWFolderView -ErrorAction Stop)
+    }
+
+    return (Get-PWFolderView -FolderPath $FolderPath -ErrorAction Stop)
+}
+
+function Get-PWFolderViewChildren {
+    <#
+    .SYNOPSIS
+    Splits a ProjectWise folder view into folder and document collections.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$FolderView
+    )
+
+    $folders = @()
+    if ($FolderView.Folders) { $folders = @($FolderView.Folders) }
+    elseif ($FolderView.Children) { $folders = @($FolderView.Children | Where-Object { $_ -and $_.FolderPath -and -not $_.DocumentID }) }
+
+    $docs = @()
+    if ($FolderView.Documents) { $docs = @($FolderView.Documents) }
+    elseif ($FolderView.Children) { $docs = @($FolderView.Children | Where-Object { $_ -and ($_.DocumentID -or $_.Name) }) }
+
+    return [pscustomobject]@{
+        Folders   = $folders
+        Documents = $docs
+    }
+}
+
+function Get-PWDocumentsInFolderRaw {
+    <#
+    .SYNOPSIS
+    Returns documents directly inside a ProjectWise folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    if (-not (_PWC-TryImportPWModules)) {
+        throw 'ProjectWise cmdlets not loaded (Get-PWDocumentsBySearch missing). Import pwps_dab/pwps or run under ProjectWise PowerShell.'
+    }
+
+    return @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -PopulatePath -ErrorAction Stop)
+}
+
+function Show-PWFolderBrowser {
+    <#
+    .SYNOPSIS
+    Prints child folders and documents for a ProjectWise folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DatasourceName,
+        [Parameter(Mandatory)]
+        [string]$CredentialPath,
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [Parameter(Mandatory = $false)]
+        [int]$Max = 40
+    )
+
+    Invoke-PWAuthenticatedCommand -DatasourceName $DatasourceName -CredentialPath $CredentialPath -ScriptBlock {
+        Write-Host ("FolderPath: {0}" -f $FolderPath) -ForegroundColor Cyan
+        $view = Get-PWFolderViewCompat -FolderPath $FolderPath
+        $children = Get-PWFolderViewChildren -FolderView $view
+
+        Write-Host ("Folders: {0}" -f @($children.Folders).Count) -ForegroundColor Green
+        $children.Folders | Select-Object -First $Max Name,FolderPath | Format-Table -AutoSize
+        Write-Host ("Documents: {0}" -f @($children.Documents).Count) -ForegroundColor Green
+        $children.Documents | Select-Object -First $Max Name,Description,DocumentID,FullPath | Format-Table -AutoSize
+    }
+}
+
+function Show-PWFolderDocumentList {
+    <#
+    .SYNOPSIS
+    Prints documents and PDF counts for a ProjectWise folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DatasourceName,
+        [Parameter(Mandatory)]
+        [string]$CredentialPath,
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [Parameter(Mandatory = $false)]
+        [int]$Max = 25
+    )
+
+    Invoke-PWAuthenticatedCommand -DatasourceName $DatasourceName -CredentialPath $CredentialPath -ScriptBlock {
+        Write-Host ("FolderPath: {0}" -f $FolderPath) -ForegroundColor Cyan
+        $docs = @(Get-PWDocumentsInFolderRaw -FolderPath $FolderPath)
+        Write-Host ("TotalDocs: {0}" -f $docs.Count) -ForegroundColor Green
+
+        $pdfs = @($docs | Where-Object { $_.Name -match '\.pdf$' })
+        Write-Host ("PdfDocs:   {0}" -f $pdfs.Count) -ForegroundColor Green
+
+        $pdfs | Select-Object -First $Max Name,DocumentID,Description,FullPath | Format-Table -AutoSize
+    }
+}
+
 function Test-PWLoginHealth {
     <#
     .SYNOPSIS
@@ -309,6 +464,12 @@ Export-ModuleMember -Function @(
     'Test-PWDiscoveryCmdlets',
     'Ensure-PWDiscoveryCmdlets',
     'Get-PWImmediateChildFolders',
+    'Invoke-PWAuthenticatedCommand',
+    'Get-PWFolderViewCompat',
+    'Get-PWFolderViewChildren',
+    'Get-PWDocumentsInFolderRaw',
+    'Show-PWFolderBrowser',
+    'Show-PWFolderDocumentList',
     'Test-PWLoginHealth',
     'Connect-PWIfNeeded'
 )
