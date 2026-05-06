@@ -443,7 +443,12 @@ function Invoke-QCPrependProcessor {
                     $connRes2 = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
                     if (-not $connRes2.IsSuccess) { throw ($connRes2.Code + ': ' + $connRes2.Message) }
 
-                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction SilentlyContinue
+                    $discRes = Ensure-PWDiscoveryCmdlets
+                    if (-not $discRes.IsSuccess -or -not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+                        throw ('QC_PREPEND_PW_DISCOVERY_INCOMPLETE: ProjectWise document search cmdlet Get-PWDocumentsBySearch is missing after connect/re-import; cannot clear QC_Archivist trigger tag.')
+                    }
+
+                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction Stop
                     if ($doc) {
                         $currentDesc = $doc.Description
                         if ($null -eq $currentDesc -and $doc.PSObject.Properties['Description']) { $currentDesc = $doc.Description }
