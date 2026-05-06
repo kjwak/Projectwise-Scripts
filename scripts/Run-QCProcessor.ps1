@@ -92,6 +92,21 @@ function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     return ''
 }
 
+function Write-WorkerStage {
+    param(
+        [string]$Stage,
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [string]$Handler = ''
+    )
+    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_STAGE' -Message $Stage -Data @{
+        stage = $Stage
+        jobId = $JobId
+        jobType = $JobType
+        handler = $Handler
+    }
+}
+
 function Move-QCJobWithLockRetries {
     param(
         [string]$JobId,
@@ -119,6 +134,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     $jobType = [string]$Job['type']
 
     if ($IsDryRun -and -not $DryRunAllowStateChange) {
+        Write-WorkerStage -Stage 'dry-run: evaluating read-only dispatch' -JobId $jobId -JobType $jobType -Handler $Handler
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job (read-only, no lock/state changes).' -Data @{
             jobId = $jobId; jobType = $jobType; handler = $Handler
             wouldRun = $true; wouldLock = $false; wouldChangeState = $false
@@ -150,6 +166,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
     }
 
+    Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
         if ($lock.Code -in @('QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT')) {
@@ -160,11 +177,13 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     }
 
     try {
+        Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler
         $loaded = Get-QCJobById -JobId $jobId -Config $Config
         if (-not $loaded.IsSuccess -or -not $loaded.Data.found) { throw "Failed to load locked job: $jobId" }
         $Job = [hashtable]$loaded.Data.job
 
         if ($IsDryRun) {
+            Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job.' -Data @{
                 jobId = $jobId; jobType = [string]$Job['type']; handler = $Handler
                 wouldRun = $true; wouldLock = $true; wouldChangeState = $DryRunAllowStateChange
@@ -172,6 +191,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
         }
 
+        Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
         $proc = Invoke-QCProcessorByType -Job $Job -Config $Config
         if ($proc.IsSuccess) {
             # Capture rich result data so the per-job JSON keeps everything the
@@ -198,6 +218,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
             # write lock twice in a row, doubling contention and producing
             # spurious WORKER_MOVE_FAILED / QUEUE_LOCK_TIMEOUT under load.
+            Write-WorkerStage -Stage 'moving completed job to succeeded' -JobId $jobId -JobType $jobType -Handler $Handler
             $mv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
@@ -238,6 +259,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock
         # cycle, in-memory job preserved with attempts/lastError stamped on disk).
+        Write-WorkerStage -Stage ("moving failed job to $target") -JobId $jobId -JobType $jobType -Handler $Handler
         $fmv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
         if (-not $fmv.IsSuccess) {
             $innerErr = ''
@@ -299,6 +321,7 @@ while ($true) {
     # comparison), so picking it up immediately is safe. Holding it until the entire
     # pass exited starved workers during long sweeps. QC_PREPEND was always
     # immediately eligible.
+    Write-WorkerStage -Stage 'polling queue for pending job'
     $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip)
     if (-not $next.IsSuccess) { throw $next.Message }
     if (-not $next.Data.job) {
@@ -316,6 +339,7 @@ while ($true) {
     $jobId = [string]$job['id']
     $handler = _Resolve-Handler -Job $job -Config $config
     Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{ jobId = $jobId; jobType = [string]$job['type']; dedupeKey = [string]$job['dedupeKey']; handler = $handler }
+    Write-WorkerStage -Stage ("selected; dispatching to $handler") -JobId $jobId -JobType ([string]$job['type']) -Handler $handler
 
     $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
 

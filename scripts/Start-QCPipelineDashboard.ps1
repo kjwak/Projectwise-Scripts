@@ -124,6 +124,104 @@ function _Trunc([string]$Text, [int]$Max) {
     return ($t.Substring(0, $Max - 3) + '...')
 }
 
+function _Repeat-Char([string]$Char, [int]$Count) {
+    if ($Count -le 0) { return '' }
+    return $Char * $Count
+}
+
+function _PadRightVisible([string]$Text, [int]$Width) {
+    $t = if ($null -eq $Text) { '' } else { [string]$Text }
+    if ($t.Length -gt $Width) { $t = _Trunc -Text $t -Max $Width }
+    return $t + (_Repeat-Char -Char ' ' -Count ($Width - $t.Length))
+}
+
+function _BoxLines([string]$Title, [string[]]$Content, [int]$Width) {
+    $w = [Math]::Max(40, $Width)
+    $inner = $w - 4
+    $safeTitle = _SafeAscii $Title
+    $titleText = if ($safeTitle) { ' ' + $safeTitle + ' ' } else { '' }
+    if ($titleText.Length -gt ($w - 4)) { $titleText = ' ' + (_Trunc -Text $safeTitle -Max ($w - 6)) + ' ' }
+    $topFill = [Math]::Max(0, $w - 2 - $titleText.Length)
+    $rows = New-Object System.Collections.Generic.List[string]
+    $rows.Add('+' + $titleText + (_Repeat-Char -Char '-' -Count $topFill) + '+') | Out-Null
+    foreach ($line in @($Content)) {
+        $rows.Add('| ' + (_PadRightVisible -Text (_SafeAscii $line) -Width $inner) + ' |') | Out-Null
+    }
+    $rows.Add('+' + (_Repeat-Char -Char '-' -Count ($w - 2)) + '+') | Out-Null
+    return @($rows)
+}
+
+function _Progress-Bar([int]$Current, [int]$Total, [int]$Width = 20) {
+    if ($Width -lt 4) { $Width = 4 }
+    if ($Total -le 0) { return '[' + (_Repeat-Char -Char '-' -Count $Width) + ']' }
+    $pct = [Math]::Max(0, [Math]::Min(1, ([double]$Current / [double]$Total)))
+    $filled = [int][Math]::Round($pct * $Width)
+    return '[' + (_Repeat-Char -Char '#' -Count $filled) + (_Repeat-Char -Char '-' -Count ($Width - $filled)) + ']'
+}
+
+function _Get-WorkerStageText([hashtable]$Worker) {
+    if (-not $Worker) { return '-' }
+    try { if ($Worker.stage) { return [string]$Worker.stage } } catch { }
+    $code = [string]$Worker.lastCode
+    $msg = [string]$Worker.lastMessage
+    switch ($code) {
+        'WORKER_SPAWN'          { return 'spawning process' }
+        'WORKER_START'          { return 'started; polling queue' }
+        'WORKER_SELECTED'       { return 'processing job' }
+        'WORKER_STAGE'          { if ($msg) { return $msg }; return 'processing stage' }
+        'WORKER_DRYRUN'         { return 'dry-run dispatch check' }
+        'WORKER_DRYRUN_HANDLER' { return 'dry-run handler check' }
+        'WORKER_MOVE_FAILED'    { return 'moving job state failed' }
+        'WORKER_SUCCEEDED'      { return 'completed job; polling queue' }
+        'WORKER_FAILED'         { return 'job failed; polling queue' }
+        'WORKER_NO_JOB'         { return 'idle; waiting for pending jobs' }
+        'WORKER_LOCK_RACE'      { return 'lock race; trying next job' }
+        'WORKER_BUDGET'         { return 'max-jobs budget reached' }
+        'WORKER_LEASE'          { return 'lease budget reached' }
+        default                 { if ($msg) { return $msg }; return '-' }
+    }
+}
+
+function _Get-LineColor([string]$Line) {
+    $l = [string]$Line
+    if ($l -match '^\+') { return 'DarkGray' }
+    if ($l -match '(?i)\b(ERROR|failed|Fail [1-9]|WORKER_FAILED|MOVE_FAILED)\b') { return 'Red' }
+    if ($l -match '(?i)\b(warning|WARN)\b') { return 'Yellow' }
+    if ($l -match '(?i)\b(succeeded|SESSION ACTIVE|OK [1-9]|completed job)\b') { return 'Green' }
+    if ($l -match '(?i)\b(RUNNING|processing|querying|scanning|CONNECTING|Run [1-9])\b') { return 'Cyan' }
+    if ($l -match '(?i)\b(PENDING|Pend [1-9]|waiting|idle)\b') { return 'Yellow' }
+    if ($l -match '^\| (QC Pipeline Dashboard|Status:|Watcher|Workers|Recent|Processor|Warnings)') { return 'White' }
+    return 'Gray'
+}
+
+function _AnsiForColor([string]$Color) {
+    switch ([string]$Color) {
+        'Black'     { return '30' }
+        'DarkRed'   { return '31' }
+        'DarkGreen' { return '32' }
+        'DarkYellow'{ return '33' }
+        'DarkBlue'  { return '34' }
+        'DarkMagenta'{ return '35' }
+        'DarkCyan'  { return '36' }
+        'Gray'      { return '37' }
+        'DarkGray'  { return '90' }
+        'Red'       { return '91' }
+        'Green'     { return '92' }
+        'Yellow'    { return '93' }
+        'Blue'      { return '94' }
+        'Magenta'   { return '95' }
+        'Cyan'      { return '96' }
+        'White'     { return '97' }
+        default     { return '37' }
+    }
+}
+
+function _Colorize-Line([string]$Line) {
+    $esc = $script:_DashEsc
+    $color = _AnsiForColor -Color (_Get-LineColor -Line $Line)
+    return ("{0}[{1}m{2}{0}[0m" -f $esc, $color, $Line)
+}
+
 function _Parse-UtcIso([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     try {
@@ -537,6 +635,7 @@ function _Get-FrameLines([hashtable]$Cfg) {
     if ($state.currentScanStage) {
         $lines.Add(("Stage:  {0}" -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
     }
+    $watcherRows.Add(("Stage:  {0}" -f (_Trunc -Text ($(if ($state.currentScanStage) { [string]$state.currentScanStage } else { '-' })) -Max ($inner - 8)))) | Out-Null
     if ($state.recentScanFolders -and $state.recentScanFolders.Count -gt 0) {
         $tail = @($state.recentScanFolders | Select-Object -Last 3)
         $lines.Add(("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max ($wideMax - 8)))) | Out-Null
@@ -576,7 +675,6 @@ function _Get-FrameLines([hashtable]$Cfg) {
             $lines.Add(("  {0}  {1,-8}  {2}  {3}{4}" -f [string]$e.ts, [string]$e.level, [string]$e.code, [string]$e.message, $suffix)) | Out-Null
         }
     }
-
     if ($state.lastError) {
         $lines.Add('') | Out-Null
         $lines.Add('Last fatal error (will retry):') | Out-Null
@@ -827,6 +925,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                     state = 'IDLE'
                                     lastCode = [string]$o.code
                                     lastMessage = [string]$o.message
+                                    stage = ''
                                     startedAtUtc = $null
                                     updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
                                 }
@@ -835,6 +934,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             if ($wpid -gt 0) { $w.pid = $wpid }
                             $w.lastCode = [string]$o.code
                             $w.lastMessage = [string]$o.message
+                            try { if ($o.data -and $o.data.stage) { $w.stage = [string]$o.data.stage } } catch { }
                             $w.updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
                             switch ([string]$o.code) {
                                 'WORKER_START'   { $w.state = 'IDLE' }
@@ -844,14 +944,23 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                         if ($o.data.jobId)   { $w.jobId   = [string]$o.data.jobId }
                                         if ($o.data.jobType) { $w.jobType = [string]$o.data.jobType }
                                     }
+                                    $w.stage = 'selected job; preparing processor'
                                     $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
                                 }
-                                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.startedAtUtc = $null }
-                                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.startedAtUtc = $null }
-                                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = '' }
-                                'WORKER_LOCK_RACE' { $w.state = 'IDLE' }
-                                'WORKER_BUDGET'    { $w.state = 'EXITING' }
-                                'WORKER_LEASE'     { $w.state = 'EXITING' }
+                                'WORKER_STAGE' {
+                                    if ($o.data) {
+                                        if ($o.data.jobId)   { $w.jobId   = [string]$o.data.jobId }
+                                        if ($o.data.jobType) { $w.jobType = [string]$o.data.jobType }
+                                    }
+                                    $w.state = if ($w.jobId) { 'RUNNING' } else { 'IDLE' }
+                                    if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o') }
+                                }
+                                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
+                                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
+                                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'idle; waiting for pending jobs' }
+                                'WORKER_LOCK_RACE' { $w.state = 'IDLE'; $w.stage = 'lock race; trying next job' }
+                                'WORKER_BUDGET'    { $w.state = 'EXITING'; $w.stage = 'max-jobs budget reached' }
+                                'WORKER_LEASE'     { $w.state = 'EXITING'; $w.stage = 'lease budget reached' }
                             }
                         } catch { }
                     }
@@ -1129,6 +1238,7 @@ function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
             state = 'STARTING'
             lastCode = 'WORKER_SPAWN'
             lastMessage = 'Worker process starting.'
+            stage = 'spawning process'
             startedAtUtc = $null
             updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
