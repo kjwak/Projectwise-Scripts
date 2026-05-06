@@ -47,12 +47,23 @@ if (-not $recentRes.IsSuccess) { throw $recentRes.Message }
 
 Write-Host ""
 Write-Host "Recent jobs (newest first):" -ForegroundColor Cyan
-foreach ($j in @($recentRes.Data.jobs)) {
-    $id = [string]$j.id
-    $state = [string]$j.state
-    $typ = [string]$j.type
-    $ts = [string]$j.lastWriteTimeUtc
-    Write-Host ("{0}  {1,-9}  {2,-12}  {3}" -f $ts, $state, $typ, $id)
+foreach ($entry in @($recentRes.Data.jobs)) {
+    # Get-QCRecentJobs returns entries shaped like: @{ state; job; lastWriteTimeUtc }.
+    # For backward compatibility, also tolerate a flat job object.
+    $job = $null
+    try { if ($entry -and $entry.job) { $job = $entry.job } } catch { $job = $null }
+    if (-not $job) { $job = $entry }
+
+    $id = ''
+    $typ = ''
+    $state = ''
+    $ts = ''
+    try { if ($job -and $job.id) { $id = [string]$job.id } } catch { }
+    try { if ($job -and $job.type) { $typ = [string]$job.type } } catch { }
+    try { if ($entry -and $entry.state) { $state = [string]$entry.state } elseif ($job -and $job.status) { $state = [string]$job.status } } catch { }
+    try { if ($entry -and $entry.lastWriteTimeUtc) { $ts = [string]$entry.lastWriteTimeUtc } elseif ($job -and $job.updatedAtUtc) { $ts = [string]$job.updatedAtUtc } } catch { }
+
+    Write-Host ("{0}  {1,-9}  {2,-14}  {3}" -f $ts, $state, $typ, $id)
 }
 Write-Host ""
 

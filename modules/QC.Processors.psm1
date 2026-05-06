@@ -77,7 +77,15 @@ function _QCP-ResolveSourcePdf([hashtable]$Job) {
 function _QCP-GetQpdfExePath([hashtable]$Config) {
     if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
         $qc = _QCP-ToHashtable $Config.qcPrepend
-        if ($qc -and $qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { return [string]$qc.qpdfExePath }
+        if ($qc -and $qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) {
+            $p = [string]$qc.qpdfExePath
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($p)) {
+                    return (Join-Path (_QCP-GetRepoRoot) $p)
+                }
+            } catch { }
+            return $p
+        }
     }
     $default = Join-Path (_QCP-GetRepoRoot) 'tools\qpdf\bin\qpdf.exe'
     return $default
@@ -371,6 +379,13 @@ function Invoke-QCPrependProcessor {
 
         $qpdfExe = $null
         if ($qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { $qpdfExe = [string]$qc.qpdfExePath }
+        if (-not (_QCP-IsNullOrWhiteSpace $qpdfExe)) {
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                    $qpdfExe = Join-Path $repoRoot $qpdfExe
+                }
+            } catch { }
+        }
         if (_QCP-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
         $overlayExe = $null
         if ($qc.ContainsKey('overlayExePath') -and $qc.overlayExePath) { $overlayExe = [string]$qc.overlayExePath }
@@ -443,7 +458,12 @@ function Invoke-QCPrependProcessor {
                     $connRes2 = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
                     if (-not $connRes2.IsSuccess) { throw ($connRes2.Code + ': ' + $connRes2.Message) }
 
-                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction SilentlyContinue
+                    $discRes = Ensure-PWDiscoveryCmdlets
+                    if (-not $discRes.IsSuccess -or -not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+                        throw ('QC_PREPEND_PW_DISCOVERY_INCOMPLETE: ProjectWise document search cmdlet Get-PWDocumentsBySearch is missing after connect/re-import; cannot clear QC_Archivist trigger tag.')
+                    }
+
+                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction Stop
                     if ($doc) {
                         $currentDesc = $doc.Description
                         if ($null -eq $currentDesc -and $doc.PSObject.Properties['Description']) { $currentDesc = $doc.Description }

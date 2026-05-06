@@ -979,14 +979,24 @@ if ($shouldWriteBack) {
     if ($existingDoc) {
       Write-Log "Updating existing StatusSet document in PW..."
       $updateCmd = Get-Command Update-PWDocumentFile
-      $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
-        $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable')
-      } | Select-Object -First 1
+
+      # pwps_dab 24+ uses: -InputDocuments and -NewFilePathName
+      $docParamName = if ($updateCmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' } elseif ($updateCmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' } else { $null }
+      if (-not $docParamName) { throw "Update-PWDocumentFile: could not find document input parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
+
+      $fileParamName = if ($updateCmd.Parameters.ContainsKey('NewFilePathName')) { 'NewFilePathName' } else { $null }
       if (-not $fileParamName) {
-        $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -ne 'InputDocument' } | Select-Object -First 1
+        $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
+          $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable')
+        } | Select-Object -First 1
       }
-      if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter." }
-      $updateArgs = @{ InputDocument = $existingDoc; $fileParamName = $outPdf }
+      if (-not $fileParamName) {
+        $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -notin @('InputDocument','InputDocuments') } | Select-Object -First 1
+      }
+      if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
+
+      $docArg = if ($docParamName -eq 'InputDocuments') { @($existingDoc) } else { $existingDoc }
+      $updateArgs = @{ $docParamName = $docArg; $fileParamName = $outPdf }
       Update-PWDocumentFile @updateArgs | Out-Null
       Write-Log "Updated StatusSet document in PW."
     } else {

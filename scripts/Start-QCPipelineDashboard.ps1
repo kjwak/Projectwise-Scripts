@@ -264,6 +264,68 @@ function _Get-DocumentsAreaTwoSegments([string]$AnyPath) {
     return $null
 }
 
+function _TryGet-StatusSetProjectNameFromFolder([hashtable]$Cfg, [string]$FolderPath) {
+    # Extract "project name" from paths like:
+    #   Documents\<AzDot root>\<project...>\CADD\Sheets
+    # using appsettings watchList.roots[*].path + .sheetsPathFromProject + .projectDepth.
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
+    if (-not $Cfg) { return $null }
+
+    $norm = ([string]$FolderPath).Trim() -replace '/', '\'
+    $norm = $norm.TrimEnd('\')
+
+    $roots = $null
+    try {
+        if ($Cfg.ContainsKey('projectWise') -and $Cfg.projectWise -and
+            $Cfg.projectWise.ContainsKey('watchList') -and $Cfg.projectWise.watchList -and
+            $Cfg.projectWise.watchList.ContainsKey('roots') -and $Cfg.projectWise.watchList.roots) {
+            $roots = @($Cfg.projectWise.watchList.roots)
+        }
+    } catch { $roots = $null }
+    if (-not $roots) { return $null }
+
+    foreach ($r in $roots) {
+        $rootPath = $null
+        $sheetsRel = $null
+        $depth = 1
+        try { if ($r.path) { $rootPath = [string]$r.path } } catch { $rootPath = $null }
+        try { if ($r.sheetsPathFromProject) { $sheetsRel = [string]$r.sheetsPathFromProject } } catch { $sheetsRel = $null }
+        try { if ($r.projectDepth) { $depth = [int]$r.projectDepth } } catch { $depth = 1 }
+        if (-not $rootPath) { continue }
+        if ($depth -lt 1) { $depth = 1 }
+
+        $rootNorm = ([string]$rootPath).Trim() -replace '/', '\'
+        $rootNorm = $rootNorm.TrimEnd('\')
+        $prefix = $rootNorm + '\'
+        if (-not ($norm.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
+
+        $rel = $norm.Substring($prefix.Length)
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+
+        if ($sheetsRel) {
+            $suf = ([string]$sheetsRel).Trim() -replace '/', '\'
+            $suf = $suf.Trim('\')
+            if ($suf) {
+                $suffix = '\' + $suf
+                if ($rel.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) {
+                    $rel = $rel.Substring(0, $rel.Length - $suffix.Length)
+                }
+            }
+        }
+
+        $rel = $rel.Trim('\')
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+
+        $parts = @($rel -split '\\' | Where-Object { $_ -ne '' })
+        if ($parts.Count -le 0) { continue }
+        $take = [Math]::Min([int]$depth, $parts.Count)
+        $proj = ($parts | Select-Object -First $take) -join '\'
+        if (-not [string]::IsNullOrWhiteSpace($proj)) { return $proj }
+    }
+
+    return $null
+}
+
 function _Format-QCPrependJobLine([object]$Entry, [int]$ColWidth) {
     if (-not $Entry) { return '' }
     $ts = _Format-UiTs -IsoOrNull ([string]$Entry.lastWriteTimeUtc)
@@ -302,7 +364,7 @@ function _Format-QCPrependJobLine([object]$Entry, [int]$ColWidth) {
     return _Trunc -Text ("$head $tail") -Max $ColWidth
 }
 
-function _Format-StatusSetJobLine([object]$Entry, [int]$ColWidth) {
+function _Format-StatusSetJobLine([hashtable]$Cfg, [object]$Entry, [int]$ColWidth) {
     if (-not $Entry) { return '' }
     $ts = _Format-UiTs -IsoOrNull ([string]$Entry.lastWriteTimeUtc)
     $state = [string]$Entry.state
@@ -317,13 +379,18 @@ function _Format-StatusSetJobLine([object]$Entry, [int]$ColWidth) {
         }
     } catch { }
     $folder = _SafeAscii $folder
-    $segs = _Get-DocumentsAreaTwoSegments $folder
-    $dir = if ($segs) { ($segs[0] + '/' + $segs[1]) } else { '' }
-    if (-not $dir -and $folder) {
-        $norm = $folder.Trim() -replace '\\', '/'
-        $parts = @($norm -split '/' | Where-Object { $_ -ne '' })
-        if ($parts.Count -ge 2) { $dir = $parts[$parts.Count - 2] + '/' + $parts[$parts.Count - 1] }
-        else { $dir = $norm }
+    $proj = _TryGet-StatusSetProjectNameFromFolder -Cfg $Cfg -FolderPath $folder
+    $dir = if ($proj) { $proj } else { '' }
+    if (-not $dir) {
+        # Fallback: show Documents\<root>\<project> (or last two segments) if we can't match a watch root.
+        $segs = _Get-DocumentsAreaTwoSegments $folder
+        $dir = if ($segs) { ($segs[0] + '/' + $segs[1]) } else { '' }
+        if (-not $dir -and $folder) {
+            $norm = $folder.Trim() -replace '\\', '/'
+            $parts = @($norm -split '/' | Where-Object { $_ -ne '' })
+            if ($parts.Count -ge 2) { $dir = $parts[$parts.Count - 2] + '/' + $parts[$parts.Count - 1] }
+            else { $dir = $norm }
+        }
     }
     $prefix = ("{0,-9} {1} " -f $state, $ts)
     if ($ColWidth -le ($prefix.Length + 2)) { return _Trunc -Text $prefix.TrimEnd() -Max $ColWidth }
@@ -584,7 +651,7 @@ function _Get-RecentJobsTwoColLines([object[]]$Jobs, [int]$Limit) {
         $lJob = if ($i -lt $qcJobs.Count) { $qcJobs[$i] } else { $null }
         $rJob = if ($i -lt $stJobs.Count) { $stJobs[$i] } else { $null }
         $lText = _Format-QCPrependJobLine -Entry $lJob -ColWidth $colWidth
-        $rText = _Format-StatusSetJobLine -Entry $rJob -ColWidth $colWidth
+        $rText = _Format-StatusSetJobLine -Cfg $script:_DashCfg -Entry $rJob -ColWidth $colWidth
         $lines.Add((_Format-TwoColumns -Left $lText -Right $rText -ColWidth $colWidth)) | Out-Null
     }
     return @($lines)
@@ -1251,6 +1318,8 @@ function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
 while ($true) {
     try {
         $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath -DryRun:$DryRun.IsPresent
+        # Make config available to render helpers without threading it through every call.
+        $script:_DashCfg = $cfg
         $wc = _Get-WorkersConfig -Cfg $cfg
         $state.workerSlotMax = [int]$wc.maxParallel
 

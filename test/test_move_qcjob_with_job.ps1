@@ -85,9 +85,9 @@ try {
     _Assert (($idxSucc -gt 0) -and ($idxFailHeader -gt $idxSucc)) "Success block found before failure block"
     $succBlock = $wsrc.Substring($idxSucc, $idxFailHeader - $idxSucc)
     _Assert ($succBlock -notmatch [regex]::Escape('Update-QCJob -Job $Job -Config $Config')) "Success path no longer invokes Update-QCJob"
-    _Assert ($succBlock -match [regex]::Escape("Move-QCJob -JobId `$jobId -FromState 'running' -ToState 'succeeded' -Config `$Config -Job `$Job")) "Success path uses Move-QCJob -Job"
+    _Assert ($succBlock -match [regex]::Escape("Move-QCJobWithLockRetries -JobId `$jobId -FromState 'running' -ToState 'succeeded' -Config `$Config -Job `$Job")) "Success path uses Move-QCJobWithLockRetries (Move-QCJob -Job under one lock cycle)"
 
-    $idxFmv = $wsrc.IndexOf("Move-QCJob -JobId `$jobId -FromState 'running' -ToState `$target -Config `$Config -Job `$Job")
+    $idxFmv = $wsrc.IndexOf("Move-QCJobWithLockRetries -JobId `$jobId -FromState 'running' -ToState `$target -Config `$Config -Job `$Job")
     _Assert ($idxFmv -gt 0)                                      "Failure path uses Move-QCJob -Job to target"
     _Assert ($wsrc -notmatch [regex]::Escape("Set-QCJobStatus -JobId `$jobId -Status `$target")) "Failure path no longer calls Set-QCJobStatus before move"
 

@@ -3,6 +3,15 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
+function _PWC-TestPWDiscoveryCmdlets {
+    [CmdletBinding()]
+    param()
+
+    # pwps_dab discovery/listing can appear independently of pwps connection cmdlets.
+    # Either command is enough to prove the current runspace still has document/folder discovery.
+    return [bool]((Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue) -or (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue))
+}
+
 function _PWC-TryImportPWModules {
     <#
     .SYNOPSIS
@@ -10,34 +19,68 @@ function _PWC-TryImportPWModules {
     .DESCRIPTION
     Dashboard/watcher runs with -NoProfile on some hosts (servers, services), so modules that
     used to be present via user profile are missing. Try to import modules explicitly and
-    provide actionable diagnostics if unavailable.
+    provide actionable diagnostics if unavailable. pwps provides connection cmdlets while
+    pwps_dab provides folder/document discovery; both may need to be re-imported in a worker
+    runspace after opening a connection.
     #>
     [CmdletBinding()]
     param()
 
-    # If Open-PWConnection is already available, we're good.
-    if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+    $hasConnection = [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
+    $hasDiscovery = _PWC-TestPWDiscoveryCmdlets
+    if ($hasConnection -and $hasDiscovery) { return $true }
 
-    $imported = $false
     foreach ($name in @('pwps_dab','pwps')) {
-        try {
-            Import-Module $name -Force -ErrorAction Stop | Out-Null
-            $imported = $true
-        } catch { }
-        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        try { Import-Module $name -Force -ErrorAction Stop | Out-Null } catch { }
+        $hasConnection = [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
+        $hasDiscovery = _PWC-TestPWDiscoveryCmdlets
+        if ($hasConnection -and $hasDiscovery) { return $true }
     }
 
     # Common explicit path (Bentley install) if modules aren't in PSModulePath.
     $pwpsPath = 'C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1'
     if (Test-Path -LiteralPath $pwpsPath) {
-        try {
-            Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null
-            $imported = $true
-        } catch { }
-        if (Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue) { return $true }
+        try { Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null } catch { }
     }
 
-    return $false
+    return [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
+}
+
+function Test-PWDiscoveryCmdlets {
+    <#
+    .SYNOPSIS
+    Returns true when pwps_dab discovery/listing cmdlets are available in this runspace.
+    #>
+    [CmdletBinding()]
+    param()
+
+    return (_PWC-TestPWDiscoveryCmdlets)
+}
+
+function Ensure-PWDiscoveryCmdlets {
+    <#
+    .SYNOPSIS
+    Ensures ProjectWise discovery/listing cmdlets from pwps_dab are available.
+    .DESCRIPTION
+    Open-PWConnection can succeed with only pwps loaded, or the runspace can effectively lose
+    pwps_dab after connect. Force re-import pwps_dab and fail distinctly if folder/document
+    discovery is still missing so callers do not mistake cmdlet loss for an empty datasource.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (_PWC-TestPWDiscoveryCmdlets) {
+        return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available.' -Data @{ discoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
+    }
+
+    try { Import-Module pwps_dab -Force -ErrorAction Stop | Out-Null } catch { }
+
+    if (_PWC-TestPWDiscoveryCmdlets) {
+        return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available after re-import.' -Data @{ discoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
+    }
+
+    $msg = 'ProjectWise connected, but pwps_dab discovery cmdlets are missing (Get-PWFolderView/Get-PWDocumentsBySearch). Re-import pwps_dab or run the worker under ProjectWise PowerShell/MTA; do not treat this as an empty folder.'
+    return New-QCFailureResult -Code 'PW_DISCOVERY_INCOMPLETE' -Message $msg -Data @{ psModulePath = $env:PSModulePath; missingDiscoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
 }
 
 function _PWC-IsNullOrWhiteSpace([object]$Value) {
@@ -93,7 +136,11 @@ function Connect-PW {
 
     try {
         Open-PWConnection -DatasourceName $DatasourceName -UserName $Credential.UserName -Password $Credential.Password -WarningAction SilentlyContinue | Out-Null
-        return New-QCSuccessResult -Code 'PW_CONNECTED' -Message 'ProjectWise connected.' -Data @{ datasourceName = $DatasourceName; userName = $Credential.UserName }
+        $discRes = Ensure-PWDiscoveryCmdlets
+        if (-not $discRes.IsSuccess) {
+            return New-QCFailureResult -Code 'PW_DISCOVERY_INCOMPLETE' -Message $discRes.Message -Data @{ datasourceName = $DatasourceName; userName = $Credential.UserName; discovery = $discRes.Data }
+        }
+        return New-QCSuccessResult -Code 'PW_CONNECTED' -Message 'ProjectWise connected.' -Data @{ datasourceName = $DatasourceName; userName = $Credential.UserName; discovery = $discRes.Data }
     } catch {
         return New-QCFailureResult -Code 'PW_CONNECT_FAILED' -Message 'ProjectWise connection failed.' -Data @{ datasourceName = $DatasourceName; userName = $Credential.UserName; errorMessage = $_.Exception.Message }
     }
@@ -138,6 +185,16 @@ function Get-PWImmediateChildFolders {
         return @()
     }
 
+    function _PwcGetFolderView([string]$p) {
+        $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+            $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction Stop
+            if (-not $f) { throw "Folder not found: $p" }
+            return ($f | Get-PWFolderView -ErrorAction Stop)
+        }
+        return (Get-PWFolderView -FolderPath $p -ErrorAction Stop)
+    }
+
     function _PwcPwProp([object]$Obj, [string]$Name) {
         try {
             if ($null -eq $Obj -or -not $Obj.PSObject -or -not $Obj.PSObject.Properties[$Name]) { return $null }
@@ -154,12 +211,14 @@ function Get-PWImmediateChildFolders {
 
     $view = $null
     try {
-        $view = Get-PWFolderView -FolderPath $normalized -ErrorAction Stop
+        $view = _PwcGetFolderView $normalized
     } catch {
         try {
             $folderObj = Get-PWFolders -FolderPath $normalized -JustOne -ErrorAction SilentlyContinue
             if ($folderObj) {
-                $view = $folderObj | Get-PWFolderView -ErrorAction SilentlyContinue
+                try {
+                    $view = _PwcGetFolderView $normalized
+                } catch { }
             }
         } catch { }
     }
@@ -247,6 +306,8 @@ Export-ModuleMember -Function @(
     'Get-PWCredentialFromFile',
     'Connect-PW',
     'Disconnect-PW',
+    'Test-PWDiscoveryCmdlets',
+    'Ensure-PWDiscoveryCmdlets',
     'Get-PWImmediateChildFolders',
     'Test-PWLoginHealth',
     'Connect-PWIfNeeded'

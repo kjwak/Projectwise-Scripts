@@ -539,14 +539,24 @@ Write-Log "Updating history document content in PW..."
 if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content from merged PDF")) {
 
   $updateCmd = Get-Command Update-PWDocumentFile
-  $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
-    $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','OutVariable','OutBuffer','PipelineVariable')
-  } | Select-Object -First 1
+
+  # pwps_dab 24+ uses: -InputDocuments and -NewFilePathName
+  $docParamName = if ($updateCmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' } elseif ($updateCmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' } else { $null }
+  if (-not $docParamName) { throw "Update-PWDocumentFile: could not find document input parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
+
+  $fileParamName = if ($updateCmd.Parameters.ContainsKey('NewFilePathName')) { 'NewFilePathName' } else { $null }
   if (-not $fileParamName) {
-    $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -ne 'InputDocument' } | Select-Object -First 1
+    $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
+      $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','OutVariable','OutBuffer','PipelineVariable')
+    } | Select-Object -First 1
+  }
+  if (-not $fileParamName) {
+    $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -notin @('InputDocument','InputDocuments') } | Select-Object -First 1
   }
   if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
-  $pwUpdateFileParams = @{ InputDocument = $historyDoc; $fileParamName = $localMerged }
+
+  $docArg = if ($docParamName -eq 'InputDocuments') { @($historyDoc) } else { $historyDoc }
+  $pwUpdateFileParams = @{ $docParamName = $docArg; $fileParamName = $localMerged }
   Update-PWDocumentFile @pwUpdateFileParams | Out-Null
 
   Write-Log "Updated history document."

@@ -103,6 +103,36 @@ function _SSS-IsNullOrWhiteSpace([object]$Value) {
     return $false
 }
 
+function _SSS-EnsurePWDiscoveryCmdlets {
+    [CmdletBinding()]
+    param()
+
+    if (Get-Command -Name Ensure-PWDiscoveryCmdlets -ErrorAction SilentlyContinue) {
+        return Ensure-PWDiscoveryCmdlets
+    }
+
+    if ((Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue) -or (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+        return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available.' -Data @{}
+    }
+
+    try { Import-Module pwps_dab -Force -ErrorAction Stop | Out-Null } catch { }
+    if ((Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue) -or (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+        return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available after re-import.' -Data @{}
+    }
+
+    return New-QCFailureResult -Code 'STATUS_SET_PW_DISCOVERY_INCOMPLETE' -Message 'ProjectWise discovery cmdlets are missing (Get-PWFolderView/Get-PWDocumentsBySearch); cannot distinguish an empty datasource from an incomplete pwps_dab runspace.' -Data @{ missingDiscoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch'); psModulePath = $env:PSModulePath }
+}
+
+function _SSS-TestPWDiscoveryCmdlets {
+    [CmdletBinding()]
+    param()
+
+    if (Get-Command -Name Test-PWDiscoveryCmdlets -ErrorAction SilentlyContinue) {
+        return [bool](Test-PWDiscoveryCmdlets)
+    }
+    return [bool]((Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue) -or (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue))
+}
+
 function _SSS-EnsureDir([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
@@ -783,6 +813,13 @@ function Invoke-StatusSetNativeJob {
         }
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (-not (_SSS-IsNullOrWhiteSpace $qpdfExe)) {
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                $qpdfExe = Join-Path $repoRoot $qpdfExe
+            }
+        } catch { }
+    }
     if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
     _SSS-AssertCommand $qpdfExe
 
@@ -1340,6 +1377,21 @@ function Get-StatusSetPWFolderState {
         [Parameter(Mandatory)]
         [bool]$OneLevelDeep
     )
+    $discRes = _SSS-EnsurePWDiscoveryCmdlets
+    if (-not $discRes.IsSuccess) {
+        return @{
+            folderStateHash = ''
+            pairedCount = 0
+            pdfCount = 0
+            dgnCount = 0
+            stableInput = ''
+            orderKey = ''
+            pairedSheets = @()
+            orderedPdfDocuments = @()
+            discoveryIncomplete = $true
+            discoveryError = $discRes
+        }
+    }
     return _SSS-BuildPWStatusSetState -FolderPath $FolderPath -OneLevelDeep $OneLevelDeep -IncludeOrderedPdfDocuments:$false
 }
 
@@ -1952,6 +2004,13 @@ function Invoke-StatusSetNativeJob {
         }
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (-not (_SSS-IsNullOrWhiteSpace $qpdfExe)) {
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                $qpdfExe = Join-Path $repoRoot $qpdfExe
+            }
+        } catch { }
+    }
     if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
 
     $forceRebuild = $false
@@ -2064,10 +2123,17 @@ function Invoke-StatusSetNativeJob {
                 orderedPdfDocuments = @()
             }
         } else {
+            $discRes = _SSS-EnsurePWDiscoveryCmdlets
+            if (-not $discRes.IsSuccess) {
+                return New-QCFailureResult -Code 'STATUS_SET_PW_DISCOVERY_INCOMPLETE' -Message $discRes.Message -Data @{ folder = $sourceFolder; pwPath = $pwPath; oneLevelDeep = $oneLevelDeep; useLocalFs = $useLocalFs; discovery = $discRes.Data }
+            }
             $fullState = _SSS-BuildPWStatusSetState -FolderPath $pwPath -OneLevelDeep $oneLevelDeep -IncludeOrderedPdfDocuments:$true
         }
 
         if ([int]$fullState.pairedCount -le 0) {
+            if (-not $useLocalFs -and (-not (_SSS-TestPWDiscoveryCmdlets))) {
+                return New-QCFailureResult -Code 'STATUS_SET_PW_DISCOVERY_INCOMPLETE' -Message 'ProjectWise returned zero pairs while pwps_dab discovery cmdlets are missing; treating as incomplete discovery instead of no pairs.' -Data @{ folder = $sourceFolder; pwPath = $pwPath; oneLevelDeep = $oneLevelDeep; useLocalFs = $useLocalFs; pairedCount = [int]$fullState.pairedCount; pdfCount = [int]$fullState.pdfCount; dgnCount = [int]$fullState.dgnCount }
+            }
             return New-QCFailureResult -Code 'STATUS_SET_NO_PAIRS' -Message 'No PDF/DGN pairs found for status set.' -Data @{ folder = $sourceFolder; oneLevelDeep = $oneLevelDeep; useLocalFs = $useLocalFs }
         }
 

@@ -10,11 +10,27 @@ No ProjectWise writes are performed.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$AppSettingsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'appsettings.json')
+    [string]$AppSettingsPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+
+function _Get-ThisScriptDir {
+    try {
+        if ($PSScriptRoot -and -not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $PSScriptRoot }
+    } catch { }
+    try {
+        $p = $MyInvocation.MyCommand.Path
+        if ($p -and (Test-Path -LiteralPath $p)) { return (Split-Path -Parent $p) }
+    } catch { }
+    return (Get-Location).Path
+}
+
+$scriptDir = _Get-ThisScriptDir
+$repoRoot = Split-Path -Parent $scriptDir
+if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
+    $AppSettingsPath = (Join-Path $repoRoot 'appsettings.json')
+}
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
