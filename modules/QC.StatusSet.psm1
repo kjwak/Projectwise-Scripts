@@ -813,6 +813,13 @@ function Invoke-StatusSetNativeJob {
         }
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (-not (_SSS-IsNullOrWhiteSpace $qpdfExe)) {
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                $qpdfExe = Join-Path $repoRoot $qpdfExe
+            }
+        } catch { }
+    }
     if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
     _SSS-AssertCommand $qpdfExe
 
@@ -1997,6 +2004,13 @@ function Invoke-StatusSetNativeJob {
         }
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    if (-not (_SSS-IsNullOrWhiteSpace $qpdfExe)) {
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                $qpdfExe = Join-Path $repoRoot $qpdfExe
+            }
+        } catch { }
+    }
     if (_SSS-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
 
     $forceRebuild = $false

@@ -77,7 +77,15 @@ function _QCP-ResolveSourcePdf([hashtable]$Job) {
 function _QCP-GetQpdfExePath([hashtable]$Config) {
     if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
         $qc = _QCP-ToHashtable $Config.qcPrepend
-        if ($qc -and $qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { return [string]$qc.qpdfExePath }
+        if ($qc -and $qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) {
+            $p = [string]$qc.qpdfExePath
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($p)) {
+                    return (Join-Path (_QCP-GetRepoRoot) $p)
+                }
+            } catch { }
+            return $p
+        }
     }
     $default = Join-Path (_QCP-GetRepoRoot) 'tools\qpdf\bin\qpdf.exe'
     return $default
@@ -371,6 +379,13 @@ function Invoke-QCPrependProcessor {
 
         $qpdfExe = $null
         if ($qc.ContainsKey('qpdfExePath') -and $qc.qpdfExePath) { $qpdfExe = [string]$qc.qpdfExePath }
+        if (-not (_QCP-IsNullOrWhiteSpace $qpdfExe)) {
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($qpdfExe)) {
+                    $qpdfExe = Join-Path $repoRoot $qpdfExe
+                }
+            } catch { }
+        }
         if (_QCP-IsNullOrWhiteSpace $qpdfExe) { $qpdfExe = Join-Path $repoRoot 'tools\qpdf\bin\qpdf.exe' }
         $overlayExe = $null
         if ($qc.ContainsKey('overlayExePath') -and $qc.overlayExePath) { $overlayExe = [string]$qc.overlayExePath }
