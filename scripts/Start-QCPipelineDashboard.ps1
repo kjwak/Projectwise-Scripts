@@ -39,6 +39,14 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipReconcileStatusSetsFirst,
 
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('FullRedraw', 'DiffAnsi')]
+    [string]$RenderMode = 'DiffAnsi',
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 60)]
+    [int]$MaxFps = 8,
+
     # Bypass the singleton lock (normally only one dashboard per queue root). Use when
     # the lock file is wrong/stale or you intentionally need a second instance.
     [Parameter(Mandatory = $false)]
@@ -225,15 +233,6 @@ function _Format-StatusSetJobLine([object]$Entry, [int]$ColWidth) {
     $dirDisp = _Trunc -Text $dir -Max $dirBudget
     if (-not $dirDisp -and $id) { $dirDisp = _Trunc -Text $id -Max $dirBudget }
     return _Trunc -Text ($prefix + $dirDisp) -Max $ColWidth
-}
-
-function _Write-TwoColumns([string]$Left, [string]$LeftColor, [string]$Right, [string]$RightColor, [int]$ColWidth) {
-    $l = _Trunc -Text $Left -Max $ColWidth
-    $r = _Trunc -Text $Right -Max $ColWidth
-    $pad = ' ' * ([Math]::Max(1, ($ColWidth - $l.Length) + 3))
-    if ($l) { Write-Host $l -NoNewline -ForegroundColor $LeftColor } else { Write-Host (' ' * $ColWidth) -NoNewline }
-    Write-Host $pad -NoNewline
-    if ($r) { Write-Host $r -ForegroundColor $RightColor } else { Write-Host '' }
 }
 
 $AppSettingsPath = _Resolve-AppSettingsPath -ProvidedPath $AppSettingsPath
@@ -434,22 +433,27 @@ function _Compute-PhaseText([hashtable]$Cfg) {
     return (_Get-ActivityStatusText -Cfg $Cfg)
 }
 
-function _Render-Workers() {
+function _Format-TwoColumns([string]$Left, [string]$Right, [int]$ColWidth) {
+    $l = _Trunc -Text $Left -Max $ColWidth
+    $r = _Trunc -Text $Right -Max $ColWidth
+    $pad = ' ' * ([Math]::Max(1, ($ColWidth - $l.Length) + 3))
+    $leftText = if ($l) { $l } else { ' ' * $ColWidth }
+    return ($leftText + $pad + $r).TrimEnd()
+}
+
+function _Get-WorkersLines() {
+    $lines = New-Object System.Collections.Generic.List[string]
     $max = [int]$state.workerSlotMax
     if ($max -le 0) { $max = $state.workers.Count }
-    Write-Host ("Workers (max {0})" -f $max) -ForegroundColor White
+    $lines.Add(("Workers (max {0})" -f $max)) | Out-Null
     if (-not $state.workers -or $state.workers.Count -eq 0) {
-        Write-Host '  (no workers spawned yet)' -ForegroundColor DarkGray
-        return
+        $lines.Add('  (no workers spawned yet)') | Out-Null
+        return @($lines)
     }
+
     $sorted = @($state.workers.Values | Sort-Object -Property label)
     foreach ($w in $sorted) {
         $st = [string]$w.state
-        $color = switch -Regex ($st) {
-            'RUNNING' { 'Cyan'; break }
-            'EXITING' { 'DarkGray'; break }
-            default   { 'Yellow' }
-        }
         $elapsed = '-'
         if ($w.startedAtUtc) {
             try {
@@ -459,14 +463,16 @@ function _Render-Workers() {
         }
         $jobId = if ($w.jobId) { [string]$w.jobId } else { '-' }
         $jobType = if ($w.jobType) { [string]$w.jobType } else { '-' }
-        Write-Host (
+        $lines.Add((
             "  {0,-4}  pid={1,-6}  {2,-8}  {3,-15}  {4,-36}  {5}" -f `
                 [string]$w.label, [int]$w.pid, $st, $jobType, (_Trunc -Text $jobId -Max 36), $elapsed
-        ) -ForegroundColor $color
+        )) | Out-Null
     }
+    return @($lines)
 }
 
-function _Render-RecentJobsTwoCol([object[]]$Jobs, [int]$Limit) {
+function _Get-RecentJobsTwoColLines([object[]]$Jobs, [int]$Limit) {
+    $lines = New-Object System.Collections.Generic.List[string]
     $width = _Get-TerminalWidth
     $colWidth = [int][Math]::Max(44, [Math]::Floor(($width - 6) / 2))
 
@@ -475,54 +481,43 @@ function _Render-RecentJobsTwoCol([object[]]$Jobs, [int]$Limit) {
     $qcJobs = @($jobs | Where-Object { $_ -and $_.job -and ([string]$_.job.type) -eq 'QC_PREPEND' } | Select-Object -First $Limit)
     $stJobs = @($jobs | Where-Object { $_ -and $_.job -and ([string]$_.job.type) -eq 'STATUS_SET_GEN' } | Select-Object -First $Limit)
 
-    _Write-TwoColumns -Left 'QC (QC_PREPEND)' -LeftColor 'White' -Right 'Status (STATUS_SET_GEN)' -RightColor 'White' -ColWidth $colWidth
+    $lines.Add((_Format-TwoColumns -Left 'QC (QC_PREPEND)' -Right 'Status (STATUS_SET_GEN)' -ColWidth $colWidth)) | Out-Null
     for ($i = 0; $i -lt [Math]::Max($qcJobs.Count, $stJobs.Count); $i++) {
         $lJob = if ($i -lt $qcJobs.Count) { $qcJobs[$i] } else { $null }
         $rJob = if ($i -lt $stJobs.Count) { $stJobs[$i] } else { $null }
         $lText = _Format-QCPrependJobLine -Entry $lJob -ColWidth $colWidth
         $rText = _Format-StatusSetJobLine -Entry $rJob -ColWidth $colWidth
-        $lColor = if ($lJob) { _ColorForState -State ([string]$lJob.state) } else { 'Gray' }
-        $rColor = if ($rJob) { _ColorForState -State ([string]$rJob.state) } else { 'Gray' }
-        _Write-TwoColumns -Left $lText -LeftColor $lColor -Right $rText -RightColor $rColor -ColWidth $colWidth
+        $lines.Add((_Format-TwoColumns -Left $lText -Right $rText -ColWidth $colWidth)) | Out-Null
     }
+    return @($lines)
 }
 
-function _Render-Full([hashtable]$Cfg) {
-    Clear-Host
+function _Get-FrameLines([hashtable]$Cfg) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $width = _Get-TerminalWidth
+    $wideMax = [Math]::Max(48, $width - 2)
     $now = Get-Date
     $dry = $false
     try { $dry = [bool]$Cfg.dryRun } catch { $dry = $false }
 
-    Write-Host ("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry) -ForegroundColor Cyan
-    Write-Host ("Config: {0}" -f $AppSettingsPath) -ForegroundColor DarkGray
-    $phaseText = _Compute-PhaseText -Cfg $Cfg
-    Write-Host 'Status: ' -NoNewline -ForegroundColor Yellow
-    Write-Host $phaseText -NoNewline -ForegroundColor Yellow
+    $lines.Add(("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry)) | Out-Null
+    $lines.Add(("Config: {0}" -f $AppSettingsPath)) | Out-Null
+
+    $status = 'Status: ' + (_Compute-PhaseText -Cfg $Cfg)
     if ($state.queueStats) {
         $st = $state.queueStats.states
         $p = [int]$st.pending; $ru = [int]$st.running; $su = [int]$st.succeeded; $fa = [int]$st.failed
         $lk = [int]$state.queueStats.locks.count
-        Write-Host '     ' -NoNewline
-        Write-Host 'Pend ' -NoNewline -ForegroundColor DarkGray
-        Write-Host $p -NoNewline -ForegroundColor Yellow
-        Write-Host '  Run ' -NoNewline -ForegroundColor DarkGray
-        Write-Host $ru -NoNewline -ForegroundColor Cyan
-        Write-Host '  OK ' -NoNewline -ForegroundColor DarkGray
-        Write-Host $su -NoNewline -ForegroundColor Green
-        Write-Host '  Fail ' -NoNewline -ForegroundColor DarkGray
-        Write-Host $fa -NoNewline -ForegroundColor Red
-        Write-Host ('  Locks ' + $lk) -ForegroundColor DarkGray
-    } else {
-        Write-Host ''
+        $status += ("     Pend {0}  Run {1}  OK {2}  Fail {3}  Locks {4}" -f $p, $ru, $su, $fa, $lk)
     }
+    $lines.Add((_Trunc -Text $status -Max $wideMax)) | Out-Null
+
     $pwInd = _Get-PwSessionIndicator -Cfg $Cfg
-    if ($pwInd) {
-        Write-Host 'ProjectWise: ' -NoNewline -ForegroundColor DarkGray
-        Write-Host $pwInd.text -ForegroundColor $pwInd.color
-    }
-    Write-Host ("Root:   {0}" -f $(if ($state.scanRoot) { $state.scanRoot } else { '-' })) -ForegroundColor DarkGray
-    Write-Host ("Proj:   {0}" -f $(if ($state.scanProject) { $state.scanProject } else { '-' })) -ForegroundColor DarkGray
-    Write-Host ("Path:   {0}" -f (_Trunc -Text ($(if ($state.scanPath) { $state.scanPath } else { '-' })) -Max 170)) -ForegroundColor DarkGray
+    if ($pwInd) { $lines.Add(('ProjectWise: ' + [string]$pwInd.text)) | Out-Null }
+    $lines.Add(("Root:   {0}" -f $(if ($state.scanRoot) { $state.scanRoot } else { '-' }))) | Out-Null
+    $lines.Add(("Proj:   {0}" -f $(if ($state.scanProject) { $state.scanProject } else { '-' }))) | Out-Null
+    $lines.Add(("Path:   {0}" -f (_Trunc -Text ($(if ($state.scanPath) { $state.scanPath } else { '-' })) -Max ($wideMax - 8)))) | Out-Null
+
     $lastPass = ''
     if ($state.lastPassDurationMs) { $lastPass = ("Last pass: {0:0.0}s" -f ([double]$state.lastPassDurationMs / 1000.0)) }
     if ($state.passStartedAtUtc) {
@@ -532,47 +527,45 @@ function _Render-Full([hashtable]$Cfg) {
             if ($start) { $elapsed = [int]((Get-Date).ToUniversalTime() - $start).TotalSeconds } else { $elapsed = 0 }
         } catch { $elapsed = 0 }
         $suffix = if ($lastPass) { "  $lastPass" } else { '' }
-        Write-Host ("Pass:   #{0}  Elapsed: {1}s{2}" -f [int]$state.passCount, $elapsed, $suffix) -ForegroundColor DarkGray
+        $lines.Add(("Pass:   #{0}  Elapsed: {1}s{2}" -f [int]$state.passCount, $elapsed, $suffix)) | Out-Null
     } elseif ($lastPass) {
-        Write-Host ("Pass:   #{0}  {1}" -f [int]$state.passCount, $lastPass) -ForegroundColor DarkGray
+        $lines.Add(("Pass:   #{0}  {1}" -f [int]$state.passCount, $lastPass)) | Out-Null
     }
     if ([int]$state.pwFolderTotal -gt 0) {
-        Write-Host ("PW:     {0}/{1} folders" -f [int]$state.pwFolderIndex, [int]$state.pwFolderTotal) -ForegroundColor DarkGray
+        $lines.Add(("PW:     {0}/{1} folders" -f [int]$state.pwFolderIndex, [int]$state.pwFolderTotal)) | Out-Null
     }
     if ($state.currentScanStage) {
-        Write-Host ("Stage:  {0}" -f (_Trunc -Text ([string]$state.currentScanStage) -Max 170)) -ForegroundColor DarkGray
+        $lines.Add(("Stage:  {0}" -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
     }
     if ($state.recentScanFolders -and $state.recentScanFolders.Count -gt 0) {
         $tail = @($state.recentScanFolders | Select-Object -Last 3)
-        Write-Host ("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max 170)) -ForegroundColor DarkGray
+        $lines.Add(("Recent: {0}" -f (_Trunc -Text ($tail -join '  |  ') -Max ($wideMax - 8)))) | Out-Null
     }
-    if ($state.lastHeartbeatUtc) { Write-Host ("Heartbeat: {0}" -f (_Format-UiTs -IsoOrNull ([string]$state.lastHeartbeatUtc))) -ForegroundColor DarkGray }
-    Write-Host ""
+    if ($state.lastHeartbeatUtc) { $lines.Add(("Heartbeat: {0}" -f (_Format-UiTs -IsoOrNull ([string]$state.lastHeartbeatUtc)))) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    _Render-Workers
-    Write-Host ""
+    foreach ($line in @(_Get-WorkersLines)) { $lines.Add($line) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    Write-Host ("Recent jobs (last {0} per column)" -f $RecentJobs) -ForegroundColor White
-    _Render-RecentJobsTwoCol -Jobs @($state.recentJobs) -Limit $RecentJobs
-    Write-Host ""
+    $lines.Add(("Recent jobs (last {0} per column)" -f $RecentJobs)) | Out-Null
+    foreach ($line in @(_Get-RecentJobsTwoColLines -Jobs @($state.recentJobs) -Limit $RecentJobs)) { $lines.Add($line) | Out-Null }
+    $lines.Add('') | Out-Null
 
-    Write-Host "Processor activity" -ForegroundColor White
+    $lines.Add('Processor activity') | Out-Null
     if ($state.lastWorkerEvent) {
         $evt = $state.lastWorkerEvent
-        $cc = _ColorForLevel -Level ([string]$evt.level)
-        Write-Host ("  {0} {1} - {2}" -f [string]$evt.code, [string]$evt.level, [string]$evt.message) -ForegroundColor $cc
+        $lines.Add(("  {0} {1} - {2}" -f [string]$evt.code, [string]$evt.level, [string]$evt.message)) | Out-Null
     } else {
-        Write-Host "  (no worker activity yet)" -ForegroundColor DarkGray
+        $lines.Add('  (no worker activity yet)') | Out-Null
     }
-    Write-Host ""
+    $lines.Add('') | Out-Null
 
-    Write-Host ("Recent warnings/errors (last {0})" -f $RecentErrors) -ForegroundColor White
+    $lines.Add(("Recent warnings/errors (last {0})" -f $RecentErrors)) | Out-Null
     $tail = @($state.errors | Select-Object -Last $RecentErrors)
     if ($tail.Count -eq 0) {
-        Write-Host "  (none)" -ForegroundColor DarkGray
+        $lines.Add('  (none)') | Out-Null
     } else {
         foreach ($e in $tail) {
-            $cc = _ColorForLevel -Level ([string]$e.level)
             $folder = ''
             $errMsg = ''
             try { if ($e.data -and $e.data.folder) { $folder = [string]$e.data.folder } } catch { }
@@ -580,14 +573,102 @@ function _Render-Full([hashtable]$Cfg) {
             $suffix = ''
             if (-not [string]::IsNullOrWhiteSpace($folder)) { $suffix += ('  [' + (_Trunc -Text $folder -Max 80) + ']') }
             if (-not [string]::IsNullOrWhiteSpace($errMsg)) { $suffix += ('  ' + (_Trunc -Text $errMsg -Max 110)) }
-            Write-Host ("  {0}  {1,-8}  {2}  {3}{4}" -f [string]$e.ts, [string]$e.level, [string]$e.code, [string]$e.message, $suffix) -ForegroundColor $cc
+            $lines.Add(("  {0}  {1,-8}  {2}  {3}{4}" -f [string]$e.ts, [string]$e.level, [string]$e.code, [string]$e.message, $suffix)) | Out-Null
         }
     }
 
     if ($state.lastError) {
-        Write-Host ""
-        Write-Host "Last fatal error (will retry):" -ForegroundColor Red
-        Write-Host ("  {0}" -f [string]$state.lastError) -ForegroundColor Red
+        $lines.Add('') | Out-Null
+        $lines.Add('Last fatal error (will retry):') | Out-Null
+        $lines.Add(("  {0}" -f [string]$state.lastError)) | Out-Null
+    }
+
+    return @($lines | ForEach-Object { _Trunc -Text ([string]$_) -Max $wideMax })
+}
+
+function _Test-VtSupported() {
+    try {
+        if ($env:TERM_PROGRAM -or $env:WT_SESSION -or $env:ConEmuANSI -eq 'ON' -or $env:ANSICON) { return $true }
+        if ($env:TERM -and $env:TERM -notin @('', 'dumb')) { return $true }
+        if ($Host.UI -and ($Host.UI.PSObject.Properties.Name -contains 'SupportsVirtualTerminal') -and [bool]$Host.UI.SupportsVirtualTerminal) { return $true }
+    } catch { }
+    return $false
+}
+
+function _Write-Ansi([string]$Text) {
+    [Console]::Write($Text)
+}
+
+$script:_DashEsc = [char]27
+$script:_DashPrevFrame = $null
+$script:_DashLastRenderUtc = [DateTime]::MinValue
+$script:_DashEffectiveRenderMode = if ($RenderMode -eq 'DiffAnsi' -and -not (_Test-VtSupported)) { 'FullRedraw' } else { $RenderMode }
+$script:_DashCursorHidden = $false
+try {
+    Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+        try { [Console]::Write("$([char]27)[?25h") } catch { }
+    } | Out-Null
+} catch { }
+
+function _Hide-Cursor() {
+    if ($script:_DashEffectiveRenderMode -ne 'DiffAnsi' -or $script:_DashCursorHidden) { return }
+    try {
+        _Write-Ansi ($script:_DashEsc + '[?25l')
+        $script:_DashCursorHidden = $true
+    } catch { }
+}
+
+function _Show-Cursor() {
+    if (-not $script:_DashCursorHidden) { return }
+    try { _Write-Ansi ($script:_DashEsc + '[?25h') } catch { }
+    $script:_DashCursorHidden = $false
+}
+
+function _Render-Full([hashtable]$Cfg) {
+    Clear-Host
+    foreach ($line in @(_Get-FrameLines -Cfg $Cfg)) {
+        Write-Host $line
+    }
+    $script:_DashPrevFrame = $null
+}
+
+function _Render-DiffAnsi([hashtable]$Cfg) {
+    _Hide-Cursor
+    $esc = $script:_DashEsc
+    $frame = @(_Get-FrameLines -Cfg $Cfg)
+    if ($null -eq $script:_DashPrevFrame) {
+        _Write-Ansi ($esc + '[2J' + $esc + '[H')
+        if ($frame.Count -gt 0) { _Write-Ansi (($frame -join "`r`n") + "`r`n") }
+        $script:_DashPrevFrame = @($frame)
+        return
+    }
+
+    $prev = @($script:_DashPrevFrame)
+    $maxRows = [Math]::Max($prev.Count, $frame.Count)
+    for ($i = 0; $i -lt $maxRows; $i++) {
+        $old = if ($i -lt $prev.Count) { [string]$prev[$i] } else { $null }
+        $new = if ($i -lt $frame.Count) { [string]$frame[$i] } else { '' }
+        if ($old -ne $new) {
+            $row = $i + 1
+            _Write-Ansi ("{0}[{1};1H{0}[2K{2}" -f $esc, $row, $new)
+        }
+    }
+    _Write-Ansi ("{0}[{1};1H" -f $esc, ([Math]::Max(1, $frame.Count + 1)))
+    $script:_DashPrevFrame = @($frame)
+}
+
+function _Render-Dashboard([hashtable]$Cfg, [switch]$Force) {
+    $nowUtc = [DateTime]::UtcNow
+    $intervalMs = [int](1000 / [Math]::Max(1, [int]$MaxFps))
+    if (-not $Force.IsPresent -and $script:_DashLastRenderUtc -ne [DateTime]::MinValue) {
+        if (($nowUtc - $script:_DashLastRenderUtc).TotalMilliseconds -lt $intervalMs) { return }
+    }
+    $script:_DashLastRenderUtc = $nowUtc
+
+    if ($script:_DashEffectiveRenderMode -eq 'DiffAnsi') {
+        _Render-DiffAnsi -Cfg $Cfg
+    } else {
+        _Render-Full -Cfg $Cfg
     }
 }
 
@@ -904,7 +985,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
         $Child.lastHeartbeatAt = $now
         $state.lastHeartbeatUtc = $now.ToUniversalTime().ToString('o')
         _MaybeRefreshQueue -Cfg $Cfg -MinIntervalMs 1500
-        _Render-Full -Cfg $Cfg
+        _Render-Dashboard -Cfg $Cfg
     }
 }
 
@@ -1122,7 +1203,7 @@ while ($true) {
             $state.pwConnectOkSeen = $false
             $state.pwFoldersPreparedSeen = $false
             _MaybeRefreshQueue -Cfg $cfg -MinIntervalMs 0
-            _Render-Full -Cfg $cfg
+            _Render-Dashboard -Cfg $cfg -Force
 
             $wArgs = @('-AppSettingsPath', $AppSettingsPath)
             if ([bool]$cfg.dryRun) { $wArgs += '-DryRun' }
@@ -1136,7 +1217,7 @@ while ($true) {
             $state.watcherAlive = $true
             $state.passPipelineActive = $true
             try { $state.watcherPid = [int]$watcherChild.process.Id } catch { $state.watcherPid = 0 }
-            _Render-Full -Cfg $cfg
+            _Render-Dashboard -Cfg $cfg -Force
         }
 
         $watcherAlive = $false
@@ -1222,7 +1303,7 @@ while ($true) {
         } catch {
             $cfg = @{ dryRun = $false }
         }
-        _Render-Full -Cfg $cfg
+        _Render-Dashboard -Cfg $cfg -Force
         if ($PollSeconds -gt 0) {
             Start-Sleep -Seconds ([Math]::Max(2, $PollSeconds))
         } else {
