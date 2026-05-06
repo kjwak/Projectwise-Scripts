@@ -185,6 +185,16 @@ function Get-PWImmediateChildFolders {
         return @()
     }
 
+    function _PwcGetFolderView([string]$p) {
+        $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+            $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction Stop
+            if (-not $f) { throw "Folder not found: $p" }
+            return ($f | Get-PWFolderView -ErrorAction Stop)
+        }
+        return (Get-PWFolderView -FolderPath $p -ErrorAction Stop)
+    }
+
     function _PwcPwProp([object]$Obj, [string]$Name) {
         try {
             if ($null -eq $Obj -or -not $Obj.PSObject -or -not $Obj.PSObject.Properties[$Name]) { return $null }
@@ -201,12 +211,14 @@ function Get-PWImmediateChildFolders {
 
     $view = $null
     try {
-        $view = Get-PWFolderView -FolderPath $normalized -ErrorAction Stop
+        $view = _PwcGetFolderView $normalized
     } catch {
         try {
             $folderObj = Get-PWFolders -FolderPath $normalized -JustOne -ErrorAction SilentlyContinue
             if ($folderObj) {
-                $view = $folderObj | Get-PWFolderView -ErrorAction SilentlyContinue
+                try {
+                    $view = _PwcGetFolderView $normalized
+                } catch { }
             }
         } catch { }
     }

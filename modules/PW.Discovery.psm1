@@ -155,7 +155,15 @@ function Get-PWDocumentsInFolder {
         $allDocs = @()
 
         $view = $null
-        try { $view = Get-PWFolderView -FolderPath $FolderPath -ErrorAction Stop } catch { }
+        try {
+            $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+            if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+                $f = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction Stop
+                if ($f) { $view = $f | Get-PWFolderView -ErrorAction Stop }
+            } else {
+                $view = Get-PWFolderView -FolderPath $FolderPath -ErrorAction Stop
+            }
+        } catch { }
         if ($view -and $view.Documents) {
             $allDocs = @($view.Documents)
         } elseif ($view -and $view.Children) {
@@ -187,7 +195,15 @@ function Get-PWDocumentsInFolder {
         try {
             $folder = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction SilentlyContinue
             if ($folder) {
-                $view = $folder | Get-PWFolderView -ErrorAction SilentlyContinue
+                try {
+                    $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+                    if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+                        $f2 = Get-PWFolders -FolderPath $FolderPath -JustOne -ErrorAction SilentlyContinue
+                        if ($f2) { $view = $f2 | Get-PWFolderView -ErrorAction SilentlyContinue }
+                    } else {
+                        $view = Get-PWFolderView -FolderPath $FolderPath -ErrorAction SilentlyContinue
+                    }
+                } catch { }
                 if ($view -and $view.Documents) { return @($view.Documents) }
             }
         } catch { }
@@ -222,7 +238,14 @@ function Find-PWSheetsFoldersUnderRoot {
         if ([string]::IsNullOrWhiteSpace($apiPath)) { return $false }
         foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
             try {
-                $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+                if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+                    $ff = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction Stop
+                    if (-not $ff) { throw 'missing' }
+                    $null = $ff | Get-PWFolderView -WarningAction SilentlyContinue -ErrorAction Stop
+                } else {
+                    $null = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                }
                 return $true
             } catch {
                 try {
@@ -240,8 +263,30 @@ function Find-PWSheetsFoldersUnderRoot {
         $names = @()
 
         foreach ($p in @($apiPath, ('Documents\' + $apiPath))) {
+            # Prefer ImmediateChildren because Get-PWFolderView can succeed but return empty on some servers/paths.
             try {
-                $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                $children = Get-PWFoldersImmediateChildren -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                foreach ($c in @($children)) {
+                    if (-not $c) { continue }
+                    $name = Get-PWObjectPropertyValue -Object $c -Name 'Name'
+                    if (-not $name) {
+                        $fp = Get-PWObjectPropertyValue -Object $c -Name 'FolderPath'
+                        if ($fp) { $name = [System.IO.Path]::GetFileName(([string]$fp).TrimEnd('\')) }
+                    }
+                    if ($name) { $names += [string]$name }
+                }
+            } catch { }
+            if ($names.Count -gt 0) { break }
+
+            try {
+                $cmd = Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue
+                if ($cmd -and $cmd.Parameters.ContainsKey('InputFolder')) {
+                    $ff2 = Get-PWFolders -FolderPath $p -JustOne -WarningAction SilentlyContinue -ErrorAction Stop
+                    if (-not $ff2) { throw 'missing' }
+                    $view = $ff2 | Get-PWFolderView -WarningAction SilentlyContinue -ErrorAction Stop
+                } else {
+                    $view = Get-PWFolderView -FolderPath $p -WarningAction SilentlyContinue -ErrorAction Stop
+                }
                 if ($view.Children) {
                     foreach ($c in $view.Children) {
                         $name = Get-PWObjectPropertyValue -Object $c -Name 'Name'

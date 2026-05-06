@@ -54,7 +54,7 @@ if ($config.ContainsKey('projectWise') -and $config.projectWise) {
 $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
 $ds = if ($pwCfg.ContainsKey('datasourceName') -and $pwCfg.datasourceName) { [string]$pwCfg.datasourceName } else { '' }
 
-$credRes = Get-PWCredentialFromFile -Path $credPath
+$credRes = Get-PWCredentialFromFile -CredentialPath $credPath
 if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
 
 $conn = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
