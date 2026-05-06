@@ -16,8 +16,16 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - **Notable behavior**: converts `pw:\...\Documents\...` into canonical `Documents\...`, collapses slashes, trims trailing `\`, lowercases.
 
 ### `Core.Config.psm1`
-- **Purpose**: intended config loader/validator façade (many scripts currently do config parsing inline).
+- **Purpose**: intended config loader/validator façade.
 - **Declared exports**: `Read-AppConfig`, `Test-AppSettings`, `Get-AppSetting`, `Test-AppSettingsCompatibility`.
+
+### `Core.Runtime.psm1`
+- **Purpose**: script runtime helpers shared by entrypoints.
+- **Exports**: `ConvertTo-HashtableDeep`, `Read-QCAppSettings`, `Get-QCAppSettingsConfig`, `Write-QCJsonLog`.
+
+### `Core.Hashing.psm1`
+- **Purpose**: reusable SHA-256 helpers.
+- **Exports**: `Get-Sha256FileHex`, `Get-Sha256TextHex`.
 
 ### `Core.Logging.psm1`
 - **Purpose**: intended structured logging/audit façade.
@@ -81,6 +89,10 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - **Purpose**: placeholder notification routing for job events.
 - **Declared export**: `Send-QCNotification(Event, Job, Config)`.
 
+### `QC.Worker.psm1`
+- **Purpose**: reusable worker retry/transition policy.
+- **Exports**: `Move-QCJobWithLockRetries`.
+
 ## ProjectWise port modules
 
 ### `PW.Connection.psm1`
@@ -89,8 +101,8 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - **Requires**: pwps_dab cmdlets (run in ProjectWise PowerShell).
 
 ### `PW.Discovery.psm1`
-- **Purpose**: discovery interface for PW candidates (currently mostly stubbed; active PW watchList logic lives in `scripts/Watch-QCTrigger.ps1`).
-- **Declared exports**: `Resolve-WatchPaths`, `Get-PWTriggerCandidates`, `Get-PWCandidateMetadata`.
+- **Purpose**: discovery interface for PW candidates plus shared ProjectWise metadata/folder traversal helpers used by the watcher.
+- **Key exports**: `Resolve-WatchPaths`, `Get-PWTriggerCandidates`, `Get-PWCandidateMetadata`, `Get-PWDocName`, `Get-PWDocDescription`, `Get-PWDocLastModifiedUtc`, `ConvertTo-PWCmdletFolderPath`, `ConvertTo-PWCanonicalDocumentsFolderPath`, `Get-PWDocumentsInFolder`, `Find-PWSheetsFoldersUnderRoot`.
 
 ## Orchestration
 

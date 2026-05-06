@@ -17,35 +17,16 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 
-function _ToHashtable([object]$Value) {
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [string]) { return $Value }
-    if ($Value -is [System.ValueType]) { return $Value }
-    if ($Value -is [System.Collections.IDictionary]) { return $Value }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $out = @()
-        foreach ($i in $Value) { $out += (_ToHashtable $i) }
-        return $out
-    }
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }
-        return $h
-    }
-    return $Value
-}
-
-if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
-    throw "appsettings.json not found: $AppSettingsPath"
-}
-$raw = Get-Content -LiteralPath $AppSettingsPath -Raw -ErrorAction Stop
-$config = [hashtable](_ToHashtable ($raw | ConvertFrom-Json -ErrorAction Stop))
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
+if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
+$config = [hashtable]$cfgRes.Data.config
 
 $pw = @{}
 if ($config.ContainsKey('projectWise') -and $config.projectWise) {
-    $pwNorm = _ToHashtable $config.projectWise
+    $pwNorm = ConvertTo-HashtableDeep -Value $config.projectWise
     if ($pwNorm) { $pw = $pwNorm }
 }
 

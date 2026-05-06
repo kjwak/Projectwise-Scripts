@@ -40,54 +40,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
-
-function _ToHashtable([object]$Value) {
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [string]) { return $Value }
-    if ($Value -is [System.ValueType]) { return $Value }
-    if ($Value -is [System.Collections.IDictionary]) { return $Value }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $out = @()
-        foreach ($i in $Value) { $out += (_ToHashtable $i) }
-        return $out
-    }
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = (_ToHashtable $p.Value) }
-        return $h
-    }
-    return $Value
-}
-
-function _Read-AppSettingsJson([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return New-QCFailureResult -Code 'CONFIG_MISSING_FILE' -Message "appsettings.json not found: $Path" -Data @{ path = $Path }
-    }
-    try {
-        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
-        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = (_ToHashtable $obj); path = $Path }
-    } catch {
-        return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
-    }
-}
-
-function _Log([string]$Level, [string]$Code, [string]$Message, [hashtable]$Data) {
-    if (-not $Data) { $Data = @{} }
-    if (-not [string]::IsNullOrWhiteSpace($script:WorkerLabel) -and -not $Data.ContainsKey('workerLabel')) {
-        $Data['workerLabel'] = $script:WorkerLabel
-    }
-    if (-not $Data.ContainsKey('workerPid')) { $Data['workerPid'] = $PID }
-    $ts = [DateTime]::UtcNow.ToString('o')
-    $payload = @{ ts = $ts; level = $Level; code = $Code; message = $Message; data = $Data } | ConvertTo-Json -Depth 20 -Compress
-    Write-Host $payload
-}
+Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
 
 $script:WorkerLabel = $WorkerLabel
 
-$cfgRes = _Read-AppSettingsJson -Path $AppSettingsPath
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
 
@@ -111,7 +71,7 @@ if ($config.ContainsKey('queue') -and $config.queue -and $config.queue.ContainsK
 
 $loopMode = ($MaxJobs -gt 1) -or ($LeaseSeconds -gt 0) -or ($IdleSleepMs -gt 0)
 
-_Log -Level 'Information' -Code 'WORKER_START' -Message 'Worker run started.' -Data @{
+Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_START' -Message 'Worker run started.' -Data @{
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
     dryRunAllowStateChange = $dryRunAllowStateChange
@@ -132,7 +92,7 @@ function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     return ''
 }
 
-function _Move-QCJobWithLockRetries {
+function Move-QCJobWithLockRetries {
     param(
         [string]$JobId,
         [string]$FromState,
@@ -159,7 +119,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     $jobType = [string]$Job['type']
 
     if ($IsDryRun -and -not $DryRunAllowStateChange) {
-        _Log -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job (read-only, no lock/state changes).' -Data @{
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job (read-only, no lock/state changes).' -Data @{
             jobId = $jobId; jobType = $jobType; handler = $Handler
             wouldRun = $true; wouldLock = $false; wouldChangeState = $false
         }
@@ -167,16 +127,16 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             try {
                 $cmd = Get-Command -Name $Handler -ErrorAction SilentlyContinue
                 if (-not $cmd) {
-                    _Log -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler not found.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false }
+                    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler not found.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false }
                     return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
                 }
                 $Config['dryRun'] = $true
                 $hr = & $Handler -Job $Job -Config $Config
                 if ($null -eq $hr -or -not ($hr.PSObject.Properties.Name -contains 'IsSuccess')) {
-                    _Log -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler returned invalid result.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false }
+                    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler returned invalid result.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false }
                     return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
                 }
-                _Log -Level 'Information' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler invoked.' -Data @{
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler invoked.' -Data @{
                     jobId = $jobId; handler = $Handler
                     isSuccess = [bool]$hr.IsSuccess
                     resultCode = [string]$hr.Code
@@ -184,7 +144,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     resultData = $hr.Data
                 }
             } catch {
-                _Log -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler threw.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false; errorMessage = $_.Exception.Message }
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_DRYRUN_HANDLER' -Message 'Dry-run: handler threw.' -Data @{ jobId = $jobId; handler = $Handler; isSuccess = $false; errorMessage = $_.Exception.Message }
             }
         }
         return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
@@ -193,7 +153,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
         if ($lock.Code -in @('QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT')) {
-            _Log -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Lost race for job lock; skipping.' -Data @{ jobId = $jobId; lockCode = [string]$lock.Code }
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Lost race for job lock; skipping.' -Data @{ jobId = $jobId; lockCode = [string]$lock.Code }
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
         throw $lock.Message
@@ -205,7 +165,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         $Job = [hashtable]$loaded.Data.job
 
         if ($IsDryRun) {
-            _Log -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job.' -Data @{
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job.' -Data @{
                 jobId = $jobId; jobType = [string]$Job['type']; handler = $Handler
                 wouldRun = $true; wouldLock = $true; wouldChangeState = $DryRunAllowStateChange
             }
@@ -238,11 +198,11 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
             # write lock twice in a row, doubling contention and producing
             # spurious WORKER_MOVE_FAILED / QUEUE_LOCK_TIMEOUT under load.
-            $mv = _Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
+            $mv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
                 try { if ($mv.Data -and $mv.Data.error) { $innerErr = [string]$mv.Data.error } } catch { }
-                _Log -Level 'Error' -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\.' -Data @{
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\.' -Data @{
                     jobId = $jobId; fromState = 'running'; toState = 'succeeded'
                     errorCode = [string]$mv.Code; errorMessage = [string]$mv.Message; errorData = $innerErr
                 }
@@ -265,7 +225,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     if ($resultData.ContainsKey($k)) { $logData[$k] = $resultData[$k] }
                 }
             }
-            _Log -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
             return @{ Outcome = 'succeeded'; ExitOk = $true; SkipId = $jobId }
         }
 
@@ -278,11 +238,11 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock
         # cycle, in-memory job preserved with attempts/lastError stamped on disk).
-        $fmv = _Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
+        $fmv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
         if (-not $fmv.IsSuccess) {
             $innerErr = ''
             try { if ($fmv.Data -and $fmv.Data.error) { $innerErr = [string]$fmv.Data.error } } catch { }
-            _Log -Level 'Error' -Code 'WORKER_MOVE_FAILED' -Message ('Failed to move failed job to ' + $target + '\.') -Data @{
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_MOVE_FAILED' -Message ('Failed to move failed job to ' + $target + '\.') -Data @{
                 jobId = $jobId; fromState = 'running'; toState = $target
                 errorCode = [string]$fmv.Code; errorMessage = [string]$fmv.Message; errorData = $innerErr
             }
@@ -303,7 +263,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                 if ($details.Length -gt 2000) { $details = $details.Substring(0, 2000) }
             } catch { }
         }
-        _Log -Level 'Error' -Code 'WORKER_FAILED' -Message 'Job failed.' -Data @{
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_FAILED' -Message 'Job failed.' -Data @{
             jobId = $jobId; jobType = [string]$Job['type']
             attempts = $attempts; maxAttempts = $MaxAttempts; movedTo = $target
             errorCode = [string]$proc.Code; errorMessage = [string]$proc.Message
@@ -326,11 +286,11 @@ $startedAt = [DateTime]::UtcNow
 
 while ($true) {
     if ($MaxJobs -gt 0 -and $processed -ge $MaxJobs) {
-        _Log -Level 'Information' -Code 'WORKER_BUDGET' -Message 'Worker reached MaxJobs budget; exiting.' -Data @{ processed = $processed; maxJobs = $MaxJobs }
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_BUDGET' -Message 'Worker reached MaxJobs budget; exiting.' -Data @{ processed = $processed; maxJobs = $MaxJobs }
         break
     }
     if ($LeaseSeconds -gt 0 -and ([DateTime]::UtcNow - $startedAt).TotalSeconds -ge $LeaseSeconds) {
-        _Log -Level 'Information' -Code 'WORKER_LEASE' -Message 'Worker reached LeaseSeconds budget; exiting.' -Data @{ processed = $processed; leaseSeconds = $LeaseSeconds }
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LEASE' -Message 'Worker reached LeaseSeconds budget; exiting.' -Data @{ processed = $processed; leaseSeconds = $LeaseSeconds }
         break
     }
 
@@ -342,7 +302,7 @@ while ($true) {
     $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip)
     if (-not $next.IsSuccess) { throw $next.Message }
     if (-not $next.Data.job) {
-        _Log -Level 'Information' -Code 'WORKER_NO_JOB' -Message 'No pending jobs.' -Data @{
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_NO_JOB' -Message 'No pending jobs.' -Data @{
             processed = $processed
         }
         if (-not $loopMode) { break }
@@ -355,7 +315,7 @@ while ($true) {
     $job = [hashtable]$next.Data.job
     $jobId = [string]$job['id']
     $handler = _Resolve-Handler -Job $job -Config $config
-    _Log -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{ jobId = $jobId; jobType = [string]$job['type']; dedupeKey = [string]$job['dedupeKey']; handler = $handler }
+    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{ jobId = $jobId; jobType = [string]$job['type']; dedupeKey = [string]$job['dedupeKey']; handler = $handler }
 
     $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
 
