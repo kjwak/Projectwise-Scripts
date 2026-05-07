@@ -27,8 +27,10 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `QC.Notifications.psm1` | Notification dispatch placeholder for workflow events. |
 | `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend and status-set generation jobs, including readiness checks and external tool invocation. |
 | `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, and recent-job reporting. |
+| `QC.Reporting.psm1` | Read-only QC reporting aggregation over ProjectWise QC attributes, optional workflow states, and JSON snapshot generation for QC_REPORTING_SCAN jobs. |
 | `QC.StatusSet.psm1` | Native status-set implementation: manifest/cache management, ProjectWise export/writeback, PDF merging, workspace reconciliation, and related helpers. |
 | `QC.Triggers.psm1` | Trigger rule ordering, matching, and job-type classification. |
+| `QC.Workflow.psm1` | Optional QC workflow/state/attribute writeback framework for ProjectWise, with validation, dry-run planning, and isolated ProjectWise write wrappers. |
 | `QC.Worker.psm1` | Shared worker retry/state-transition policy for moving locked jobs between queue states. |
 | `README.md` | Existing architectural notes for module responsibilities and contracts. |
 | `FILES.md` | This file; quick purpose index and refactoring assessment for the modules directory. |

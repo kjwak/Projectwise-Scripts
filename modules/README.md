@@ -75,6 +75,11 @@ All modules primarily communicate via a shared result envelope from `Core.Result
   - `legacy`: runs `legacy\combine_status_set.ps1`
   - `stub`: explicit no-op (only if configured)
 
+### `QC.Reporting.psm1`
+- **Purpose**: read-only QC reporting aggregation over existing `CADD/Sheets` folders using QC document attributes first and workflow states second.
+- **Key exports**: `Get-QCReportingSettings`, `Get-QCReportingDocuments`, `ConvertTo-QCReportingDocument`, `New-QCReportingSnapshot`, `Write-QCReportingSnapshot`, `Invoke-QCReportingScan`, `New-QCReportingScanJob`.
+- **Output**: JSON snapshots for `QC_REPORTING_SCAN` under `metrics/qc/<timestamp>/<project>.json`; database ingestion is intentionally deferred.
+
 ### `QC.StatusSet.psm1`
 - **Purpose**: native Status Set generation and reconcile/writeback.
 - **Core flow**: pair PDF sheets with matching CAD docs by base name → order → build `_StatusSet.pdf` → optional PW write-back.
