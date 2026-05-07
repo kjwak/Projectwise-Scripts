@@ -8,3 +8,7 @@ If you’re looking for “how the pipeline works”, start at:
 - `modules/README.md`
 - `scripts/README.md`
 
+
+Additional guides:
+
+- `qc-workflow-framework.md` - configurable ProjectWise QC workflow/state/attribute writeback framework and rollout plan.

@@ -2,6 +2,7 @@
 # Responsibility: Processor readiness checks and job-type-based dispatch.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -62,6 +63,106 @@ function _QCP-Sha256Hex([string]$Text) {
         $sha.Dispose()
     }
     return -join ($hash | ForEach-Object { $_.ToString('x2') })
+}
+
+function _QCP-GetJobMetadataValue([hashtable]$Job, [string[]]$Keys) {
+    foreach ($k in $Keys) {
+        if ($Job.ContainsKey($k) -and $null -ne $Job[$k]) { return $Job[$k] }
+    }
+    try {
+        if ($Job.ContainsKey('metadata') -and $Job.metadata) {
+            $md = _QCP-ToHashtable $Job.metadata
+            if ($md) {
+                foreach ($k in $Keys) {
+                    if ($md.ContainsKey($k) -and $null -ne $md[$k]) { return $md[$k] }
+                }
+                if ($md.ContainsKey('candidate') -and $md.candidate) {
+                    $cand = _QCP-ToHashtable $md.candidate
+                    if ($cand) {
+                        foreach ($k in $Keys) {
+                            if ($cand.ContainsKey($k) -and $null -ne $cand[$k]) { return $cand[$k] }
+                        }
+                    }
+                }
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath, [string]$ResultStatus, [string]$ErrorMessage) {
+    $now = (Get-Date).ToString('o')
+    $stage = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcStage','stage','workflowStage')
+    if (_QCP-IsNullOrWhiteSpace $stage) { $stage = 'red' }
+    $reviewer = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewer','qcReviewer')
+    $assignedTo = _QCP-GetJobMetadataValue -Job $Job -Keys @('assignedTo','qcAssignedTo')
+    $lastActionBy = _QCP-GetJobMetadataValue -Job $Job -Keys @('lastActionBy','userName','triggeredBy')
+    $cycleId = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleId','qcCycleId')
+    if (_QCP-IsNullOrWhiteSpace $cycleId -and $Job.ContainsKey('id')) { $cycleId = [string]$Job.id }
+
+    $stageValue = $stage
+    $statusValue = $ResultStatus
+    try {
+        $settings = Get-QCWorkflowSettings -Config $Config
+        $stageMap = _QCP-ToHashtable $settings.stageMap
+        $stageKey = ([string]$stage).Trim().ToLowerInvariant()
+        if ($stageMap -and $stageMap.ContainsKey($stageKey)) {
+            $stageCfg = _QCP-ToHashtable $stageMap[$stageKey]
+            if ($stageCfg) {
+                if ($stageCfg.ContainsKey('stageValue') -and $stageCfg.stageValue) { $stageValue = [string]$stageCfg.stageValue }
+                if ($stageCfg.ContainsKey('statusValue') -and $stageCfg.statusValue) { $statusValue = [string]$stageCfg.statusValue }
+            }
+        }
+    } catch { }
+
+    $docPath = if (-not (_QCP-IsNullOrWhiteSpace $SourcePath)) { $SourcePath } else { [string](_QCP-GetJobMetadataValue -Job $Job -Keys @('sourceDocumentPath','sourcePath')) }
+    return @{
+        jobId = [string]$Job.id
+        jobType = [string]$Job.type
+        stage = ([string]$stage).Trim().ToLowerInvariant()
+        resultStatus = $ResultStatus
+        documentPath = $docPath
+        sourcePath = $SourcePath
+        outputPath = $OutputPath
+        historyPath = $HistoryPath
+        timestamp = $now
+        attributes = @{
+            cycleId = $cycleId
+            stage = $stageValue
+            reviewer = $reviewer
+            assignedTo = $assignedTo
+            lastActionBy = $lastActionBy
+            lastActionDate = $now
+            status = $statusValue
+            historyPdfPath = $HistoryPath
+            latestOverlayPdfPath = $OutputPath
+            sourceDocumentPath = $docPath
+            automationLastRun = $now
+            automationResult = $ResultStatus
+            automationError = $ErrorMessage
+        }
+    }
+}
+
+function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath) {
+    if ($null -eq $Result -or -not $Result.IsSuccess) { return $Result }
+    $ctx = _QCP-NewWorkflowContext -Job $Job -Config $Config -SourcePath $SourcePath -OutputPath $OutputPath -HistoryPath $HistoryPath -ResultStatus 'Succeeded' -ErrorMessage $null
+    $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
+    $strict = $false
+    try {
+        $settings = Get-QCWorkflowSettings -Config $Config
+        $strict = [bool]$settings.strictMode
+    } catch { }
+    $data = @{}
+    if ($Result.Data) {
+        $rd = _QCP-ToHashtable $Result.Data
+        if ($rd) { foreach ($k in $rd.Keys) { $data[$k] = $rd[$k] } }
+    }
+    $data['workflowWriteback'] = $writeback
+    if (-not $writeback.IsSuccess -and $strict) {
+        return New-QCFailureResult -Code 'QC_PREPEND_WORKFLOW_WRITEBACK_FAILED' -Message 'QC_PREPEND succeeded but strict QC workflow writeback failed.' -Data $data
+    }
+    return New-QCSuccessResult -Code $Result.Code -Message $Result.Message -Data $data
 }
 
 function _QCP-ResolveSourcePdf([hashtable]$Job) {
@@ -484,7 +585,7 @@ function Invoke-QCPrependProcessor {
                 }
             }
 
-            return New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
+            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
                 exitCode = [int]$p.ExitCode
                 stdout = $stdout
                 stderr = $stderr
@@ -494,6 +595,7 @@ function Invoke-QCPrependProcessor {
                 triggerTagCleared = $tagCleared
                 triggerTagClearError = $tagClearError
             }
+            return (_QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $incomingDocName -OutputPath $null -HistoryPath $null)
         } finally {
             Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
@@ -663,7 +765,7 @@ function Invoke-QCPrependProcessor {
             return New-QCFailureResult -Code 'QC_PREPEND_HISTORY_WRITE_FAILED' -Message 'Failed to write updated history PDF (move/replace failed).' -Data @{ tmpHistory = $tmpHistory; targetHistoryPdf = $historyPdf; errorMessage = $_.Exception.Message }
         }
 
-        return New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND history updated.' -Data @{
+        $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND history updated.' -Data @{
             jobId = [string]$Job.id
             sourcePdf = $sourcePdf
             targetHistoryPdf = $historyPdf
@@ -671,6 +773,7 @@ function Invoke-QCPrependProcessor {
             overlayExe = if ($enableOverlay) { $overlayExePath } else { $null }
             qcOutputPdf = $overlayOutPdf
         }
+        return (_QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $sourcePdf -OutputPath $overlayOutPdf -HistoryPath $historyPdf)
     } finally {
         if (Test-Path -LiteralPath $tmpHistory) {
             Remove-Item -LiteralPath $tmpHistory -Force -ErrorAction SilentlyContinue
