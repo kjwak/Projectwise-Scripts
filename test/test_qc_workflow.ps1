@@ -33,6 +33,7 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
             strictMode = $Strict
             dryRunWriteback = $DryRunWriteback
             workflowName = 'QC Review Workflow'
+            expectedWorkflowName = 'QC Review Workflow'
             autoAssignWorkflow = $true
             autoSetState = $true
             autoWriteAttributes = $true
@@ -86,19 +87,20 @@ Assert-Eq $disabled.Data.actions.Count 0 'Disabled workflow should not plan acti
 
 # dry-run returns planned changes and does not call PW write cmdlets
 $script:pwWriteCalls = 0
-function Set-PWDocumentWorkflow { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
 function Set-PWDocumentState { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
-function Update-PWDocumentProperties { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
+function Update-PWDocumentAttributes { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
+function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
+function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'QC Received'; ToStateName = 'Redlines Issued' } }
 $dry = Invoke-QCWorkflowWriteback -Config (New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true) -Context (New-WorkflowContext)
 Assert-True $dry.IsSuccess 'Dry-run workflow should return success'
 Assert-Eq $script:pwWriteCalls 0 'Dry-run should not call PW write cmdlets'
-Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_ASSIGN_PLANNED' })).Count -eq 1) 'Dry-run should plan assignment'
+Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_VALIDATED' -or $_.Code -eq 'QC_WORKFLOW_VALIDATION_WARNING' })).Count -eq 1) 'Dry-run should validate inherited workflow'
 Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_STATE_PLANNED' })).Count -eq 1) 'Dry-run should plan state'
 Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_ATTRIBUTES_PLANNED' })).Count -eq 1) 'Dry-run should plan attributes'
 
 # missing workflow/state/attribute config logs warnings but does not fail by default
 $missing = New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true
-$missing.qcWorkflow.workflowName = ''
+$missing.qcWorkflow.expectedWorkflowName = ''
 $missing.qcWorkflow.Remove('attributeMap')
 $missing.qcWorkflow.stageMap.Remove('blue')
 $v = Test-QCWorkflowConfig -Config $missing
@@ -107,16 +109,17 @@ Assert-True ($v.Data.warnings.Count -ge 3) 'Missing config should include warnin
 
 # strictMode converts missing configuration into failure
 $strict = New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$true
-$strict.qcWorkflow.workflowName = ''
+$strict.qcWorkflow.expectedWorkflowName = ''
 $strictRes = Test-QCWorkflowConfig -Config $strict
 Assert-True (-not $strictRes.IsSuccess) 'Strict missing workflow name should fail validation'
 Assert-Eq $strictRes.Code 'QC_WORKFLOW_CONFIG_STRICT_FAILURE' 'Strict validation code'
 
 # workflow writeback failure does not fail unless strictMode = true
 $nonStrictNoCmdlets = New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$false
-Remove-Item function:\Set-PWDocumentWorkflow -ErrorAction SilentlyContinue
 Remove-Item function:\Set-PWDocumentState -ErrorAction SilentlyContinue
-Remove-Item function:\Update-PWDocumentProperties -ErrorAction SilentlyContinue
+Remove-Item function:\Update-PWDocumentAttributes -ErrorAction SilentlyContinue
+Remove-Item function:\Get-PWWorkflows -ErrorAction SilentlyContinue
+Remove-Item function:\Get-PWWorkflowStateLinks -ErrorAction SilentlyContinue
 $nonStrict = Invoke-QCWorkflowWriteback -Config $nonStrictNoCmdlets -Context (New-WorkflowContext)
 Assert-True $nonStrict.IsSuccess 'Missing PW write cmdlets should be non-fatal when strictMode=false'
 Assert-True ($nonStrict.Data.warnings.Count -ge 1) 'Missing PW write cmdlets should return warnings'
@@ -132,6 +135,26 @@ $attrs = Set-PWQCAttributes -Settings $settings -Context (New-WorkflowContext) -
 Assert-True $attrs.IsSuccess 'Dry-run attribute mapping should succeed'
 Assert-Eq $attrs.Data.attributes['QC_Cycle_ID'] 'cycle-1' 'cycleId should map to configured PW attribute'
 Assert-Eq $attrs.Data.attributes['QC_Status'] 'Open' 'status should map to configured PW attribute'
+
+# real write paths use confirmed cmdlets when not dry-run
+$script:stateWrites = 0
+$script:attributeWrites = 0
+function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
+function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'QC Received'; ToStateName = 'Redlines Issued' } }
+function Set-PWDocumentState { [CmdletBinding()] param([object[]]$InputDocuments, [string]$StateName, [switch]$ReturnBoolean) $script:stateWrites++; return $true }
+function Update-PWDocumentAttributes { [CmdletBinding()] param([object[]]$InputDocuments, [hashtable]$Attributes, [switch]$ReturnBoolean) $script:attributeWrites++; return $true }
+$writeSettings = Get-QCWorkflowSettings -Config (New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$false)
+$doc = [pscustomobject]@{ WorkflowName = 'QC Review Workflow'; StateName = 'QC Received'; DocumentID = 1; ProjectID = 2 }
+$writeContext = New-WorkflowContext
+$writeContext.document = $doc
+$stateWrite = Set-PWQCWorkflowState -Settings $writeSettings -Context $writeContext -StateName 'Redlines Issued' -DryRun:$false
+Assert-True $stateWrite.IsSuccess 'Set-PWQCWorkflowState should succeed with confirmed Set-PWDocumentState stub'
+Assert-Eq $stateWrite.Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' 'State write success code'
+Assert-Eq $script:stateWrites 1 'Set-PWDocumentState should be called once'
+$attrWrite = Set-PWQCAttributes -Settings $writeSettings -Context $writeContext -DryRun:$false
+Assert-True $attrWrite.IsSuccess 'Set-PWQCAttributes should succeed with confirmed Update-PWDocumentAttributes stub'
+Assert-Eq $attrWrite.Code 'QC_WORKFLOW_ATTRIBUTE_WRITE_SUCCESS' 'Attribute write success code'
+Assert-Eq $script:attributeWrites 1 'Update-PWDocumentAttributes should be called once'
 
 # successful QC_PREPEND calls Invoke-QCWorkflowWriteback (disabled default returns attached workflow result)
 $tmp = Join-Path $env:TEMP ("qc-workflow-prepend-" + ([guid]::NewGuid().ToString('N')))

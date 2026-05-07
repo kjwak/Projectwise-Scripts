@@ -65,6 +65,7 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
     "strictMode": false,
     "dryRunWriteback": true,
     "workflowName": "QC Review Workflow",
+    "expectedWorkflowName": "QC Review Workflow",
     "defaultStateAfterPrepend": "QC Received",
     "stateAfterSuccessfulPrepend": "Redlines Issued",
     "stateAfterFailedPrepend": "Error / Needs Attention",
@@ -145,9 +146,39 @@ Review these capability areas before enabling writeback:
 - Workflow catalog/state reads: `Get-PWWorkflows`, `Get-PWWorkflowStateLinks`.
 - Document lookup reads: `Get-PWDocumentsBySearch`, `Get-PWDocumentsBySearchExtended`, `Get-PWDocumentsBySearchWithReturnColumns`.
 - Environment attribute reads: `Get-PWDocumentEAttributes`, `Get-PWEnvironmentColumns`.
-- Candidate write cmdlets only after confirmation: `Set-PWDocumentState`, `Set-PWDocumentWorkflow`, `Update-PWDocumentAttributes`.
+- Confirmed document write cmdlets: `Set-PWDocumentState`, `Update-PWDocumentAttributes`.
+- Confirmed folder workflow cmdlets for administrator/setup validation: `Set-PWFolderWorkflow`, `Set-PWWorkflowByFolderPath`.
+- Confirmed missing direct document workflow cmdlet: `Set-PWDocumentWorkflow`; the QC framework validates folder-inherited workflow membership instead of assigning workflows directly to documents.
 
-Do not implement or enable real workflow/state/attribute writes until the discovery output confirms the exact cmdlets and parameter sets for the target ProjectWise environment.
+Do not enable real workflow/state/attribute writes until the discovery output confirms the exact parameter sets for the target ProjectWise environment.
+
+
+## Controlled writeback testing
+
+After capability discovery confirms the target environment exposes `Set-PWDocumentState` and `Update-PWDocumentAttributes`, use the controlled writeback harness for a single pilot document. The script requires both `-ConfirmWrites` and `-TestDocumentPath`, prints planned dry-run operations first, and supports state-only, attribute-only, or combined tests:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\discovery\Test-QCWorkflowWriteback.ps1 `
+  -ConfirmWrites `
+  -TestDocumentPath "Project\CADD\Sheets\example-qc.pdf" `
+  -Mode StateOnly `
+  -TargetState "Redlines Issued" `
+  -ExpectedWorkflowName "QC Review Workflow" `
+  -Pretty
+```
+
+Rollback is best-effort because ProjectWise workflow rules may prevent returning to the prior state and because environment attribute value shapes vary by datasource:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\discovery\Test-QCWorkflowWriteback.ps1 `
+  -ConfirmWrites `
+  -Rollback `
+  -TestDocumentPath "Project\CADD\Sheets\example-qc.pdf" `
+  -Mode Combined `
+  -TargetState "Redlines Issued"
+```
+
+Never run the controlled writeback script against production documents until the workflow, valid state transitions, environment attributes, and rollback expectations are validated with the ProjectWise administrator.
 
 ## Dry-run testing steps
 
@@ -159,9 +190,11 @@ Do not implement or enable real workflow/state/attribute writes until the discov
 3. Run `QC_PREPEND` against representative QC PDFs.
 4. Review structured workflow writeback results attached to the processor result and log events:
    - `QC_WORKFLOW_DRYRUN`
-   - `QC_WORKFLOW_ASSIGN_PLANNED`
+   - `QC_WORKFLOW_VALIDATED` / `QC_WORKFLOW_EXPECTED_MISSING`
+   - `QC_WORKFLOW_STATE_TRANSITION_VALID` / `QC_WORKFLOW_STATE_TRANSITION_INVALID`
    - `QC_WORKFLOW_STATE_PLANNED`
    - `QC_WORKFLOW_ATTRIBUTES_PLANNED`
+   - `QC_WORKFLOW_STATE_WRITE_SUCCESS` and `QC_WORKFLOW_ATTRIBUTE_WRITE_SUCCESS` only after real writeback is enabled
 5. Confirm planned workflow, state, and attribute values with the ProjectWise administrator.
 6. Only after validation, set `qcWorkflow.dryRunWriteback` to `false` for a pilot.
 
@@ -176,8 +209,8 @@ Do not implement or enable real workflow/state/attribute writes until the discov
 
 ## Risks and limitations
 
-- The final ProjectWise workflow, state, and attribute names are not known yet; all names must remain configurable.
-- `pwps` / `pwps_dab` workflow cmdlet availability and signatures can vary by installation and datasource. The module isolates these calls in wrapper functions with TODO comments for site-specific confirmation.
+- The final ProjectWise workflow, state, and attribute names are not known yet; all names must remain configurable. Workflow assignment is expected to be inherited from configured ProjectWise folders.
+- `pwps` / `pwps_dab` workflow cmdlet parameter sets can vary by installation and datasource. The module isolates state and attribute writes in wrapper functions and validates folder-inherited workflow membership before writeback.
 - Missing workflow/state/attribute support logs warnings and returns non-fatal results by default.
 - `strictMode` should only be enabled after configuration and ProjectWise cmdlet behavior are validated.
 - Dry-run mode must be used before any production writeback is enabled.

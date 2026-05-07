@@ -234,10 +234,12 @@ $candidateCmdlets = @(
     'Get-PWDocumentsBySearchWithReturnColumns',
     'Update-PWDocumentAttributes',
     'Set-PWDocumentState',
+    'Set-PWFolderWorkflow',
+    'Set-PWWorkflowByFolderPath',
     'Set-PWDocumentWorkflow'
 )
 
-$writeCandidateNames = @('Update-PWDocumentAttributes','Set-PWDocumentState','Set-PWDocumentWorkflow','Set-PWDocumentWorkflowState','Update-PWDocumentProperties')
+$writeCandidateNames = @('Update-PWDocumentAttributes','Set-PWDocumentState','Set-PWFolderWorkflow','Set-PWWorkflowByFolderPath')
 $warnings = [System.Collections.Generic.List[string]]::new()
 
 $pwps = Import-PWModuleIfAvailable -Name 'pwps'
@@ -289,15 +291,16 @@ $readCapabilities = [ordered]@{
 }
 
 $writeCapabilities = [ordered]@{
-    assignWorkflow = [bool](Get-Command -Name Set-PWDocumentWorkflow -ErrorAction SilentlyContinue)
+    directDocumentWorkflowAssignment = [bool](Get-Command -Name Set-PWDocumentWorkflow -ErrorAction SilentlyContinue)
+    folderWorkflowAssignment = [bool](Get-Command -Name Set-PWFolderWorkflow -ErrorAction SilentlyContinue)
+    folderPathWorkflowAssignment = [bool](Get-Command -Name Set-PWWorkflowByFolderPath -ErrorAction SilentlyContinue)
     setState = [bool](Get-Command -Name Set-PWDocumentState -ErrorAction SilentlyContinue)
-    setWorkflowState = [bool](Get-Command -Name Set-PWDocumentWorkflowState -ErrorAction SilentlyContinue)
     updateEnvironmentAttributes = [bool](Get-Command -Name Update-PWDocumentAttributes -ErrorAction SilentlyContinue)
     updateDocumentProperties = [bool](Get-Command -Name Update-PWDocumentProperties -ErrorAction SilentlyContinue)
     updateAttributesHasInputDocuments = Test-CommandHasAnyParameter -CommandName 'Update-PWDocumentAttributes' -ParameterNames @('InputDocuments','InputDocument')
     updateAttributesHasAttributes = Test-CommandHasAnyParameter -CommandName 'Update-PWDocumentAttributes' -ParameterNames @('Attributes')
     setStateHasStateName = Test-CommandHasAnyParameter -CommandName 'Set-PWDocumentState' -ParameterNames @('StateName','State')
-    setWorkflowHasWorkflowName = Test-CommandHasAnyParameter -CommandName 'Set-PWDocumentWorkflow' -ParameterNames @('WorkflowName','Workflow')
+    folderWorkflowHasWorkflowName = Test-CommandHasAnyParameter -CommandName 'Set-PWFolderWorkflow' -ParameterNames @('WorkflowName','Workflow')
 }
 
 $documentRead = $null
