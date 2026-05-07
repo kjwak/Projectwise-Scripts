@@ -1,0 +1,239 @@
+﻿{
+    "collectedAtUtc":  "2026-05-07T04:20:06.6142117Z",
+    "datasourceName":  "typsa-us-pw.bentley.com:typsa-us-pw-03",
+    "projectRoot":  "Documents\\AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101",
+    "subfolders":  [
+                       {
+                           "label":  "CADD",
+                           "folderPath":  "Documents\\AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\CADD",
+                           "metrics":  {
+                                           "maxFileUpdateDate":  {
+                                                                     "ok":  true,
+                                                                     "cmdlet":  "Get-PWFolderTreeMaxFileUpdateDate",
+                                                                     "data":  {
+                                                                                  "PWPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\CADD",
+                                                                                  "MaxUpdateDate":  "\/Date(1752784124963)\/"
+                                                                              },
+                                                                     "kind":  "ok"
+                                                                 },
+                                           "folderTreeDocumentSize":  {
+                                                                          "ok":  true,
+                                                                          "cmdlet":  "Get-PWFolderTreeDocumentSize",
+                                                                          "data":  {
+                                                                                       "IsRichProject":  false,
+                                                                                       "TopLevelProjectId":  13828,
+                                                                                       "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\CADD",
+                                                                                       "CurrentTime":  "\/Date(1778127608503)\/",
+                                                                                       "NumberOfContainedDocuments":  1495,
+                                                                                       "SumOfDocumentSizes":  2166496477,
+                                                                                       "AllDocumentsInTree":  true,
+                                                                                       "StorageArea":  null,
+                                                                                       "Node":  null,
+                                                                                       "Path":  null,
+                                                                                       "MaxDocumentUpdateDate":  "\/Date(1778115716000)\/"
+                                                                                   },
+                                                                          "kind":  "ok"
+                                                                      },
+                                           "documentSizeByPath":  {
+                                                                      "ok":  true,
+                                                                      "cmdlet":  "Get-PWFolderDocumentSizeByPath",
+                                                                      "data":  {
+
+                                                                               },
+                                                                      "kind":  "ok"
+                                                                  },
+                                           "documentStateCounts":  {
+                                                                       "ok":  true,
+                                                                       "cmdlet":  "Get-PWFolderTreeDocumentStateCount",
+                                                                       "data":  {
+                                                                                    "IsRichProject":  false,
+                                                                                    "TopLevelProjectId":  13828,
+                                                                                    "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\CADD",
+                                                                                    "CurrentTime":  "\/Date(1778127608000)\/",
+                                                                                    "NumberOfContainedDocuments":  1489,
+                                                                                    "KeyProjectPropertyName":  null,
+                                                                                    "KeyProjectPropertyValue":  null,
+                                                                                    "WorkflowName":  "None",
+                                                                                    "StateName":  "None",
+                                                                                    "NumberOfDocumentsInState":  1489
+                                                                                },
+                                                                       "kind":  "ok"
+                                                                   }
+                                       }
+                       },
+                       {
+                           "label":  "Proj_Management",
+                           "folderPath":  "Documents\\AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Proj_Management",
+                           "metrics":  {
+                                           "maxFileUpdateDate":  {
+                                                                     "ok":  true,
+                                                                     "cmdlet":  "Get-PWFolderTreeMaxFileUpdateDate",
+                                                                     "data":  {
+                                                                                  "PWPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Proj_Management",
+                                                                                  "MaxUpdateDate":  "\/Date(1776179531940)\/"
+                                                                              },
+                                                                     "kind":  "ok"
+                                                                 },
+                                           "folderTreeDocumentSize":  {
+                                                                          "ok":  true,
+                                                                          "cmdlet":  "Get-PWFolderTreeDocumentSize",
+                                                                          "data":  {
+                                                                                       "IsRichProject":  false,
+                                                                                       "TopLevelProjectId":  14846,
+                                                                                       "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Proj_Management",
+                                                                                       "CurrentTime":  "\/Date(1778127610134)\/",
+                                                                                       "NumberOfContainedDocuments":  1,
+                                                                                       "SumOfDocumentSizes":  261003,
+                                                                                       "AllDocumentsInTree":  true,
+                                                                                       "StorageArea":  null,
+                                                                                       "Node":  null,
+                                                                                       "Path":  null,
+                                                                                       "MaxDocumentUpdateDate":  "\/Date(1776179531000)\/"
+                                                                                   },
+                                                                          "kind":  "ok"
+                                                                      },
+                                           "documentSizeByPath":  {
+                                                                      "ok":  true,
+                                                                      "cmdlet":  "Get-PWFolderDocumentSizeByPath",
+                                                                      "data":  {
+
+                                                                               },
+                                                                      "kind":  "ok"
+                                                                  },
+                                           "documentStateCounts":  {
+                                                                       "ok":  true,
+                                                                       "cmdlet":  "Get-PWFolderTreeDocumentStateCount",
+                                                                       "data":  {
+                                                                                    "IsRichProject":  false,
+                                                                                    "TopLevelProjectId":  14846,
+                                                                                    "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Proj_Management",
+                                                                                    "CurrentTime":  "\/Date(1778127610000)\/",
+                                                                                    "NumberOfContainedDocuments":  1,
+                                                                                    "KeyProjectPropertyName":  null,
+                                                                                    "KeyProjectPropertyValue":  null,
+                                                                                    "WorkflowName":  "None",
+                                                                                    "StateName":  "None",
+                                                                                    "NumberOfDocumentsInState":  1
+                                                                                },
+                                                                       "kind":  "ok"
+                                                                   }
+                                       }
+                       },
+                       {
+                           "label":  "Design_Engineering",
+                           "folderPath":  "Documents\\AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Design_Engineering",
+                           "metrics":  {
+                                           "maxFileUpdateDate":  {
+                                                                     "ok":  true,
+                                                                     "cmdlet":  "Get-PWFolderTreeMaxFileUpdateDate",
+                                                                     "data":  {
+                                                                                  "PWPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Design_Engineering",
+                                                                                  "MaxUpdateDate":  "\/Date(1763154351683)\/"
+                                                                              },
+                                                                     "kind":  "ok"
+                                                                 },
+                                           "folderTreeDocumentSize":  {
+                                                                          "ok":  true,
+                                                                          "cmdlet":  "Get-PWFolderTreeDocumentSize",
+                                                                          "data":  {
+                                                                                       "IsRichProject":  false,
+                                                                                       "TopLevelProjectId":  14211,
+                                                                                       "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Design_Engineering",
+                                                                                       "CurrentTime":  "\/Date(1778127611880)\/",
+                                                                                       "NumberOfContainedDocuments":  1439,
+                                                                                       "SumOfDocumentSizes":  3057147888,
+                                                                                       "AllDocumentsInTree":  true,
+                                                                                       "StorageArea":  null,
+                                                                                       "Node":  null,
+                                                                                       "Path":  null,
+                                                                                       "MaxDocumentUpdateDate":  "\/Date(1778113686000)\/"
+                                                                                   },
+                                                                          "kind":  "ok"
+                                                                      },
+                                           "documentSizeByPath":  {
+                                                                      "ok":  true,
+                                                                      "cmdlet":  "Get-PWFolderDocumentSizeByPath",
+                                                                      "data":  {
+
+                                                                               },
+                                                                      "kind":  "ok"
+                                                                  },
+                                           "documentStateCounts":  {
+                                                                       "ok":  true,
+                                                                       "cmdlet":  "Get-PWFolderTreeDocumentStateCount",
+                                                                       "data":  {
+                                                                                    "IsRichProject":  false,
+                                                                                    "TopLevelProjectId":  14211,
+                                                                                    "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Design_Engineering",
+                                                                                    "CurrentTime":  "\/Date(1778127612000)\/",
+                                                                                    "NumberOfContainedDocuments":  1439,
+                                                                                    "KeyProjectPropertyName":  null,
+                                                                                    "KeyProjectPropertyValue":  null,
+                                                                                    "WorkflowName":  "None",
+                                                                                    "StateName":  "None",
+                                                                                    "NumberOfDocumentsInState":  1439
+                                                                                },
+                                                                       "kind":  "ok"
+                                                                   }
+                                       }
+                       },
+                       {
+                           "label":  "Submittals",
+                           "folderPath":  "Documents\\AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Submittals",
+                           "metrics":  {
+                                           "maxFileUpdateDate":  {
+                                                                     "ok":  true,
+                                                                     "cmdlet":  "Get-PWFolderTreeMaxFileUpdateDate",
+                                                                     "data":  {
+                                                                                  "PWPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Submittals",
+                                                                                  "MaxUpdateDate":  "\/Date(1769810975537)\/"
+                                                                              },
+                                                                     "kind":  "ok"
+                                                                 },
+                                           "folderTreeDocumentSize":  {
+                                                                          "ok":  true,
+                                                                          "cmdlet":  "Get-PWFolderTreeDocumentSize",
+                                                                          "data":  {
+                                                                                       "IsRichProject":  false,
+                                                                                       "TopLevelProjectId":  14849,
+                                                                                       "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Submittals",
+                                                                                       "CurrentTime":  "\/Date(1778127613406)\/",
+                                                                                       "NumberOfContainedDocuments":  49,
+                                                                                       "SumOfDocumentSizes":  261975716,
+                                                                                       "AllDocumentsInTree":  true,
+                                                                                       "StorageArea":  null,
+                                                                                       "Node":  null,
+                                                                                       "Path":  null,
+                                                                                       "MaxDocumentUpdateDate":  "\/Date(1778081309000)\/"
+                                                                                   },
+                                                                          "kind":  "ok"
+                                                                      },
+                                           "documentSizeByPath":  {
+                                                                      "ok":  true,
+                                                                      "cmdlet":  "Get-PWFolderDocumentSizeByPath",
+                                                                      "data":  {
+
+                                                                               },
+                                                                      "kind":  "ok"
+                                                                  },
+                                           "documentStateCounts":  {
+                                                                       "ok":  true,
+                                                                       "cmdlet":  "Get-PWFolderTreeDocumentStateCount",
+                                                                       "data":  {
+                                                                                    "IsRichProject":  false,
+                                                                                    "TopLevelProjectId":  14849,
+                                                                                    "TopLevelFolderPath":  "AZDOT 2024\\AZFWY1704-FD02-SR202 - I-10 to SR101\\Submittals",
+                                                                                    "CurrentTime":  "\/Date(1778127613000)\/",
+                                                                                    "NumberOfContainedDocuments":  48,
+                                                                                    "KeyProjectPropertyName":  null,
+                                                                                    "KeyProjectPropertyValue":  null,
+                                                                                    "WorkflowName":  "None",
+                                                                                    "StateName":  "None",
+                                                                                    "NumberOfDocumentsInState":  48
+                                                                                },
+                                                                       "kind":  "ok"
+                                                                   }
+                                       }
+                       }
+                   ]
+}

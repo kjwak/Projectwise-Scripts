@@ -1,0 +1,274 @@
+{
+  "schemaVersion": "1.0",
+  "title": "ProjectWise — attributes and information extractable via PowerShell (pwps / pwps_dab)",
+  "generatedAt": "2026-05-07",
+  "sourceInventory": "pwps_dump_20260209_125642/commands.txt",
+  "disclaimer": [
+    "Exact property names on document and folder objects depend on the datasource environment, registered interfaces, and environment column configuration.",
+    "Some cmdlets require specific parameter sets (e.g. folder tree rollups use -InputFolder with a folder object, not always -FolderPath).",
+    "Read-only extraction is recommended for metrics; avoid write cmdlets in scheduled scanners unless explicitly approved."
+  ],
+  "modules": {
+    "pwps": {
+      "role": "Connection, datasource admin, users/groups, storage, document/file e-attributes",
+      "typicalPath": "C:\\Program Files (x86)\\Bentley\\ProjectWise\\bin\\PowerShell\\pwps\\pwps.psd1"
+    },
+    "pwps_dab": {
+      "role": "Documents, folders, search, export, folder views, aggregates, workflows, audit, many PW365/connected-project cmdlets",
+      "typicalPath": "C:\\Program Files\\WindowsPowerShell\\Modules\\pwps_dab\\<version>\\pwps_dab.psd1"
+    }
+  },
+  "connectionContext": {
+    "description": "Session-scoped values available after Open-PWConnection",
+    "typicalCmdlets": [
+      "Get-PWCurrentDatasource",
+      "Get-PWCurrentDSSession",
+      "Get-PWCurrentUser",
+      "Get-PWDatasource",
+      "Get-PWDatasourceStatistics",
+      "Get-PWServerVersion",
+      "Get-PWModuleVersion",
+      "Get-PWActiveServerVersion"
+    ],
+    "exampleGeneratedFields": [
+      { "name": "datasourceName", "source": "config or Get-PWCurrentDatasource" },
+      { "name": "scanUser", "source": "Get-PWCurrentUser" },
+      { "name": "collectedAtUtc", "source": "scanner clock" }
+    ]
+  },
+  "document": {
+    "coreObjectProperties": {
+      "description": "Often present on objects returned by Get-PWDocumentsBySearch*, Get-PWFolderView, or pipe from Get-PWFolders; names vary.",
+      "commonAliases": [
+        {
+          "concept": "documentId",
+          "propertyNames": ["DocumentID", "DocumentId", "ID"]
+        },
+        {
+          "concept": "documentName",
+          "propertyNames": ["Name", "DocumentName"]
+        },
+        {
+          "concept": "description",
+          "propertyNames": ["Description", "DocumentDescription"]
+        },
+        {
+          "concept": "folderPath",
+          "propertyNames": ["FolderPath", "Path", "FullPath", "DocumentPath"]
+        },
+        {
+          "concept": "logicalPath",
+          "propertyNames": ["FullPath", "PopulatePath result columns"]
+        },
+        {
+          "concept": "fileExtensionOrType",
+          "propertyNames": ["FileNameExtension", "Extension", "DocumentType", "FileType"]
+        },
+        {
+          "concept": "fileSizeBytes",
+          "propertyNames": ["FileSize", "Size", "DocumentSize"]
+        },
+        {
+          "concept": "updatedOrVersionDateUtc",
+          "propertyNames": [
+            "FileUpdatedDate",
+            "FileUpdateDate",
+            "DocumentUpdateDate",
+            "VersionModifiedDate",
+            "Version Modified Date"
+          ],
+          "repoNormalizer": "modules/PW.Discovery.psm1 Get-PWDocLastModifiedUtc"
+        },
+        {
+          "concept": "documentGuid",
+          "propertyNames": ["DocumentGUID", "OGUID", "GUID"]
+        },
+        {
+          "concept": "versionNumberOrLabel",
+          "propertyNames": ["Version", "VersionNumber", "VersionName", "DocumentVersion"]
+        },
+        {
+          "concept": "checkoutState",
+          "propertyNames": ["CheckedOut", "IsCheckedOut", "CheckoutUser", "CheckoutUserName", "CheckoutDate"]
+        },
+        {
+          "concept": "workflowState",
+          "propertyNames": ["Workflow", "WorkflowName", "WorkflowState", "State", "StateName"]
+        }
+      ]
+    },
+    "richerDocumentInfo": {
+      "description": "Expand or query additional fields beyond default search columns",
+      "typicalCmdlets": [
+        "Expand-PWDocumentInformation",
+        "Get-PWDocumentFromParameters",
+        "Get-PWDocumentPropertyCount",
+        "Get-PWDocumentReportDataTable",
+        "Get-PWDocumentsBySearchExtended",
+        "Get-PWDocumentsBySearchWithReturnColumns"
+      ],
+      "notes": [
+        "Get-PWDocumentsBySearchWithReturnColumns is the usual way to limit columns for large scans.",
+        "Expand-PWDocumentInformation is useful when you need many attributes for a smaller set of documents."
+      ]
+    },
+    "environmentAttributes": {
+      "description": "Schema-defined attributes (interfaces / environment columns), not Windows file attributes",
+      "typicalCmdlets": [
+        "Get-PWDocumentEAttributes",
+        "Get-PWEnvironmentColumns",
+        "Get-PWEnvironments",
+        "Get-PWAttributeSettings"
+      ]
+    },
+    "integrityAndFiles": {
+      "typicalCmdlets": [
+        "Get-PWFileHash",
+        "Get-PWFileCheckSumReport",
+        "Get-PWDgnFileVersion",
+        "Get-PWDocumentCopyOutLocationCounts"
+      ]
+    },
+    "relationsAndSets": {
+      "typicalCmdlets": [
+        "Get-PWDocumentReferenceElementIds",
+        "Get-PWDocumentFlatSet",
+        "Get-PWDocumentFlatSetMembers",
+        "Get-PWFlatSetsBySearch"
+      ]
+    },
+    "geo": {
+      "typicalCmdlets": ["Get-PWDocumentGeoSpatialLocation"]
+    },
+    "auditAndActivity": {
+      "typicalCmdlets": [
+        "Get-PWDocumentAuditTrailRecords",
+        "Get-PWAuditTrailRecordsFromPreviousDays",
+        "Get-PWAuditTrailSettings"
+      ]
+    },
+    "resolutionById": {
+      "typicalCmdlets": [
+        "Get-PWDocumentsByGUIDs",
+        "Get-PWDocumentByURN"
+      ]
+    }
+  },
+  "folder": {
+    "identityAndListing": {
+      "typicalCmdlets": [
+        "Get-PWFolders",
+        "Get-PWFoldersByGUIDs",
+        "Get-PWFolderByURN",
+        "Get-PWFoldersImmediateChildren",
+        "Get-PWFolderView",
+        "Get-PWFolderPathAndProperties"
+      ],
+      "commonObjectProperties": [
+        "FolderID",
+        "Name",
+        "FolderPath",
+        "Description",
+        "ParentFolderID",
+        "ProjectID",
+        "IsRichProject",
+        "OGUID"
+      ]
+    },
+    "aggregatesUnderSubtree": {
+      "description": "Fast metrics for dashboards; many take -InputFolder (folder object from Get-PWFolders -JustOne)",
+      "typicalCmdlets": [
+        "Get-PWFolderTreeDocumentSize",
+        "Get-PWFolderTreeDocumentSizeByDepth",
+        "Get-PWFolderTreeMaxFileUpdateDate",
+        "Get-PWFolderTreeDocumentStateCount",
+        "Get-PWFolderTreeDocumentStateCountDataTable",
+        "Get-PWFolderTreeScalar",
+        "Get-PWFolderTreeScalarDataTable",
+        "Get-PWFolderDocumentSize",
+        "Get-PWFolderDocumentSizeByPath"
+      ],
+      "exampleObservedFields": {
+        "fromGetPWFolderTreeDocumentStateCount": [
+          "TopLevelProjectId",
+          "TopLevelFolderPath",
+          "NumberOfContainedDocuments",
+          "WorkflowName",
+          "StateName",
+          "NumberOfDocumentsInState",
+          "IsRichProject",
+          "CurrentTime"
+        ],
+        "fromGetPWFolderTreeMaxFileUpdateDate": ["PWPath", "MaxUpdateDate"]
+      }
+    },
+    "securityAndAccess": {
+      "typicalCmdlets": [
+        "Get-PWFolderSecurity",
+        "Get-PWFolderTreeAccessUsers",
+        "Get-PWFolderTreeAccessObjects",
+        "Get-PWFoldersByAccessMember",
+        "Get-PWAccessControlItems"
+      ]
+    },
+    "workflow": {
+      "typicalCmdlets": [
+        "Get-PWWorkflows",
+        "Get-PWWorkflowStateLinks",
+        "Get-PWWREActionsForWorkflow"
+      ]
+    },
+    "audit": {
+      "typicalCmdlets": ["Get-PWFolderAuditTrailRecords"]
+    },
+    "geo": {
+      "typicalCmdlets": ["Get-PWFolderGeoSpatialLocation"]
+    }
+  },
+  "tagsAndProjectProperties": {
+    "typicalCmdlets": [
+      "Get-PWTagSetAttributes",
+      "Get-PWTagSetAttributeBindings",
+      "Get-PWTagDocumentProperty",
+      "Get-PWTagFolderProperty",
+      "Get-PWTagProjectProperty"
+    ]
+  },
+  "renditions": {
+    "typicalCmdlets": [
+      "Get-PWFolderRenditionProfile",
+      "Get-PWRenditionProfiles",
+      "Get-PWRenditionJobsStatus",
+      "Get-PWRenditionOptions"
+    ]
+  },
+  "documentManagementSubmittals": {
+    "description": "If DM/transmittals modules are used in your datasource",
+    "typicalCmdlets": [
+      "Get-PWDMIncomingSubmittals",
+      "Get-PWDMIncomingRFIs",
+      "Get-PWDMIncomingRFIsWithProperties",
+      "Get-PWDMOutgoingTransmittals",
+      "Get-PWDMTransmittalsForDocuments"
+    ]
+  },
+  "generatedMetricExamples": {
+    "description": "Fields you compute in your scanner from PW data (not raw PW columns)",
+    "perDocument": [
+      { "name": "extensionNormalized", "rule": "lowercase extension from Name or typed column" },
+      { "name": "lastModifiedUtcIso", "rule": "normalize any of the date aliases to UTC ISO-8601" },
+      { "name": "pathDepth", "rule": "count of path segments under Documents" },
+      { "name": "isPdf", "rule": "extension equals .pdf" },
+      { "name": "descriptionHasTag", "rule": "substring match for QC_Archivist or other markers" }
+    ],
+    "perFolderSubtree": [
+      { "name": "documentCountContained", "rule": "from Get-PWFolderTreeDocumentStateCount or search" },
+      { "name": "maxFileUpdateDateUtc", "rule": "from Get-PWFolderTreeMaxFileUpdateDate" },
+      { "name": "totalBytesApprox", "rule": "from Get-PWFolderTreeDocumentSize when available" },
+      { "name": "workflowStateMix", "rule": "aggregate or DataTable variant of state counts" }
+    ]
+  },
+  "notWindowsFileAttributes": {
+    "note": "NTFS attributes (Hidden, Archive, ReadOnly) apply to local copies. In PW, use document metadata, checkout state, and storage references — not System.IO.FileAttributes — unless you export and scan the file on disk."
+  }
+}
