@@ -83,15 +83,16 @@ function Get-QCWorkflowSettings {
         enabled = $false
         strictMode = $false
         dryRunWriteback = $true
-        workflowName = 'QC Review Workflow'
-        expectedWorkflowName = 'QC Review Workflow'
+        workflowName = ''
+        expectedWorkflowName = ''
+        mode = 'AttributesOnly'
         defaultStateAfterPrepend = 'QC Received'
         stateAfterSuccessfulPrepend = 'Redlines Issued'
         stateAfterFailedPrepend = 'Error / Needs Attention'
-        autoAssignWorkflow = $true
-        autoSetState = $true
+        autoSetState = $false
         autoWriteAttributes = $true
         attributeMap = @{
+            qcActive = 'QC_Active'
             cycleId = 'QC_Cycle_ID'
             stage = 'QC_Stage'
             reviewer = 'QC_Reviewer'
@@ -107,9 +108,9 @@ function Get-QCWorkflowSettings {
             automationError = 'QC_Automation_Error'
         }
         stageMap = @{
-            red = @{ stageValue = 'Red'; stateName = 'Redlines Issued'; statusValue = 'Open' }
-            green = @{ stageValue = 'Green'; stateName = 'Corrections Complete'; statusValue = 'Pending Backcheck' }
-            blue = @{ stageValue = 'Blue'; stateName = 'Verified Closed'; statusValue = 'Closed' }
+            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = 'Corrections Required' }
+            green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = 'Corrections Complete' }
+            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = 'QC Verified' }
         }
     }
 
@@ -125,7 +126,7 @@ function Get-QCWorkflowSettings {
     if (_QCW-IsNullOrWhiteSpace $settings.workflowName -and -not (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName)) {
         $settings.workflowName = $settings.expectedWorkflowName
     }
-    foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoAssignWorkflow','autoSetState','autoWriteAttributes')) {
+    foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoSetState','autoWriteAttributes')) {
         try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { $settings[$boolKey] = [bool]$defaults[$boolKey] }
     }
     return $settings
@@ -148,10 +149,15 @@ function Test-QCWorkflowConfig {
         return New-QCSuccessResult -Code 'QC_WORKFLOW_CONFIG_DISABLED' -Message 'QC workflow writeback is disabled.' -Data @{ settings = $settings; warnings = @(); criticalIssues = @() }
     }
 
-    if (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName) {
-        $msg = 'qcWorkflow.enabled is true but qcWorkflow.expectedWorkflowName is empty.'
+    $mode = ([string]$settings.mode).Trim()
+    if (_QCW-IsNullOrWhiteSpace $mode) { $mode = 'AttributesOnly' }
+    if ($mode -notin @('AttributesOnly','StateAndAttributes')) {
+        $msg = "qcWorkflow.mode '$mode' is not recognized; use AttributesOnly or StateAndAttributes."
         $warnings += $msg
         $critical += $msg
+    }
+    if ([bool]$settings.autoSetState -and _QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName) {
+        $warnings += 'qcWorkflow.autoSetState is true but qcWorkflow.expectedWorkflowName is empty; workflow validation will be partial.'
     }
     $rawAttributeMap = $null
     if ($raw.ContainsKey('attributeMap')) { $rawAttributeMap = _QCW-ToHashtable $raw.attributeMap }
@@ -221,9 +227,7 @@ function Ensure-PWQCWorkflowAssignment {
     $warnings = @()
     $workflowExists = $null
 
-    if (_QCW-IsNullOrWhiteSpace $expected) {
-        $warnings += 'Expected workflow name is empty; inherited workflow validation cannot run.'
-    } else {
+    if (-not (_QCW-IsNullOrWhiteSpace $expected)) {
         $wfCmd = Get-Command -Name Get-PWWorkflows -ErrorAction SilentlyContinue
         if ($wfCmd) {
             try {
@@ -231,45 +235,42 @@ function Ensure-PWQCWorkflowAssignment {
                 $workflowExists = [bool](@($workflows | Where-Object { _QCW-ObjectNameMatches -Object $_ -ExpectedName $expected -PropertyNames @('Name','WorkflowName','Workflow') }).Count -gt 0)
                 if (-not $workflowExists) { $warnings += "Expected ProjectWise workflow '$expected' was not returned by Get-PWWorkflows." }
             } catch {
-                $warnings += ('Get-PWWorkflows failed while validating expected workflow: ' + $_.Exception.Message)
+                $warnings += ('Get-PWWorkflows failed while validating current project workflow: ' + $_.Exception.Message)
             }
         } else {
-            $warnings += 'Get-PWWorkflows is unavailable; expected workflow existence cannot be validated.'
+            $warnings += 'Get-PWWorkflows is unavailable; current project workflow existence cannot be validated.'
         }
     }
 
-    $matchesExpected = $false
-    if (-not (_QCW-IsNullOrWhiteSpace $currentWorkflow) -and -not (_QCW-IsNullOrWhiteSpace $expected)) {
-        $matchesExpected = ([string]$currentWorkflow).Trim() -eq $expected.Trim()
-    }
     if (_QCW-IsNullOrWhiteSpace $currentWorkflow) {
-        $warnings += 'Document object does not expose current workflow; folder-inherited workflow could not be validated from document properties.'
-    } elseif (-not $matchesExpected) {
-        $warnings += "Document current workflow '$currentWorkflow' does not match expected workflow '$expected'. Confirm the ProjectWise folder workflow inheritance configuration."
+        $warnings += 'Document object does not expose current workflow; workflow validation is informational only.'
+    } elseif (-not (_QCW-IsNullOrWhiteSpace $expected) -and ([string]$currentWorkflow).Trim() -ne $expected.Trim()) {
+        $warnings += "Document current workflow '$currentWorkflow' does not match expected workflow '$expected'. QC attributes remain authoritative."
     }
 
     $data = @{
         expectedWorkflowName = $expected
         currentWorkflowName = $currentWorkflow
         workflowExists = $workflowExists
-        documentMatchesExpectedWorkflow = $matchesExpected
+        documentMatchesExpectedWorkflow = (-not (_QCW-IsNullOrWhiteSpace $currentWorkflow) -and -not (_QCW-IsNullOrWhiteSpace $expected) -and ([string]$currentWorkflow).Trim() -eq $expected.Trim())
         folderPath = $info.Data.folderPath
         dryRun = $DryRun
         changed = $false
         warnings = @($warnings)
+        informationalOnly = $true
     }
 
-    if (($workflowExists -eq $false) -or (_QCW-IsNullOrWhiteSpace $expected)) {
-        _QCW-Log -Event 'QC_WORKFLOW_EXPECTED_MISSING' -Level 'Warning' -Message 'Expected ProjectWise workflow was not validated.' -Data $data
-        return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_EXPECTED_MISSING' -Message 'Expected ProjectWise workflow was not validated.' -Data $data
+    if ($workflowExists -eq $false) {
+        _QCW-Log -Event 'QC_WORKFLOW_EXPECTED_MISSING' -Level 'Warning' -Message 'Expected current ProjectWise workflow was not validated.' -Data $data
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_EXPECTED_MISSING' -Message 'Expected current ProjectWise workflow was not validated; continuing because workflow is informational.' -Data $data
     }
     if ($warnings.Count -gt 0) {
-        _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message 'QC workflow inheritance validation completed with warnings.' -Data $data
-        return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_VALIDATION_WARNING' -Message 'QC workflow inheritance validation completed with warnings.' -Data $data
+        _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message 'QC workflow informational validation completed with warnings.' -Data $data
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_VALIDATION_WARNING' -Message 'QC workflow informational validation completed with warnings.' -Data $data
     }
 
-    _QCW-Log -Event 'QC_WORKFLOW_VALIDATED' -Level 'Information' -Message 'QC workflow inheritance validated.' -Data $data
-    return New-QCSuccessResult -Code 'QC_WORKFLOW_VALIDATED' -Message 'QC workflow inheritance validated.' -Data $data
+    _QCW-Log -Event 'QC_WORKFLOW_VALIDATED' -Level 'Information' -Message 'QC workflow informational validation completed.' -Data $data
+    return New-QCSuccessResult -Code 'QC_WORKFLOW_VALIDATED' -Message 'QC workflow informational validation completed.' -Data $data
 }
 
 function Test-QCWorkflowStateTransition {
@@ -496,21 +497,21 @@ function Invoke-QCWorkflowWriteback {
     $actions = [System.Collections.Generic.List[object]]::new()
     $warnings = [System.Collections.Generic.List[string]]::new()
 
-    if ([bool]$settings.autoAssignWorkflow) {
+    if ([bool]$settings.autoSetState -and ([string]$settings.mode) -ieq 'StateAndAttributes') {
         $assign = Ensure-PWQCWorkflowAssignment -Settings $settings -Context $Context -DryRun:$dryRun
         $actions.Add($assign) | Out-Null
         if ($assign.Data -and $assign.Data.warnings) { foreach ($w in @($assign.Data.warnings)) { if ($w) { $warnings.Add([string]$w) | Out-Null } } }
         if (-not $assign.IsSuccess -and [bool]$settings.strictMode) { return New-QCFailureResult -Code 'QC_WORKFLOW_STRICT_FAILURE' -Message $assign.Message -Data @{ actions = @($actions); warnings = @($warnings); settings = $settings; dryRun = $dryRun } }
     }
 
-    if ([bool]$settings.autoSetState) {
+    if ([bool]$settings.autoSetState -and ([string]$settings.mode) -ieq 'StateAndAttributes') {
         $stageKey = $null
         try { if ($Context -and $Context.ContainsKey('stage') -and $Context.stage) { $stageKey = ([string]$Context.stage).Trim().ToLowerInvariant() } } catch { }
         $stateName = $null
         $stageMap = _QCW-ToHashtable $settings.stageMap
         if ($stageKey -and $stageMap -and $stageMap.ContainsKey($stageKey)) {
             $stageCfg = _QCW-ToHashtable $stageMap[$stageKey]
-            if ($stageCfg -and $stageCfg.ContainsKey('stateName')) { $stateName = [string]$stageCfg.stateName }
+            if ($stageCfg -and $stageCfg.ContainsKey('optionalStateName')) { $stateName = [string]$stageCfg.optionalStateName } elseif ($stageCfg -and $stageCfg.ContainsKey('stateName')) { $stateName = [string]$stageCfg.stateName }
         }
         if (_QCW-IsNullOrWhiteSpace $stateName) {
             if ($Context -and $Context.ContainsKey('resultStatus') -and ([string]$Context.resultStatus).ToLowerInvariant() -eq 'failed') { $stateName = [string]$settings.stateAfterFailedPrepend }

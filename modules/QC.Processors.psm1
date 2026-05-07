@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -127,6 +128,7 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
         historyPath = $HistoryPath
         timestamp = $now
         attributes = @{
+            qcActive = $true
             cycleId = $cycleId
             stage = $stageValue
             reviewer = $reviewer
@@ -361,6 +363,7 @@ function Invoke-QCProcessorByType {
         # Default mapping for initial rollout.
         if ($jobType -eq 'QC_PREPEND') { $handlerName = 'Invoke-QCPrependProcessor' }
         elseif ($jobType -eq 'STATUS_SET_GEN') { $handlerName = 'Invoke-StatusSetProcessor' }
+        elseif ($jobType -eq 'QC_REPORTING_SCAN') { $handlerName = 'Invoke-QCReportingScanProcessor' }
     }
 
     if (_QCP-IsNullOrWhiteSpace $handlerName) {
@@ -934,4 +937,22 @@ function Invoke-StatusSetProcessor {
         Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
 }
+
+function Invoke-QCReportingScanProcessor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Job,
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $mod = Join-Path (_QCP-GetRepoRoot) 'modules\QC.Reporting.psm1'
+    if (-not (Test-Path -LiteralPath $mod)) {
+        return New-QCFailureResult -Code 'QC_REPORTING_MODULE_MISSING' -Message "QC.Reporting.psm1 not found: $mod" -Data @{ path = $mod }
+    }
+    Import-Module $mod -Force
+    return Invoke-QCReportingScan -Job $Job -Config $Config
+}
+
 Export-ModuleMember -Function *

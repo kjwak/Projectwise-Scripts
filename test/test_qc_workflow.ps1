@@ -33,13 +33,15 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
             strictMode = $Strict
             dryRunWriteback = $DryRunWriteback
             workflowName = 'QC Review Workflow'
-            expectedWorkflowName = 'QC Review Workflow'
-            autoAssignWorkflow = $true
-            autoSetState = $true
+            expectedWorkflowName = ''
+            mode = 'AttributesOnly'
+            autoAssignWorkflow = $false
+            autoSetState = $false
             autoWriteAttributes = $true
             stateAfterSuccessfulPrepend = 'Redlines Issued'
             stateAfterFailedPrepend = 'Error / Needs Attention'
             attributeMap = @{
+                qcActive = 'QC_Active'
                 cycleId = 'QC_Cycle_ID'
                 stage = 'QC_Stage'
                 status = 'QC_Status'
@@ -51,9 +53,9 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
                 automationError = 'QC_Automation_Error'
             }
             stageMap = @{
-                red = @{ stageValue = 'Red'; stateName = 'Redlines Issued'; statusValue = 'Open' }
-                green = @{ stageValue = 'Green'; stateName = 'Corrections Complete'; statusValue = 'Pending Backcheck' }
-                blue = @{ stageValue = 'Blue'; stateName = 'Verified Closed'; statusValue = 'Closed' }
+                red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = 'Redlines Issued' }
+                green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = 'Corrections Complete' }
+                blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = 'Verified Closed' }
             }
         }
     }
@@ -66,6 +68,7 @@ function New-WorkflowContext() {
         resultStatus = 'Succeeded'
         documentPath = 'Documents\Demo\a.pdf'
         attributes = @{
+            qcActive = $true
             cycleId = 'cycle-1'
             stage = 'Red'
             status = 'Open'
@@ -94,13 +97,12 @@ function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{
 $dry = Invoke-QCWorkflowWriteback -Config (New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true) -Context (New-WorkflowContext)
 Assert-True $dry.IsSuccess 'Dry-run workflow should return success'
 Assert-Eq $script:pwWriteCalls 0 'Dry-run should not call PW write cmdlets'
-Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_VALIDATED' -or $_.Code -eq 'QC_WORKFLOW_VALIDATION_WARNING' })).Count -eq 1) 'Dry-run should validate inherited workflow'
-Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_STATE_PLANNED' })).Count -eq 1) 'Dry-run should plan state'
+Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_STATE_PLANNED' })).Count -eq 0) 'AttributesOnly dry-run should not plan state'
 Assert-True ((@($dry.Data.actions | Where-Object { $_.Code -eq 'QC_WORKFLOW_ATTRIBUTES_PLANNED' })).Count -eq 1) 'Dry-run should plan attributes'
 
 # missing workflow/state/attribute config logs warnings but does not fail by default
 $missing = New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true
-$missing.qcWorkflow.expectedWorkflowName = ''
+$missing.qcWorkflow.mode = 'NotAMode'
 $missing.qcWorkflow.Remove('attributeMap')
 $missing.qcWorkflow.stageMap.Remove('blue')
 $v = Test-QCWorkflowConfig -Config $missing
@@ -109,9 +111,9 @@ Assert-True ($v.Data.warnings.Count -ge 3) 'Missing config should include warnin
 
 # strictMode converts missing configuration into failure
 $strict = New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$true
-$strict.qcWorkflow.expectedWorkflowName = ''
+$strict.qcWorkflow.mode = 'NotAMode'
 $strictRes = Test-QCWorkflowConfig -Config $strict
-Assert-True (-not $strictRes.IsSuccess) 'Strict missing workflow name should fail validation'
+Assert-True (-not $strictRes.IsSuccess) 'Strict invalid workflow mode should fail validation'
 Assert-Eq $strictRes.Code 'QC_WORKFLOW_CONFIG_STRICT_FAILURE' 'Strict validation code'
 
 # workflow writeback failure does not fail unless strictMode = true
@@ -143,7 +145,11 @@ function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = '
 function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'QC Received'; ToStateName = 'Redlines Issued' } }
 function Set-PWDocumentState { [CmdletBinding()] param([object[]]$InputDocuments, [string]$StateName, [switch]$ReturnBoolean) $script:stateWrites++; return $true }
 function Update-PWDocumentAttributes { [CmdletBinding()] param([object[]]$InputDocuments, [hashtable]$Attributes, [switch]$ReturnBoolean) $script:attributeWrites++; return $true }
-$writeSettings = Get-QCWorkflowSettings -Config (New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$false)
+$writeCfg = New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$false
+$writeCfg.qcWorkflow.mode = 'StateAndAttributes'
+$writeCfg.qcWorkflow.autoSetState = $true
+$writeCfg.qcWorkflow.expectedWorkflowName = 'QC Review Workflow'
+$writeSettings = Get-QCWorkflowSettings -Config $writeCfg
 $doc = [pscustomobject]@{ WorkflowName = 'QC Review Workflow'; StateName = 'QC Received'; DocumentID = 1; ProjectID = 2 }
 $writeContext = New-WorkflowContext
 $writeContext.document = $doc

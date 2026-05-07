@@ -119,15 +119,18 @@ if (-not [string]::IsNullOrWhiteSpace($AttributesJson)) {
     foreach ($p in $custom.PSObject.Properties) { $attributes[$p.Name] = $p.Value }
 }
 
+$workflowMode = if ($Mode -eq 'AttributeOnly') { 'AttributesOnly' } else { 'StateAndAttributes' }
+
 $config = @{
     dryRun = $false
     qcWorkflow = @{
         enabled = $true
         strictMode = $true
         dryRunWriteback = $true
+        mode = $workflowMode
         workflowName = $ExpectedWorkflowName
         expectedWorkflowName = $ExpectedWorkflowName
-        autoAssignWorkflow = $true
+        autoAssignWorkflow = $false
         autoSetState = ($Mode -eq 'StateOnly' -or $Mode -eq 'Combined')
         autoWriteAttributes = ($Mode -eq 'AttributeOnly' -or $Mode -eq 'Combined')
         stateAfterSuccessfulPrepend = $target
@@ -137,9 +140,9 @@ $config = @{
             automationError = 'QC_Automation_Error'
         }
         stageMap = @{
-            red = @{ stageValue = 'Red'; stateName = $target; statusValue = 'Open' }
-            green = @{ stageValue = 'Green'; stateName = $target; statusValue = 'Pending Backcheck' }
-            blue = @{ stageValue = 'Blue'; stateName = $target; statusValue = 'Closed' }
+            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = $target }
+            green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = $target }
+            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = $target }
         }
     }
 }

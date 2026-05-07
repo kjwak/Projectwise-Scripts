@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This framework adds an optional ProjectWise workflow, state, and document-attribute writeback layer on top of the existing `QC_PREPEND` PDF processing flow. It is intentionally disabled by default because the final ProjectWise workflow, states, and environment attributes have not been finalized.
+This framework adds an optional ProjectWise document-attribute writeback layer, with optional document-state integration, on top of the existing `QC_PREPEND` PDF processing flow. QC lifecycle values are an attribute-first overlay on the existing project workflow and existing `CADD/Sheets` folder structure.
 
 The framework is designed to support the red / green / blue QC process:
 
@@ -14,14 +14,14 @@ The framework is designed to support the red / green / blue QC process:
 
 ## Expected ProjectWise Administrator setup
 
-A likely future setup is a dedicated ProjectWise workflow for QC PDF files, created and maintained in ProjectWise Administrator. The automation does **not** create this workflow or any environment attributes.
+QC PDFs and status sets remain in the existing ProjectWise `CADD/Sheets` folder structure. The automation does **not** create dedicated QC folders, does **not** assign workflows to documents, and does **not** replace the project workflow. ProjectWise Administrator setup should focus first on QC environment attributes; optional state integration can be enabled later within the existing workflow.
 
 Recommended setup tasks:
 
-1. Create a dedicated workflow for QC PDFs.
-2. Create the desired workflow states.
-3. Create or expose document attributes in the ProjectWise environment used by QC PDFs.
-4. Confirm which `pwps` / `pwps_dab` cmdlets and parameters are approved for workflow assignment, state transitions, and attribute updates in the target datasource.
+1. Create or expose QC document attributes in the ProjectWise environment used by sheet PDFs.
+2. Confirm `Update-PWDocumentAttributes` parameter behavior in the target datasource.
+3. Optionally identify existing workflow states that can represent QC milestones without replacing the project workflow.
+4. Confirm `Set-PWDocumentState` and `Get-PWWorkflowStateLinks` behavior before enabling state-and-attribute mode.
 5. Pilot with dry-run writeback before enabling real writes.
 
 ## Recommended workflow states
@@ -64,15 +64,16 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
     "enabled": false,
     "strictMode": false,
     "dryRunWriteback": true,
-    "workflowName": "QC Review Workflow",
-    "expectedWorkflowName": "QC Review Workflow",
+    "mode": "AttributesOnly",
+    "workflowName": "",
+    "expectedWorkflowName": "",
     "defaultStateAfterPrepend": "QC Received",
     "stateAfterSuccessfulPrepend": "Redlines Issued",
     "stateAfterFailedPrepend": "Error / Needs Attention",
-    "autoAssignWorkflow": true,
-    "autoSetState": true,
+    "autoSetState": false,
     "autoWriteAttributes": true,
     "attributeMap": {
+      "qcActive": "QC_Active",
       "cycleId": "QC_Cycle_ID",
       "stage": "QC_Stage",
       "reviewer": "QC_Reviewer",
@@ -90,24 +91,35 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
     "stageMap": {
       "red": {
         "stageValue": "Red",
-        "stateName": "Redlines Issued",
-        "statusValue": "Open"
+        "statusValue": "Open",
+        "optionalStateName": "Corrections Required"
       },
       "green": {
         "stageValue": "Green",
-        "stateName": "Corrections Complete",
-        "statusValue": "Pending Backcheck"
+        "statusValue": "Pending Backcheck",
+        "optionalStateName": "Corrections Complete"
       },
       "blue": {
         "stageValue": "Blue",
-        "stateName": "Verified Closed",
-        "statusValue": "Closed"
+        "statusValue": "Closed",
+        "optionalStateName": "QC Verified"
       }
     }
   }
 }
 ```
 
+
+
+## Operational modes
+
+### AttributesOnly (default)
+
+`AttributesOnly` writes configured QC attributes only and does not attempt to change ProjectWise document state. This is the recommended and safest deployment mode.
+
+### StateAndAttributes (optional)
+
+`StateAndAttributes` still writes QC attributes first, then optionally validates and changes document state when `qcWorkflow.autoSetState = true`. It validates target state existence and transition links where possible using `Get-PWWorkflowStateLinks`, then writes with `Set-PWDocumentState`. It never changes workflow assignment.
 
 ## Capability discovery before enabling writeback
 
@@ -147,8 +159,9 @@ Review these capability areas before enabling writeback:
 - Document lookup reads: `Get-PWDocumentsBySearch`, `Get-PWDocumentsBySearchExtended`, `Get-PWDocumentsBySearchWithReturnColumns`.
 - Environment attribute reads: `Get-PWDocumentEAttributes`, `Get-PWEnvironmentColumns`.
 - Confirmed document write cmdlets: `Set-PWDocumentState`, `Update-PWDocumentAttributes`.
-- Confirmed folder workflow cmdlets for administrator/setup validation: `Set-PWFolderWorkflow`, `Set-PWWorkflowByFolderPath`.
-- Confirmed missing direct document workflow cmdlet: `Set-PWDocumentWorkflow`; the QC framework validates folder-inherited workflow membership instead of assigning workflows directly to documents.
+- Confirmed workflow-state cmdlets for optional state integration: `Get-PWWorkflowStateLinks`, `Set-PWDocumentState`.
+- Confirmed reporting/search cmdlets: `Get-PWFolderTreeDocumentStateCount`, `Get-PWDocumentsBySearchExtended`, `Get-PWDocumentsBySearchWithReturnColumns`, `Get-PWDocumentEAttributes`, `Get-PWEnvironmentColumns`.
+- Confirmed missing direct document workflow cmdlet: `Set-PWDocumentWorkflow`; the QC framework never changes workflow assignment.
 
 Do not enable real workflow/state/attribute writes until the discovery output confirms the exact parameter sets for the target ProjectWise environment.
 
@@ -209,8 +222,8 @@ Never run the controlled writeback script against production documents until the
 
 ## Risks and limitations
 
-- The final ProjectWise workflow, state, and attribute names are not known yet; all names must remain configurable. Workflow assignment is expected to be inherited from configured ProjectWise folders.
-- `pwps` / `pwps_dab` workflow cmdlet parameter sets can vary by installation and datasource. The module isolates state and attribute writes in wrapper functions and validates folder-inherited workflow membership before writeback.
+- The final ProjectWise state and attribute names are configurable. QC attributes are authoritative; workflow states are optional secondary context.
+- `pwps` / `pwps_dab` cmdlet parameter sets can vary by installation and datasource. The module isolates attribute and optional state writes in wrapper functions and never reassigns workflows.
 - Missing workflow/state/attribute support logs warnings and returns non-fatal results by default.
 - `strictMode` should only be enabled after configuration and ProjectWise cmdlet behavior are validated.
 - Dry-run mode must be used before any production writeback is enabled.
