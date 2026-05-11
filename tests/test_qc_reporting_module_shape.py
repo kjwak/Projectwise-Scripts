@@ -24,6 +24,15 @@ def test_reporting_module_exports_expected_functions_and_metrics():
         "qcClosedCount",
         "qcErrorCount",
         "staleQcCount",
+        "inProductionCount",
+        "qcReceivedCount",
+        "redlinesIssuedCount",
+        "correctionsInProgressCount",
+        "correctionsCompleteCount",
+        "backcheckInProgressCount",
+        "verifiedClosedCount",
+        "errorNeedsAttentionCount",
+        "staleOpenQcCount",
         "avgQcCycleDays",
     ]:
         assert metric in text

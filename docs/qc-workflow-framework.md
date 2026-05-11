@@ -24,18 +24,56 @@ Recommended setup tasks:
 4. Confirm `Set-PWDocumentState` and `Get-PWWorkflowStateLinks` behavior before enabling state-and-attribute mode.
 5. Pilot with dry-run writeback before enabling real writes.
 
-## Recommended workflow states
+## Initial ProjectWise QC workflow model
 
-The default configuration uses example names only. Rename them in `qcWorkflow` to match the final ProjectWise setup.
+The initial ProjectWise model keeps QC PDFs and status sets in the existing `CADD/Sheets` folder structure. The ProjectWise workflow state is optional secondary context; QC attributes remain the primary control layer used by prepend processing, reporting, and future dashboard logic.
 
-- `QC Received`
-- `Redlines Issued`
-- `Corrections In Progress`
-- `Corrections Complete`
-- `Backcheck In Progress`
-- `Verified Closed`
-- `Superseded`
-- `Error / Needs Attention`
+| State | Meaning | Primary owner/responsibility |
+| --- | --- | --- |
+| `In Production` | Normal sheet production. This is the starting/default state before QC begins. | Designer/producer owns sheet production. |
+| `QC Received` | QC set/file has been created or received and is ready for review. | Reviewer/QC coordinator owns review intake. |
+| `Redlines Issued` | Reviewer has completed redline comments. Ownership moves to the designer/producer. | Designer/producer owns response and correction planning. |
+| `Corrections In Progress` | Designer/producer is actively addressing reviewer comments. | Designer/producer owns corrections. |
+| `Corrections Complete` | Designer/producer has marked responses/corrections complete. Ownership moves back to reviewer. | Reviewer owns backcheck readiness. |
+| `Backcheck In Progress` | Reviewer is verifying the corrected work. | Reviewer owns verification. |
+| `Verified Closed` | Reviewer has verified corrections. QC cycle is complete. | Reviewer/QC coordinator owns closure. |
+| `Error Needs Attention` | Automation or process issue requires manual attention. | QC coordinator or automation owner investigates and restores normal processing. |
+
+Recommended transition path:
+
+```text
+In Production
+-> QC Received
+-> Redlines Issued
+-> Corrections In Progress
+-> Corrections Complete
+-> Backcheck In Progress
+-> Verified Closed
+```
+
+Recommended loopback:
+
+```text
+Backcheck In Progress -> Corrections In Progress
+```
+
+Recommended reopening path:
+
+```text
+Verified Closed -> In Production
+```
+
+Recommended error path:
+
+```text
+Any active QC state -> Error Needs Attention
+```
+
+Do not automatically move documents from `In Production` to `QC Received` during normal prepend processing yet. Prepend processing should continue to write QC attributes only by default.
+
+State automation is intentionally optional because ProjectWise workflows may already encode project production controls, review permissions, or client-specific gates. The QC framework must not make ProjectWise state the source of truth unless a project explicitly opts into state writeback. State changes only occur when `qcWorkflow.mode = StateAndAttributes` and `qcWorkflow.autoSetState = true`.
+
+Attributes remain the primary control layer because they are less disruptive than workflow state changes, can be reported consistently across projects, can coexist with existing production workflows, and allow dry-run/pilot validation before any ProjectWise state writes are enabled.
 
 ## Recommended document attributes
 
@@ -67,9 +105,14 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
     "mode": "AttributesOnly",
     "workflowName": "",
     "expectedWorkflowName": "",
+    "productionStateName": "In Production",
+    "receivedStateName": "QC Received",
+    "correctionsInProgressStateName": "Corrections In Progress",
+    "backcheckInProgressStateName": "Backcheck In Progress",
+    "errorStateName": "Error Needs Attention",
     "defaultStateAfterPrepend": "QC Received",
     "stateAfterSuccessfulPrepend": "Redlines Issued",
-    "stateAfterFailedPrepend": "Error / Needs Attention",
+    "stateAfterFailedPrepend": "Error Needs Attention",
     "autoSetState": false,
     "autoWriteAttributes": true,
     "attributeMap": {
@@ -92,7 +135,7 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
       "red": {
         "stageValue": "Red",
         "statusValue": "Open",
-        "optionalStateName": "Corrections Required"
+        "optionalStateName": "Redlines Issued"
       },
       "green": {
         "stageValue": "Green",
@@ -102,7 +145,7 @@ The default attribute map uses example names only. Rename them in `qcWorkflow.at
       "blue": {
         "stageValue": "Blue",
         "statusValue": "Closed",
-        "optionalStateName": "QC Verified"
+        "optionalStateName": "Verified Closed"
       }
     }
   }

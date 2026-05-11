@@ -86,9 +86,14 @@ function Get-QCWorkflowSettings {
         workflowName = ''
         expectedWorkflowName = ''
         mode = 'AttributesOnly'
+        productionStateName = 'In Production'
+        receivedStateName = 'QC Received'
+        correctionsInProgressStateName = 'Corrections In Progress'
+        backcheckInProgressStateName = 'Backcheck In Progress'
+        errorStateName = 'Error Needs Attention'
         defaultStateAfterPrepend = 'QC Received'
         stateAfterSuccessfulPrepend = 'Redlines Issued'
-        stateAfterFailedPrepend = 'Error / Needs Attention'
+        stateAfterFailedPrepend = 'Error Needs Attention'
         autoSetState = $false
         autoWriteAttributes = $true
         attributeMap = @{
@@ -108,9 +113,9 @@ function Get-QCWorkflowSettings {
             automationError = 'QC_Automation_Error'
         }
         stageMap = @{
-            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = 'Corrections Required' }
+            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = 'Redlines Issued' }
             green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = 'Corrections Complete' }
-            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = 'QC Verified' }
+            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = 'Verified Closed' }
         }
     }
 
@@ -156,7 +161,7 @@ function Test-QCWorkflowConfig {
         $warnings += $msg
         $critical += $msg
     }
-    if ([bool]$settings.autoSetState -and _QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName) {
+    if ([bool]$settings.autoSetState -and (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName)) {
         $warnings += 'qcWorkflow.autoSetState is true but qcWorkflow.expectedWorkflowName is empty; workflow validation will be partial.'
     }
     $rawAttributeMap = $null
@@ -316,7 +321,7 @@ function Test-QCWorkflowStateTransition {
     }
     $targetExists = [bool](@($states | Where-Object { $_ -eq $TargetStateName }).Count -gt 0)
 
-    if ($targetExists -and (-not $ValidatePath -or _QCW-IsNullOrWhiteSpace $CurrentStateName -or $CurrentStateName -eq $TargetStateName)) {
+    if ($targetExists -and (-not $ValidatePath -or (_QCW-IsNullOrWhiteSpace $CurrentStateName) -or $CurrentStateName -eq $TargetStateName)) {
         $transitionValid = $true
     } elseif ($targetExists -and $ValidatePath) {
         $transitionValid = $false

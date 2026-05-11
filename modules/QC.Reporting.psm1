@@ -186,6 +186,15 @@ function New-QCReportingSnapshot {
     $cycleDays = @($closed | ForEach-Object { if ($_.cycleStartDate -and $_.lastActionDate) { ($_.lastActionDate - $_.cycleStartDate).TotalDays } } | Where-Object { $null -ne $_ })
     $avg = if ($cycleDays.Count -gt 0) { [math]::Round((($cycleDays | Measure-Object -Average).Average),2) } else { $null }
 
+    $inProduction = @($normalized | Where-Object { (-not $_.qcActive -and (_QCR-IsBlank $_.stage) -and (_QCR-IsBlank $_.status)) -or ([string]$_.stateName) -ieq 'In Production' })
+    $qcReceived = @($active | Where-Object { ([string]$_.status) -match '(?i)^QC Received$|^Received$' -or ([string]$_.stateName) -ieq 'QC Received' })
+    $redlinesIssued = @($active | Where-Object { ([string]$_.stage) -ieq 'Red' -or ([string]$_.status) -ieq 'Open' -or ([string]$_.stateName) -ieq 'Redlines Issued' })
+    $correctionsInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Corrections In Progress' -or ([string]$_.stage) -ieq 'Corrections In Progress' -or ([string]$_.stateName) -ieq 'Corrections In Progress' })
+    $correctionsComplete = @($active | Where-Object { ([string]$_.stage) -ieq 'Green' -or ([string]$_.status) -ieq 'Pending Backcheck' -or ([string]$_.stateName) -ieq 'Corrections Complete' })
+    $backcheckInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Backcheck In Progress' -or ([string]$_.stage) -ieq 'Backcheck In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
+    $verifiedClosed = @($active | Where-Object { ([string]$_.stage) -ieq 'Blue' -or ([string]$_.status) -ieq 'Closed' -or ([string]$_.stateName) -ieq 'Verified Closed' })
+    $errorNeedsAttention = @($active | Where-Object { -not (_QCR-IsBlank $_.automationError) -or ([string]$_.automationResult) -match '(?i)fail|error' -or ([string]$_.stateName) -ieq 'Error Needs Attention' })
+
     $stateCounts = @{}
     if ([bool]$Settings.includeWorkflowStateCounts) {
         foreach ($d in @($normalized)) {
@@ -207,6 +216,15 @@ function New-QCReportingSnapshot {
             qcClosedCount = @($closed).Count
             qcErrorCount = @($errors).Count
             staleQcCount = @($stale).Count
+            inProductionCount = @($inProduction).Count
+            qcReceivedCount = @($qcReceived).Count
+            redlinesIssuedCount = @($redlinesIssued).Count
+            correctionsInProgressCount = @($correctionsInProgress).Count
+            correctionsCompleteCount = @($correctionsComplete).Count
+            backcheckInProgressCount = @($backcheckInProgress).Count
+            verifiedClosedCount = @($verifiedClosed).Count
+            errorNeedsAttentionCount = @($errorNeedsAttention).Count
+            staleOpenQcCount = @($stale).Count
             avgQcCycleDays = $avg
         }
         workflowStateCounts = [pscustomobject]$stateCounts

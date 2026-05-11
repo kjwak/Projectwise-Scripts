@@ -38,8 +38,13 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
             autoAssignWorkflow = $false
             autoSetState = $false
             autoWriteAttributes = $true
+            productionStateName = 'In Production'
+            receivedStateName = 'QC Received'
+            correctionsInProgressStateName = 'Corrections In Progress'
+            backcheckInProgressStateName = 'Backcheck In Progress'
+            errorStateName = 'Error Needs Attention'
             stateAfterSuccessfulPrepend = 'Redlines Issued'
-            stateAfterFailedPrepend = 'Error / Needs Attention'
+            stateAfterFailedPrepend = 'Error Needs Attention'
             attributeMap = @{
                 qcActive = 'QC_Active'
                 cycleId = 'QC_Cycle_ID'
@@ -81,6 +86,19 @@ function New-WorkflowContext() {
         }
     }
 }
+
+# built-in defaults stay attribute-first and use the finalized ProjectWise state names
+$defaultSettings = Get-QCWorkflowSettings -Config @{}
+Assert-Eq $defaultSettings.mode 'AttributesOnly' 'AttributesOnly should remain the default workflow mode'
+Assert-Eq $defaultSettings.autoSetState $false 'autoSetState should remain false by default'
+Assert-Eq $defaultSettings.productionStateName 'In Production' 'Default production state name'
+Assert-Eq $defaultSettings.receivedStateName 'QC Received' 'Default received state name'
+Assert-Eq $defaultSettings.correctionsInProgressStateName 'Corrections In Progress' 'Default corrections in progress state name'
+Assert-Eq $defaultSettings.backcheckInProgressStateName 'Backcheck In Progress' 'Default backcheck state name'
+Assert-Eq $defaultSettings.errorStateName 'Error Needs Attention' 'Default error state name'
+Assert-Eq $defaultSettings.stageMap.red.optionalStateName 'Redlines Issued' 'Default red optional state'
+Assert-Eq $defaultSettings.stageMap.green.optionalStateName 'Corrections Complete' 'Default green optional state'
+Assert-Eq $defaultSettings.stageMap.blue.optionalStateName 'Verified Closed' 'Default blue optional state'
 
 # workflow config disabled means no writeback occurs
 $disabled = Invoke-QCWorkflowWriteback -Config (New-WorkflowConfig -Enabled:$false -Strict:$false -DryRunWriteback:$true) -Context (New-WorkflowContext)
