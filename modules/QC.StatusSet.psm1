@@ -491,7 +491,17 @@ function _SSS-PWGetDocName([object]$Doc) {
 }
 
 function _SSS-GetDocLastModified([object]$Doc) {
-    foreach ($n in @('DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileUpdatedDate','FileUpdateDate')) {
+    # Prefer FileUpdateDateUtc (stable for "reprint"/new version detection).
+    # Fall back to other date columns for older PW return shapes.
+    foreach ($n in @(
+        'FileUpdateDateUtc',
+        'FileUpdatedDateUtc',
+        'FileUpdateDate',
+        'FileUpdatedDate',
+        'DocumentUpdateDate',
+        'VersionModifiedDate',
+        'Version Modified Date'
+    )) {
         $v = _SSS-PWGetProp -Obj $Doc -Name $n
         $dt = _SSS-ParseIsoDateTime $v
         if ($dt) { return $dt }
@@ -1320,11 +1330,22 @@ function _SSS-BuildPWStatusSetState {
             DgnDocumentId = $dgnDocId
             DgnName = $dgnName
         }
-        # Hash identity for dedupe + manifest: sizes and PW document IDs only. PW "last modified"
-        # fields are unstable across listings/API paths and caused spurious new dedupeKeys after restart.
+        # Hash identity for dedupe + manifest:
+        # - Include PW document IDs (stable identity) and file sizes (when available)
+        # - Include FileUpdateDateUtc (via _SSS-PWGetDocLastModifiedUtcIso) so PW "reprints"/new versions
+        #   trigger rebuilds even when the PDF size does not change.
         $pdfIdStr = if ($null -ne $pdfDocId -and -not [string]::IsNullOrWhiteSpace([string]$pdfDocId)) { [string]$pdfDocId } else { '' }
         $dgnIdStr = if ($null -ne $dgnDocId -and -not [string]::IsNullOrWhiteSpace([string]$dgnDocId)) { [string]$dgnDocId } else { '' }
-        $lines += (@($stemKey, ([string]$pdfSize), ([string]$dgnSize), $pdfIdStr, $dgnIdStr, $dirKey) -join '|')
+        $lines += (@(
+            $stemKey,
+            ([string]$pdfSize),
+            ([string]$dgnSize),
+            $pdfIdStr,
+            $dgnIdStr,
+            ([string]$pdfMod),
+            ([string]$dgnMod),
+            $dirKey
+        ) -join '|')
     }
 
     $lines = @($lines | Sort-Object)
