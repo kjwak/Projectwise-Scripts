@@ -844,6 +844,7 @@ function _Get-WorkersConfig([hashtable]$Cfg) {
         maxJobsPerWorker = 25
         leaseSeconds     = 600
         idleSleepMs      = 750
+        watcherIdleSleepMs = 750
         spawnStaggerMs   = 250
     }
     try {
@@ -853,11 +854,16 @@ function _Get-WorkersConfig([hashtable]$Cfg) {
                 foreach ($k in @('maxParallel','maxJobsPerWorker','leaseSeconds','idleSleepMs','spawnStaggerMs')) {
                     if ($src.ContainsKey($k) -and $src[$k] -ne $null) { $w[$k] = [int]$src[$k] }
                 }
+                $w.watcherIdleSleepMs = [int]$w.idleSleepMs
             }
+        }
+        if ($Cfg.ContainsKey('watcher') -and $Cfg.watcher -and ($Cfg.watcher -is [hashtable])) {
+            if ($Cfg.watcher.ContainsKey('idleSleepMs') -and $Cfg.watcher.idleSleepMs -ne $null) { $w.watcherIdleSleepMs = [int]$Cfg.watcher.idleSleepMs }
         }
     } catch { }
     if ($Workers -gt 0) { $w.maxParallel = [int]$Workers }
     if ($w.maxParallel -lt 1) { $w.maxParallel = 1 }
+    if ($w.watcherIdleSleepMs -lt 100) { $w.watcherIdleSleepMs = 100 }
     return $w
 }
 
@@ -1386,7 +1392,7 @@ while ($true) {
                 $state.watcherAlive = $false
                 $state.watcherPid = 0
                 if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
-                elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
+                else { Start-Sleep -Milliseconds ([int]$wc.watcherIdleSleepMs) }
             }
         }
 

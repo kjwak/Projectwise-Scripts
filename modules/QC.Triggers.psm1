@@ -93,13 +93,18 @@ function Test-QCTriggerCandidate {
         [Parameter(Mandatory)]
         [hashtable]$Candidate,
         [Parameter(Mandatory)]
-        [hashtable]$Config
+        [hashtable]$Config,
+        [Parameter(Mandatory = $false)]
+        [object[]]$OrderedRules = $null
     )
 
-    $orderedRes = Get-OrderedTriggerRules -Config $Config
-    if (-not $orderedRes.IsSuccess) { return $orderedRes }
+    if ($null -eq $OrderedRules) {
+        $orderedRes = Get-OrderedTriggerRules -Config $Config
+        if (-not $orderedRes.IsSuccess) { return $orderedRes }
+        $OrderedRules = @($orderedRes.Data.rules)
+    }
 
-    foreach ($rule in @($orderedRes.Data.rules)) {
+    foreach ($rule in @($OrderedRules)) {
         $r = Test-TriggerRule -Candidate $Candidate -Rule $rule
         if (-not $r.IsSuccess) { return $r }
         if ($r.Data.isMatch) {

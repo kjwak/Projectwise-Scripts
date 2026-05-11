@@ -36,6 +36,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$watchRunSw = [System.Diagnostics.Stopwatch]::StartNew()
+$phaseMs = @{}
+$phaseCounts = @{}
 
 function _Get-ThisScriptDir {
     try {
@@ -46,6 +49,140 @@ function _Get-ThisScriptDir {
         if ($p -and (Test-Path -LiteralPath $p)) { return (Split-Path -Parent $p) }
     } catch { }
     return (Get-Location).Path
+}
+
+
+function _Add-WatchPhaseMs {
+    param(
+        [hashtable]$PhaseMs,
+        [string]$Name,
+        [System.Diagnostics.Stopwatch]$Stopwatch
+    )
+    if (-not $PhaseMs.ContainsKey($Name)) { $PhaseMs[$Name] = 0 }
+    $PhaseMs[$Name] = [int64]$PhaseMs[$Name] + [int64]$Stopwatch.ElapsedMilliseconds
+}
+
+function _Get-WatcherQueueRoot {
+    param([hashtable]$Config)
+    if ($Config -and $Config.ContainsKey('queue') -and $Config.queue) {
+        if ($Config.queue.ContainsKey('rootDir') -and $Config.queue.rootDir) { return [string]$Config.queue.rootDir }
+        if ($Config.queue.ContainsKey('root') -and $Config.queue.root) { return [string]$Config.queue.root }
+        if ($Config.queue.ContainsKey('path') -and $Config.queue.path) { return [string]$Config.queue.path }
+    }
+    return (Join-Path $repoRoot 'queue')
+}
+
+function _Get-WatcherConfigHash {
+    param([hashtable]$Config)
+    $payload = @{
+        filters = if ($Config.ContainsKey('filters')) { $Config.filters } else { $null }
+        triggers = if ($Config.ContainsKey('triggers')) { $Config.triggers } else { $null }
+    }
+    try {
+        $json = ($payload | ConvertTo-Json -Depth 80 -Compress)
+    } catch {
+        $json = [string]$payload
+    }
+    return Get-Sha256TextHex -Text $json
+}
+
+function _Read-LocalWatcherCache {
+    param([string]$Path)
+    $empty = @{ version = 1; entries = @{} }
+    if (-not (Test-Path -LiteralPath $Path)) { return $empty }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $entries = @{}
+        if ($obj -and $obj.entries) {
+            foreach ($prop in @($obj.entries.PSObject.Properties)) {
+                $entries[[string]$prop.Name] = $prop.Value
+            }
+        }
+        return @{ version = 1; entries = $entries }
+    } catch {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_READ_FAILED' -Message 'Local watcher cache could not be read; rebuilding.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        return $empty
+    }
+}
+
+function _Write-LocalWatcherCache {
+    param(
+        [string]$Path,
+        [hashtable]$Cache
+    )
+    try {
+        $dir = Split-Path -Parent $Path
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $json = (@{ version = 1; writtenAtUtc = ([DateTime]::UtcNow.ToString('o')); entries = $Cache.entries } | ConvertTo-Json -Depth 80)
+        Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+        return $true
+    } catch {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_WRITE_FAILED' -Message 'Local watcher cache could not be written.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        return $false
+    }
+}
+
+function _Get-LocalFileSignature {
+    param(
+        [System.IO.FileInfo]$FileInfo,
+        [string]$NormPath,
+        [string]$ConfigHash
+    )
+    return @{
+        path = $NormPath
+        lastWriteTicksUtc = [int64]$FileInfo.LastWriteTimeUtc.Ticks
+        length = [int64]$FileInfo.Length
+        configHash = $ConfigHash
+    }
+}
+
+function _Test-LocalCacheEntryMatches {
+    param(
+        [object]$Entry,
+        [hashtable]$Signature
+    )
+    if (-not $Entry) { return $false }
+    try {
+        return (([int64]$Entry.lastWriteTicksUtc -eq [int64]$Signature.lastWriteTicksUtc) -and
+            ([int64]$Entry.length -eq [int64]$Signature.length) -and
+            ([string]$Entry.configHash -eq [string]$Signature.configHash))
+    } catch { return $false }
+}
+
+
+function _Test-LocalHashEntryMatches {
+    param(
+        [object]$Entry,
+        [hashtable]$Signature
+    )
+    if (-not $Entry) { return $false }
+    try {
+        return (([int64]$Entry.lastWriteTicksUtc -eq [int64]$Signature.lastWriteTicksUtc) -and
+            ([int64]$Entry.length -eq [int64]$Signature.length) -and
+            $Entry.sha256)
+    } catch { return $false }
+}
+
+function _Set-LocalWatcherCacheEntry {
+    param(
+        [hashtable]$Cache,
+        [string]$Key,
+        [hashtable]$Signature,
+        [AllowNull()][string]$Sha256 = $null,
+        [AllowNull()][string]$Outcome = $null
+    )
+    $entry = @{
+        path = [string]$Signature.path
+        lastWriteTicksUtc = [int64]$Signature.lastWriteTicksUtc
+        length = [int64]$Signature.length
+        configHash = [string]$Signature.configHash
+        processedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+    }
+    if ($Sha256) { $entry.sha256 = $Sha256 }
+    if ($Outcome) { $entry.outcome = $Outcome }
+    $Cache.entries[$Key] = $entry
 }
 
 $scriptDir = _Get-ThisScriptDir
@@ -108,6 +245,27 @@ $enqueued = 0
 $duplicates = 0
 $skippedStatusSetCurrent = 0
 $errors = 0
+$localCacheHits = 0
+$localCacheMisses = 0
+$localCacheSkips = 0
+$hashCacheHits = 0
+$hashCacheMisses = 0
+$triggerRuleCacheUses = 0
+
+$queueRoot = _Get-WatcherQueueRoot -Config $config
+$localCachePath = Join-Path (Join-Path $queueRoot '_watcher') 'local-file-cache.json'
+$triggerFilterConfigHash = _Get-WatcherConfigHash -Config $config
+$localWatcherCache = _Read-LocalWatcherCache -Path $localCachePath
+$localWatcherCacheDirty = $false
+
+$orderedTriggerRules = @()
+try {
+    $orderedTriggerRulesRes = Get-OrderedTriggerRules -Config $config
+    if (-not $orderedTriggerRulesRes.IsSuccess) { throw $orderedTriggerRulesRes.Message }
+    $orderedTriggerRules = @($orderedTriggerRulesRes.Data.rules)
+} catch {
+    throw "Failed to load ordered trigger rules: $($_.Exception.Message)"
+}
 
 $statusSetRules = @()
 try {
@@ -138,6 +296,7 @@ try {
 if ($statusSetRules.Count -ge 0) {
     # ProjectWise sources (watchList) — read-only.
     if ($hasPwWatchList) {
+        $pwWatchSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $pwCfg = ConvertTo-HashtableDeep -Value $config.projectWise
             $ds = if ($pwCfg.ContainsKey('datasourceName') -and $pwCfg.datasourceName) { [string]$pwCfg.datasourceName } else { '' }
@@ -498,7 +657,8 @@ if ($statusSetRules.Count -ge 0) {
                                 continue
                             }
 
-                            $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config
+                            $triggerRuleCacheUses++
+                            $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules
                             if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
                             if (-not [bool]$matchRes.Data.matched) {
                                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any trigger rule.' -Data @{
@@ -567,9 +727,13 @@ if ($statusSetRules.Count -ge 0) {
         } catch {
             $errors++
             Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{ errorMessage = [string]$_.Exception.Message; scriptStackTrace = [string]$_.ScriptStackTrace }
+        } finally {
+            $pwWatchSw.Stop()
+            _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'projectWiseWatchList' -Stopwatch $pwWatchSw
         }
     }
 
+    $localStatusSetSw = [System.Diagnostics.Stopwatch]::StartNew()
     foreach ($folder in $watchFolders) {
         try {
             if (-not (Test-Path -LiteralPath $folder)) { continue }
@@ -680,8 +844,12 @@ if ($statusSetRules.Count -ge 0) {
             }
         }
     }
+    $localStatusSetSw.Stop()
+    _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'localStatusSetFolders' -Stopwatch $localStatusSetSw
+    $phaseCounts['statusSetRules'] = [int]$statusSetRules.Count
 }
 
+$localDiscoverSw = [System.Diagnostics.Stopwatch]::StartNew()
 $fileItems = @()
 foreach ($folder in $watchFolders) {
     if (-not (Test-Path -LiteralPath $folder)) {
@@ -692,17 +860,37 @@ foreach ($folder in $watchFolders) {
 }
 
 if ($MaxFiles -gt 0) { $fileItems = @($fileItems | Select-Object -First $MaxFiles) }
+$localDiscoverSw.Stop()
+_Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'localDiscover' -Stopwatch $localDiscoverSw
+$phaseCounts['localFilesDiscovered'] = [int]$fileItems.Count
+$phaseCounts['watchFolders'] = [int]$watchFolders.Count
+$phaseCounts['triggerRules'] = [int]$orderedTriggerRules.Count
 
+$localProcessSw = [System.Diagnostics.Stopwatch]::StartNew()
 foreach ($fi in $fileItems) {
     try {
         $pathRes = Normalize-QCPath -Path ([string]$fi.FullName)
         if (-not $pathRes.IsSuccess) { throw $pathRes.Message }
         $normPath = [string]$pathRes.Data.path
+        $localCacheKey = $normPath.ToLowerInvariant()
+        $localSignature = _Get-LocalFileSignature -FileInfo $fi -NormPath $normPath -ConfigHash $triggerFilterConfigHash
+        $localCacheEntry = $null
+        if ($localWatcherCache.entries.ContainsKey($localCacheKey)) { $localCacheEntry = $localWatcherCache.entries[$localCacheKey] }
+        $localCacheEntryMatches = _Test-LocalCacheEntryMatches -Entry $localCacheEntry -Signature $localSignature
+        if ($localCacheEntryMatches) { $localCacheHits++ } else { $localCacheMisses++ }
+        if ($localCacheEntryMatches -and -not $isDryRun) {
+            $localCacheSkips++
+            continue
+        }
 
         $allowRes = Test-QCPathAllowed -CandidatePath $normPath -Config $config
         if (-not $allowRes.IsSuccess) { throw $allowRes.Message }
         if (-not [bool]$allowRes.Data.allowed) {
             $filtered++
+            if (-not $isDryRun) {
+                _Set-LocalWatcherCacheEntry -Cache $localWatcherCache -Key $localCacheKey -Signature $localSignature -Outcome 'filtered'
+                $localWatcherCacheDirty = $true
+            }
             continue
         }
 
@@ -721,7 +909,8 @@ foreach ($fi in $fileItems) {
         if (-not $sfRes.IsSuccess) { throw $sfRes.Message }
         $candidate.sourceFolder = [string]$sfRes.Data.path
 
-        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config
+        $triggerRuleCacheUses++
+        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules
         if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
         if (-not [bool]$matchRes.Data.matched) {
             $ignored++
@@ -731,6 +920,10 @@ foreach ($fi in $fileItems) {
                     fileName = $candidate.fileName
                     ignoredCount = $ignored
                 }
+            }
+            if (-not $isDryRun) {
+                _Set-LocalWatcherCacheEntry -Cache $localWatcherCache -Key $localCacheKey -Signature $localSignature -Outcome 'ignored'
+                $localWatcherCacheDirty = $true
             }
             continue
         }
@@ -751,7 +944,15 @@ foreach ($fi in $fileItems) {
 
         if (-not $groupingEnabled -or $groupBy -ne 'folder' -or $jobType -ne 'STATUS_SET_GEN') {
             # file-level workflows: compute a stable file hash for dedupe (read-only).
-            $candidate.file.sha256 = Get-Sha256FileHex -Path ([string]$fi.FullName)
+            $cachedSha = $null
+            try { if ((_Test-LocalHashEntryMatches -Entry $localCacheEntry -Signature $localSignature)) { $cachedSha = [string]$localCacheEntry.sha256 } } catch { $cachedSha = $null }
+            if ($cachedSha) {
+                $hashCacheHits++
+                $candidate.file.sha256 = $cachedSha
+            } else {
+                $hashCacheMisses++
+                $candidate.file.sha256 = Get-Sha256FileHex -Path ([string]$fi.FullName)
+            }
         } else {
             # grouped folder workflow: establish groupKey = jobType + sourceFolder
             $candidate.groupKey = ($jobType + '|' + [string]$candidate.sourceFolder).ToLowerInvariant()
@@ -792,12 +993,16 @@ foreach ($fi in $fileItems) {
 
         if ($wouldDedupe) {
             $duplicates++
+            _Set-LocalWatcherCacheEntry -Cache $localWatcherCache -Key $localCacheKey -Signature $localSignature -Sha256 ([string]$candidate.file.sha256) -Outcome 'duplicate'
+            $localWatcherCacheDirty = $true
             continue
         }
 
         $enqRes = Add-QCQueueJob -Job $job -Config $config
         if (-not $enqRes.IsSuccess) { throw $enqRes.Message }
         $enqueued++
+        _Set-LocalWatcherCacheEntry -Cache $localWatcherCache -Key $localCacheKey -Signature $localSignature -Sha256 ([string]$candidate.file.sha256) -Outcome 'enqueued'
+        $localWatcherCacheDirty = $true
     } catch {
         $errors++
         $ex = $_.Exception
@@ -809,9 +1014,24 @@ foreach ($fi in $fileItems) {
         }
     }
 }
+$localProcessSw.Stop()
+_Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'localProcess' -Stopwatch $localProcessSw
+
+if ($localWatcherCacheDirty) {
+    $cacheWriteSw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void](_Write-LocalWatcherCache -Path $localCachePath -Cache $localWatcherCache)
+    $cacheWriteSw.Stop()
+    _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'localCacheWrite' -Stopwatch $cacheWriteSw
+}
+
+$phaseCounts['localCacheEntries'] = [int]$localWatcherCache.entries.Count
+$watchRunSw.Stop()
 
 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch run completed.' -Data @{
     dryRun = $isDryRun
+    elapsedMs = [int64]$watchRunSw.ElapsedMilliseconds
+    phaseMs = $phaseMs
+    phaseCounts = $phaseCounts
     scanned = $fileItems.Count
     filtered = $filtered
     ignored = $ignored
@@ -821,6 +1041,13 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     skippedStatusSetCurrent = $skippedStatusSetCurrent
     enqueued = $enqueued
     errors = $errors
+    localCacheHits = $localCacheHits
+    localCacheMisses = $localCacheMisses
+    localCacheSkips = $localCacheSkips
+    localCacheEntries = [int]$localWatcherCache.entries.Count
+    hashCacheHits = $hashCacheHits
+    hashCacheMisses = $hashCacheMisses
+    triggerRuleCacheUses = $triggerRuleCacheUses
 }
 
 exit 0
