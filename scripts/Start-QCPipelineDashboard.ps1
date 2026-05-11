@@ -836,6 +836,22 @@ function _Render-Dashboard([hashtable]$Cfg, [switch]$Force) {
     }
 }
 
+function _Get-WatcherConfig([hashtable]$Cfg) {
+    $w = @{
+        idleSleepMs = 5000
+    }
+    try {
+        if ($Cfg.ContainsKey('watcher') -and $Cfg.watcher -and ($Cfg.watcher -is [hashtable])) {
+            if ($Cfg.watcher.ContainsKey('idleSleepMs') -and $Cfg.watcher.idleSleepMs -ne $null) {
+                $w.idleSleepMs = [int]$Cfg.watcher.idleSleepMs
+            }
+        }
+    } catch { }
+    if ($PollSeconds -gt 0) { $w.idleSleepMs = [int]$PollSeconds * 1000 }
+    if ($w.idleSleepMs -lt 0) { $w.idleSleepMs = 0 }
+    return $w
+}
+
 function _Get-WorkersConfig([hashtable]$Cfg) {
     $w = @{
         maxParallel      = 2
@@ -1321,6 +1337,7 @@ while ($true) {
         # Make config available to render helpers without threading it through every call.
         $script:_DashCfg = $cfg
         $wc = _Get-WorkersConfig -Cfg $cfg
+        $watchCfg = _Get-WatcherConfig -Cfg $cfg
         $state.workerSlotMax = [int]$wc.maxParallel
 
         $hasPw = _Test-HasPwWatchList -Cfg $cfg
@@ -1368,8 +1385,7 @@ while ($true) {
                 $watcherChild = $null
                 $state.watcherAlive = $false
                 $state.watcherPid = 0
-                if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
-                elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
+                if ([int]$watchCfg.idleSleepMs -gt 0) { Start-Sleep -Milliseconds ([int]$watchCfg.idleSleepMs) }
             }
         }
 
