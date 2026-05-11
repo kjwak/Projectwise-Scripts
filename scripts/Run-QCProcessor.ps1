@@ -352,7 +352,15 @@ while ($true) {
     $job = [hashtable]$next.Data.job
     $jobId = [string]$job['id']
     $handler = _Resolve-Handler -Job $job -Config $config
-    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{ jobId = $jobId; jobType = [string]$job['type']; dedupeKey = [string]$job['dedupeKey']; handler = $handler }
+    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{
+        jobId = $jobId
+        jobType = [string]$job['type']
+        dedupeKey = [string]$job['dedupeKey']
+        handler = $handler
+        sourceFolder = [string]$job['sourceFolder']
+        sourcePath = [string]$job['sourcePath']
+        sourceName = [string]$job['sourceName']
+    }
     Write-WorkerStage -Stage ("selected; dispatching to $handler") -JobId $jobId -JobType ([string]$job['type']) -Handler $handler
 
     $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
