@@ -1,0 +1,291 @@
+# QC.Reporting.psm1
+# Responsibility: Read-only QC attribute-first reporting aggregation and JSON snapshots.
+
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+
+function _QCR-ToHashtable([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value }
+    if ($Value -is [string] -or $Value -is [System.ValueType]) { return @{ value = $Value } }
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    }
+    return $null
+}
+
+function _QCR-IsBlank([object]$Value) {
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }
+    return $false
+}
+
+function _QCR-GetProp([object]$Object, [string[]]$Names) {
+    foreach ($n in @($Names)) {
+        try { if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n } } catch { }
+    }
+    return $null
+}
+
+function _QCR-SafeName([string]$Name) {
+    if (_QCR-IsBlank $Name) { return 'project' }
+    return (($Name -replace '[\\/:*?"<>|]+','_') -replace '\s+','_').Trim('_')
+}
+
+function _QCR-ToBool([object]$Value) {
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return [bool]$Value }
+    $s = ([string]$Value).Trim()
+    return ($s -match '(?i)^(true|1|yes|y|active|open)$')
+}
+
+function _QCR-ToDate([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    try { return ([datetime]$Value) } catch { return $null }
+}
+
+function _QCR-GetAttributeValue([object]$Document, [string]$AttributeName) {
+    if (_QCR-IsBlank $AttributeName) { return $null }
+    $containers = @()
+    foreach ($prop in @('qcAttributes','attributes','Attributes','CustomAttributes','EnvironmentAttributes')) {
+        try { if ($Document -and $Document.PSObject.Properties[$prop] -and $Document.$prop) { $containers += $Document.$prop } } catch { }
+    }
+    foreach ($c in @($containers)) {
+        $h = _QCR-ToHashtable $c
+        if ($h -and $h.ContainsKey($AttributeName)) { return $h[$AttributeName] }
+    }
+    try { if ($Document -and $Document.PSObject.Properties[$AttributeName]) { return $Document.$AttributeName } } catch { }
+    return $null
+}
+
+function Get-QCReportingSettings {
+    [CmdletBinding()]
+    param([hashtable]$Config)
+
+    $raw = @{}
+    if ($Config -and $Config.ContainsKey('qcReporting') -and $Config.qcReporting) { $raw = _QCR-ToHashtable $Config.qcReporting }
+    $wf = @{}
+    if ($Config -and $Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) { $wf = _QCR-ToHashtable $Config.qcWorkflow }
+    $attributeMap = if ($wf -and $wf.ContainsKey('attributeMap')) { _QCR-ToHashtable $wf.attributeMap } else { @{} }
+
+    $settings = @{
+        enabled = $false
+        snapshotRoot = 'metrics\qc'
+        staleDays = 14
+        includeWorkflowStateCounts = $true
+        scanSubtree = $true
+        scheduledIntervalMinutes = 60
+        attributeMap = $attributeMap
+    }
+    if ($raw) { foreach ($k in $raw.Keys) { $settings[$k] = $raw[$k] } }
+    if (-not $settings.attributeMap -or $settings.attributeMap.Keys.Count -eq 0) {
+        $settings.attributeMap = @{
+            qcActive = 'QC_Active'
+            cycleId = 'QC_Cycle_ID'
+            stage = 'QC_Stage'
+            status = 'QC_Status'
+            lastActionDate = 'QC_Last_Action_Date'
+            automationLastRun = 'QC_Automation_Last_Run'
+            automationResult = 'QC_Automation_Result'
+            automationError = 'QC_Automation_Error'
+        }
+    }
+    try { $settings.staleDays = [int]$settings.staleDays } catch { $settings.staleDays = 14 }
+    return $settings
+}
+
+function ConvertTo-QCReportingDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Document,
+        [Parameter(Mandatory)]
+        [hashtable]$AttributeMap
+    )
+
+    $attrs = @{}
+    foreach ($key in @($AttributeMap.Keys)) { $attrs[$key] = _QCR-GetAttributeValue -Document $Document -AttributeName ([string]$AttributeMap[$key]) }
+    $state = _QCR-GetProp -Object $Document -Names @('StateName','WorkflowState','State','DocumentState')
+    $workflow = _QCR-GetProp -Object $Document -Names @('WorkflowName','Workflow')
+    $name = _QCR-GetProp -Object $Document -Names @('Name','DocumentName','FileName')
+    $path = _QCR-GetProp -Object $Document -Names @('FullPath','Path','FolderPath')
+    $lastAction = _QCR-ToDate $attrs.lastActionDate
+    $cycleStart = _QCR-ToDate (_QCR-GetAttributeValue -Document $Document -AttributeName 'QC_Cycle_Start_Date')
+
+    return [pscustomobject]@{
+        name = $name
+        path = $path
+        workflowName = $workflow
+        stateName = $state
+        qcActive = (_QCR-ToBool $attrs.qcActive)
+        cycleId = $attrs.cycleId
+        stage = $attrs.stage
+        status = $attrs.status
+        lastActionDate = $lastAction
+        cycleStartDate = $cycleStart
+        automationResult = $attrs.automationResult
+        automationError = $attrs.automationError
+        attributes = $attrs
+    }
+}
+
+function Get-QCReportingDocuments {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Job,
+        [hashtable]$Settings
+    )
+
+    if ($Job -and $Job.ContainsKey('documents') -and $Job.documents) { return @($Job.documents) }
+
+    $folder = $null
+    if ($Job -and $Job.ContainsKey('sourceFolder')) { $folder = [string]$Job.sourceFolder }
+    elseif ($Job -and $Job.ContainsKey('folderPath')) { $folder = [string]$Job.folderPath }
+    if (_QCR-IsBlank $folder) { return @() }
+
+    $docs = @()
+    $cmd = Get-Command -Name Get-PWDocumentsBySearchWithReturnColumns -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $cols = @('Name','DocumentID','ProjectID','WorkflowName','StateName') + @($Settings.attributeMap.Values)
+        $cols = @($cols | Where-Object { -not (_QCR-IsBlank $_) } | Select-Object -Unique)
+        $param = if ($cmd.Parameters.ContainsKey('ReturnColumns')) { 'ReturnColumns' } elseif ($cmd.Parameters.ContainsKey('ColumnsToReturn')) { 'ColumnsToReturn' } else { $null }
+        try {
+            $args = @{ FolderPath = $folder; ErrorAction = 'Stop' }
+            if ($param) { $args[$param] = $cols }
+            if ($cmd.Parameters.ContainsKey('PopulatePath')) { $args['PopulatePath'] = $true }
+            if (-not [bool]$Settings.scanSubtree -and $cmd.Parameters.ContainsKey('JustThisFolder')) { $args['JustThisFolder'] = $true }
+            $docs = @(& $cmd @args)
+        } catch { $docs = @() }
+    }
+    if ($docs.Count -eq 0 -and (Get-Command -Name Get-PWDocumentsBySearchExtended -ErrorAction SilentlyContinue)) {
+        try { $docs = @(Get-PWDocumentsBySearchExtended -FolderPath $folder -ErrorAction Stop) } catch { $docs = @() }
+    }
+    return @($docs)
+}
+
+function New-QCReportingSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Documents,
+        [Parameter(Mandatory)]
+        [hashtable]$Settings,
+        [string]$Project = 'project'
+    )
+
+    $normalized = @($Documents | ForEach-Object { ConvertTo-QCReportingDocument -Document $_ -AttributeMap $Settings.attributeMap })
+    $now = Get-Date
+    $active = @($normalized | Where-Object { $_.qcActive -or -not (_QCR-IsBlank $_.status) -or -not (_QCR-IsBlank $_.stage) })
+    $open = @($active | Where-Object { ([string]$_.status) -ieq 'Open' })
+    $pending = @($active | Where-Object { ([string]$_.status) -ieq 'Pending Backcheck' })
+    $closed = @($active | Where-Object { ([string]$_.status) -ieq 'Closed' })
+    $errors = @($active | Where-Object { -not (_QCR-IsBlank $_.automationError) -or ([string]$_.automationResult) -match '(?i)fail|error' })
+    $stale = @($active | Where-Object { $_.lastActionDate -and (($now - $_.lastActionDate).TotalDays -gt [int]$Settings.staleDays) -and ([string]$_.status) -ine 'Closed' })
+    $cycleDays = @($closed | ForEach-Object { if ($_.cycleStartDate -and $_.lastActionDate) { ($_.lastActionDate - $_.cycleStartDate).TotalDays } } | Where-Object { $null -ne $_ })
+    $avg = if ($cycleDays.Count -gt 0) { [math]::Round((($cycleDays | Measure-Object -Average).Average),2) } else { $null }
+
+    $inProduction = @($normalized | Where-Object { (-not $_.qcActive -and (_QCR-IsBlank $_.stage) -and (_QCR-IsBlank $_.status)) -or ([string]$_.stateName) -ieq 'In Production' })
+    $qcReceived = @($active | Where-Object { ([string]$_.status) -match '(?i)^QC Received$|^Received$' -or ([string]$_.stateName) -ieq 'QC Received' })
+    $redlinesIssued = @($active | Where-Object { ([string]$_.stage) -ieq 'Red' -or ([string]$_.status) -ieq 'Open' -or ([string]$_.stateName) -ieq 'Redlines Issued' })
+    $correctionsInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Corrections In Progress' -or ([string]$_.stage) -ieq 'Corrections In Progress' -or ([string]$_.stateName) -ieq 'Corrections In Progress' })
+    $correctionsComplete = @($active | Where-Object { ([string]$_.stage) -ieq 'Green' -or ([string]$_.status) -ieq 'Pending Backcheck' -or ([string]$_.stateName) -ieq 'Corrections Complete' })
+    $backcheckInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Backcheck In Progress' -or ([string]$_.stage) -ieq 'Backcheck In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
+    $verifiedClosed = @($active | Where-Object { ([string]$_.stage) -ieq 'Blue' -or ([string]$_.status) -ieq 'Closed' -or ([string]$_.stateName) -ieq 'Verified Closed' })
+    $errorNeedsAttention = @($active | Where-Object { -not (_QCR-IsBlank $_.automationError) -or ([string]$_.automationResult) -match '(?i)fail|error' -or ([string]$_.stateName) -ieq 'Error Needs Attention' })
+
+    $stateCounts = @{}
+    if ([bool]$Settings.includeWorkflowStateCounts) {
+        foreach ($d in @($normalized)) {
+            $k = if (_QCR-IsBlank $d.stateName) { '<none>' } else { [string]$d.stateName }
+            if (-not $stateCounts.ContainsKey($k)) { $stateCounts[$k] = 0 }
+            $stateCounts[$k]++
+        }
+    }
+
+    return [pscustomobject]@{
+        project = $Project
+        generatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        source = 'QC_REPORTING_SCAN'
+        metrics = [pscustomobject]@{
+            documentCount = @($normalized).Count
+            qcActiveCount = @($active).Count
+            qcOpenCount = @($open).Count
+            qcPendingBackcheckCount = @($pending).Count
+            qcClosedCount = @($closed).Count
+            qcErrorCount = @($errors).Count
+            staleQcCount = @($stale).Count
+            inProductionCount = @($inProduction).Count
+            qcReceivedCount = @($qcReceived).Count
+            redlinesIssuedCount = @($redlinesIssued).Count
+            correctionsInProgressCount = @($correctionsInProgress).Count
+            correctionsCompleteCount = @($correctionsComplete).Count
+            backcheckInProgressCount = @($backcheckInProgress).Count
+            verifiedClosedCount = @($verifiedClosed).Count
+            errorNeedsAttentionCount = @($errorNeedsAttention).Count
+            staleOpenQcCount = @($stale).Count
+            avgQcCycleDays = $avg
+        }
+        workflowStateCounts = [pscustomobject]$stateCounts
+        documents = @($normalized)
+    }
+}
+
+function Write-QCReportingSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Snapshot,
+        [Parameter(Mandatory)]
+        [hashtable]$Settings
+    )
+
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $projectName = _QCR-SafeName ([string]$Snapshot.project)
+    $root = [string]$Settings.snapshotRoot
+    $dir = Join-Path $root $stamp
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $path = Join-Path $dir ($projectName + '.json')
+    $Snapshot | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $path -Encoding utf8
+    return $path
+}
+
+function Invoke-QCReportingScan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Job,
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $settings = Get-QCReportingSettings -Config $Config
+    $docs = @(Get-QCReportingDocuments -Job $Job -Settings $settings)
+    $project = if ($Job.ContainsKey('project')) { [string]$Job.project } elseif ($Job.ContainsKey('sourceFolder')) { [string]$Job.sourceFolder } else { 'project' }
+    $snapshot = New-QCReportingSnapshot -Documents $docs -Settings $settings -Project $project
+    $path = Write-QCReportingSnapshot -Snapshot $snapshot -Settings $settings
+    return New-QCSuccessResult -Code 'QC_REPORTING_SCAN_OK' -Message 'QC reporting snapshot written.' -Data @{ snapshotPath = $path; snapshot = $snapshot; documentCount = $docs.Count }
+}
+
+function New-QCReportingScanJob {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Project,
+        [Parameter(Mandatory)]
+        [string]$SourceFolder
+    )
+    $bucket = (Get-Date).ToUniversalTime().ToString('yyyyMMddHH')
+    $safe = _QCR-SafeName $Project
+    return @{
+        id = ('qc_reporting_' + $safe + '_' + $bucket)
+        type = 'QC_REPORTING_SCAN'
+        sourceFolder = $SourceFolder
+        project = $Project
+        dedupeKey = ('dq_qc_reporting|' + $SourceFolder + '|' + $bucket).ToLowerInvariant()
+        createdUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
+Export-ModuleMember -Function Get-QCReportingSettings,Get-QCReportingDocuments,ConvertTo-QCReportingDocument,New-QCReportingSnapshot,Write-QCReportingSnapshot,Invoke-QCReportingScan,New-QCReportingScanJob

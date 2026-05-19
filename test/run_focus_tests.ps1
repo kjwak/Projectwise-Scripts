@@ -9,6 +9,7 @@ $tests = @(
     'test\test_blacklist_pw_uri.ps1',
     'test\test_statusset_processor_default.ps1',
     'test\test_pw_writeback_failure.ps1',
+    'test\test_qc_workflow.ps1',
     'test\test_move_qcjob_with_job.ps1',
     'test\test_statusset_reconcile.ps1'
 )
