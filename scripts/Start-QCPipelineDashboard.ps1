@@ -264,10 +264,11 @@ function _Get-DocumentsAreaTwoSegments([string]$AnyPath) {
     return $null
 }
 
-function _TryGet-StatusSetProjectNameFromFolder([hashtable]$Cfg, [string]$FolderPath) {
+function _TryGet-ProjectNameFromFolder([hashtable]$Cfg, [string]$FolderPath) {
     # Extract "project name" from paths like:
     #   Documents\<AzDot root>\<project...>\CADD\Sheets
     # using appsettings watchList.roots[*].path + .sheetsPathFromProject + .projectDepth.
+    # Works for any PW path under a configured watch root (status set or QC prepend).
     if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
     if (-not $Cfg) { return $null }
 
@@ -379,7 +380,7 @@ function _Format-StatusSetJobLine([hashtable]$Cfg, [object]$Entry, [int]$ColWidt
         }
     } catch { }
     $folder = _SafeAscii $folder
-    $proj = _TryGet-StatusSetProjectNameFromFolder -Cfg $Cfg -FolderPath $folder
+    $proj = _TryGet-ProjectNameFromFolder -Cfg $Cfg -FolderPath $folder
     $dir = if ($proj) { $proj } else { '' }
     if (-not $dir) {
         # Fallback: show Documents\<root>\<project> (or last two segments) if we can't match a watch root.
@@ -628,9 +629,10 @@ function _Get-WorkersLines() {
         }
         $jobId = if ($w.jobId) { [string]$w.jobId } else { '-' }
         $jobType = if ($w.jobType) { [string]$w.jobType } else { '-' }
+        $proj = if ($w.projectName) { [string]$w.projectName } else { '-' }
         $lines.Add((
-            "  {0,-4}  pid={1,-6}  {2,-8}  {3,-15}  {4,-36}  {5}" -f `
-                [string]$w.label, [int]$w.pid, $st, $jobType, (_Trunc -Text $jobId -Max 36), $elapsed
+            "  {0,-4}  pid={1,-6}  {2,-8}  {3,-15}  {4,-30}  {5,-24}  {6}" -f `
+                [string]$w.label, [int]$w.pid, $st, $jobType, (_Trunc -Text $proj -Max 30), (_Trunc -Text $jobId -Max 24), $elapsed
         )) | Out-Null
     }
     return @($lines)
@@ -842,6 +844,7 @@ function _Get-WorkersConfig([hashtable]$Cfg) {
         maxJobsPerWorker = 25
         leaseSeconds     = 600
         idleSleepMs      = 750
+        watcherIdleSleepMs = 750
         spawnStaggerMs   = 250
     }
     try {
@@ -851,11 +854,16 @@ function _Get-WorkersConfig([hashtable]$Cfg) {
                 foreach ($k in @('maxParallel','maxJobsPerWorker','leaseSeconds','idleSleepMs','spawnStaggerMs')) {
                     if ($src.ContainsKey($k) -and $src[$k] -ne $null) { $w[$k] = [int]$src[$k] }
                 }
+                $w.watcherIdleSleepMs = [int]$w.idleSleepMs
             }
+        }
+        if ($Cfg.ContainsKey('watcher') -and $Cfg.watcher -and ($Cfg.watcher -is [hashtable])) {
+            if ($Cfg.watcher.ContainsKey('idleSleepMs') -and $Cfg.watcher.idleSleepMs -ne $null) { $w.watcherIdleSleepMs = [int]$Cfg.watcher.idleSleepMs }
         }
     } catch { }
     if ($Workers -gt 0) { $w.maxParallel = [int]$Workers }
     if ($w.maxParallel -lt 1) { $w.maxParallel = 1 }
+    if ($w.watcherIdleSleepMs -lt 100) { $w.watcherIdleSleepMs = 100 }
     return $w
 }
 
@@ -988,6 +996,8 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                     pid = $wpid
                                     jobId = ''
                                     jobType = ''
+                                    sourceFolder = ''
+                                    projectName = ''
                                     state = 'IDLE'
                                     lastCode = [string]$o.code
                                     lastMessage = [string]$o.message
@@ -1007,23 +1017,36 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                 'WORKER_SELECTED' {
                                     $w.state = 'RUNNING'
                                     if ($o.data) {
-                                        if ($o.data.jobId)   { $w.jobId   = [string]$o.data.jobId }
-                                        if ($o.data.jobType) { $w.jobType = [string]$o.data.jobType }
+                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                                        if ($o.data.sourceFolder) { $w.sourceFolder = [string]$o.data.sourceFolder }
+                                        $w.projectName = ''
+                                        try {
+                                            $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                                            if ($pn) { $w.projectName = [string]$pn }
+                                        } catch { }
                                     }
                                     $w.stage = 'selected job; preparing processor'
                                     $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
                                 }
                                 'WORKER_STAGE' {
                                     if ($o.data) {
-                                        if ($o.data.jobId)   { $w.jobId   = [string]$o.data.jobId }
-                                        if ($o.data.jobType) { $w.jobType = [string]$o.data.jobType }
+                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                                        if ($o.data.sourceFolder) {
+                                            $w.sourceFolder = [string]$o.data.sourceFolder
+                                            try {
+                                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                                                $w.projectName = if ($pn) { [string]$pn } else { '' }
+                                            } catch { }
+                                        }
                                     }
                                     $w.state = if ($w.jobId) { 'RUNNING' } else { 'IDLE' }
                                     if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o') }
                                 }
-                                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
-                                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
-                                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.stage = 'idle; waiting for pending jobs' }
+                                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
+                                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
+                                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'idle; waiting for pending jobs' }
                                 'WORKER_LOCK_RACE' { $w.state = 'IDLE'; $w.stage = 'lock race; trying next job' }
                                 'WORKER_BUDGET'    { $w.state = 'EXITING'; $w.stage = 'max-jobs budget reached' }
                                 'WORKER_LEASE'     { $w.state = 'EXITING'; $w.stage = 'lease budget reached' }
@@ -1369,7 +1392,7 @@ while ($true) {
                 $state.watcherAlive = $false
                 $state.watcherPid = 0
                 if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
-                elseif ($hasPw) { Start-Sleep -Milliseconds 500 }
+                else { Start-Sleep -Milliseconds ([int]$wc.watcherIdleSleepMs) }
             }
         }
 
