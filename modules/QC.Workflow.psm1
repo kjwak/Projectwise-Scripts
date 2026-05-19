@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCW-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -48,6 +49,31 @@ function _QCW-Log([string]$Event, [string]$Level, [string]$Message, [hashtable]$
 function _QCW-NewWorkflowResult([bool]$IsSuccess, [string]$Code, [string]$Message, [hashtable]$Data) {
     if ($IsSuccess) { return New-QCSuccessResult -Code $Code -Message $Message -Data $Data }
     return New-QCFailureResult -Code $Code -Message $Message -Data $Data
+}
+
+function _QCW-InvokeStateChangeNotification {
+    param(
+        [hashtable]$Config,
+        [hashtable]$Context,
+        [string]$PreviousState,
+        [string]$CurrentState,
+        [object]$Document
+    )
+
+    if (-not $Config) { return $null }
+    if (-not (Get-Command -Name Invoke-QCNotificationForStateChange -ErrorAction SilentlyContinue)) { return $null }
+    $job = $null
+    if ($Context -and $Context.ContainsKey('job')) { $job = $Context.job }
+    try {
+        return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
+            -Document $Document -Job $job
+    } catch {
+        if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `
+                -Result @{ success = $false } -Event @{ previousState = $PreviousState; currentState = $CurrentState }
+        }
+        return $null
+    }
 }
 
 function _QCW-GetCommandParameterName([string]$CommandName, [string[]]$CandidateNames) {
@@ -402,6 +428,9 @@ function Set-PWQCWorkflowState {
         else { & $cmd $document $StateName -ErrorAction Stop | Out-Null }
         $data.changed = $true
         _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
+        $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
+        $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $info.Data.stateName -CurrentState $StateName -Document $document
+        if ($notify) { $data.notification = $notify }
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Message 'QC workflow state write succeeded.' -Data $data
     } catch {
         $data.warnings = @($_.Exception.Message)
@@ -478,6 +507,8 @@ function Invoke-QCWorkflowWriteback {
         [hashtable]$Config,
         [hashtable]$Context
     )
+
+    if ($Context -and $Config -and -not $Context.ContainsKey('config')) { $Context['config'] = $Config }
 
     $settings = Get-QCWorkflowSettings -Config $Config
     if (-not [bool]$settings.enabled) {

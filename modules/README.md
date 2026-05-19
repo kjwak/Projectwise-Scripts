@@ -91,8 +91,9 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; retention-based staging cleanup instead of per-job scratch deletion.
 
 ### `QC.Notifications.psm1`
-- **Purpose**: placeholder notification routing for job events.
-- **Declared export**: `Send-QCNotification(Event, Job, Config)`.
+- **Purpose**: configurable QC workflow email notifications (Mock provider + Microsoft Graph stub).
+- **Exports**: `Invoke-QCNotificationForStateChange`, `Send-QCNotification`, `Resolve-QCNotificationRecipients`, and related helpers.
+- **Related**: `QC.NotificationTemplates.psm1`, `QC.NotificationMock.psm1`, `QC.NotificationGraph.psm1`. See `docs/qc-notifications.md`.
 
 ### `QC.Worker.psm1`
 - **Purpose**: reusable worker retry/transition policy.

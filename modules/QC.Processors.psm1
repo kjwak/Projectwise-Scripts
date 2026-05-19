@@ -149,6 +149,9 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
 function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath) {
     if ($null -eq $Result -or -not $Result.IsSuccess) { return $Result }
     $ctx = _QCP-NewWorkflowContext -Job $Job -Config $Config -SourcePath $SourcePath -OutputPath $OutputPath -HistoryPath $HistoryPath -ResultStatus 'Succeeded' -ErrorMessage $null
+    $ctx['config'] = $Config
+    $ctx['job'] = $Job
+    if ($Job -and $Job.ContainsKey('document')) { $ctx['document'] = $Job.document }
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     $strict = $false
     try {
