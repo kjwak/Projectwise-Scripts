@@ -1319,12 +1319,15 @@ function _SSS-BuildPWStatusSetState {
         $dgnDocId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
         $pdfDocGuid = _SSS-PWGetProp -Obj $p -Name 'DocumentGUID'
         $dgnDocGuid = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
+        $pdfStateName = _SSS-PWGetProp -Obj $p -Name 'StateName'
+        $dgnStateName = _SSS-PWGetProp -Obj $d -Name 'StateName'
 
         $dirKey = ([string]$FolderPath).ToLowerInvariant()
         $pairRows += [pscustomobject]@{
             Stem = $stemKey
             Dir = $dirKey
             PdfDoc = $p
+            DgnDoc = $d
             PdfName = $pn
             PdfMod = $pdfMod
             PdfSize = $pdfSize
@@ -1334,6 +1337,8 @@ function _SSS-BuildPWStatusSetState {
             DgnDocumentId = $dgnDocId
             PdfDocumentGuid = $pdfDocGuid
             DgnDocumentGuid = $dgnDocGuid
+            PdfStateName = $pdfStateName
+            DgnStateName = $dgnStateName
             DgnName = $dgnName
         }
         # Hash identity for dedupe + manifest:
@@ -1369,6 +1374,8 @@ function _SSS-BuildPWStatusSetState {
                 length = $r.PdfSize
                 documentId = $r.PdfDocumentId
                 documentGuid = $r.PdfDocumentGuid
+                stateName = $r.PdfStateName
+                doc = $r.PdfDoc
             }
             dgn = @{
                 name = [string]$r.DgnName
@@ -1376,6 +1383,8 @@ function _SSS-BuildPWStatusSetState {
                 length = $r.DgnSize
                 documentId = $r.DgnDocumentId
                 documentGuid = $r.DgnDocumentGuid
+                stateName = $r.DgnStateName
+                doc = $r.DgnDoc
             }
         }
     }
