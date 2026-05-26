@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 
 # Import modules with explicit error trapping
 $modulesDir = Join-Path $repoRoot 'modules'
-foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1')) {
+foreach ($mod in @('Core.Results.psm1', 'Core.Database.psm1')) {
     $modPath = Join-Path $modulesDir $mod
     if (-not (Test-Path -LiteralPath $modPath)) {
         Write-Host "ERROR: Module not found: $modPath" -ForegroundColor Red
@@ -100,7 +100,7 @@ if ($connRes.IsSuccess) {
     $warnings.Add("Connection failed: $($connRes.Message)")
     Write-Host "  FAILED: $($connRes.Message)" -ForegroundColor Red
     Write-Host "`nCannot proceed without a database connection." -ForegroundColor Red
-    $result = [ordered]@{ timestamp = Get-QCTimestamp; checks = $checks; warnings = @($warnings) }
+    $result = [ordered]@{ timestamp = (Get-Date).ToString('o'); checks = $checks; warnings = @($warnings) }
     if ($Pretty) { $result | ConvertTo-Json -Depth 10 } else { $result | ConvertTo-Json -Depth 10 -Compress }
     return
 }
@@ -186,7 +186,7 @@ $checks['viewsMissing'] = @($viewsMissing)
 # -- 5. CRUD round-trip test ---------------------------------------------------
 
 Write-Host "`n[5] CRUD round-trip test (poll_runs)..." -ForegroundColor Yellow
-$testTs = Get-QCTimestamp
+$testTs = (Get-Date).ToString('o')
 $insertRes = Invoke-QCDatabaseNonQuery -Config $config -Sql "INSERT INTO poll_runs (started_at, events_fetched, events_relevant, candidates_created, jobs_enqueued, error_message, is_reconciliation) VALUES (@ts, 0, 0, 0, 0, 'connectivity_test', 0)" -Parameters @{ ts = $testTs }
 
 if ($insertRes.IsSuccess) {
@@ -247,7 +247,7 @@ if ($warnings.Count -gt 0) {
 }
 
 $result = [ordered]@{
-    timestamp       = Get-QCTimestamp
+    timestamp       = (Get-Date).ToString('o')
     overall         = if ($allOk) { 'PASS' } else { 'ISSUES' }
     checks          = $checks
     warnings        = @($warnings)

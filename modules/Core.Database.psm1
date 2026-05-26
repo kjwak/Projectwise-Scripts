@@ -3,7 +3,6 @@
 # The database is the reporting/control layer. The JSON queue remains the execution source.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 # ---------------------------------------------------------------------------
 # Internal helpers
