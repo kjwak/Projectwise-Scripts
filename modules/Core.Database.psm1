@@ -248,7 +248,9 @@ function Initialize-QCDatabaseSchema {
     }
 
     $targetVersion = '1.1.0'
-    $schemaSql = _QDB-GetSchemaV1 + "`n" + _QDB-GetSchemaV1_1
+    $schemaV1 = _QDB-GetSchemaV1
+    $schemaV1_1 = _QDB-GetSchemaV1dot1
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -574,7 +576,7 @@ GROUP BY job_type, status;
 '@
 }
 
-function _QDB-GetSchemaV1_1 {
+function _QDB-GetSchemaV1dot1 {
     return @'
 
 GO
