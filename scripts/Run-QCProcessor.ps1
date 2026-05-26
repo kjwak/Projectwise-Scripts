@@ -266,6 +266,22 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
                 -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
                 -DedupeKey ([string]$Job['dedupeKey']) -ResultData $rdJson
+
+            # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
+            if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
+                try {
+                    $srcName = [string]$Job['sourceName']
+                    $srcFolder = [string]$Job['sourceFolder']
+                    $qcPdfName = [System.IO.Path]::GetFileName([string]$resultData.qcOutputPdf)
+                    if ($srcName -and $srcFolder -and $qcPdfName) {
+                        Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index SET qc_pdf_name = @qcPdfName, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_name = @srcName AND folder_path = @srcFolder
+"@ -Parameters @{ qcPdfName = $qcPdfName; srcName = $srcName; srcFolder = $srcFolder } | Out-Null
+                    }
+                } catch { }
+            }
+
             return @{ Outcome = 'succeeded'; ExitOk = $true; SkipId = $jobId }
         }
 

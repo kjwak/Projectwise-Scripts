@@ -247,8 +247,8 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.0.0'
-    $schemaSql = _QDB-GetSchemaV1
+    $targetVersion = '1.1.0'
+    $schemaSql = _QDB-GetSchemaV1 + "`n" + _QDB-GetSchemaV1_1
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -574,6 +574,79 @@ GROUP BY job_type, status;
 '@
 }
 
+function _QDB-GetSchemaV1_1 {
+    return @'
+
+GO
+
+-- sheet_index: tracks all sheets in watched Sheets folders with QC PDF pairing and ownership
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NULL
+CREATE TABLE sheet_index (
+    id                  INT IDENTITY(1,1) PRIMARY KEY,
+    document_guid       NVARCHAR(40) NOT NULL,
+    document_name       NVARCHAR(500) NOT NULL,
+    document_number     INT NULL,
+    folder_path         NVARCHAR(1000) NOT NULL,
+    project_name        NVARCHAR(200) NULL,
+    watch_root          NVARCHAR(500) NULL,
+    extension           NVARCHAR(20) NULL,
+
+    qc_pdf_guid         NVARCHAR(40) NULL,
+    qc_pdf_name         NVARCHAR(500) NULL,
+    source_type         NVARCHAR(10) NULL,
+
+    designer_email      NVARCHAR(200) NULL,
+    reviewer_email      NVARCHAR(200) NULL,
+
+    pw_state_name       NVARCHAR(100) NULL,
+    qc_stage            NVARCHAR(20) NULL,
+    qc_status           NVARCHAR(50) NULL,
+
+    first_seen_at       DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    last_updated_at     DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    last_audit_event_at DATETIMEOFFSET NULL,
+    file_modified_at    DATETIMEOFFSET NULL,
+
+    CONSTRAINT UQ_sheet_index_doc_guid UNIQUE (document_guid)
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_folder')
+    CREATE INDEX IX_sheet_index_folder ON sheet_index (folder_path);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_qc_pair')
+    CREATE INDEX IX_sheet_index_qc_pair ON sheet_index (qc_pdf_guid) WHERE qc_pdf_guid IS NOT NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_designer')
+    CREATE INDEX IX_sheet_index_designer ON sheet_index (designer_email) WHERE designer_email IS NOT NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_reviewer')
+    CREATE INDEX IX_sheet_index_reviewer ON sheet_index (reviewer_email) WHERE reviewer_email IS NOT NULL;
+
+GO
+
+-- v_sheet_status: project status overview of all indexed sheets
+IF OBJECT_ID('dbo.v_sheet_status', 'V') IS NOT NULL DROP VIEW v_sheet_status;
+
+GO
+
+CREATE VIEW v_sheet_status AS
+SELECT
+    s.document_name,
+    s.folder_path,
+    s.project_name,
+    s.extension,
+    s.designer_email,
+    s.reviewer_email,
+    s.pw_state_name,
+    s.qc_stage,
+    s.qc_status,
+    s.qc_pdf_name,
+    CASE WHEN s.qc_pdf_guid IS NOT NULL THEN 1 ELSE 0 END AS has_qc_pdf,
+    s.last_updated_at,
+    s.file_modified_at,
+    s.watch_root
+FROM sheet_index s;
+
+'@
+}
+
 # ---------------------------------------------------------------------------
 # Fire-and-forget telemetry writers
 # These silently no-op when the database is disabled or unreachable.
@@ -729,4 +802,115 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry
+function Write-QCSheetIndex {
+    <#
+    .SYNOPSIS
+    Upserts a sheet into the sheet_index table. Fire-and-forget.
+    Accepts either raw field values or a PW document object.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [int]$DocumentNumber = 0,
+        [string]$ProjectName,
+        [string]$WatchRoot,
+        [string]$Extension,
+        [string]$SourceType,
+        [string]$DesignerEmail,
+        [string]$ReviewerEmail,
+        [string]$PwStateName,
+        [string]$QcStage,
+        [string]$QcStatus,
+        [string]$LastAuditEventAt,
+        [string]$FileModifiedAt
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        if (-not $Extension -and $DocumentName) {
+            $ext = [System.IO.Path]::GetExtension($DocumentName)
+            if ($ext) { $Extension = $ext.ToLowerInvariant() }
+        }
+        $sql = @"
+MERGE sheet_index AS tgt
+USING (SELECT @docGuid AS document_guid) AS src ON tgt.document_guid = src.document_guid
+WHEN MATCHED THEN UPDATE SET
+    document_name = @docName,
+    folder_path = @folderPath,
+    document_number = CASE WHEN @docNumber > 0 THEN @docNumber ELSE tgt.document_number END,
+    project_name = COALESCE(@projectName, tgt.project_name),
+    watch_root = COALESCE(@watchRoot, tgt.watch_root),
+    extension = COALESCE(@extension, tgt.extension),
+    source_type = COALESCE(@sourceType, tgt.source_type),
+    designer_email = COALESCE(@designerEmail, tgt.designer_email),
+    reviewer_email = COALESCE(@reviewerEmail, tgt.reviewer_email),
+    pw_state_name = COALESCE(@pwStateName, tgt.pw_state_name),
+    qc_stage = COALESCE(@qcStage, tgt.qc_stage),
+    qc_status = COALESCE(@qcStatus, tgt.qc_status),
+    last_updated_at = SYSDATETIMEOFFSET(),
+    last_audit_event_at = COALESCE(@lastAuditEventAt, tgt.last_audit_event_at),
+    file_modified_at = COALESCE(@fileModifiedAt, tgt.file_modified_at)
+WHEN NOT MATCHED THEN INSERT
+    (document_guid, document_name, document_number, folder_path, project_name, watch_root,
+     extension, source_type, designer_email, reviewer_email, pw_state_name, qc_stage, qc_status,
+     last_audit_event_at, file_modified_at)
+VALUES
+    (@docGuid, @docName, @docNumber, @folderPath, @projectName, @watchRoot,
+     @extension, @sourceType, @designerEmail, @reviewerEmail, @pwStateName, @qcStage, @qcStatus,
+     @lastAuditEventAt, @fileModifiedAt);
+"@
+        $params = @{
+            docGuid          = $DocumentGuid
+            docName          = $DocumentName
+            docNumber        = $DocumentNumber
+            folderPath       = $FolderPath
+            projectName      = if ($ProjectName)      { $ProjectName }      else { $null }
+            watchRoot        = if ($WatchRoot)         { $WatchRoot }         else { $null }
+            extension        = if ($Extension)         { $Extension }         else { $null }
+            sourceType       = if ($SourceType)        { $SourceType }        else { $null }
+            designerEmail    = if ($DesignerEmail)     { $DesignerEmail }     else { $null }
+            reviewerEmail    = if ($ReviewerEmail)     { $ReviewerEmail }     else { $null }
+            pwStateName      = if ($PwStateName)       { $PwStateName }       else { $null }
+            qcStage          = if ($QcStage)           { $QcStage }           else { $null }
+            qcStatus         = if ($QcStatus)          { $QcStatus }          else { $null }
+            lastAuditEventAt = if ($LastAuditEventAt)  { $LastAuditEventAt }  else { $null }
+            fileModifiedAt   = if ($FileModifiedAt)    { $FileModifiedAt }    else { $null }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
+function Update-QCSheetQcPdf {
+    <#
+    .SYNOPSIS
+    Links a -qc.pdf to its source sheet in the sheet_index table. Fire-and-forget.
+    Called after a successful QC_PREPEND job.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$SourceDocumentGuid,
+        [string]$QcPdfGuid,
+        [string]$QcPdfName
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        $sql = @"
+UPDATE sheet_index
+SET qc_pdf_guid = @qcPdfGuid,
+    qc_pdf_name = @qcPdfName,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @sourceDocGuid
+"@
+        $params = @{
+            sourceDocGuid = $SourceDocumentGuid
+            qcPdfGuid     = if ($QcPdfGuid) { $QcPdfGuid } else { $null }
+            qcPdfName     = if ($QcPdfName) { $QcPdfName } else { $null }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Update-QCSheetQcPdf

@@ -201,6 +201,7 @@ Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
@@ -353,6 +354,209 @@ if ($statusSetRules.Count -ge 0) {
                 }
             }
 
+            # --- Hybrid scan decision: audit trail (fast) vs full folder scan (reconciliation) ---
+            $auditPollerCfg = $null
+            $useAuditScan = $false
+            if ($config.ContainsKey('auditPoller') -and $config.auditPoller) {
+                $auditPollerCfg = ConvertTo-HashtableDeep -Value $config.auditPoller
+                try { $useAuditScan = [bool]$auditPollerCfg.enabled } catch { $useAuditScan = $false }
+            }
+
+            $counterPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-poll-cycle.txt'
+            $cycleNum = Get-AuditPollCycleCounter -CounterPath $counterPath
+            $reconcileEvery = 20
+            if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
+                try { $reconcileEvery = [int]$auditPollerCfg.reconcileEveryNCycles } catch { $reconcileEvery = 20 }
+            }
+            $isReconciliationCycle = (($cycleNum % $reconcileEvery) -eq 0)
+            $runFullScan = (-not $useAuditScan) -or $isReconciliationCycle
+
+            if ($useAuditScan -and -not $isReconciliationCycle) {
+                # --- AUDIT TRAIL SCAN (primary path) ---
+                $auditScanSw = [System.Diagnostics.Stopwatch]::StartNew()
+                try {
+                    $lookbackSeconds = 120
+                    if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('lookbackSeconds') -and $auditPollerCfg.lookbackSeconds) {
+                        try { $lookbackSeconds = [int]$auditPollerCfg.lookbackSeconds } catch { $lookbackSeconds = 120 }
+                    }
+
+                    $hwm = Get-AuditTrailHighWaterMark -Config $config
+                    $since = if ($hwm) { $hwm.AddSeconds(-10) } else { (Get-Date).AddSeconds(-$lookbackSeconds) }
+
+                    $watchRootConfigs = @()
+                    if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
+                        $watchRootConfigs = @($watchList.roots | ForEach-Object { ConvertTo-HashtableDeep -Value $_ })
+                    }
+
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
+                        since = $since.ToString('yyyy-MM-dd HH:mm:ss')
+                        cycleNum = $cycleNum
+                        reconcileEvery = $reconcileEvery
+                    }
+
+                    $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -WatchRootConfigs $watchRootConfigs
+                    if (-not $auditRes.IsSuccess) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
+                        $fallback = $true
+                        if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('fallbackToFullScan')) {
+                            try { $fallback = [bool]$auditPollerCfg.fallbackToFullScan } catch { $fallback = $true }
+                        }
+                        if ($fallback) {
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_FALLBACK' -Message 'Falling back to full folder scan.' -Data @{}
+                            $runFullScan = $true
+                        }
+                    } else {
+                        $auditData = $auditRes.Data
+                        $auditCandidates = @($auditData.candidates)
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
+                            totalEvents    = $auditData.stats.totalEvents
+                            relevantEvents = $auditData.stats.relevantEvents
+                            watchMatches   = $auditData.stats.watchMatches
+                            sheetsMatches  = $auditData.stats.sheetsMatches
+                            candidates     = $auditCandidates.Count
+                            durationMs     = $auditData.durationMs
+                            watermarkAfter = $auditData.watermarkAfter
+                        }
+
+                        # Process audit candidates through the existing trigger/job/enqueue pipeline.
+                        # Audit-sourced candidates that are in Sheets folders get STATUS_SET_GEN (folder-level).
+                        # PDF check-ins with QC_Archivist tag get QC_PREPEND (document-level).
+                        $auditFoldersSeen = @{}
+                        foreach ($ac in $auditCandidates) {
+                            try {
+                                $fp = [string]$ac.resolvedFolder
+                                if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+
+                                # Write sheet index for documents in Sheets folders
+                                if ([bool]$ac.isSheetsFolder -and $ac.objGuid) {
+                                    Write-QCSheetIndex -Config $config -DocumentGuid ([string]$ac.objGuid) `
+                                        -DocumentName ([string]$ac.itemName) -FolderPath $fp `
+                                        -LastAuditEventAt ([string]$ac.actTime)
+                                }
+
+                                # STATUS_SET_GEN: one per unique Sheets folder
+                                if ([bool]$ac.isSheetsFolder -and $statusRuleObj -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
+                                    $auditFoldersSeen[$fp.ToLowerInvariant()] = $true
+
+                                    $allowRes = Test-QCPathAllowed -CandidatePath $fp -Config $config
+                                    if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                        $filtered++
+                                        continue
+                                    }
+
+                                    $candidate = @{
+                                        path = $fp
+                                        fileName = '_folder_'
+                                        description = ''
+                                        detectedAtUtc = (Get-QCTimestamp)
+                                        sourceFolder = $fp
+                                        datasourceName = $ds
+                                        groupKey = ('STATUS_SET_GEN|' + $fp).ToLowerInvariant()
+                                        triggerSource = 'audit_trail'
+                                        file = @{
+                                            fullName = $fp
+                                            length = 0
+                                            lastWriteTimeUtc = (Get-QCTimestamp)
+                                        }
+                                    }
+
+                                    $jobRes = New-QCJobObject -Candidate $candidate -Rule $statusRuleObj -Config $config
+                                    if (-not $jobRes.IsSuccess) { continue }
+                                    $job = [hashtable]$jobRes.Data.job
+
+                                    $accepted++
+                                    $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                    if (-not $dupRes.IsSuccess) { continue }
+                                    $wouldDedupe = [bool]$dupRes.Data.isDuplicate
+
+                                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
+                                        jobId = [string]$job['id']; jobType = [string]$job['type']
+                                        sourceFolder = $fp; triggerSource = 'audit_trail'
+                                        dryRun = $isDryRun; wouldDedupe = $wouldDedupe
+                                    }
+
+                                    if (-not $isDryRun -and -not $wouldDedupe) {
+                                        $enqRes = Add-QCQueueJob -Job $job -Config $config
+                                        if ($enqRes.IsSuccess) { $enqueued++ }
+                                    } elseif ($wouldDedupe) { $duplicates++ }
+                                }
+
+                                # QC_PREPEND: check if the document is a PDF with QC_Archivist tag
+                                $itemName = [string]$ac.itemName
+                                if ($itemName -match '(?i)\.pdf$' -and [string]$ac.actionName -eq 'DOCUMENT_CIN') {
+                                    try {
+                                        $doc = Get-PWDocumentsByGUIDs -DocumentGUIDs @([string]$ac.objGuid) -ErrorAction SilentlyContinue
+                                        if ($doc) {
+                                            $dd = Get-PWDocDescription -Doc $doc
+                                            if ($dd -and $dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                                                $candidate = @{
+                                                    path = ($fp + '\' + $itemName)
+                                                    fileName = $itemName
+                                                    description = [string]$dd
+                                                    detectedAtUtc = (Get-QCTimestamp)
+                                                    sourceFolder = $fp
+                                                    datasourceName = $ds
+                                                    triggerSource = 'audit_trail'
+                                                    file = @{
+                                                        fullName = ($fp + '\' + $itemName)
+                                                        length = 0
+                                                        lastWriteTimeUtc = (Get-QCTimestamp)
+                                                    }
+                                                }
+                                                $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config
+                                                if ($matchRes.IsSuccess -and [bool]$matchRes.Data.matched) {
+                                                    $ruleObj = $matchRes.Data.rule
+                                                    if ([string]$ruleObj.jobType -eq 'QC_PREPEND') {
+                                                        $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
+                                                        if ($jobRes.IsSuccess) {
+                                                            $job = [hashtable]$jobRes.Data.job
+                                                            $accepted++
+                                                            $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                                            $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
+
+                                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
+                                                                jobId = [string]$job['id']; jobType = 'QC_PREPEND'
+                                                                sourcePath = ($fp + '\' + $itemName)
+                                                                triggerSource = 'audit_trail'
+                                                                dryRun = $isDryRun; wouldDedupe = $wouldDedupe
+                                                            }
+
+                                                            if (-not $isDryRun -and -not $wouldDedupe) {
+                                                                $enqRes = Add-QCQueueJob -Job $job -Config $config
+                                                                if ($enqRes.IsSuccess) { $enqueued++ }
+                                                            } elseif ($wouldDedupe) { $duplicates++ }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } catch { }
+                                }
+                            } catch {
+                                $errors++
+                            }
+                        }
+                    }
+                } catch {
+                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_AUDIT_SCAN_ERROR' -Message "Audit scan threw: $($_.Exception.Message)" -Data @{ scriptStackTrace = [string]$_.ScriptStackTrace }
+                    $errors++
+                    $runFullScan = $true
+                } finally {
+                    $auditScanSw.Stop()
+                    _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'auditTrailScan' -Stopwatch $auditScanSw
+                }
+            }
+
+            if ($isReconciliationCycle) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message 'Running full folder scan (reconciliation cycle).' -Data @{
+                    cycleNum = $cycleNum; reconcileEvery = $reconcileEvery
+                }
+                Reset-AuditPollCycleCounter -CounterPath $counterPath
+            }
+
+            # --- FULL FOLDER SCAN (reconciliation or fallback) ---
+            if ($runFullScan) {
+
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
                 foreach ($r in @($watchList.roots)) {
@@ -500,6 +704,30 @@ if ($statusSetRules.Count -ge 0) {
                             pairedCount = [int]$state.pairedCount
                         }
                         if ([int]$state.pairedCount -gt 0) {
+                            # Index paired sheets during reconciliation scan
+                            if ($state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
+                                foreach ($ps in @($state.pairedSheets)) {
+                                    try {
+                                        $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
+                                        $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
+                                        $pdfDocId = if ($ps.pdf -and $ps.pdf.documentId) { [string]$ps.pdf.documentId } else { $null }
+                                        if ($pdfName -and $pdfDocId) {
+                                            Write-QCSheetIndex -Config $config -DocumentGuid $pdfDocId `
+                                                -DocumentName $pdfName -FolderPath $fp `
+                                                -SourceType 'pdf' -WatchRoot ([string]$entry.FolderPath)
+                                        }
+                                        if ($dgnName) {
+                                            $dgnDocId = if ($ps.dgn -and $ps.dgn.documentId) { [string]$ps.dgn.documentId } else { $null }
+                                            if ($dgnDocId) {
+                                                Write-QCSheetIndex -Config $config -DocumentGuid $dgnDocId `
+                                                    -DocumentName $dgnName -FolderPath $fp `
+                                                    -SourceType 'dgn' -WatchRoot ([string]$entry.FolderPath)
+                                            }
+                                        }
+                                    } catch { }
+                                }
+                            }
+
                             $gateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $fp -FolderState $state
                             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)
                             if ($skipUpToDate) {
@@ -723,6 +951,8 @@ if ($statusSetRules.Count -ge 0) {
                     }
                 }
             }
+
+            } # end if ($runFullScan)
 
             Disconnect-PW | Out-Null
         } catch {
