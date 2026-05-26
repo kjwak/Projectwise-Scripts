@@ -483,7 +483,7 @@ if ($statusSetRules.Count -ge 0) {
 
                                 # QC_PREPEND: check if the document is a PDF with QC_Archivist tag
                                 $itemName = [string]$ac.itemName
-                                if ($itemName -match '(?i)\.pdf$' -and [string]$ac.actionName -eq 'DOCUMENT_CIN') {
+                                if ($itemName -match '(?i)\.pdf$') {
                                     try {
                                         $doc = Get-PWDocumentsByGUIDs -DocumentGUIDs @([string]$ac.objGuid) -ErrorAction SilentlyContinue
                                         if ($doc) {

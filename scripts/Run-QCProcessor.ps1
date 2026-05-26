@@ -207,7 +207,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         }
 
         Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
+        $jobSw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = Invoke-QCProcessorByType -Job $Job -Config $Config
+        $jobSw.Stop()
+        $jobDurationMs = [int]$jobSw.ElapsedMilliseconds
         if ($proc.IsSuccess) {
             # Capture rich result data so the per-job JSON keeps everything the
             # processor reported (pwUpload, needsFullRebuild, changedCount, etc).
@@ -265,7 +268,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             $rdJson = $null; try { if ($resultData) { $rdJson = ($resultData | ConvertTo-Json -Depth 4 -Compress) } } catch {}
             Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
                 -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-                -DedupeKey ([string]$Job['dedupeKey']) -ResultData $rdJson
+                -DedupeKey ([string]$Job['dedupeKey']) -DurationMs $jobDurationMs -ResultData $rdJson
 
             # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
@@ -328,7 +331,7 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
         }
         Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
             -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-            -DedupeKey ([string]$Job['dedupeKey']) -AttemptCount $attempts `
+            -DedupeKey ([string]$Job['dedupeKey']) -DurationMs $jobDurationMs -AttemptCount $attempts `
             -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message)
         if ($target -eq 'failed') {
             return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
