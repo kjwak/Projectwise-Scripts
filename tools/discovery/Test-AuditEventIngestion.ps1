@@ -99,10 +99,16 @@ Write-Host "`n[1] Connecting to ProjectWise..." -ForegroundColor Yellow
 $ds = $null
 try {
     $pw = $config.projectWise
-    if (-not $pw -or -not $pw.datasource) { throw "projectWise.datasource not configured" }
-    $ds = [string]$pw.datasource
-    $connRes = Connect-PW -DatasourceName $ds
-    if (-not $connRes) { throw "Connect-PW returned null" }
+    if (-not $pw) { throw "projectWise section not configured" }
+    $ds = $null
+    if ($pw.datasourceName) { $ds = [string]$pw.datasourceName }
+    elseif ($pw.datasource) { $ds = [string]$pw.datasource }
+    if (-not $ds) { throw "projectWise.datasourceName not configured" }
+    $credPath = if ($pw.credentialPath) { [string]$pw.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+    $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+    if (-not $credRes.IsSuccess) { throw "Credential error: $($credRes.Message)" }
+    $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+    if (-not $connRes.IsSuccess) { throw "Connection error: $($connRes.Message)" }
     Write-Host "  Connected to datasource: $ds" -ForegroundColor Green
 } catch {
     Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red
