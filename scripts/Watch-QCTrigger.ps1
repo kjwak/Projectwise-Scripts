@@ -706,55 +706,64 @@ if ($statusSetRules.Count -ge 0) {
                         if ([int]$state.pairedCount -gt 0) {
                             # Index paired sheets during reconciliation scan
                             if ($state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
-                                # Enrich documents with environment attributes (designer/reviewer emails)
-                                $guidToAttrs = @{}
-                                $richCmd = Get-Command -Name 'Get-PWRichProperties' -ErrorAction SilentlyContinue
-                                if ($richCmd) {
-                                    $allDocs = @()
-                                    foreach ($ps in @($state.pairedSheets)) {
-                                        if ($ps.pdf -and $ps.pdf.doc) { $allDocs += $ps.pdf.doc }
-                                        if ($ps.dgn -and $ps.dgn.doc) { $allDocs += $ps.dgn.doc }
-                                    }
-                                    if ($allDocs.Count -gt 0) {
+                                # Fetch email attributes and workflow state via search API
+                                # per docs/pw-environment-email-attributes.md
+                                $nameToAttrs = @{}
+                                try {
+                                    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp
+                                    $searchRows = @(Get-PWDocumentsBySearchWithReturnColumns `
+                                        -FolderPath $apiPath -JustThisFolder `
+                                        -ColumnsToReturn @('EM_Designer_Email', 'EM_Reviewer_Email') `
+                                        -ErrorAction SilentlyContinue)
+                                    foreach ($sr in $searchRows) {
+                                        $srName = $null
+                                        try { $srName = [string]$sr.Name } catch { }
+                                        if (-not $srName) { try { $srName = [string]$sr.DocumentName } catch { } }
+                                        if (-not $srName) { try { $srName = [string]$sr.FileName } catch { } }
+                                        if (-not $srName) { continue }
+                                        $de = $null; $re = $null; $ws = $null
+                                        try { $ws = [string]$sr.WorkflowState } catch { }
+                                        if (-not $ws) { try { $ws = [string]$sr.StateName } catch { } }
                                         try {
-                                            $enriched = @(Get-PWRichProperties -InputDocuments $allDocs -ErrorAction SilentlyContinue)
-                                            foreach ($ed in $enriched) {
-                                                $eg = $null
-                                                try { $eg = [string]$ed.DocumentGUID } catch { }
-                                                if (-not $eg) { continue }
-                                                $de = $null; $re = $null
-                                                try { $de = [string]$ed.EM_Designer_Email } catch { }
-                                                try { $re = [string]$ed.EM_Reviewer_Email } catch { }
-                                                $guidToAttrs[$eg] = @{ designerEmail = $de; reviewerEmail = $re }
+                                            if ($sr.Attributes) {
+                                                foreach ($bag in @($sr.Attributes)) {
+                                                    if ($bag -is [System.Collections.IDictionary]) {
+                                                        foreach ($k in $bag.Keys) {
+                                                            if ([string]$k -eq 'EM_Designer_Email') { $de = [string]$bag[$k] }
+                                                            if ([string]$k -eq 'EM_Reviewer_Email') { $re = [string]$bag[$k] }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         } catch { }
+                                        $nameToAttrs[$srName.ToLowerInvariant()] = @{
+                                            designerEmail = $de; reviewerEmail = $re; workflowState = $ws
+                                        }
                                     }
-                                }
+                                } catch { }
 
                                 foreach ($ps in @($state.pairedSheets)) {
                                     try {
                                         $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
                                         $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
                                         $pdfGuid = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
-                                        $pdfState = if ($ps.pdf -and $ps.pdf.stateName) { [string]$ps.pdf.stateName } else { $null }
                                         if ($pdfName -and $pdfGuid) {
-                                            $a = if ($guidToAttrs.ContainsKey($pdfGuid)) { $guidToAttrs[$pdfGuid] } else { @{} }
+                                            $a = if ($nameToAttrs.ContainsKey($pdfName.ToLowerInvariant())) { $nameToAttrs[$pdfName.ToLowerInvariant()] } else { @{} }
                                             Write-QCSheetIndex -Config $config -DocumentGuid $pdfGuid `
                                                 -DocumentName $pdfName -FolderPath $fp `
                                                 -SourceType 'pdf' -WatchRoot ([string]$entry.FolderPath) `
                                                 -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
-                                                -PwStateName $pdfState
+                                                -PwStateName ([string]$a.workflowState)
                                         }
                                         if ($dgnName) {
                                             $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
-                                            $dgnState = if ($ps.dgn -and $ps.dgn.stateName) { [string]$ps.dgn.stateName } else { $null }
                                             if ($dgnGuid) {
-                                                $a = if ($guidToAttrs.ContainsKey($dgnGuid)) { $guidToAttrs[$dgnGuid] } else { @{} }
+                                                $a = if ($nameToAttrs.ContainsKey($dgnName.ToLowerInvariant())) { $nameToAttrs[$dgnName.ToLowerInvariant()] } else { @{} }
                                                 Write-QCSheetIndex -Config $config -DocumentGuid $dgnGuid `
                                                     -DocumentName $dgnName -FolderPath $fp `
                                                     -SourceType 'dgn' -WatchRoot ([string]$entry.FolderPath) `
                                                     -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
-                                                    -PwStateName $dgnState
+                                                    -PwStateName ([string]$a.workflowState)
                                             }
                                         }
                                     } catch { }

@@ -181,16 +181,8 @@ try {
                 if (-not $folder) { continue }
                 $ext = [System.IO.Path]::GetExtension([string]$doc.FileName)
                 $designerEmail = $null; $reviewerEmail = $null; $stateName = $null
-                try {
-                    $attrs = $doc | Get-PWDocumentAttributes -ErrorAction SilentlyContinue
-                    if ($attrs) {
-                        $de = $attrs | Where-Object { $_.Name -eq 'EM_Designer_Email' } | Select-Object -First 1
-                        $re = $attrs | Where-Object { $_.Name -eq 'EM_Reviewer_Email' } | Select-Object -First 1
-                        if ($de) { $designerEmail = [string]$de.Value }
-                        if ($re) { $reviewerEmail = [string]$re.Value }
-                    }
-                } catch { }
-                try { $stateName = [string]$doc.StateName } catch { }
+                try { $stateName = [string]$doc.WorkflowState } catch { }
+                if (-not $stateName) { try { $stateName = [string]$doc.StateName } catch { } }
 
                 Write-QCSheetIndex -Config $config -DocumentGuid $dg `
                     -DocumentName ([string]$doc.FileName) -FolderPath $folder `
