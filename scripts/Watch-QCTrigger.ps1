@@ -706,25 +706,79 @@ if ($statusSetRules.Count -ge 0) {
                         if ([int]$state.pairedCount -gt 0) {
                             # Index paired sheets during reconciliation scan
                             if ($state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
+                                # Batch-fetch document attributes for designer/reviewer emails
+                                $guidToAttrs = @{}
+                                $allGuids = @()
+                                foreach ($ps in @($state.pairedSheets)) {
+                                    $pg = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
+                                    $dg = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
+                                    if ($pg) { $allGuids += $pg }
+                                    if ($dg) { $allGuids += $dg }
+                                }
+                                $allGuids = @($allGuids | Where-Object { $_ } | Select-Object -Unique)
+                                if ($allGuids.Count -gt 0) {
+                                    try {
+                                        $batchDocs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $allGuids -ErrorAction SilentlyContinue)
+                                        foreach ($bd in $batchDocs) {
+                                            $bg = [string]$bd.DocumentGUID
+                                            if (-not $bg) { continue }
+                                            $de = $null; $re = $null; $sn = $null
+                                            try { $sn = [string]$bd.StateName } catch { }
+                                            try {
+                                                $attrs = $bd | Get-PWDocumentAttributes -ErrorAction SilentlyContinue
+                                                if ($attrs) {
+                                                    $dea = $attrs | Where-Object { $_.Name -eq 'EM_Designer_Email' } | Select-Object -First 1
+                                                    $rea = $attrs | Where-Object { $_.Name -eq 'EM_Reviewer_Email' } | Select-Object -First 1
+                                                    if ($dea) { $de = [string]$dea.Value }
+                                                    if ($rea) { $re = [string]$rea.Value }
+                                                }
+                                            } catch { }
+                                            $guidToAttrs[$bg] = @{ designerEmail = $de; reviewerEmail = $re; stateName = $sn }
+                                        }
+                                    } catch { }
+                                }
+
                                 foreach ($ps in @($state.pairedSheets)) {
                                     try {
                                         $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
                                         $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
-                                        $pdfDocId = if ($ps.pdf -and $ps.pdf.documentId) { [string]$ps.pdf.documentId } else { $null }
-                                        if ($pdfName -and $pdfDocId) {
-                                            Write-QCSheetIndex -Config $config -DocumentGuid $pdfDocId `
+                                        $pdfGuid = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
+                                        if ($pdfName -and $pdfGuid) {
+                                            $a = if ($guidToAttrs.ContainsKey($pdfGuid)) { $guidToAttrs[$pdfGuid] } else { @{} }
+                                            Write-QCSheetIndex -Config $config -DocumentGuid $pdfGuid `
                                                 -DocumentName $pdfName -FolderPath $fp `
-                                                -SourceType 'pdf' -WatchRoot ([string]$entry.FolderPath)
+                                                -SourceType 'pdf' -WatchRoot ([string]$entry.FolderPath) `
+                                                -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
+                                                -PwStateName ([string]$a.stateName)
                                         }
                                         if ($dgnName) {
-                                            $dgnDocId = if ($ps.dgn -and $ps.dgn.documentId) { [string]$ps.dgn.documentId } else { $null }
-                                            if ($dgnDocId) {
-                                                Write-QCSheetIndex -Config $config -DocumentGuid $dgnDocId `
+                                            $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
+                                            if ($dgnGuid) {
+                                                $a = if ($guidToAttrs.ContainsKey($dgnGuid)) { $guidToAttrs[$dgnGuid] } else { @{} }
+                                                Write-QCSheetIndex -Config $config -DocumentGuid $dgnGuid `
                                                     -DocumentName $dgnName -FolderPath $fp `
-                                                    -SourceType 'dgn' -WatchRoot ([string]$entry.FolderPath)
+                                                    -SourceType 'dgn' -WatchRoot ([string]$entry.FolderPath) `
+                                                    -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
+                                                    -PwStateName ([string]$a.stateName)
                                             }
                                         }
                                     } catch { }
+                                }
+
+                                # Link QC PDFs to their source sheets
+                                if ($state.qcPdfDocs) {
+                                    foreach ($qc in @($state.qcPdfDocs)) {
+                                        try {
+                                            $qcStem = [string]$qc.stem
+                                            $srcSheet = $state.pairedSheets | Where-Object { $_.stem -eq $qcStem } | Select-Object -First 1
+                                            if ($srcSheet -and $srcSheet.pdf -and $srcSheet.pdf.documentGuid) {
+                                                Update-QCSheetQcPdf -Config $config `
+                                                    -SourceDocumentGuid ([string]$srcSheet.pdf.documentGuid) `
+                                                    -QcPdfGuid ([string]$qc.documentGuid) `
+                                                    -QcPdfName ([string]$qc.name)
+                                            }
+                                        } catch { }
+                                    }
                                 }
                             }
 

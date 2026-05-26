@@ -6,7 +6,8 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction 
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
+# Core.Database must be imported by the caller. Re-importing with -Force
+# here clobbers the caller's global-scope exports.
 
 function _QCN-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }

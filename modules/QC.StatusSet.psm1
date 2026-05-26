@@ -1317,6 +1317,8 @@ function _SSS-BuildPWStatusSetState {
         if (-not $dgnSize) { $dgnSize = _SSS-PWGetProp -Obj $d -Name 'Size' }
         $pdfDocId = _SSS-PWGetProp -Obj $p -Name 'DocumentID'
         $dgnDocId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
+        $pdfDocGuid = _SSS-PWGetProp -Obj $p -Name 'DocumentGUID'
+        $dgnDocGuid = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
 
         $dirKey = ([string]$FolderPath).ToLowerInvariant()
         $pairRows += [pscustomobject]@{
@@ -1330,6 +1332,8 @@ function _SSS-BuildPWStatusSetState {
             DgnSize = $dgnSize
             PdfDocumentId = $pdfDocId
             DgnDocumentId = $dgnDocId
+            PdfDocumentGuid = $pdfDocGuid
+            DgnDocumentGuid = $dgnDocGuid
             DgnName = $dgnName
         }
         # Hash identity for dedupe + manifest:
@@ -1364,17 +1368,33 @@ function _SSS-BuildPWStatusSetState {
                 lastWriteTimeUtc = [string]$r.PdfMod
                 length = $r.PdfSize
                 documentId = $r.PdfDocumentId
+                documentGuid = $r.PdfDocumentGuid
             }
             dgn = @{
                 name = [string]$r.DgnName
                 lastWriteTimeUtc = [string]$r.DgnMod
                 length = $r.DgnSize
                 documentId = $r.DgnDocumentId
+                documentGuid = $r.DgnDocumentGuid
             }
         }
     }
     $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
     $orderedPdfDocs = if ($IncludeOrderedPdfDocuments) { @($sortedRows | ForEach-Object { $_.PdfDoc }) } else { @() }
+
+    # Collect QC PDFs (filtered out from pairing) so the caller can link them
+    $qcPdfDocs = @()
+    foreach ($d in @($docs)) {
+        $dn = _SSS-PWGetDocName -Doc $d
+        if ($dn -match '(?i)-qc\.pdf$') {
+            $qcPdfDocs += @{
+                name = [string]$dn
+                documentId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
+                documentGuid = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
+                stem = ([System.IO.Path]::GetFileNameWithoutExtension($dn) -replace '(?i)-qc$', '').ToLowerInvariant()
+            }
+        }
+    }
 
     return @{
         folderStateHash = $hash
@@ -1385,6 +1405,7 @@ function _SSS-BuildPWStatusSetState {
         orderKey = $orderKey
         pairedSheets = $pairedSheets
         orderedPdfDocuments = $orderedPdfDocs
+        qcPdfDocs = $qcPdfDocs
     }
 }
 
