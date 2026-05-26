@@ -177,57 +177,40 @@ if ($sample.Count -gt 0) {
 
 # -- 5. Resolve parent folders (sample) ---------------------------------------
 
-Write-Host "`n[5] Resolving parent folders for sample events..." -ForegroundColor Yellow
-$parentGuids = @($relevant | ForEach-Object { [string]$_.o_parentguid } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
+Write-Host "`n[5] Resolving folders via document GUIDs..." -ForegroundColor Yellow
+$docGuidList = @($relevant | ForEach-Object { [string]$_.o_objguid } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
 $folderMap = @{}
-if ($parentGuids.Count -gt 0) {
-    $sampleGuids = @($parentGuids | Select-Object -First 50)
-
-    # Build a projectno-to-name lookup from all folders referenced by these GUIDs,
-    # then walk up the parent chain to construct paths.
-    $projByNo = @{}
-    $guidToNo = @{}
-    foreach ($guid in $sampleGuids) {
+$docToFolder = @{}
+if ($docGuidList.Count -gt 0) {
+    $sampleDocGuids = @($docGuidList | Select-Object -First 50)
+    $resolved = 0
+    foreach ($dg in $sampleDocGuids) {
         try {
-            $r = Select-PWSQL -SQLSelectStatement "SELECT o_projectno, o_projectguid, o_projectname, o_parentno FROM dms_proj WHERE o_projectguid = '$guid'" -ErrorAction Stop
-            if ($r -and $r.Rows.Count -gt 0) {
-                $row = $r.Rows[0]
-                $no = [int]$row.o_projectno
-                $projByNo[$no] = @{ name = [string]$row.o_projectname; parentNo = [int]$row.o_parentno; guid = $guid }
-                $guidToNo[$guid] = $no
+            $doc = Get-PWDocumentsByGUIDs -DocumentGUIDs @($dg) -ErrorAction SilentlyContinue
+            if ($doc) {
+                $fp = $null
+                if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
+                elseif ($doc.FullPath) {
+                    $full = [string]$doc.FullPath
+                    $fp = [System.IO.Path]::GetDirectoryName($full) -replace '/', '\'
+                }
+                if ($fp) {
+                    $docToFolder[$dg] = $fp
+                    # Also map the parent GUID for the event-level folder resolution
+                    $matchingEvt = $relevant | Where-Object { [string]$_.o_objguid -eq $dg } | Select-Object -First 1
+                    if ($matchingEvt) {
+                        $pg = [string]$matchingEvt.o_parentguid
+                        if ($pg -and -not $folderMap.ContainsKey($pg)) { $folderMap[$pg] = $fp }
+                    }
+                    $resolved++
+                }
             }
         } catch { }
     }
-
-    # Walk parent chain (up to 10 levels) for each resolved folder
-    foreach ($guid in $sampleGuids) {
-        if (-not $guidToNo.ContainsKey($guid)) { continue }
-        $parts = [System.Collections.Generic.List[string]]::new()
-        $curNo = $guidToNo[$guid]
-        for ($lvl = 0; $lvl -lt 10; $lvl++) {
-            if (-not $projByNo.ContainsKey($curNo)) {
-                # Fetch missing ancestor
-                try {
-                    $r = Select-PWSQL -SQLSelectStatement "SELECT o_projectno, o_projectname, o_parentno FROM dms_proj WHERE o_projectno = $curNo" -ErrorAction Stop
-                    if ($r -and $r.Rows.Count -gt 0) {
-                        $row = $r.Rows[0]
-                        $projByNo[$curNo] = @{ name = [string]$row.o_projectname; parentNo = [int]$row.o_parentno }
-                    } else { break }
-                } catch { break }
-            }
-            $node = $projByNo[$curNo]
-            $parts.Insert(0, $node.name)
-            if ($node.parentNo -le 0) { break }
-            $curNo = $node.parentNo
-        }
-        if ($parts.Count -gt 0) {
-            $folderMap[$guid] = $parts -join '\'
-        }
-    }
-
-    Write-Host "  Resolved $($folderMap.Count) / $($sampleGuids.Count) parent folders" -ForegroundColor Green
-    foreach ($k in ($folderMap.Keys | Select-Object -First 10)) {
-        Write-Host "    $k -> $($folderMap[$k])" -ForegroundColor DarkCyan
+    Write-Host "  Resolved $resolved / $($sampleDocGuids.Count) document folders" -ForegroundColor Green
+    $uniqueFolders = @($docToFolder.Values | Select-Object -Unique)
+    foreach ($f in ($uniqueFolders | Select-Object -First 10)) {
+        Write-Host "    $f" -ForegroundColor DarkCyan
     }
 }
 
@@ -243,7 +226,8 @@ try {
 
 $matchCount = 0
 $matchedFolders = @{}
-foreach ($path in $folderMap.Values) {
+$allResolvedPaths = @($folderMap.Values) + @($docToFolder.Values) | Select-Object -Unique
+foreach ($path in $allResolvedPaths) {
     foreach ($root in $watchRoots) {
         if ($path -like "$root*") {
             $matchCount++
@@ -279,7 +263,9 @@ if (-not $dbEnabled) {
         $actionName = $QCRelevantActions[$actionCode]
         $objGuid = [string]$evt.o_objguid
         $parentGuid = [string]$evt.o_parentguid
-        $resolvedFolder = if ($folderMap.ContainsKey($parentGuid)) { $folderMap[$parentGuid] } else { $null }
+        $resolvedFolder = $null
+        if ($docToFolder.ContainsKey($objGuid)) { $resolvedFolder = $docToFolder[$objGuid] }
+        elseif ($folderMap.ContainsKey($parentGuid)) { $resolvedFolder = $folderMap[$parentGuid] }
 
         $candidateType = $null
         if ($resolvedFolder) {
