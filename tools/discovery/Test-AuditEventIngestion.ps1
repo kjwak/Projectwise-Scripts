@@ -182,29 +182,47 @@ $parentGuids = @($relevant | ForEach-Object { [string]$_.o_parentguid } | Where-
 $folderMap = @{}
 if ($parentGuids.Count -gt 0) {
     $sampleGuids = @($parentGuids | Select-Object -First 50)
-    $inClause = ($sampleGuids | ForEach-Object { "'$_'" }) -join ','
-    $folderSql = "SELECT p.o_projectguid, p.o_projectname, p2.o_projectname AS parent_name, p3.o_projectname AS grandparent_name FROM dms_proj p LEFT JOIN dms_proj p2 ON p.o_parentno = p2.o_projectno LEFT JOIN dms_proj p3 ON p2.o_parentno = p3.o_projectno WHERE p.o_projectguid IN ($inClause)"
-    try {
-        $folderResult = Select-PWSQL -SQLSelectStatement $folderSql -ErrorAction Stop
-        foreach ($row in $folderResult.Rows) {
-            $guid = [string]$row.o_projectguid
-            $parts = @()
-            if (-not ($row.grandparent_name -is [DBNull]) -and $row.grandparent_name) { $parts += [string]$row.grandparent_name }
-            if (-not ($row.parent_name -is [DBNull]) -and $row.parent_name) { $parts += [string]$row.parent_name }
-            $parts += [string]$row.o_projectname
-            $folderMap[$guid] = $parts -join '\'
-        }
-    } catch {
-        Write-Host "  SQL folder resolution failed: $($_.Exception.Message)" -ForegroundColor Red
+
+    # Build a projectno-to-name lookup from all folders referenced by these GUIDs,
+    # then walk up the parent chain to construct paths.
+    $projByNo = @{}
+    $guidToNo = @{}
+    foreach ($guid in $sampleGuids) {
+        try {
+            $r = Select-PWSQL -SQLSelectStatement "SELECT o_projectno, o_projectguid, o_projectname, o_parentno FROM dms_proj WHERE o_projectguid = '$guid'" -ErrorAction Stop
+            if ($r -and $r.Rows.Count -gt 0) {
+                $row = $r.Rows[0]
+                $no = [int]$row.o_projectno
+                $projByNo[$no] = @{ name = [string]$row.o_projectname; parentNo = [int]$row.o_parentno; guid = $guid }
+                $guidToNo[$guid] = $no
+            }
+        } catch { }
     }
 
-    # Also try pwps_dab cmdlet for full paths on resolved folders
+    # Walk parent chain (up to 10 levels) for each resolved folder
     foreach ($guid in $sampleGuids) {
-        if ($folderMap.ContainsKey($guid)) { continue }
-        try {
-            $folder = Get-PWFolders -FolderGUID $guid -ErrorAction SilentlyContinue
-            if ($folder -and $folder.FullPath) { $folderMap[$guid] = [string]$folder.FullPath }
-        } catch { }
+        if (-not $guidToNo.ContainsKey($guid)) { continue }
+        $parts = [System.Collections.Generic.List[string]]::new()
+        $curNo = $guidToNo[$guid]
+        for ($lvl = 0; $lvl -lt 10; $lvl++) {
+            if (-not $projByNo.ContainsKey($curNo)) {
+                # Fetch missing ancestor
+                try {
+                    $r = Select-PWSQL -SQLSelectStatement "SELECT o_projectno, o_projectname, o_parentno FROM dms_proj WHERE o_projectno = $curNo" -ErrorAction Stop
+                    if ($r -and $r.Rows.Count -gt 0) {
+                        $row = $r.Rows[0]
+                        $projByNo[$curNo] = @{ name = [string]$row.o_projectname; parentNo = [int]$row.o_parentno }
+                    } else { break }
+                } catch { break }
+            }
+            $node = $projByNo[$curNo]
+            $parts.Insert(0, $node.name)
+            if ($node.parentNo -le 0) { break }
+            $curNo = $node.parentNo
+        }
+        if ($parts.Count -gt 0) {
+            $folderMap[$guid] = $parts -join '\'
+        }
     }
 
     Write-Host "  Resolved $($folderMap.Count) / $($sampleGuids.Count) parent folders" -ForegroundColor Green
