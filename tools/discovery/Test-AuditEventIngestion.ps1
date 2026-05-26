@@ -227,8 +227,21 @@ try {
 $matchCount = 0
 $matchedFolders = @{}
 $allResolvedPaths = @($folderMap.Values) + @($docToFolder.Values) | Select-Object -Unique
+
+# Build alternate roots: strip leading "Documents\" if present, and add it if not,
+# so matching works regardless of whether the API returns the prefix.
+$matchRoots = [System.Collections.Generic.List[string]]::new()
+foreach ($root in $watchRoots) {
+    $matchRoots.Add($root)
+    if ($root -like 'Documents\*') {
+        $matchRoots.Add($root.Substring('Documents\'.Length))
+    } else {
+        $matchRoots.Add("Documents\$root")
+    }
+}
+
 foreach ($path in $allResolvedPaths) {
-    foreach ($root in $watchRoots) {
+    foreach ($root in $matchRoots) {
         if ($path -like "$root*") {
             $matchCount++
             if (-not $matchedFolders.ContainsKey($path)) { $matchedFolders[$path] = 0 }
@@ -269,7 +282,7 @@ if (-not $dbEnabled) {
 
         $candidateType = $null
         if ($resolvedFolder) {
-            foreach ($root in $watchRoots) {
+            foreach ($root in $matchRoots) {
                 if ($resolvedFolder -like "$root*") { $candidateType = 'WATCH_MATCH'; break }
             }
         }
