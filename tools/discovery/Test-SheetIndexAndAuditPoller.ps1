@@ -30,12 +30,20 @@ foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1
         Write-Host "ERROR: Module not found: $modPath" -ForegroundColor Red
         return
     }
-    try { Import-Module $modPath -Force -ErrorAction Stop }
+    try {
+        Import-Module $modPath -Force -ErrorAction Stop
+        Write-Host "  Imported $mod OK" -ForegroundColor Green
+    }
     catch {
-        Write-Host "ERROR: Failed to import $mod -- $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Failed to import $mod" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "  Inner: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
         return
     }
 }
+Write-Host "  Checking Test-QCDatabaseEnabled available: $(if (Get-Command Test-QCDatabaseEnabled -ErrorAction SilentlyContinue) { 'YES' } else { 'NO' })" -ForegroundColor Cyan
 
 function _DeepHashtable ($obj) {
     if ($obj -is [System.Management.Automation.PSCustomObject]) {
