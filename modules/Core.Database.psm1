@@ -574,4 +574,159 @@ GROUP BY job_type, status;
 '@
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema
+# ---------------------------------------------------------------------------
+# Fire-and-forget telemetry writers
+# These silently no-op when the database is disabled or unreachable.
+# Pipeline execution must NEVER fail because telemetry fails.
+# ---------------------------------------------------------------------------
+
+function _QDB-SafeWrite {
+    param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters)
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try { Invoke-QCDatabaseNonQuery -Config $Config -Sql $Sql -Parameters $Parameters | Out-Null }
+    catch { }
+}
+
+function Write-QCJobTelemetry {
+    <#
+    .SYNOPSIS
+    Upserts a processing job outcome into the processing_jobs table.
+    Fire-and-forget: silently no-ops if DB is disabled or unreachable.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][string]$JobType,
+        [Parameter(Mandatory)][string]$Status,
+        [string]$SourcePath,
+        [string]$SourceFolder,
+        [string]$DedupeKey,
+        [string]$TriggerSource,
+        [int]$AttemptCount = 0,
+        [Nullable[int]]$DurationMs,
+        [string]$ErrorCode,
+        [string]$ErrorMessage,
+        [string]$ResultData
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        $sql = @"
+MERGE processing_jobs AS tgt
+USING (SELECT @jobId AS job_id) AS src ON tgt.job_id = src.job_id
+WHEN MATCHED THEN UPDATE SET
+    status = @status,
+    completed_at = CASE WHEN @status IN ('succeeded','failed') THEN SYSDATETIMEOFFSET() ELSE tgt.completed_at END,
+    attempt_count = @attemptCount,
+    duration_ms = @durationMs,
+    error_code = @errorCode,
+    error_message = @errorMessage,
+    result_data = @resultData
+WHEN NOT MATCHED THEN INSERT
+    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, attempt_count, duration_ms, error_code, error_message, result_data)
+VALUES
+    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData);
+"@
+        $params = @{
+            jobId         = $JobId
+            jobType       = $JobType
+            status        = $Status
+            sourcePath    = if ($SourcePath)    { $SourcePath }    else { $null }
+            sourceFolder  = if ($SourceFolder)  { $SourceFolder }  else { $null }
+            dedupeKey     = if ($DedupeKey)      { $DedupeKey }      else { $null }
+            triggerSource = if ($TriggerSource) { $TriggerSource } else { $null }
+            attemptCount  = $AttemptCount
+            durationMs    = if ($null -ne $DurationMs) { $DurationMs } else { $null }
+            errorCode     = if ($ErrorCode)     { $ErrorCode }     else { $null }
+            errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
+            resultData    = if ($ResultData)    { $ResultData }    else { $null }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
+function Write-QCPollRunTelemetry {
+    <#
+    .SYNOPSIS
+    Inserts a completed scan/poll run into the poll_runs table.
+    Fire-and-forget.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$EventsFetched = 0,
+        [int]$EventsRelevant = 0,
+        [int]$CandidatesCreated = 0,
+        [int]$JobsEnqueued = 0,
+        [Nullable[int]]$DurationMs,
+        [string]$ErrorMessage,
+        [bool]$IsReconciliation = $false
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        $sql = @"
+INSERT INTO poll_runs
+    (started_at, completed_at, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation)
+VALUES
+    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation)
+"@
+        $params = @{
+            eventsFetched     = $EventsFetched
+            eventsRelevant    = $EventsRelevant
+            candidatesCreated = $CandidatesCreated
+            jobsEnqueued      = $JobsEnqueued
+            durationMs        = if ($null -ne $DurationMs) { $DurationMs } else { 0 }
+            errorMessage      = if ($ErrorMessage) { $ErrorMessage } else { $null }
+            isReconciliation  = if ($IsReconciliation) { 1 } else { 0 }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
+function Write-QCNotificationTelemetry {
+    <#
+    .SYNOPSIS
+    Inserts a sent notification record into the notification_log table.
+    Fire-and-forget.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$EventType,
+        [string]$DocumentGuid,
+        [string]$DocumentName,
+        [string]$FolderPath,
+        [string]$Recipients,
+        [string]$Subject,
+        [string]$DedupeKey,
+        [string]$Provider,
+        [bool]$Success = $true,
+        [string]$ErrorMessage,
+        [Nullable[int]]$TransitionId
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        $sql = @"
+INSERT INTO notification_log
+    (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id)
+VALUES
+    (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId)
+"@
+        $params = @{
+            eventType    = $EventType
+            documentGuid = if ($DocumentGuid) { $DocumentGuid } else { $null }
+            documentName = if ($DocumentName) { $DocumentName } else { $null }
+            folderPath   = if ($FolderPath)   { $FolderPath }   else { $null }
+            recipients   = if ($Recipients)   { $Recipients }   else { $null }
+            subject      = if ($Subject)      { $Subject }      else { $null }
+            dedupeKey    = if ($DedupeKey)     { $DedupeKey }     else { $null }
+            provider     = if ($Provider)      { $Provider }      else { $null }
+            success      = if ($Success) { 1 } else { 0 }
+            errorMessage = if ($ErrorMessage) { $ErrorMessage } else { $null }
+            transitionId = if ($null -ne $TransitionId) { $TransitionId } else { $null }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry

@@ -44,6 +44,7 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 
 $script:WorkerLabel = $WorkerLabel
 
@@ -261,6 +262,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                 }
             }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
+            $rdJson = $null; try { if ($resultData) { $rdJson = ($resultData | ConvertTo-Json -Depth 4 -Compress) } } catch {}
+            Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
+                -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
+                -DedupeKey ([string]$Job['dedupeKey']) -ResultData $rdJson
             return @{ Outcome = 'succeeded'; ExitOk = $true; SkipId = $jobId }
         }
 
@@ -305,6 +310,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             errorCode = [string]$proc.Code; errorMessage = [string]$proc.Message
             processorData = $details; processorStdout = $stdoutPreview; processorStderr = $stderrPreview
         }
+        Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
+            -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
+            -DedupeKey ([string]$Job['dedupeKey']) -AttemptCount $attempts `
+            -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message)
         if ($target -eq 'failed') {
             return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
         } else {

@@ -6,6 +6,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction 
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
 
 function _QCN-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -510,6 +511,13 @@ function Send-QCNotification {
     $code = if ($sendResult.IsSuccess) { 'QC_NOTIFICATION_SENT' } else { 'QC_NOTIFICATION_FAILED' }
     $level = if ($sendResult.IsSuccess) { 'Information' } else { 'Warning' }
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
+
+    Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
+        -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
+        -FolderPath ([string]$Event.documentPath) `
+        -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
+        -Provider ([string]$provider) -Success $sendResult.IsSuccess `
+        -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null })
 
     if ($sendResult.IsSuccess) { return New-QCSuccessResult -Code $code -Message $sendResult.Message -Data $result }
     return New-QCFailureResult -Code $code -Message $sendResult.Message -Data $result

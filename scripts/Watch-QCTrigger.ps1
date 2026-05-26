@@ -199,6 +199,7 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
@@ -1049,6 +1050,14 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     hashCacheMisses = $hashCacheMisses
     triggerRuleCacheUses = $triggerRuleCacheUses
 }
+
+Write-QCPollRunTelemetry -Config $config `
+    -EventsFetched $fileItems.Count `
+    -EventsRelevant $matched `
+    -CandidatesCreated $accepted `
+    -JobsEnqueued $enqueued `
+    -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
+    -IsReconciliation:$ReconcileStatusSetsFirst.IsPresent
 
 exit 0
 
