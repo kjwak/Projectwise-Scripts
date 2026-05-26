@@ -277,10 +277,10 @@ function Get-AuditPollCycleCounter {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$CounterPath)
 
-    $counter = 1
+    $counter = 0
     if (Test-Path -LiteralPath $CounterPath) {
         try { $counter = [int](Get-Content -LiteralPath $CounterPath -Raw -ErrorAction Stop).Trim() + 1 }
-        catch { $counter = 1 }
+        catch { $counter = 0 }
     }
     try {
         $dir = Split-Path -Parent $CounterPath

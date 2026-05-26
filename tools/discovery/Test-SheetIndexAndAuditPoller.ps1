@@ -167,6 +167,42 @@ try {
         Write-Host "  Scan failed: $($scanRes.Message)" -ForegroundColor Red
     }
 
+    # 5b. Populate sheet_index from sheets candidates
+    $sheetsCandidates = @($scanRes.Data.candidates | Where-Object { $_.isSheetsFolder })
+    if ($sheetsCandidates.Count -gt 0) {
+        Write-Host "`n[5b] Populating sheet_index from $($sheetsCandidates.Count) sheets candidates..." -ForegroundColor Yellow
+        $sheetGuids = @($sheetsCandidates | ForEach-Object { $_.objGuid } | Select-Object -Unique)
+        $indexed = 0
+        foreach ($chunk in @(for ($ci = 0; $ci -lt $sheetGuids.Count; $ci += 200) { ,@($sheetGuids[$ci..[Math]::Min($ci + 199, $sheetGuids.Count - 1)]) })) {
+            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $chunk -ErrorAction SilentlyContinue)
+            foreach ($doc in $docs) {
+                $dg = [string]$doc.DocumentGUID
+                $folder = if ($scanRes.Data.docToFolder.ContainsKey($dg)) { $scanRes.Data.docToFolder[$dg] } else { $null }
+                if (-not $folder) { continue }
+                $ext = [System.IO.Path]::GetExtension([string]$doc.FileName)
+                $designerEmail = $null; $reviewerEmail = $null; $stateName = $null
+                try {
+                    $attrs = $doc | Get-PWDocumentAttributes -ErrorAction SilentlyContinue
+                    if ($attrs) {
+                        $de = $attrs | Where-Object { $_.Name -eq 'EM_Designer_Email' } | Select-Object -First 1
+                        $re = $attrs | Where-Object { $_.Name -eq 'EM_Reviewer_Email' } | Select-Object -First 1
+                        if ($de) { $designerEmail = [string]$de.Value }
+                        if ($re) { $reviewerEmail = [string]$re.Value }
+                    }
+                } catch { }
+                try { $stateName = [string]$doc.StateName } catch { }
+
+                Write-QCSheetIndex -Config $config -DocumentGuid $dg `
+                    -DocumentName ([string]$doc.FileName) -FolderPath $folder `
+                    -Extension $ext -SourceType ($ext -replace '^\.', '') `
+                    -DesignerEmail $designerEmail -ReviewerEmail $reviewerEmail `
+                    -PwStateName $stateName -WatchRoot ''
+                $indexed++
+            }
+        }
+        Write-Host "  Indexed $indexed sheets into sheet_index." -ForegroundColor Green
+    }
+
     Disconnect-PW | Out-Null
 } catch {
     Write-Host "  PW not available: $($_.Exception.Message)" -ForegroundColor Yellow
