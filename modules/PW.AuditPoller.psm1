@@ -132,15 +132,19 @@ function Invoke-AuditTrailScan {
         }
     }
 
-    # 3. Resolve folders via document GUIDs
+    # 3. Resolve folders via document GUIDs (batched)
     $docGuids = @($relevant | ForEach-Object { [string]$_.o_objguid } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
     $docToFolder = @{}
     $folderMap = @{}
 
-    foreach ($dg in $docGuids) {
+    $batchSize = 200
+    for ($i = 0; $i -lt $docGuids.Count; $i += $batchSize) {
+        $chunk = @($docGuids[$i..[Math]::Min($i + $batchSize - 1, $docGuids.Count - 1)])
         try {
-            $doc = Get-PWDocumentsByGUIDs -DocumentGUIDs @($dg) -ErrorAction SilentlyContinue
-            if ($doc) {
+            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $chunk -ErrorAction SilentlyContinue)
+            foreach ($doc in $docs) {
+                $dg = [string]$doc.DocumentGUID
+                if (-not $dg) { continue }
                 $fp = $null
                 if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
                 elseif ($doc.FullPath) {
@@ -149,15 +153,19 @@ function Invoke-AuditTrailScan {
                 }
                 if ($fp) {
                     $docToFolder[$dg] = $fp
-                    $matchingEvt = $relevant | Where-Object { [string]$_.o_objguid -eq $dg } | Select-Object -First 1
-                    if ($matchingEvt) {
-                        $pg = [string]$matchingEvt.o_parentguid
-                        if ($pg -and -not $folderMap.ContainsKey($pg)) { $folderMap[$pg] = $fp }
-                    }
                     $stats.foldersResolved++
                 }
             }
         } catch { }
+    }
+
+    # Build parent-GUID to folder map from resolved documents
+    foreach ($evt in $relevant) {
+        $og = [string]$evt.o_objguid
+        $pg = [string]$evt.o_parentguid
+        if ($og -and $docToFolder.ContainsKey($og) -and $pg -and -not $folderMap.ContainsKey($pg)) {
+            $folderMap[$pg] = $docToFolder[$og]
+        }
     }
 
     # 4. Match against watch roots
