@@ -181,15 +181,32 @@ Write-Host "`n[5] Resolving parent folders for sample events..." -ForegroundColo
 $parentGuids = @($relevant | ForEach-Object { [string]$_.o_parentguid } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
 $folderMap = @{}
 if ($parentGuids.Count -gt 0) {
-    $sampleGuids = @($parentGuids | Select-Object -First 20)
+    $sampleGuids = @($parentGuids | Select-Object -First 50)
+    $inClause = ($sampleGuids | ForEach-Object { "'$_'" }) -join ','
+    $folderSql = "SELECT p.o_projectguid, p.o_projectname, p2.o_projectname AS parent_name, p3.o_projectname AS grandparent_name FROM dms_proj p LEFT JOIN dms_proj p2 ON p.o_parentno = p2.o_projectno LEFT JOIN dms_proj p3 ON p2.o_parentno = p3.o_projectno WHERE p.o_projectguid IN ($inClause)"
+    try {
+        $folderResult = Select-PWSQL -SQLSelectStatement $folderSql -ErrorAction Stop
+        foreach ($row in $folderResult.Rows) {
+            $guid = [string]$row.o_projectguid
+            $parts = @()
+            if (-not ($row.grandparent_name -is [DBNull]) -and $row.grandparent_name) { $parts += [string]$row.grandparent_name }
+            if (-not ($row.parent_name -is [DBNull]) -and $row.parent_name) { $parts += [string]$row.parent_name }
+            $parts += [string]$row.o_projectname
+            $folderMap[$guid] = $parts -join '\'
+        }
+    } catch {
+        Write-Host "  SQL folder resolution failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    # Also try pwps_dab cmdlet for full paths on resolved folders
     foreach ($guid in $sampleGuids) {
+        if ($folderMap.ContainsKey($guid)) { continue }
         try {
-            $folder = Get-PWFoldersByGUIDs -FolderGUIDs @($guid) -ErrorAction SilentlyContinue
-            if ($folder -and $folder.FullPath) {
-                $folderMap[$guid] = [string]$folder.FullPath
-            }
+            $folder = Get-PWFolders -FolderGUID $guid -ErrorAction SilentlyContinue
+            if ($folder -and $folder.FullPath) { $folderMap[$guid] = [string]$folder.FullPath }
         } catch { }
     }
+
     Write-Host "  Resolved $($folderMap.Count) / $($sampleGuids.Count) parent folders" -ForegroundColor Green
     foreach ($k in ($folderMap.Keys | Select-Object -First 10)) {
         Write-Host "    $k -> $($folderMap[$k])" -ForegroundColor DarkCyan
