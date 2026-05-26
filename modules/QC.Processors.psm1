@@ -2,6 +2,7 @@
 # Responsibility: Processor readiness checks and job-type-based dispatch.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
 
@@ -92,7 +93,7 @@ function _QCP-GetJobMetadataValue([hashtable]$Job, [string[]]$Keys) {
 }
 
 function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath, [string]$ResultStatus, [string]$ErrorMessage) {
-    $now = (Get-Date).ToString('o')
+    $now = Get-QCTimestamp
     $stage = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcStage','stage','workflowStage')
     if (_QCP-IsNullOrWhiteSpace $stage) { $stage = 'red' }
     $reviewer = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewer','qcReviewer')

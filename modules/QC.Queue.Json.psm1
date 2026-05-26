@@ -2,6 +2,7 @@
 # Responsibility: JSON-backed queue persistence, lifecycle transitions, and queue reporting.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _QCQJ-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -124,7 +125,7 @@ function _QCQJ-AcquireLockFile([string]$LockPath, [int]$TimeoutMs = 30000, [int]
             try {
                 $payload = @{
                     pid = $PID
-                    createdAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                    createdAtUtc = (Get-QCTimestamp)
                 } | ConvertTo-Json -Depth 5
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
                 $fs.Write($bytes, 0, $bytes.Length)
@@ -180,10 +181,10 @@ function _QCQJ-DeepToJsonSafeObject {
     if ($Value -is [bool]) { return $Value }
     if ($Value -is [System.ValueType]) {
         if ($Value -is [datetime]) {
-            try { return ([datetime]$Value).ToUniversalTime().ToString('o') } catch { return [string]$Value }
+            try { return (ConvertTo-QCTimestamp -DateTime ([datetime]$Value)) } catch { return [string]$Value }
         }
         if ($Value -is [datetimeoffset]) {
-            try { return ([datetimeoffset]$Value).UtcDateTime.ToString('o') } catch { return [string]$Value }
+            try { return (ConvertTo-QCTimestamp -DateTime ([datetimeoffset]$Value).UtcDateTime) } catch { return [string]$Value }
         }
         return $Value
     }
@@ -342,7 +343,7 @@ function Add-QCQueueJob {
                 return New-QCFailureResult -Code 'QUEUE_JOB_ALREADY_EXISTS' -Message 'Job already exists in pending state.' -Data @{ jobId = $jobId; path = $dest }
             }
             $Job.status = 'pending'
-            $Job.enqueuedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            $Job.enqueuedAtUtc = (Get-QCTimestamp)
             _QCQJ-WriteJobFileAtomic -Path $dest -Job $Job
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
@@ -515,7 +516,7 @@ function Set-QCWatcherActive {
         $flag = Join-Path $root '_watcher_active.flag'
         $payload = @{
             pid = $PID
-            createdAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            createdAtUtc = (Get-QCTimestamp)
         } | ConvertTo-Json -Depth 5
         Set-Content -LiteralPath $flag -Value $payload -Encoding utf8 -ErrorAction Stop
         return New-QCSuccessResult -Code 'QUEUE_WATCHER_ACTIVE_SET' -Message 'Watcher-active flag set.' -Data @{ path = $flag }
@@ -627,7 +628,7 @@ function Set-QCJobStatus {
             }
             $job = _QCQJ-ReadJobFile -Path $loc.path
             $job.status = $Status
-            $job.updatedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            $job.updatedAtUtc = (Get-QCTimestamp)
             _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $job
             return New-QCSuccessResult -Code 'QUEUE_STATUS_UPDATED' -Message 'Job status updated.' -Data @{ jobId = $JobId; state = $loc.state; status = $Status }
         } finally {
@@ -677,7 +678,7 @@ function Update-QCJob {
             if (-not $loc) {
                 return New-QCFailureResult -Code 'QUEUE_JOB_NOT_FOUND' -Message 'Job not found for update.' -Data @{ jobId = $jobId }
             }
-            $Job.updatedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            $Job.updatedAtUtc = (Get-QCTimestamp)
             _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job
             return New-QCSuccessResult -Code 'QUEUE_JOB_UPDATED' -Message 'Job updated.' -Data @{ jobId = $jobId; state = $loc.state; path = $loc.path }
         } finally {
@@ -767,13 +768,13 @@ function Move-QCJob {
                 # Caller supplied the authoritative job content (e.g. with result/lastError).
                 # Stamp status + updatedAtUtc and write to source path before the rename.
                 $Job.status = $to
-                $Job.updatedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                $Job.updatedAtUtc = (Get-QCTimestamp)
                 if (-not $Job.ContainsKey('id') -or [string]::IsNullOrWhiteSpace([string]$Job.id)) { $Job.id = $JobId }
                 _QCQJ-WriteJobFileAtomic -Path $src -Job $Job
             } else {
                 $existing = _QCQJ-ReadJobFile -Path $src
                 $existing.status = $to
-                $existing.updatedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                $existing.updatedAtUtc = (Get-QCTimestamp)
                 _QCQJ-WriteJobFileAtomic -Path $src -Job $existing
             }
             _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst
@@ -855,7 +856,7 @@ function Lock-QCJob {
 
             $job = _QCQJ-ReadJobFile -Path $pending
             $job.status = 'running'
-            $job.startedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            $job.startedAtUtc = (Get-QCTimestamp)
             _QCQJ-WriteJobFileAtomic -Path $pending -Job $job
             Move-Item -LiteralPath $pending -Destination $running -Force -ErrorAction Stop
         } finally {
@@ -1044,7 +1045,7 @@ function Recover-QCStaleJobs {
                 if ($job.ContainsKey('attempts') -and $job.attempts -ne $null) { $attempts = [int]$job.attempts }
                 $attempts++
                 $job.attempts = $attempts
-                $job.updatedAtUtc = $now.ToString('o')
+                $job.updatedAtUtc = (ConvertTo-QCTimestamp -DateTime $now)
 
                 _QCQJ-ReleaseLockFile -LockPath $lockPathJob2
 

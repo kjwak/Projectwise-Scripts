@@ -2,6 +2,7 @@
 # Responsibility: Microsoft Graph email provider (stub until tenant credentials are available).
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _QCNG-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -54,7 +55,7 @@ function Send-QCNotificationGraph {
         [switch]$DryRun
     )
 
-    $timestampUtc = [DateTime]::UtcNow.ToString('o')
+    $timestampUtc = Get-QCTimestamp
     $validation = Test-QCNotificationGraphConfigured -GraphSettings $GraphSettings
     if (-not $validation.configured) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_GRAPH_NOT_CONFIGURED' -Message 'Microsoft Graph provider is not configured.' -Data @{

@@ -2,6 +2,7 @@
 # Responsibility: Read-only QC attribute-first reporting aggregation and JSON snapshots.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _QCR-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -206,7 +207,7 @@ function New-QCReportingSnapshot {
 
     return [pscustomobject]@{
         project = $Project
-        generatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        generatedUtc = Get-QCTimestamp
         source = 'QC_REPORTING_SCAN'
         metrics = [pscustomobject]@{
             documentCount = @($normalized).Count
@@ -241,7 +242,7 @@ function Write-QCReportingSnapshot {
         [hashtable]$Settings
     )
 
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $stamp = Get-QCTimestampShort
     $projectName = _QCR-SafeName ([string]$Snapshot.project)
     $root = [string]$Settings.snapshotRoot
     $dir = Join-Path $root $stamp
@@ -276,7 +277,7 @@ function New-QCReportingScanJob {
         [Parameter(Mandatory)]
         [string]$SourceFolder
     )
-    $bucket = (Get-Date).ToUniversalTime().ToString('yyyyMMddHH')
+    $bucket = ([TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))).ToString('yyyyMMddHH')
     $safe = _QCR-SafeName $Project
     return @{
         id = ('qc_reporting_' + $safe + '_' + $bucket)
@@ -284,7 +285,7 @@ function New-QCReportingScanJob {
         sourceFolder = $SourceFolder
         project = $Project
         dedupeKey = ('dq_qc_reporting|' + $SourceFolder + '|' + $bucket).ToLowerInvariant()
-        createdUtc = (Get-Date).ToUniversalTime().ToString('o')
+        createdUtc = Get-QCTimestamp
     }
 }
 

@@ -2,6 +2,7 @@
 # Responsibility: Mock/dry-run notification delivery (log + local payload files).
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _QCNM-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -29,7 +30,7 @@ function Send-QCNotificationMock {
         [switch]$DryRun
     )
 
-    $timestampUtc = [DateTime]::UtcNow.ToString('o')
+    $timestampUtc = Get-QCTimestamp
     $mockDir = Join-Path $OutputRoot 'mock'
     _QCNM-EnsureDirectory -Path $mockDir
 

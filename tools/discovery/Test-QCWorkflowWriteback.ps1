@@ -48,6 +48,7 @@ if ([string]::IsNullOrWhiteSpace($TestDocumentPath)) {
 }
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Workflow.psm1') -Force
 
 foreach ($moduleName in @('pwps','pwps_dab')) {
@@ -110,7 +111,7 @@ if (($Mode -eq 'StateOnly' -or $Mode -eq 'Combined') -and [string]::IsNullOrWhit
 }
 
 $attributes = @{
-    automationLastRun = (Get-Date).ToString('o')
+    automationLastRun = Get-QCTimestamp
     automationResult = 'ControlledWritebackTest'
     automationError = $null
 }

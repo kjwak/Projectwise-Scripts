@@ -115,7 +115,7 @@ function _Write-LocalWatcherCache {
     try {
         $dir = Split-Path -Parent $Path
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $json = (@{ version = 1; writtenAtUtc = ([DateTime]::UtcNow.ToString('o')); entries = $Cache.entries } | ConvertTo-Json -Depth 80)
+        $json = (@{ version = 1; writtenAtUtc = (Get-QCTimestamp); entries = $Cache.entries } | ConvertTo-Json -Depth 80)
         Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
         return $true
     } catch {
@@ -178,7 +178,7 @@ function _Set-LocalWatcherCacheEntry {
         lastWriteTicksUtc = [int64]$Signature.lastWriteTicksUtc
         length = [int64]$Signature.length
         configHash = [string]$Signature.configHash
-        processedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+        processedAtUtc = (Get-QCTimestamp)
     }
     if ($Sha256) { $entry.sha256 = $Sha256 }
     if ($Outcome) { $entry.outcome = $Outcome }
@@ -516,7 +516,7 @@ if ($statusSetRules.Count -ge 0) {
                                     path = $fp
                                     fileName = '_folder_'
                                     description = ''
-                                    detectedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                                    detectedAtUtc = (Get-QCTimestamp)
                                     sourceFolder = $fp
                                     datasourceName = $ds
                                     groupKey = ('STATUS_SET_GEN|' + $fp).ToLowerInvariant()
@@ -530,7 +530,7 @@ if ($statusSetRules.Count -ge 0) {
                                     file = @{
                                         fullName = $fp
                                         length = 0
-                                        lastWriteTimeUtc = ([DateTime]::UtcNow.ToString('o'))
+                                        lastWriteTimeUtc = (Get-QCTimestamp)
                                     }
                                 }
 
@@ -639,7 +639,7 @@ if ($statusSetRules.Count -ge 0) {
                                 path = ($fp.TrimEnd('\') + '\' + $docName)
                                 fileName = $docName
                                 description = $desc
-                                detectedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                                detectedAtUtc = (Get-QCTimestamp)
                                 sourceFolder = $fp
                                 datasourceName = $ds
                                 file = @{
@@ -778,7 +778,7 @@ if ($statusSetRules.Count -ge 0) {
                 path = $normFolder
                 fileName = '_folder_'
                 description = ''
-                detectedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                detectedAtUtc = (Get-QCTimestamp)
                 sourceFolder = $normFolder
                 groupKey = ($jobType + '|' + $normFolder).ToLowerInvariant()
                 folderStateHash = [string]$state.folderStateHash
@@ -791,7 +791,7 @@ if ($statusSetRules.Count -ge 0) {
                 file = @{
                     fullName = $folder
                     length = 0
-                    lastWriteTimeUtc = ([DateTime]::UtcNow.ToString('o'))
+                    lastWriteTimeUtc = (Get-QCTimestamp)
                 }
             }
 
@@ -898,7 +898,7 @@ foreach ($fi in $fileItems) {
             path = $normPath
             fileName = [string]$fi.Name
             description = '' # local filesystem has no PW description; triggers should use filename/path/extension.
-            detectedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+            detectedAtUtc = (Get-QCTimestamp)
             file = @{
                 fullName = [string]$fi.FullName
                 length = [int64]$fi.Length

@@ -1,7 +1,68 @@
 # Core.Runtime.psm1
-# Responsibility: Shared script runtime helpers for config conversion/loading and JSON log output.
+# Responsibility: Shared script runtime helpers for config conversion/loading, JSON log output, and timezone utilities.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+
+# ---------------------------------------------------------------------------
+# Timezone utilities -- all timestamps standardized to Mountain Time (MST/MDT)
+# ---------------------------------------------------------------------------
+
+$script:_QCTimezone = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
+
+function Get-QCTimestamp {
+    <#
+    .SYNOPSIS
+    Returns the current time in Mountain Time as an ISO 8601 string with offset.
+    #>
+    $utcNow = [DateTime]::UtcNow
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $script:_QCTimezone)
+    $offset = $script:_QCTimezone.GetUtcOffset($mt)
+    return ([DateTimeOffset]::new($mt, $offset)).ToString('o')
+}
+
+function ConvertTo-QCTimestamp {
+    <#
+    .SYNOPSIS
+    Converts a DateTime to Mountain Time as an ISO 8601 string with offset.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][DateTime]$DateTime)
+    $utc = $DateTime.ToUniversalTime()
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $script:_QCTimezone)
+    $offset = $script:_QCTimezone.GetUtcOffset($mt)
+    return ([DateTimeOffset]::new($mt, $offset)).ToString('o')
+}
+
+function Format-QCTimestamp {
+    <#
+    .SYNOPSIS
+    Parses an ISO 8601 string and formats it for display in Mountain Time (yyyy-MM-dd HH:mm:ss).
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$IsoString)
+    if ([string]::IsNullOrWhiteSpace($IsoString)) { return '' }
+    try {
+        $dto = [DateTimeOffset]::Parse($IsoString, [System.Globalization.CultureInfo]::InvariantCulture)
+        $mt = [TimeZoneInfo]::ConvertTime($dto, $script:_QCTimezone)
+        return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+    } catch {
+        try {
+            $dt = [DateTime]::Parse($IsoString, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            $mt = [TimeZoneInfo]::ConvertTimeFromUtc($dt.ToUniversalTime(), $script:_QCTimezone)
+            return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+        } catch { return $IsoString }
+    }
+}
+
+function Get-QCTimestampShort {
+    <#
+    .SYNOPSIS
+    Returns current Mountain Time as a compact stamp for file naming (yyyyMMdd_HHmmss).
+    #>
+    $utcNow = [DateTime]::UtcNow
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $script:_QCTimezone)
+    return $mt.ToString('yyyyMMdd_HHmmss')
+}
 
 function ConvertTo-HashtableDeep {
     <#
@@ -110,7 +171,7 @@ function Write-QCJsonLog {
     if ($IncludeWorkerPid.IsPresent -and -not $Data.ContainsKey('workerPid')) { $Data['workerPid'] = $PID }
 
     $payload = @{
-        ts      = [DateTime]::UtcNow.ToString('o')
+        ts      = Get-QCTimestamp
         level   = $Level
         code    = $Code
         message = $Message

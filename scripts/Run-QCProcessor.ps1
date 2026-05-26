@@ -224,7 +224,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             $Job['result'] = @{
                 code           = [string]$proc.Code
                 message        = [string]$proc.Message
-                completedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+                completedAtUtc = Get-QCTimestamp
                 data           = $resultData
             }
             # Single Move-QCJob call writes the in-memory $Job (with result/data)
@@ -268,7 +268,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         if ($Job.ContainsKey('attempts') -and $Job.attempts -ne $null) { $attempts = [int]$Job.attempts }
         $attempts++
         $Job['attempts'] = $attempts
-        $Job['lastError'] = @{ code = [string]$proc.Code; message = [string]$proc.Message; atUtc = ([DateTime]::UtcNow.ToString('o')) }
+        $Job['lastError'] = @{ code = [string]$proc.Code; message = [string]$proc.Message; atUtc = Get-QCTimestamp }
 
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock

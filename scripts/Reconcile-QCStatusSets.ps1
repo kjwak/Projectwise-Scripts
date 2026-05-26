@@ -80,7 +80,7 @@ try {
                 workspaceDir = [string]$rec.workspaceDir
                 pwFolder     = [string]$rec.pwPath
                 outputPdf    = [string]$rec.outputPdf
-                localMtime   = if ($rec.outputPdfLastWriteUtc) { ([datetime]$rec.outputPdfLastWriteUtc).ToString('o') } else { $null }
+                localMtime   = if ($rec.outputPdfLastWriteUtc) { ConvertTo-QCTimestamp -DateTime ([datetime]$rec.outputPdfLastWriteUtc) } else { $null }
             }
         }
         Write-QCJsonLog 'Information' 'RECONCILE_DRYRUN_DONE' 'Dry-run reconciliation completed.' @{

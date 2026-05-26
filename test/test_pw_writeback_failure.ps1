@@ -65,7 +65,7 @@ _Assert ($wsrc -match [regex]::Escape('Update-QCJob -Job $Job -Config $Config'))
 $idxUpdate = $wsrc.IndexOf('Update-QCJob -Job $Job -Config $Config')
 $idxMoveSuccess = $wsrc.IndexOf("Move-QCJob -JobId `$jobId -FromState 'running' -ToState 'succeeded'")
 _Assert (($idxUpdate -gt 0) -and ($idxMoveSuccess -gt $idxUpdate)) "Update-QCJob precedes Move-QCJob to succeeded"
-_Assert ($wsrc -match [regex]::Escape("completedAtUtc = ([DateTime]::UtcNow.ToString('o'))")) "result.completedAtUtc is recorded"
+_Assert ($wsrc -match [regex]::Escape("completedAtUtc = (Get-QCTimestamp)")) "result.completedAtUtc is recorded"
 _Assert ($wsrc -match [regex]::Escape('data           = $resultData')) "result.data captures the processor's Data hashtable"
 
 Write-Host ""

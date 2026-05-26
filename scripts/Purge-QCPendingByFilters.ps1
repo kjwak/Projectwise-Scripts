@@ -27,6 +27,7 @@ if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings
 if (-not (Test-Path -LiteralPath $AppSettingsPath)) { throw "appsettings.json not found: $AppSettingsPath" }
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
 
@@ -103,7 +104,7 @@ foreach ($f in $files) {
         try {
             $job | Add-Member -MemberType NoteProperty -Name 'status' -Value 'failed' -Force
             $job | Add-Member -MemberType NoteProperty -Name 'filteredReason' -Value ("blacklist_repurge: $reason | $rule") -Force
-            $job | Add-Member -MemberType NoteProperty -Name 'updatedAtUtc' -Value ([DateTime]::UtcNow.ToString('o')) -Force
+            $job | Add-Member -MemberType NoteProperty -Name 'updatedAtUtc' -Value (Get-QCTimestamp) -Force
             $tmp = $f.FullName + '.tmp'
             $job | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding utf8
             Move-Item -LiteralPath $tmp -Destination $f.FullName -Force

@@ -237,9 +237,7 @@ function _Parse-UtcIso([string]$Value) {
 }
 
 function _Format-UiTs([string]$IsoOrNull) {
-    $dt = _Parse-UtcIso -Value $IsoOrNull
-    if (-not $dt) { return '' }
-    return $dt.ToString('yy-MM-dd HH:mm:ss')
+    return Format-QCTimestamp -IsoString $IsoOrNull
 }
 
 function _SafeAscii([string]$Text) {
@@ -591,7 +589,7 @@ function _MaybeRefreshQueue([hashtable]$Cfg, [int]$MinIntervalMs = 1500) {
         $recentLimit = [Math]::Max(80, [int]$RecentJobs * 20)
         $recent = Get-QCRecentJobs -Config $Cfg -Limit $recentLimit
         if ($recent.IsSuccess) { $state.recentJobs = @($recent.Data.jobs) }
-        $state.lastQueueRefreshUtc = (Get-Date).ToUniversalTime().ToString('o')
+        $state.lastQueueRefreshUtc = Get-QCTimestamp
     } catch { }
 }
 
@@ -663,11 +661,11 @@ function _Get-FrameLines([hashtable]$Cfg) {
     $lines = New-Object System.Collections.Generic.List[string]
     $width = _Get-TerminalWidth
     $wideMax = [Math]::Max(48, $width - 2)
-    $now = Get-Date
+    $now = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))
     $dry = $false
     try { $dry = [bool]$Cfg.dryRun } catch { $dry = $false }
 
-    $lines.Add(("QC Pipeline Dashboard   {0}   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry)) | Out-Null
+    $lines.Add(("QC Pipeline Dashboard   {0} MST   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry)) | Out-Null
     $lines.Add(("Config: {0}" -f $AppSettingsPath)) | Out-Null
 
     $status = 'Status: ' + (_Compute-PhaseText -Cfg $Cfg)
@@ -906,7 +904,7 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
     # timestamp + script tag + PID-placeholder; PID is rewritten after spawn.
     $logDir = _Get-ChildLogDir
     $tag = [System.IO.Path]::GetFileNameWithoutExtension($ScriptPath)
-    $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss_fff')
+    $stamp = Get-QCTimestampShort
     $stdoutPath = Join-Path $logDir ("${stamp}_${tag}.out.log")
     $stderrPath = Join-Path $logDir ("${stamp}_${tag}.err.log")
     # Windows: Start-Process -ArgumentList @(...) joins arguments in a way that breaks paths
@@ -1003,7 +1001,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                     lastMessage = [string]$o.message
                                     stage = ''
                                     startedAtUtc = $null
-                                    updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                                    updatedAtUtc = Get-QCTimestamp
                                 }
                             }
                             $w = $state.workers[$wlbl]
@@ -1011,7 +1009,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             $w.lastCode = [string]$o.code
                             $w.lastMessage = [string]$o.message
                             try { if ($o.data -and $o.data.stage) { $w.stage = [string]$o.data.stage } } catch { }
-                            $w.updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                            $w.updatedAtUtc = Get-QCTimestamp
                             switch ([string]$o.code) {
                                 'WORKER_START'   { $w.state = 'IDLE' }
                                 'WORKER_SELECTED' {
@@ -1027,7 +1025,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                         } catch { }
                                     }
                                     $w.stage = 'selected job; preparing processor'
-                                    $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                                    $w.startedAtUtc = Get-QCTimestamp
                                 }
                                 'WORKER_STAGE' {
                                     if ($o.data) {
@@ -1042,7 +1040,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                         }
                                     }
                                     $w.state = if ($w.jobId) { 'RUNNING' } else { 'IDLE' }
-                                    if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = (Get-Date).ToUniversalTime().ToString('o') }
+                                    if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = Get-QCTimestamp }
                                 }
                                 'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
                                 'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
@@ -1110,7 +1108,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                     # Pass tracking + progress
                     if ($o.code -eq 'WATCH_START') {
                         # Use the event timestamp (already UTC) for consistent timing.
-                        try { $state.passStartedAtUtc = [string]$o.ts } catch { $state.passStartedAtUtc = (Get-Date).ToUniversalTime().ToString('o') }
+                        try { $state.passStartedAtUtc = [string]$o.ts } catch { $state.passStartedAtUtc = Get-QCTimestamp }
                         # Every WATCH_START is a new pass.
                         if ([int]$state.passCount -le 0) { $state.passCount = 1 } else { $state.passCount = ([int]$state.passCount + 1) }
                         $state.pwFolderTotal = 0
@@ -1181,7 +1179,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
     $now = Get-Date
     if ((($now - $Child.lastHeartbeatAt).TotalMilliseconds -ge 800)) {
         $Child.lastHeartbeatAt = $now
-        $state.lastHeartbeatUtc = $now.ToUniversalTime().ToString('o')
+        $state.lastHeartbeatUtc = Get-QCTimestamp
         _MaybeRefreshQueue -Cfg $Cfg -MinIntervalMs 1500
         _Render-Dashboard -Cfg $Cfg
     }
@@ -1259,7 +1257,7 @@ try {
     }
     @{
         pid          = $PID
-        startedAtUtc = ([DateTime]::UtcNow.ToString('o'))
+        startedAtUtc = Get-QCTimestamp
         host         = $env:COMPUTERNAME
         scriptPath   = $MyInvocation.MyCommand.Path
         queueRoot    = $queueRoot
@@ -1281,7 +1279,7 @@ try {
         $rec = Recover-QCStaleJobs -Config $bootCfg
         if ($rec -and $rec.IsSuccess -and $rec.Data) {
             $state.lastWorkerEvent = [pscustomobject]@{
-                ts = (Get-Date).ToUniversalTime().ToString('o')
+                ts = Get-QCTimestamp
                 level = 'Information'
                 code = 'WORKER_RECOVERY'
                 message = ("Stale recovery: requeued={0} failed={1}" -f [int]$rec.Data.recoveredToPending, [int]$rec.Data.recoveredToFailed)
@@ -1329,7 +1327,7 @@ function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
             lastMessage = 'Worker process starting.'
             stage = 'spawning process'
             startedAtUtc = $null
-            updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            updatedAtUtc = Get-QCTimestamp
         }
     } else {
         $state.workers[$Label].pid = [int]$newChild.process.Id
@@ -1463,7 +1461,7 @@ while ($true) {
                     try { $fai  = [int]$rec.Data.recoveredToFailed } catch { }
                     if (($orph + $req + $fai) -gt 0) {
                         $state.lastWorkerEvent = [pscustomobject]@{
-                            ts = (Get-Date).ToUniversalTime().ToString('o')
+                            ts = Get-QCTimestamp
                             level = 'Information'
                             code = 'WORKER_RECOVERY'
                             message = ("Stale recovery: orphans={0} requeued={1} failed={2}" -f $orph, $req, $fai)

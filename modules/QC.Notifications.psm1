@@ -362,7 +362,7 @@ function Register-QCNotificationDedupe {
 
     $entry = @{
         key = $DedupeKey
-        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        timestampUtc = Get-QCTimestamp
         eventType = $ResultData.eventType
         documentName = $ResultData.documentName
         provider = $ResultData.provider
@@ -434,7 +434,7 @@ function Send-QCNotification {
             to = @($To)
             cc = @($Cc)
             message = 'Notifications are disabled in configuration.'
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_DISABLED' -Level 'Information' -Message $result.message -Result $result -Event $Event
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DISABLED' -Message $result.message -Data $result
@@ -451,7 +451,7 @@ function Send-QCNotification {
             to = @()
             cc = @($Cc)
             message = 'Notification skipped: no To recipients resolved.'
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Level 'Warning' -Message $result.message -Result $result -Event $Event
         return New-QCFailureResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Message $result.message -Data $result
@@ -504,7 +504,7 @@ function Send-QCNotification {
         if ($rd) { foreach ($k in $rd.Keys) { $result[$k] = $rd[$k] } }
     }
     if (-not $result.ContainsKey('timestampUtc')) {
-        $result['timestampUtc'] = [DateTime]::UtcNow.ToString('o')
+        $result['timestampUtc'] = Get-QCTimestamp
     }
 
     $code = if ($sendResult.IsSuccess) { 'QC_NOTIFICATION_SENT' } else { 'QC_NOTIFICATION_FAILED' }
@@ -548,7 +548,7 @@ function Invoke-QCNotificationForStateChange {
             to = @()
             cc = @()
             message = 'Notifications are disabled in configuration.'
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_DISABLED' -Level 'Information' -Message $skipped.message -Result $skipped -Event @{ currentState = $CurrentState; previousState = $PreviousState }
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DISABLED' -Message $skipped.message -Data $skipped
@@ -563,7 +563,7 @@ function Invoke-QCNotificationForStateChange {
             message = 'No workflow state change detected.'
             previousState = $prev
             currentState = $curr
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_NO_CHANGE' -Level 'Information' -Message $skipped.message -Result $skipped
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_CHANGE' -Message $skipped.message -Data $skipped
@@ -576,7 +576,7 @@ function Invoke-QCNotificationForStateChange {
             skipped = $true
             message = "No notification event configured for state '$curr'."
             currentState = $curr
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_NO_EVENT' -Level 'Information' -Message $skipped.message -Result $skipped
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_EVENT' -Message $skipped.message -Data $skipped
@@ -589,7 +589,7 @@ function Invoke-QCNotificationForStateChange {
             skipped = $true
             message = "Notification event for state '$curr' is disabled."
             currentState = $curr
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_EVENT_DISABLED' -Level 'Information' -Message $skipped.message -Result $skipped
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_EVENT_DISABLED' -Message $skipped.message -Data $skipped
@@ -630,7 +630,7 @@ function Invoke-QCNotificationForStateChange {
             message = 'Duplicate notification suppressed.'
             eventType = $eventType
             documentName = $DocumentName
-            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            timestampUtc = Get-QCTimestamp
         }
         Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped

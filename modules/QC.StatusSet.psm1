@@ -17,6 +17,7 @@ Native StatusSet implementation that matches legacy/combine_status_set.ps1 metho
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
 
 $script:StatusSetManifestSchemaVersion = 2
@@ -200,17 +201,18 @@ function _SSS-CleanupExpiredStatusSetStaging {
     )
     if ($RetentionDays -lt 1) { $RetentionDays = 1 }
     if (-not (Test-Path -LiteralPath $WorkspaceDir)) { return }
-    $cutoff = [DateTime]::UtcNow.AddDays(-1 * $RetentionDays)
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))
+    $cutoff = $mt.AddDays(-1 * $RetentionDays)
     $patterns = @('_export_*', '_render', '_render_*', '_pw_status_chunk_*.pdf', '*.next.*.pdf')
     foreach ($pattern in $patterns) {
         $items = @(Get-ChildItem -LiteralPath $WorkspaceDir -Filter $pattern -Force -ErrorAction SilentlyContinue)
         foreach ($item in $items) {
             $mtime = $item.LastWriteTimeUtc
             if ($mtime -gt $cutoff) {
-                _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'skips' -Operation @{ action='retention-skip'; path=[string]$item.FullName; lastWriteTimeUtc=$mtime.ToString('o'); cutoffUtc=$cutoff.ToString('o') }
+                _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'skips' -Operation @{ action='retention-skip'; path=[string]$item.FullName; lastWriteTimeUtc=ConvertTo-QCTimestamp $mtime; cutoffUtc=ConvertTo-QCTimestamp $cutoff }
                 continue
             }
-            _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'deletes' -Operation @{ action='retention-delete'; path=[string]$item.FullName; lastWriteTimeUtc=$mtime.ToString('o'); cutoffUtc=$cutoff.ToString('o') }
+            _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'deletes' -Operation @{ action='retention-delete'; path=[string]$item.FullName; lastWriteTimeUtc=ConvertTo-QCTimestamp $mtime; cutoffUtc=ConvertTo-QCTimestamp $cutoff }
             if (-not $DryRun) {
                 try {
                     if ($item.PSIsContainer) { _SSS-RemoveExportDirContentsFileFirst -DirPath $item.FullName -RemoveEmptyDir $true }
@@ -244,7 +246,7 @@ function _SSS-InstallStatusSetPdf {
     if (Test-Path -LiteralPath $OutputPdf) {
         if (_SSS-IsNullOrWhiteSpace $HistoryDir) { $HistoryDir = Join-Path (Split-Path -Parent $OutputPdf) '_history' }
         _SSS-EnsureDir $HistoryDir
-        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd_HHmmss')
+        $stamp = Get-QCTimestampShort
         $backupPath = Join-Path $HistoryDir (([System.IO.Path]::GetFileNameWithoutExtension($OutputPdf)) + '_' + $stamp + [System.IO.Path]::GetExtension($OutputPdf))
     }
     _SSS-AddStatusSetOperation -Report $OperationReport -Kind 'replaces' -Operation @{ action='atomic-output-replace'; source=$SourcePdf; destination=$OutputPdf; backup=$backupPath; atomicReplace=$AtomicReplace }
@@ -512,7 +514,7 @@ function _SSS-GetDocLastModified([object]$Doc) {
 function _SSS-PWGetDocLastModifiedUtcIso([object]$Doc) {
     # Back-compat shim for older watcher/state code: return UTC ISO string (or '').
     $dt = _SSS-GetDocLastModified $Doc
-    if ($dt) { return $dt.ToString('o') }
+    if ($dt) { return ConvertTo-QCTimestamp $dt }
     return ''
 }
 
@@ -653,21 +655,21 @@ function Get-StatusSetLocalFolderState {
                 name = [string]$p.Name
                 fullName = [string]$p.FullName
                 length = [int64]$p.Length
-                lastWriteTimeUtc = $p.LastWriteTimeUtc.ToString('o')
+                lastWriteTimeUtc = ConvertTo-QCTimestamp $p.LastWriteTimeUtc
             }
             cad = @{
                 name = [string]$c.Name
                 fullName = [string]$c.FullName
                 length = [int64]$c.Length
-                lastWriteTimeUtc = $c.LastWriteTimeUtc.ToString('o')
+                lastWriteTimeUtc = ConvertTo-QCTimestamp $c.LastWriteTimeUtc
             }
         }
         $lines += (@(
             $stemKey,
             ([string]$p.Length),
-            ($p.LastWriteTimeUtc.ToString('o')),
+            (ConvertTo-QCTimestamp $p.LastWriteTimeUtc),
             ([string]$c.Length),
-            ($c.LastWriteTimeUtc.ToString('o')),
+            (ConvertTo-QCTimestamp $c.LastWriteTimeUtc),
             ([string]$dir).ToLowerInvariant()
         ) -join '|')
     }
@@ -752,7 +754,7 @@ function Get-StatusSetPWFolderState {
         $pn = _SSS-GetDocName $p
         $stemKey = ([System.IO.Path]::GetFileNameWithoutExtension($pn)).ToLowerInvariant()
         $mod = _SSS-GetDocLastModified $p
-        $modIso = if ($mod) { $mod.ToString('o') } else { '' }
+        $modIso = if ($mod) { ConvertTo-QCTimestamp $mod } else { '' }
         $sz = _SSS-PWGetProp -Obj $p -Name 'FileSize'
         if (-not $sz) { $sz = _SSS-PWGetProp -Obj $p -Name 'Size' }
         $sz = _SSS-NormalizeFileSize $sz
@@ -1158,11 +1160,11 @@ function Invoke-StatusSetNativeJob {
                 $pageEnd = $pageStart + $pageCount - 1
                 $row = @{ name = $name; hash = $hash; pageStart = $pageStart; pageEnd = $pageEnd }
                 $dlm = $sourcePwLastModByName[$name]
-                if ($dlm) { $row.pwLastModified = $dlm.ToUniversalTime().ToString('o') }
+                if ($dlm) { $row.pwLastModified = ConvertTo-QCTimestamp $dlm }
                 $sources += $row
             }
             $pinned = $null
-            if ($statusSetLastModified) { $pinned = $statusSetLastModified.ToUniversalTime().ToString('o') }
+            if ($statusSetLastModified) { $pinned = ConvertTo-QCTimestamp $statusSetLastModified }
             elseif ($manifest2 -and $manifest2.pinnedStatusSetLastModified) { $pinned = [string]$manifest2.pinnedStatusSetLastModified }
             $manifestObj = @{
                 manifestSchemaVersion       = $script:StatusSetManifestSchemaVersion
@@ -1195,7 +1197,7 @@ function Invoke-StatusSetNativeJob {
                         if ($dt2 -and (Test-Path -LiteralPath $manifestPath)) {
                             $m2 = Read-StatusSetManifestLegacy -ManifestPath $manifestPath
                             if ($m2) {
-                                $m2.pinnedStatusSetLastModified = $dt2.ToUniversalTime().ToString('o')
+                                $m2.pinnedStatusSetLastModified = ConvertTo-QCTimestamp $dt2
                                 $m2 | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
                             }
                         }
@@ -1535,7 +1537,7 @@ function New-StatusSetManifestObject {
         version = 1
         sheetsFolder = $SheetsFolderDisplay
         folderStateHash = [string]$State.folderStateHash
-        generatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        generatedAtUtc = Get-QCTimestamp
         sheetCount = [int]$State.pairedCount
         sheets = $sheets
     }
@@ -2343,7 +2345,7 @@ function Invoke-StatusSetNativeJob {
         $renderTag = [string]$Job['id']
         if (_SSS-IsNullOrWhiteSpace $renderTag) { $renderTag = [guid]::NewGuid().ToString('N') }
         $renderTag = ($renderTag -replace '[^a-zA-Z0-9._-]', '_')
-        $renderStamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')
+        $utcNow = [DateTime]::UtcNow; $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')); $renderStamp = $mt.ToString('yyyyMMddHHmmssfff')
         $renderPdf = if ($atomicReplaceEnabled) { Join-Path $renderDir ($statusPdfName + '.next.' + $renderTag + '.' + $renderStamp + '.pdf') } else { $outPdf }
         _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='qpdf-merge'; output=$renderPdf; inputCount=$orderedPaths.Count }
         $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $renderPdf -QpdfExe $qpdfExe
@@ -2654,7 +2656,7 @@ function Sync-StatusSetWorkspaceToPw {
         return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_CREATED' -Message 'Uploaded missing _StatusSet.pdf to PW.' -Data @{
             workspaceDir = [string]$WorkspaceRecord.workspaceDir
             pwFolder = $pwPath; sheetsFolder = $sheetsFolder
-            outputPdf = $outPdf; localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
+            outputPdf = $outPdf; localMtime = if ($localMtime) { ConvertTo-QCTimestamp $localMtime } else { $null }
             action = 'CREATED'
         }
     }
@@ -2670,8 +2672,8 @@ function Sync-StatusSetWorkspaceToPw {
             workspaceDir = [string]$WorkspaceRecord.workspaceDir
             pwFolder = $pwPath; sheetsFolder = $sheetsFolder
             outputPdf = $outPdf
-            localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
-            pwMtime    = if ($pwMtime)    { $pwMtime.ToString('o')    } else { $null }
+            localMtime = if ($localMtime) { ConvertTo-QCTimestamp $localMtime } else { $null }
+            pwMtime    = if ($pwMtime)    { ConvertTo-QCTimestamp $pwMtime    } else { $null }
             action = 'IN_SYNC'
         }
     }
@@ -2687,8 +2689,8 @@ function Sync-StatusSetWorkspaceToPw {
         workspaceDir = [string]$WorkspaceRecord.workspaceDir
         pwFolder = $pwPath; sheetsFolder = $sheetsFolder
         outputPdf = $outPdf
-        localMtime = if ($localMtime) { $localMtime.ToString('o') } else { $null }
-        pwMtime    = if ($pwMtime)    { $pwMtime.ToString('o')    } else { $null }
+        localMtime = if ($localMtime) { ConvertTo-QCTimestamp $localMtime } else { $null }
+        pwMtime    = if ($pwMtime)    { ConvertTo-QCTimestamp $pwMtime    } else { $null }
         action = 'UPDATED'
     }
 }

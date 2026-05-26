@@ -46,6 +46,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 
@@ -196,7 +197,7 @@ try {
     )
 
     $out = [ordered]@{
-        collectedAtUtc = [DateTime]::UtcNow.ToString('o')
+        collectedAtUtc = Get-QCTimestamp
         datasourceName = $DatasourceName
         projectRoot = $projFolderPath
         subfolders = @()

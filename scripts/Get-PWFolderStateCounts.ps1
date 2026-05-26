@@ -88,6 +88,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 
@@ -147,7 +148,7 @@ try {
 
     $out = [ordered]@{
         ok = $true
-        collectedAtUtc = [DateTime]::UtcNow.ToString('o')
+        collectedAtUtc = Get-QCTimestamp
         datasourceName = $DatasourceName
         input = [ordered]@{
             folderPath = $FolderPath

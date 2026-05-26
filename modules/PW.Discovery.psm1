@@ -1,6 +1,8 @@
 # PW.Discovery.psm1
 # Responsibility: Read-only ProjectWise watch-path resolution and candidate discovery.
 
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
+
 function Resolve-WatchPaths {
     <#
     .SYNOPSIS
@@ -116,10 +118,10 @@ function Get-PWDocLastModifiedUtc {
         $v = Get-PWObjectPropertyValue -Object $Doc -Name $n
         if ($v) {
             try {
-                if ($v -is [DateTime]) { return $v.ToUniversalTime().ToString('o') }
-                if ($v -is [DateTimeOffset]) { return $v.UtcDateTime.ToString('o') }
+                if ($v -is [DateTime]) { return ConvertTo-QCTimestamp $v }
+                if ($v -is [DateTimeOffset]) { return ConvertTo-QCTimestamp $v.UtcDateTime }
                 $dt = [DateTime]::Parse([string]$v, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
-                return $dt.ToUniversalTime().ToString('o')
+                return ConvertTo-QCTimestamp $dt
             } catch {
                 try { return ([string]$v).Trim() } catch { }
             }

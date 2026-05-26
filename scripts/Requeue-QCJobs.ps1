@@ -30,6 +30,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 $repoRoot = Split-Path -Parent $scriptDir
+Import-Module (Join-Path $PSScriptRoot '..\modules\Core.Runtime.psm1') -Force
 if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings.json' }
 if (-not (Test-Path -LiteralPath $AppSettingsPath)) { throw "appsettings.json not found: $AppSettingsPath" }
 
@@ -63,7 +64,7 @@ foreach ($f in $files) {
         try {
             $job | Add-Member -MemberType NoteProperty -Name 'status' -Value 'pending' -Force
             $job | Add-Member -MemberType NoteProperty -Name 'startedAtUtc' -Value $null -Force
-            $job | Add-Member -MemberType NoteProperty -Name 'updatedAtUtc' -Value ([DateTime]::UtcNow.ToString('o')) -Force
+            $job | Add-Member -MemberType NoteProperty -Name 'updatedAtUtc' -Value (Get-QCTimestamp) -Force
             $tmp = $f.FullName + '.tmp'
             $job | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $tmp -Encoding utf8
             Move-Item -LiteralPath $tmp -Destination $f.FullName -Force

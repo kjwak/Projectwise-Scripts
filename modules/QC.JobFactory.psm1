@@ -2,6 +2,7 @@
 # Responsibility: Build and validate queue job payloads.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
 
 function _QCJF-IsNullOrWhiteSpace([object]$Value) {
@@ -12,7 +13,7 @@ function _QCJF-IsNullOrWhiteSpace([object]$Value) {
 
 function _QCJF-ToStableString([object]$Value) {
     if ($null -eq $Value) { return '' }
-    if ($Value -is [datetime]) { return ($Value.ToUniversalTime().ToString('o')) }
+    if ($Value -is [datetime]) { return (ConvertTo-QCTimestamp $Value) }
     return [string]$Value
 }
 
