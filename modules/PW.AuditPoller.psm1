@@ -3,9 +3,9 @@
 # match against watch roots, and return candidate events for job creation.
 # Extracted from the POC Test-AuditEventIngestion.ps1 for production use.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
+# Dependencies (Core.Results, Core.Runtime, Core.Database) must be imported by the
+# caller before this module. Re-importing with -Force here would clobber their
+# global-scope exports.
 
 $script:QCRelevantActions = @{
     1002 = 'DOCUMENT_MODIFY'
