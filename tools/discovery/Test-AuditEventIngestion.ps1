@@ -254,18 +254,23 @@ INSERT INTO audit_events
 VALUES
     (@acttime, @action, @actionName, @objtype, @objno, @objguid, @parentguid, @userno, @itemname, @itemdesc, @textparam, @folder, @candidateType)
 "@
+        $objno = 0;  try { $objno = [int]$evt.o_objno } catch { $objno = 0 }
+        $userno = 0; try { $userno = [int]$evt.o_userno } catch { $userno = 0 }
+        $itemdesc = $null; if (-not ($evt.o_itemdesc -is [DBNull])) { $itemdesc = [string]$evt.o_itemdesc }
+        $textparam = $null; if (-not ($evt.o_textparam -is [DBNull])) { $textparam = [string]$evt.o_textparam }
+
         $params = @{
             acttime       = [string]$evt.o_acttime
             action        = $actionCode
             actionName    = $actionName
             objtype       = [int]$evt.o_objtype
-            objno         = try { [int]$evt.o_objno } catch { 0 }
+            objno         = $objno
             objguid       = $objGuid
             parentguid    = $parentGuid
-            userno        = try { [int]$evt.o_userno } catch { 0 }
+            userno        = $userno
             itemname      = [string]$evt.o_itemname
-            itemdesc      = if ($evt.o_itemdesc -is [DBNull]) { $null } else { [string]$evt.o_itemdesc }
-            textparam     = if ($evt.o_textparam -is [DBNull]) { $null } else { [string]$evt.o_textparam }
+            itemdesc      = $itemdesc
+            textparam     = $textparam
             folder        = $resolvedFolder
             candidateType = $candidateType
         }
