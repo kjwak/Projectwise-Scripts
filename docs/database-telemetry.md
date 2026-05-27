@@ -44,6 +44,18 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 |---------|-------------|
 | 1.0.0 | Core tables: `audit_events`, `document_activity`, `document_state_history`, `transition_events`, `poll_runs`, `processing_jobs`, `notification_log` |
 | 1.1.0 | Added `sheet_index` table and `v_sheet_status` view |
+| 1.2.0 | Comment sync: `qc_comment_runs`, `qc_comments`, `qc_comment_status_history`, `qc_workflow_events` |
+
+### Schema 1.2.0 — comment sync (see `docs/qc-comment-status-sync.md`)
+
+| Table | Purpose |
+|-------|---------|
+| `qc_comment_runs` | One processor execution per `QC_COMMENT_STATUS_SYNC` job; includes `processor_version` |
+| `qc_comments` | Annotation snapshot per run |
+| `qc_comment_status_history` | Status transitions per annotation (analytics, recurring issues) |
+| `qc_workflow_events` | Workflow/audit events separate from comment snapshots (replay, debugging) |
+
+Dry-run: set `database.allowWritesInDryRun: false` (default) so `dryRun: true` does not mutate production data.
 
 ---
 
@@ -96,6 +108,8 @@ Operational health of the audit poller. One row per watcher tick.
 
 ### `processing_jobs`
 Mirrors JSON queue job outcomes for dashboards. Written by `Write-QCJobTelemetry` in `Run-QCProcessor.ps1`.
+
+Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (mapping via `Get-QCProcessingJobType`). Other queue types are stored unchanged unless `database.processingJobTypeMap` overrides them.
 
 | Column | Type | Description |
 |--------|------|-------------|

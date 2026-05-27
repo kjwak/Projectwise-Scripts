@@ -87,6 +87,20 @@ function Test-TriggerRule {
     return New-QCSuccessResult -Code 'TRIGGER_MATCH' -Message 'Candidate matched trigger rule.' -Data @{ isMatch = $true; ruleId = $Rule.id; jobType = $Rule.jobType; triggerType = $Rule.triggerType; groupResults = $groupResults }
 }
 
+function Test-QCIsStatusSetOutputPdfName {
+    <#
+    .SYNOPSIS
+    True for aggregate status-set PDFs that must never receive QC_PREPEND.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FileName)
+
+    if ([string]::IsNullOrWhiteSpace($FileName)) { return $false }
+    if ($FileName -match '(?i)^_StatusSet\.pdf$') { return $true }
+    if ($FileName -match '(?i)^status_set_replace_.*\.pdf$') { return $true }
+    return $false
+}
+
 function Test-QCTriggerCandidate {
     [CmdletBinding()]
     param(
@@ -95,7 +109,9 @@ function Test-QCTriggerCandidate {
         [Parameter(Mandatory)]
         [hashtable]$Config,
         [Parameter(Mandatory = $false)]
-        [object[]]$OrderedRules = $null
+        [object[]]$OrderedRules = $null,
+        [Parameter(Mandatory = $false)]
+        [string]$TriggerType = ''
     )
 
     if ($null -eq $OrderedRules) {
@@ -104,7 +120,20 @@ function Test-QCTriggerCandidate {
         $OrderedRules = @($orderedRes.Data.rules)
     }
 
+    $triggerTypeFilter = if ($TriggerType) { ([string]$TriggerType).Trim().ToLowerInvariant() } else { '' }
+
     foreach ($rule in @($OrderedRules)) {
+        if ($triggerTypeFilter) {
+            $ruleTriggerType = ''
+            try {
+                if ($rule -is [hashtable] -and $rule.ContainsKey('triggerType') -and $rule.triggerType) {
+                    $ruleTriggerType = ([string]$rule.triggerType).Trim().ToLowerInvariant()
+                } elseif ($rule.triggerType) {
+                    $ruleTriggerType = ([string]$rule.triggerType).Trim().ToLowerInvariant()
+                }
+            } catch { $ruleTriggerType = '' }
+            if ($ruleTriggerType -and ($ruleTriggerType -ne $triggerTypeFilter)) { continue }
+        }
         $r = Test-TriggerRule -Candidate $Candidate -Rule $rule
         if (-not $r.IsSuccess) { return $r }
         if ($r.Data.isMatch) {

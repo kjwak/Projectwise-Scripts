@@ -4,6 +4,7 @@ This repo implements a **queue-based QC pipeline** with:
 
 - **Watcher**: discovers candidates, applies filters + triggers, and enqueues jobs.
 - **Worker(s)**: dequeue jobs, dispatch to processors, and transition job state.
+- **QC comment sync**: `QC_COMMENT_STATUS_SYNC` jobs react to `*-qc.pdf` updates (comment extraction, workflow state, telemetry). See `docs/qc-comment-status-sync.md`.
 - **Dashboard**: runs watcher + worker pool and renders a live terminal UI.
 
 Most logic is in `modules/`. Most runnable entrypoints are in `scripts/`.

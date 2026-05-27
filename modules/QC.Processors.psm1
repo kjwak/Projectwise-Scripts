@@ -5,6 +5,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -368,6 +369,7 @@ function Invoke-QCProcessorByType {
         if ($jobType -eq 'QC_PREPEND') { $handlerName = 'Invoke-QCPrependProcessor' }
         elseif ($jobType -eq 'STATUS_SET_GEN') { $handlerName = 'Invoke-StatusSetProcessor' }
         elseif ($jobType -eq 'QC_REPORTING_SCAN') { $handlerName = 'Invoke-QCReportingScanProcessor' }
+        elseif ($jobType -eq 'QC_COMMENT_STATUS_SYNC') { $handlerName = 'Invoke-QCCommentStatusSyncProcessor' }
     }
 
     if (_QCP-IsNullOrWhiteSpace $handlerName) {

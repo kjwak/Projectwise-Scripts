@@ -398,7 +398,7 @@ function Get-QCDedupeKey {
             ('rule=' + $ruleId)
             ('path=' + $path)
         )
-        if ($type -eq 'QC_PREPEND' -and -not (_QCJF-IsNullOrWhiteSpace $fileHash)) {
+        if ($type -in @('QC_PREPEND', 'QC_COMMENT_STATUS_SYNC') -and -not (_QCJF-IsNullOrWhiteSpace $fileHash)) {
             $stableParts += ('fileHash=' + $fileHash)
         }
         $stable = ($stableParts -join '|')

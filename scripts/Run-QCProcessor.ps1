@@ -266,9 +266,15 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
             $rdJson = $null; try { if ($resultData) { $rdJson = ($resultData | ConvertTo-Json -Depth 4 -Compress) } } catch {}
+            $triggerSource = $null
+            try {
+                if ($Job.metadata -and $Job.metadata.candidate -and $Job.metadata.candidate.triggerSource) {
+                    $triggerSource = [string]$Job.metadata.candidate.triggerSource
+                }
+            } catch { }
             Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
                 -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-                -DedupeKey ([string]$Job['dedupeKey']) -DurationMs $jobDurationMs -ResultData $rdJson
+                -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -DurationMs $jobDurationMs -ResultData $rdJson
 
             # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
@@ -329,10 +335,16 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
             errorCode = [string]$proc.Code; errorMessage = [string]$proc.Message
             processorData = $details; processorStdout = $stdoutPreview; processorStderr = $stderrPreview
         }
+        $triggerSourceFail = $null
+        try {
+            if ($Job.metadata -and $Job.metadata.candidate -and $Job.metadata.candidate.triggerSource) {
+                $triggerSourceFail = [string]$Job.metadata.candidate.triggerSource
+            }
+        } catch { }
         Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
             -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-            -DedupeKey ([string]$Job['dedupeKey']) -DurationMs $jobDurationMs -AttemptCount $attempts `
-            -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message)
+            -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSourceFail -DurationMs $jobDurationMs -AttemptCount $attempts `
+            -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message) -ResultData $details
         if ($target -eq 'failed') {
             return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
         } else {

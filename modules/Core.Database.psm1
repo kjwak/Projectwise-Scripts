@@ -247,10 +247,11 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.1.0'
+    $targetVersion = '1.2.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
-    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1
+    $schemaV1_2 = _QDB-GetSchemaV1dot2
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -263,7 +264,19 @@ function Initialize-QCDatabaseSchema {
         if ($currentVersion -is [DBNull]) { $currentVersion = $null }
 
         if ($currentVersion -eq $targetVersion) {
-            return New-QCSuccessResult -Code 'DB_SCHEMA_CURRENT' -Message "Schema already at version $targetVersion." -Data @{ version = $targetVersion }
+            $patchSql = _QDB-GetSchemaV1dot2Additive
+            $patchBatches = [regex]::Split($patchSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $patchExecuted = 0
+            foreach ($batch in $patchBatches) {
+                $trimmed = $batch.Trim()
+                if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+                $batchCmd = $conn.CreateCommand()
+                $batchCmd.CommandText = $trimmed
+                $batchCmd.CommandTimeout = 120
+                [void]$batchCmd.ExecuteNonQuery()
+                $patchExecuted++
+            }
+            return New-QCSuccessResult -Code 'DB_SCHEMA_CURRENT' -Message "Schema already at version $targetVersion (additive patches: $patchExecuted)." -Data @{ version = $targetVersion; patchCount = $patchExecuted }
         }
 
         $batches = [regex]::Split($schemaSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -281,7 +294,7 @@ function Initialize-QCDatabaseSchema {
         $insertCmd = $conn.CreateCommand()
         $insertCmd.CommandText = "INSERT INTO schema_version (version, description) VALUES (@version, @desc)"
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "Initial telemetry schema: audit_events, document_activity, document_state_history, transition_events, poll_runs, processing_jobs, notification_log")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through comment sync tables (qc_comment_*, qc_workflow_events)")
         [void]$insertCmd.ExecuteNonQuery()
 
         return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($executed batches)." -Data @{ version = $targetVersion; batchCount = $executed }
@@ -649,6 +662,155 @@ FROM sheet_index s;
 '@
 }
 
+function _QDB-GetSchemaV1dot2 {
+    return @'
+
+GO
+
+-- qc_comment_runs: one processor execution per *-qc.pdf sync job
+IF OBJECT_ID('dbo.qc_comment_runs', 'U') IS NULL
+CREATE TABLE qc_comment_runs (
+    run_id                  BIGINT IDENTITY(1,1) PRIMARY KEY,
+    job_id                  NVARCHAR(100) NOT NULL,
+    document_id             NVARCHAR(40) NULL,
+    project_id              NVARCHAR(200) NULL,
+    pw_path                 NVARCHAR(1000) NULL,
+    file_name               NVARCHAR(500) NULL,
+    file_hash               NVARCHAR(128) NULL,
+    source_modified_utc     DATETIMEOFFSET(3) NULL,
+    previous_pw_state       NVARCHAR(100) NULL,
+    target_pw_state         NVARCHAR(100) NULL,
+    state_update_result     NVARCHAR(500) NULL,
+    parser_status           NVARCHAR(50) NULL,
+    processor_version       NVARCHAR(50) NULL,
+    created_utc             DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_runs_job')
+    CREATE INDEX IX_qc_comment_runs_job ON qc_comment_runs (job_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_runs_doc')
+    CREATE INDEX IX_qc_comment_runs_doc ON qc_comment_runs (document_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_runs_created')
+    CREATE INDEX IX_qc_comment_runs_created ON qc_comment_runs (created_utc);
+
+GO
+
+-- qc_comments: annotation snapshot per run
+IF OBJECT_ID('dbo.qc_comments', 'U') IS NULL
+CREATE TABLE qc_comments (
+    comment_record_id       BIGINT IDENTITY(1,1) PRIMARY KEY,
+    run_id                  BIGINT NOT NULL,
+    document_id             NVARCHAR(40) NULL,
+    annotation_id           NVARCHAR(50) NOT NULL,
+    page_number             INT NULL,
+    author                  NVARCHAR(200) NULL,
+    subject                 NVARCHAR(500) NULL,
+    comment_text            NVARCHAR(MAX) NULL,
+    color                   NVARCHAR(100) NULL,
+    status                  NVARCHAR(100) NULL,
+    status_author           NVARCHAR(200) NULL,
+    status_timestamp_utc    DATETIMEOFFSET(3) NULL,
+    created_utc             DATETIMEOFFSET(3) NULL,
+    modified_utc            DATETIMEOFFSET(3) NULL,
+    parent_annotation_id    NVARCHAR(50) NULL,
+    raw_json                NVARCHAR(MAX) NULL,
+    inserted_utc            DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comments_run')
+    CREATE INDEX IX_qc_comments_run ON qc_comments (run_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comments_doc_annot')
+    CREATE INDEX IX_qc_comments_doc_annot ON qc_comments (document_id, annotation_id);
+
+GO
+
+-- qc_comment_status_history: status transitions over time
+IF OBJECT_ID('dbo.qc_comment_status_history', 'U') IS NULL
+CREATE TABLE qc_comment_status_history (
+    history_id                  BIGINT IDENTITY(1,1) PRIMARY KEY,
+    document_id                 NVARCHAR(40) NULL,
+    annotation_id               NVARCHAR(50) NOT NULL,
+    previous_status             NVARCHAR(100) NULL,
+    current_status              NVARCHAR(100) NULL,
+    previous_status_timestamp_utc DATETIMEOFFSET(3) NULL,
+    current_status_timestamp_utc  DATETIMEOFFSET(3) NULL,
+    detected_run_id             BIGINT NULL,
+    detected_utc                DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_status_hist_doc')
+    CREATE INDEX IX_qc_comment_status_hist_doc ON qc_comment_status_history (document_id, annotation_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_status_hist_run')
+    CREATE INDEX IX_qc_comment_status_hist_run ON qc_comment_status_history (detected_run_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_status_hist_detected')
+    CREATE INDEX IX_qc_comment_status_hist_detected ON qc_comment_status_history (detected_utc);
+
+GO
+
+-- qc_workflow_events: workflow transition audit log (separate from comment snapshots)
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NULL
+CREATE TABLE qc_workflow_events (
+    event_id                BIGINT IDENTITY(1,1) PRIMARY KEY,
+    run_id                  BIGINT NULL,
+    job_id                  NVARCHAR(100) NULL,
+    document_id             NVARCHAR(40) NULL,
+    event_type              NVARCHAR(100) NOT NULL,
+    previous_pw_state       NVARCHAR(100) NULL,
+    target_pw_state         NVARCHAR(100) NULL,
+    decision_code           NVARCHAR(100) NULL,
+    processor_version       NVARCHAR(50) NULL,
+    payload_json            NVARCHAR(MAX) NULL,
+    created_utc             DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_run')
+    CREATE INDEX IX_qc_workflow_events_run ON qc_workflow_events (run_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_doc')
+    CREATE INDEX IX_qc_workflow_events_doc ON qc_workflow_events (document_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_job')
+    CREATE INDEX IX_qc_workflow_events_job ON qc_workflow_events (job_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_created')
+    CREATE INDEX IX_qc_workflow_events_created ON qc_workflow_events (created_utc);
+
+'@
+}
+
+function _QDB-GetSchemaV1dot2Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_comment_runs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_runs_created')
+    CREATE INDEX IX_qc_comment_runs_created ON qc_comment_runs (created_utc);
+IF OBJECT_ID('dbo.qc_comment_status_history', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_status_hist_run')
+    CREATE INDEX IX_qc_comment_status_hist_run ON qc_comment_status_history (detected_run_id);
+IF OBJECT_ID('dbo.qc_comment_status_history', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_comment_status_hist_detected')
+    CREATE INDEX IX_qc_comment_status_hist_detected ON qc_comment_status_history (detected_utc);
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_job')
+    CREATE INDEX IX_qc_workflow_events_job ON qc_workflow_events (job_id);
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_created')
+    CREATE INDEX IX_qc_workflow_events_created ON qc_workflow_events (created_utc);
+'@
+}
+
+function Test-QCDatabaseWritesAllowed {
+    <#
+    .SYNOPSIS
+    Returns $true when config allows mutating DB writes (respects dry-run).
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config)
+    if (-not (_QDB-IsEnabled -Config $Config)) { return $false }
+    $dryRun = $false
+    if ($Config.ContainsKey('dryRun')) { try { $dryRun = [bool]$Config.dryRun } catch { } }
+    if ($dryRun) {
+        $allow = $false
+        if ($Config.database -and $null -ne $Config.database.allowWritesInDryRun) {
+            try { $allow = [bool]$Config.database.allowWritesInDryRun } catch { $allow = $false }
+        }
+        return $allow
+    }
+    return $true
+}
+
 # ---------------------------------------------------------------------------
 # Fire-and-forget telemetry writers
 # These silently no-op when the database is disabled or unreachable.
@@ -660,6 +822,36 @@ function _QDB-SafeWrite {
     if (-not (_QDB-IsEnabled -Config $Config)) { return }
     try { Invoke-QCDatabaseNonQuery -Config $Config -Sql $Sql -Parameters $Parameters | Out-Null }
     catch { }
+}
+
+function Get-QCProcessingJobType {
+    <#
+    .SYNOPSIS
+    Maps queue/processor job types to processing_jobs.job_type for dashboards and reporting.
+  .DESCRIPTION
+    Queue jobs may use granular types (e.g. QC_COMMENT_STATUS_SYNC) while processing_jobs
+    uses consolidated reporting types (e.g. QC_STATE).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$QueueJobType,
+        [hashtable]$Config = $null
+    )
+
+    $map = @{
+        'QC_COMMENT_STATUS_SYNC' = 'QC_STATE'
+    }
+    if ($Config -and $Config.ContainsKey('database') -and $Config.database -and $Config.database.processingJobTypeMap) {
+        $custom = $Config.database.processingJobTypeMap
+        if ($custom -is [hashtable]) {
+            foreach ($k in $custom.Keys) { $map[[string]$k] = [string]$custom[$k] }
+        }
+    }
+
+    $key = [string]$QueueJobType
+    if ($map.ContainsKey($key)) { return [string]$map[$key] }
+    return $key
 }
 
 function Write-QCJobTelemetry {
@@ -685,6 +877,7 @@ function Write-QCJobTelemetry {
         [string]$ResultData
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
     try {
         $sql = @"
 MERGE processing_jobs AS tgt
@@ -704,7 +897,7 @@ VALUES
 "@
         $params = @{
             jobId         = $JobId
-            jobType       = $JobType
+            jobType       = $telemetryJobType
             status        = $Status
             sourcePath    = if ($SourcePath)    { $SourcePath }    else { $null }
             sourceFolder  = if ($SourceFolder)  { $SourceFolder }  else { $null }
@@ -922,4 +1115,4 @@ WHERE document_guid = @sourceDocGuid
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Update-QCSheetQcPdf
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Update-QCSheetQcPdf

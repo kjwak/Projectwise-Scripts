@@ -90,6 +90,18 @@ All modules primarily communicate via a shared result envelope from `Core.Result
   - operations: `Merge-StatusSetPdfWithQpdf`, `Export-StatusSetPdfToFolder`, `Invoke-StatusSetNativeJob`, `Sync-StatusSetWorkspaceToPw`, `Invoke-StatusSetReconcile`
 - **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; retention-based staging cleanup instead of per-job scratch deletion.
 
+### Comment-status sync (`QC_COMMENT_STATUS_SYNC`)
+
+- **`QC.PdfExport.psm1`**: `Export-QCPdfToStaging` — PW PDF download to staging.
+- **`QC.CommentExtract.psm1`**: invokes `overlay/qc_pdf_comments.py`; normalized annotations only.
+- **`QC.CommentStatusDecision.psm1`**: pure `Resolve-QCCommentWorkflowState` (no side effects).
+- **`QC.CommentSync.Database.psm1`**: `qc_comment_*` + `qc_workflow_events` writers.
+- **`QC.CommentSync.State.psm1`**: thin `Set-PWQCWorkflowState` wrapper.
+- **`QC.CommentSync.Notifications.psm1`**: state-based notification routing.
+- **`QC.CommentStatusProcessor.psm1`**: thin orchestrator (`Invoke-QCCommentStatusSyncProcessor`).
+- **`QC.CommentSync.Job.psm1`**: job metadata + `Get-QCCommentSyncPwDocument`.
+- See `docs/qc-comment-status-sync.md`.
+
 ### `QC.Notifications.psm1`
 - **Purpose**: configurable QC workflow email notifications (Mock provider + Microsoft Graph stub).
 - **Exports**: `Invoke-QCNotificationForStateChange`, `Send-QCNotification`, `Resolve-QCNotificationRecipients`, and related helpers.

@@ -570,8 +570,15 @@ if ($statusSetRules.Count -ge 0) {
                                 $itemName = [string]$ac.itemName
                                 $actionName = [string]$ac.actionName
                                 if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
+                                    if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     try {
                                         $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
+                                        if ($dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no QC_Archivist in description).' -Data @{
+                                                path = ($fp + '\' + $itemName); actionName = $actionName
+                                            }
+                                            continue
+                                        }
                                         $candidate = @{
                                             path            = ($fp + '\' + $itemName)
                                             fileName        = $itemName
@@ -597,7 +604,7 @@ if ($statusSetRules.Count -ge 0) {
                                             continue
                                         }
 
-                                        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config
+                                        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config -TriggerType 'pw'
                                         if (-not $matchRes.IsSuccess) {
                                             Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Trigger evaluation failed for audit PDF.' -Data @{
                                                 path = [string]$candidate.path; actionName = $actionName; error = $matchRes.Message
@@ -606,7 +613,7 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                         if (-not [bool]$matchRes.Data.matched) {
                                             $reason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { 'no_match' }
-                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any trigger rule.' -Data @{
+                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any PW trigger rule.' -Data @{
                                                 path = [string]$candidate.path
                                                 actionName = $actionName
                                                 descriptionPreview = if ($dd.Length -gt 120) { $dd.Substring(0, 120) } else { $dd }
@@ -641,6 +648,80 @@ if ($statusSetRules.Count -ge 0) {
                                         } elseif ($wouldDedupe) { $duplicates++ }
                                     } catch {
                                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_PREPEND evaluation threw.' -Data @{
+                                            path = ($fp + '\' + $itemName)
+                                            actionName = $actionName
+                                            error = $_.Exception.Message
+                                        }
+                                    }
+                                }
+
+                                # QC_COMMENT_STATUS_SYNC: *-qc.pdf file updates
+                                $acEnableQcCommentSync = $true
+                                try { if ($null -ne $ac.enableQcCommentSync) { $acEnableQcCommentSync = [bool]$ac.enableQcCommentSync } } catch { }
+                                $commentSyncEnabled = $true
+                                if ($config.ContainsKey('qcCommentSync') -and $config.qcCommentSync) {
+                                    try { $commentSyncEnabled = [bool]$config.qcCommentSync.enabled } catch { $commentSyncEnabled = $true }
+                                }
+                                $auditActionsAllowed = @('DOCUMENT_MODIFY', 'DOCUMENT_FILE_REP', 'DOCUMENT_VERSION')
+                                if ($config.qcCommentSync -and $config.qcCommentSync.auditActions) {
+                                    $auditActionsAllowed = @($config.qcCommentSync.auditActions | ForEach-Object { [string]$_ })
+                                }
+                                if ($commentSyncEnabled -and $acEnableQcCommentSync -and $itemName -match '(?i)-qc\.pdf$' -and ($auditActionsAllowed -contains $actionName)) {
+                                    try {
+                                        $pseudoHash = Get-Sha256TextHex -Text (($itemName) + '|' + ([string]$ac.actTime) + '|0|' + $fp)
+                                        $candidate = @{
+                                            path            = ($fp + '\' + $itemName)
+                                            fileName        = $itemName
+                                            description     = ''
+                                            detectedAtUtc   = (Get-QCTimestamp)
+                                            sourceFolder    = $fp
+                                            datasourceName  = $ds
+                                            documentGuid    = [string]$ac.objGuid
+                                            triggerSource   = 'audit_trail'
+                                            auditActionName = $actionName
+                                            watchRoot       = if ($ac.watchRoot) { [string]$ac.watchRoot } else { '' }
+                                            file            = @{
+                                                fullName         = ($fp + '\' + $itemName)
+                                                length           = 0
+                                                lastWriteTimeUtc = [string]$ac.actTime
+                                                sha256           = $pseudoHash
+                                            }
+                                        }
+
+                                        $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
+                                        if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                            $filtered++
+                                            continue
+                                        }
+
+                                        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config -TriggerType 'pw'
+                                        if (-not $matchRes.IsSuccess -or -not [bool]$matchRes.Data.matched) { continue }
+                                        $ruleObj = $matchRes.Data.rule
+                                        if ([string]$ruleObj.jobType -ne 'QC_COMMENT_STATUS_SYNC') { continue }
+
+                                        $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
+                                        if (-not $jobRes.IsSuccess) { continue }
+                                        $job = [hashtable]$jobRes.Data.job
+                                        $accepted++
+                                        $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                        $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
+
+                                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
+                                            jobId           = [string]$job['id']
+                                            jobType         = 'QC_COMMENT_STATUS_SYNC'
+                                            sourcePath      = ($fp + '\' + $itemName)
+                                            triggerSource   = 'audit_trail'
+                                            auditActionName = $actionName
+                                            dryRun          = $isDryRun
+                                            wouldDedupe     = $wouldDedupe
+                                        }
+
+                                        if (-not $isDryRun -and -not $wouldDedupe) {
+                                            $enqRes = Add-QCQueueJob -Job $job -Config $config
+                                            if ($enqRes.IsSuccess) { $enqueued++ }
+                                        } elseif ($wouldDedupe) { $duplicates++ }
+                                    } catch {
+                                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_COMMENT_STATUS_SYNC evaluation threw.' -Data @{
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
                                             error = $_.Exception.Message
@@ -686,11 +767,14 @@ if ($statusSetRules.Count -ge 0) {
                     }
                     $enableQcPrepend = $false
                     if ($rh.ContainsKey('enableQcPrepend')) { try { $enableQcPrepend = [bool]$rh.enableQcPrepend } catch { $enableQcPrepend = $false } }
+                    $enableQcCommentSync = $enableQcPrepend
+                    if ($rh.ContainsKey('enableQcCommentSync')) { try { $enableQcCommentSync = [bool]$rh.enableQcCommentSync } catch { } }
                     $enableStatusSet = $false
                     if ($rh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$rh.enableStatusSet } catch { $enableStatusSet = $false } }
                     $discovered = @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)
                     foreach ($d in $discovered) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
+                        $d['EnableQcCommentSync'] = $enableQcCommentSync
                         $d['EnableStatusSet'] = $enableStatusSet
                         $pwFolders += $d
                     }
@@ -706,6 +790,8 @@ if ($statusSetRules.Count -ge 0) {
                     if ($fh.ContainsKey('oneLevelDeep')) { try { $oneLevelDeep = [bool]$fh.oneLevelDeep } catch { $oneLevelDeep = $false } }
                     $enableQcPrepend = $false
                     if ($fh.ContainsKey('enableQcPrepend')) { try { $enableQcPrepend = [bool]$fh.enableQcPrepend } catch { $enableQcPrepend = $false } }
+                    $enableQcCommentSync = $enableQcPrepend
+                    if ($fh.ContainsKey('enableQcCommentSync')) { try { $enableQcCommentSync = [bool]$fh.enableQcCommentSync } catch { } }
                     $enableStatusSet = $false
                     if ($fh.ContainsKey('enableStatusSet')) { try { $enableStatusSet = [bool]$fh.enableStatusSet } catch { $enableStatusSet = $false } }
                     $full = ($root.TrimEnd('\') + '\' + $path.TrimStart('\')).Trim()
@@ -714,6 +800,7 @@ if ($statusSetRules.Count -ge 0) {
                         FolderPath = $full
                         OneLevelDeep = $oneLevelDeep
                         EnableQcPrepend = $enableQcPrepend
+                        EnableQcCommentSync = $enableQcCommentSync
                         EnableStatusSet = $enableStatusSet
                     })
                 }
@@ -777,9 +864,11 @@ if ($statusSetRules.Count -ge 0) {
 
                     $oneLevelDeep = $false
                     $enableQcPrepend = $false
+                    $enableQcCommentSync = $false
                     $enableStatusSet = $false
                     try { $oneLevelDeep = [bool]$entry.OneLevelDeep } catch { $oneLevelDeep = $false }
                     try { $enableQcPrepend = [bool]$entry.EnableQcPrepend } catch { $enableQcPrepend = $false }
+                    try { $enableQcCommentSync = [bool]$entry.EnableQcCommentSync } catch { $enableQcCommentSync = $enableQcPrepend }
                     try { $enableStatusSet = [bool]$entry.EnableStatusSet } catch { $enableStatusSet = $false }
 
                     # Emit a "scan start" event even if filters later skip the folder.
@@ -1029,6 +1118,7 @@ if ($statusSetRules.Count -ge 0) {
                         foreach ($doc in @($docs)) {
                             $docName = Get-PWDocName -Doc $doc
                             if (-not $docName -or -not ($docName -match '(?i)\.pdf$')) { continue }
+                            if (Test-QCIsStatusSetOutputPdfName -FileName $docName) { continue }
                             $desc = Get-PWDocDescription -Doc $doc
                             if ([string]::IsNullOrWhiteSpace($desc)) { continue }
                             if ($desc.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
@@ -1067,10 +1157,10 @@ if ($statusSetRules.Count -ge 0) {
                             }
 
                             $triggerRuleCacheUses++
-                            $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules
+                            $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules -TriggerType 'pw'
                             if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
                             if (-not [bool]$matchRes.Data.matched) {
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any trigger rule.' -Data @{
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any PW trigger rule.' -Data @{
                                     path = [string]$candidate.path
                                     fileName = [string]$candidate.fileName
                                     ruleReason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { '' }
@@ -1113,6 +1203,77 @@ if ($statusSetRules.Count -ge 0) {
                                 if (-not $enqRes.IsSuccess) { throw $enqRes.Message }
                                 $enqueued++
                             } elseif ($wouldDedupe) { $duplicates++ }
+                        }
+
+                        # QC_COMMENT_STATUS_SYNC: *-qc.pdf (no QC_Archivist tag required)
+                        $commentSyncEnabledFs = $true
+                        if ($config.ContainsKey('qcCommentSync') -and $config.qcCommentSync) {
+                            try { $commentSyncEnabledFs = [bool]$config.qcCommentSync.enabled } catch { $commentSyncEnabledFs = $true }
+                        }
+                        if ($commentSyncEnabledFs -and $enableQcCommentSync) {
+                            foreach ($doc in @($docs)) {
+                                $docName = Get-PWDocName -Doc $doc
+                                if (-not $docName -or -not ($docName -match '(?i)-qc\.pdf$')) { continue }
+
+                                $mod = Get-PWDocLastModifiedUtc -Doc $doc
+                                $sz = Get-PWObjectPropertyValue -Object $doc -Name 'FileSize'
+                                if (-not $sz) { $sz = Get-PWObjectPropertyValue -Object $doc -Name 'Size' }
+                                $pseudo = Get-Sha256TextHex -Text (([string]$docName) + '|' + ([string]$mod) + '|' + ([string]$sz) + '|' + ([string]$fp))
+                                $dg = $null
+                                try { $dg = Get-PWObjectPropertyValue -Object $doc -Name 'DocumentGUID' } catch { }
+                                if (-not $dg) { try { $dg = Get-PWObjectPropertyValue -Object $doc -Name 'GUID' } catch { } }
+
+                                $candidate = @{
+                                    path = ($fp.TrimEnd('\') + '\' + $docName)
+                                    fileName = $docName
+                                    description = (Get-PWDocDescription -Doc $doc)
+                                    detectedAtUtc = (Get-QCTimestamp)
+                                    sourceFolder = $fp
+                                    datasourceName = $ds
+                                    documentGuid = if ($dg) { [string]$dg } else { '' }
+                                    triggerSource = 'pw_full_scan'
+                                    file = @{
+                                        fullName = ($fp.TrimEnd('\') + '\' + $docName)
+                                        length = if ($sz) { [int64]$sz } else { 0 }
+                                        lastWriteTimeUtc = $mod
+                                        sha256 = $pseudo
+                                    }
+                                }
+
+                                $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
+                                if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) { $filtered++; continue }
+
+                                $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules -TriggerType 'pw'
+                                if (-not $matchRes.IsSuccess -or -not [bool]$matchRes.Data.matched) { continue }
+                                $ruleObj = $matchRes.Data.rule
+                                if ([string]$ruleObj.jobType -ne 'QC_COMMENT_STATUS_SYNC') { continue }
+
+                                $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
+                                if (-not $jobRes.IsSuccess) { continue }
+                                $job = [hashtable]$jobRes.Data.job
+                                $accepted++
+                                $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                if (-not $dupRes.IsSuccess) { throw $dupRes.Message }
+                                $wouldDedupe = [bool]$dupRes.Data.isDuplicate
+                                $enqueueSkippedReason = if ($wouldDedupe) { 'duplicate' } elseif ($isDryRun) { 'dryRun' } else { $null }
+
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
+                                    jobId = [string]$job['id']
+                                    jobType = [string]$job['type']
+                                    dedupeKey = [string]$job['dedupeKey']
+                                    sourcePath = [string]$job['sourcePath']
+                                    ruleId = [string]$job['triggerRule']['id']
+                                    dryRun = $isDryRun
+                                    wouldDedupe = $wouldDedupe
+                                    enqueueSkippedReason = $enqueueSkippedReason
+                                }
+
+                                if (-not $isDryRun -and -not $wouldDedupe) {
+                                    $enqRes = Add-QCQueueJob -Job $job -Config $config
+                                    if (-not $enqRes.IsSuccess) { throw $enqRes.Message }
+                                    $enqueued++
+                                } elseif ($wouldDedupe) { $duplicates++ }
+                            }
                         }
                     }
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
@@ -1321,12 +1482,12 @@ foreach ($fi in $fileItems) {
         $candidate.sourceFolder = [string]$sfRes.Data.path
 
         $triggerRuleCacheUses++
-        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules
+        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules -TriggerType 'fs'
         if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
         if (-not [bool]$matchRes.Data.matched) {
             $ignored++
             if (($ignored % $ignoreSampleEvery) -eq 0) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no trigger match).' -Data @{
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no filesystem trigger match).' -Data @{
                     path = $normPath
                     fileName = $candidate.fileName
                     ignoredCount = $ignored

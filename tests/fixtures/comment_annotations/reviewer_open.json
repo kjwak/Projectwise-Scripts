@@ -1,0 +1,21 @@
+{
+  "parser_version": "1.0.0",
+  "parser_status": "ok",
+  "annotations": [
+    {
+      "annotation_id": "42",
+      "page_number": 1,
+      "author": "QC Reviewer",
+      "subject": "Mark",
+      "comment_text": "Fix dimension",
+      "color": "1,0,0",
+      "status": "Open",
+      "status_author": null,
+      "status_timestamp_utc": null,
+      "created_utc": null,
+      "modified_utc": null,
+      "parent_annotation_id": null,
+      "raw": { "xref": 42, "type": "Highlight" }
+    }
+  ]
+}
