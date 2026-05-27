@@ -22,11 +22,11 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentExtract.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentSync.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $repoRoot 'modules\QC.CommentExtract.psm1') -Force -ErrorAction Stop
+Import-Module (Join-Path $repoRoot 'modules\QC.CommentSync.Database.psm1') -Force -ErrorAction Stop
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
 
 function Assert-True($Condition, $Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
@@ -37,6 +37,9 @@ $config = $configRes.Data.config
 
 if (-not $config.database) { $config['database'] = @{} }
 $config.database.enabled = $true
+
+Assert-True ([bool](Get-Command -Name 'Initialize-QCDatabaseSchema' -ErrorAction SilentlyContinue)) `
+    ("Initialize-QCDatabaseSchema is missing; verify module load: " + (Join-Path $repoRoot 'modules\Core.Database.psm1'))
 
 Write-Host "[1] Initializing DB schema (if needed)..." -ForegroundColor Yellow
 $schemaRes = Initialize-QCDatabaseSchema -Config $config
