@@ -939,8 +939,8 @@ if ($statusSetRules.Count -ge 0) {
                         if ([int]$state.pairedCount -gt 0) {
                             # Index paired sheets during reconciliation scan
                             if ($state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
-                                # Fetch email attributes and workflow state via search API
-                                # per docs/pw-environment-email-attributes.md
+                                # Email attributes via WithReturnColumns; workflow state via GUID lookup
+                                # (WithReturnColumns does not populate WorkflowState in this environment).
                                 $nameToAttrs = @{}
                                 try {
                                     $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp
@@ -954,9 +954,7 @@ if ($statusSetRules.Count -ge 0) {
                                         if (-not $srName) { try { $srName = [string]$sr.DocumentName } catch { } }
                                         if (-not $srName) { try { $srName = [string]$sr.FileName } catch { } }
                                         if (-not $srName) { continue }
-                                        $de = $null; $re = $null; $ws = $null
-                                        try { $ws = [string]$sr.WorkflowState } catch { }
-                                        if (-not $ws) { try { $ws = [string]$sr.StateName } catch { } }
+                                        $de = $null; $re = $null
                                         try {
                                             if ($sr.Attributes) {
                                                 foreach ($bag in @($sr.Attributes)) {
@@ -970,10 +968,20 @@ if ($statusSetRules.Count -ge 0) {
                                             }
                                         } catch { }
                                         $nameToAttrs[$srName.ToLowerInvariant()] = @{
-                                            designerEmail = $de; reviewerEmail = $re; workflowState = $ws
+                                            designerEmail = $de; reviewerEmail = $re
                                         }
                                     }
                                 } catch { }
+
+                                $stateGuids = @()
+                                foreach ($ps in @($state.pairedSheets)) {
+                                    if ($ps.pdf -and $ps.pdf.documentGuid) { $stateGuids += [string]$ps.pdf.documentGuid }
+                                    if ($ps.dgn -and $ps.dgn.documentGuid) { $stateGuids += [string]$ps.dgn.documentGuid }
+                                }
+                                $stateByGuid = @{}
+                                if ($stateGuids.Count -gt 0) {
+                                    try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $stateGuids } catch { }
+                                }
 
                                 $sheetIndexRows = @()
                                 foreach ($ps in @($state.pairedSheets)) {
@@ -985,6 +993,7 @@ if ($statusSetRules.Count -ge 0) {
 
                                         if ($pdfName -and $pdfGuid) {
                                             $a = if ($nameToAttrs.ContainsKey($pdfName.ToLowerInvariant())) { $nameToAttrs[$pdfName.ToLowerInvariant()] } else { @{} }
+                                            $pdfState = if ($stateByGuid.ContainsKey($pdfGuid.ToLowerInvariant())) { [string]$stateByGuid[$pdfGuid.ToLowerInvariant()] } else { '' }
                                             $sheetIndexRows += @{
                                                 documentGuid = $pdfGuid
                                                 documentName = $pdfName
@@ -993,11 +1002,12 @@ if ($statusSetRules.Count -ge 0) {
                                                 sourceType   = 'pdf'
                                                 designerEmail = [string]$a.designerEmail
                                                 reviewerEmail = [string]$a.reviewerEmail
-                                                pwStateName   = [string]$a.workflowState
+                                                pwStateName   = $pdfState
                                             }
                                         }
                                         if ($dgnName -and $dgnGuid) {
                                             $a = if ($nameToAttrs.ContainsKey($dgnName.ToLowerInvariant())) { $nameToAttrs[$dgnName.ToLowerInvariant()] } else { @{} }
+                                            $dgnState = if ($stateByGuid.ContainsKey($dgnGuid.ToLowerInvariant())) { [string]$stateByGuid[$dgnGuid.ToLowerInvariant()] } else { '' }
                                             $sheetIndexRows += @{
                                                 documentGuid = $dgnGuid
                                                 documentName = $dgnName
@@ -1006,7 +1016,7 @@ if ($statusSetRules.Count -ge 0) {
                                                 sourceType   = 'dgn'
                                                 designerEmail = [string]$a.designerEmail
                                                 reviewerEmail = [string]$a.reviewerEmail
-                                                pwStateName   = [string]$a.workflowState
+                                                pwStateName   = $dgnState
                                             }
                                         }
                                     } catch { }

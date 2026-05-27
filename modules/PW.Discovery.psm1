@@ -449,6 +449,103 @@ function Get-PWDocumentAttributeMap {
     return $map
 }
 
+function _PWD-GetWorkflowStateFromDocumentRow {
+    param([AllowNull()][object]$DocRow)
+
+    if (-not $DocRow) { return '' }
+    foreach ($prop in @('WorkflowState', 'StateName', 'State', 'DocumentState', 'CurrentState', 'WorkflowStateName')) {
+        try {
+            if ($DocRow.PSObject.Properties[$prop]) {
+                $v = [string]$DocRow.$prop
+                if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+            }
+        } catch { }
+    }
+    return ''
+}
+
+function Get-PWDocumentWorkflowStateName {
+    <#
+    .SYNOPSIS
+    Reads workflow state for one document. WithReturnColumns often omits state in this environment;
+    Get-PWDocumentsByGUIDs and Get-PWDocumentsBySearch -PopulatePath return WorkflowState reliably.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$FolderPath,
+        [string]$DocumentName,
+        [string]$DocumentGuid
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+        if ($guidCmd) {
+            try {
+                $doc = & $guidCmd -DocumentGUIDs @([string]$DocumentGuid) -ErrorAction Stop | Select-Object -First 1
+                $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
+                if ($state) { return $state }
+            } catch { }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
+        $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+        if ($searchCmd) {
+            $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+            if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+            try {
+                $params = @{
+                    FolderPath     = $apiPath
+                    JustThisFolder = $true
+                    DocumentName   = $DocumentName
+                    ErrorAction    = 'Stop'
+                }
+                if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+                $doc = & $searchCmd @params | Select-Object -First 1
+                $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
+                if ($state) { return $state }
+            } catch { }
+        }
+    }
+
+    return ''
+}
+
+function Get-PWDocumentWorkflowStateMapByGuid {
+    <#
+    .SYNOPSIS
+    Batch workflow-state lookup keyed by document GUID (lowercase).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$DocumentGuids
+    )
+
+    $map = @{}
+    $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+    if (-not $guidCmd) { return $map }
+
+    $unique = @($DocumentGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    if ($unique.Count -eq 0) { return $map }
+
+    $chunkSize = 200
+    for ($i = 0; $i -lt $unique.Count; $i += $chunkSize) {
+        $chunk = @($unique[$i..[Math]::Min($i + $chunkSize - 1, $unique.Count - 1)])
+        try {
+            $docs = @(& $guidCmd -DocumentGUIDs $chunk -ErrorAction Stop)
+            foreach ($doc in $docs) {
+                $guid = $null
+                try { $guid = [string]$doc.DocumentGUID } catch { }
+                if ([string]::IsNullOrWhiteSpace($guid)) { continue }
+                $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
+                if ($state) { $map[$guid.ToLowerInvariant()] = $state }
+            }
+        } catch { }
+    }
+    return $map
+}
+
 function Get-PWDocumentEmailContacts {
     <#
     .SYNOPSIS
@@ -496,10 +593,11 @@ function Get-PWDocumentEmailContacts {
     $attrs = Get-PWDocumentAttributeMap -DocRow $row
     $designer = if ($attrs.ContainsKey($DesignerEmailColumn)) { [string]$attrs[$DesignerEmailColumn] } else { '' }
     $reviewer = if ($attrs.ContainsKey($ReviewerEmailColumn)) { [string]$attrs[$ReviewerEmailColumn] } else { '' }
-    $pwState = $null
-    try { $pwState = [string]$row.WorkflowState } catch { }
+    $pwState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $row
     if ([string]::IsNullOrWhiteSpace($pwState)) {
-        try { $pwState = [string]$row.StateName } catch { }
+        $docGuid = ''
+        try { $docGuid = [string]$row.DocumentGUID } catch { }
+        $pwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $docGuid
     }
     return @{
         designerEmail = $designer.Trim()

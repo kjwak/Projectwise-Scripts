@@ -24,7 +24,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 }
 
 $modulesDir = Join-Path $repoRoot 'modules'
-foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1', 'PW.Connection.psm1', 'PW.AuditPoller.psm1')) {
+foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1', 'PW.Connection.psm1', 'PW.Discovery.psm1', 'PW.AuditPoller.psm1')) {
     $modPath = Join-Path $modulesDir $mod
     if (-not (Test-Path -LiteralPath $modPath)) {
         Write-Host "ERROR: Module not found: $modPath" -ForegroundColor Red
@@ -181,8 +181,17 @@ try {
                 if (-not $folder) { continue }
                 $ext = [System.IO.Path]::GetExtension([string]$doc.FileName)
                 $designerEmail = $null; $reviewerEmail = $null; $stateName = $null
-                try { $stateName = [string]$doc.WorkflowState } catch { }
-                if (-not $stateName) { try { $stateName = [string]$doc.StateName } catch { } }
+                try {
+                    $contacts = Get-PWDocumentEmailContacts -FolderPath $folder -DocumentName ([string]$doc.FileName)
+                    if ($contacts.found) {
+                        $designerEmail = [string]$contacts.designerEmail
+                        $reviewerEmail = [string]$contacts.reviewerEmail
+                        $stateName = [string]$contacts.pwStateName
+                    }
+                } catch { }
+                if (-not $stateName) {
+                    try { $stateName = Get-PWDocumentWorkflowStateName -FolderPath $folder -DocumentName ([string]$doc.FileName) -DocumentGuid $dg } catch { }
+                }
 
                 Write-QCSheetIndex -Config $config -DocumentGuid $dg `
                     -DocumentName ([string]$doc.FileName) -FolderPath $folder `
