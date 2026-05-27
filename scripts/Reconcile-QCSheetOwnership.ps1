@@ -19,6 +19,8 @@ after successful PW reconciliation.
 PS> .\scripts\Reconcile-QCSheetOwnership.ps1 -DryRun
 PS> .\scripts\Reconcile-QCSheetOwnership.ps1 -ConfirmWrites
 PS> .\scripts\Reconcile-QCSheetOwnership.ps1 -ConfirmWrites -FolderPathFilter 'Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
+
+Do not combine -DryRun with -ConfirmWrites. Use -DryRun to preview only; use -ConfirmWrites alone to apply PW and database changes.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -53,6 +55,14 @@ foreach ($moduleName in @('pwps', 'pwps_dab')) {
 function _RSO-Norm([AllowNull()][string]$Value) {
     if ($null -eq $Value) { return '' }
     return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function _RSO-NormalizeFolderPath {
+    param([AllowNull()][string]$FolderPath)
+    $p = ($FolderPath -as [string]).Trim().TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($p)) { return '' }
+    if ($p -match '^(?i)Documents\\') { return $p }
+    return ('Documents\' + $p)
 }
 
 function _RSO-SheetStem([string]$DocumentName) {
@@ -153,6 +163,87 @@ function _RSO-SetPwDocumentState {
     else { & $cmd $Document $StateName -ErrorAction Stop | Out-Null }
 }
 
+function _RSO-ResolvePwDocument {
+    param(
+        [hashtable]$DocByGuid,
+        [hashtable]$EmailMap,
+        [string]$FolderPath,
+        [string]$DocumentName,
+        [string]$DocumentGuid
+    )
+
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $gk = $DocumentGuid.ToLowerInvariant()
+        if ($DocByGuid.ContainsKey($gk)) { return $DocByGuid[$gk] }
+    }
+    if ($DocumentName -and $EmailMap.ContainsKey($DocumentName.ToLowerInvariant())) {
+        $hit = $EmailMap[$DocumentName.ToLowerInvariant()]
+        if ($hit.document) { return $hit.document }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
+        $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+        if ($searchCmd) {
+            $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+            if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+            try {
+                $params = @{
+                    FolderPath     = $apiPath
+                    JustThisFolder = $true
+                    DocumentName   = $DocumentName
+                    ErrorAction    = 'Stop'
+                }
+                if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+                return (& $searchCmd @params | Select-Object -First 1)
+            } catch { }
+        }
+    }
+    return $null
+}
+
+function _RSO-LoadPwDocumentsByGuid {
+    param(
+        [string[]]$DocumentGuids,
+        [System.Collections.Generic.List[string]]$InvalidGuids,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+
+    $docByGuid = @{}
+    $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+    if (-not $guidCmd) { return $docByGuid }
+
+    $valid = @($DocumentGuids | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    foreach ($raw in @($DocumentGuids | Select-Object -Unique)) {
+        if (-not (Test-PWValidDocumentGuid -DocumentGuid $raw)) {
+            if (-not [string]::IsNullOrWhiteSpace($raw)) { $InvalidGuids.Add([string]$raw) | Out-Null }
+        }
+    }
+    if ($valid.Count -eq 0) { return $docByGuid }
+
+    $chunkSize = 200
+    for ($i = 0; $i -lt $valid.Count; $i += $chunkSize) {
+        $chunk = @($valid[$i..[Math]::Min($i + $chunkSize - 1, $valid.Count - 1)])
+        try {
+            foreach ($doc in @(& $guidCmd -DocumentGUIDs $chunk -ErrorAction Stop)) {
+                $dg = ''
+                try { $dg = [string]$doc.DocumentGUID } catch { }
+                if ($dg) { $docByGuid[$dg.ToLowerInvariant()] = $doc }
+            }
+        } catch {
+            foreach ($oneGuid in $chunk) {
+                try {
+                    $doc = & $guidCmd -DocumentGUIDs @($oneGuid) -ErrorAction Stop | Select-Object -First 1
+                    if (-not $doc) { continue }
+                    $dg = [string]$doc.DocumentGUID
+                    if ($dg) { $docByGuid[$dg.ToLowerInvariant()] = $doc }
+                } catch {
+                    $Errors.Add("GUID read failed for $oneGuid : $($_.Exception.Message)") | Out-Null
+                }
+            }
+        }
+    }
+    return $docByGuid
+}
+
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
@@ -161,10 +252,20 @@ if (-not (Test-QCDatabaseEnabled -Config $config)) {
     throw 'database.enabled must be true for sheet_index reconciliation.'
 }
 
-$doWrites = $ConfirmWrites.IsPresent -and -not $DryRun.IsPresent
+if ($DryRun.IsPresent -and $ConfirmWrites.IsPresent) {
+    throw 'Use -DryRun (preview only) OR -ConfirmWrites (apply changes), not both.'
+}
+
+$doWrites = $ConfirmWrites.IsPresent
 if (-not $DryRun.IsPresent -and -not $ConfirmWrites.IsPresent) {
     Write-Host 'Refusing PW/DB writes: pass -ConfirmWrites to apply changes, or -DryRun to preview only.' -ForegroundColor Yellow
     $DryRun = $true
+}
+
+if ($doWrites) {
+    Write-Host 'WRITE MODE: ProjectWise and sheet_index will be updated.' -ForegroundColor Green
+} else {
+    Write-Host 'PREVIEW MODE: no ProjectWise or database changes will be made.' -ForegroundColor Yellow
 }
 
 Initialize-QCDatabaseSchema -Config $config | Out-Null
@@ -193,10 +294,11 @@ foreach ($r in @($qRes.Data.table.Rows)) {
     $indexRows += [pscustomobject]@{
         documentGuid   = [string]$r.document_guid
         documentName   = [string]$r.document_name
-        folderPath     = [string]$r.folder_path
+        folderPath     = _RSO-NormalizeFolderPath -FolderPath ([string]$r.folder_path)
         extension      = if ($r.extension -is [DBNull]) { '' } else { [string]$r.extension }
         sourceType     = if ($r.source_type -is [DBNull]) { '' } else { [string]$r.source_type }
-        qcPdfGuid      = if ($r.qc_pdf_guid -is [DBNull]) { '' } else { [string]$r.qc_pdf_guid }
+        qcPdfGuid      = if ($r.qc_pdf_guid -is [DBNull]) { '' } else { if (Test-PWValidDocumentGuid -DocumentGuid ([string]$r.qc_pdf_guid)) { [string]$r.qc_pdf_guid } else { '' } }
+        qcPdfGuidRaw   = if ($r.qc_pdf_guid -is [DBNull]) { '' } else { [string]$r.qc_pdf_guid }
         qcPdfName      = if ($r.qc_pdf_name -is [DBNull]) { '' } else { [string]$r.qc_pdf_name }
         designerEmail  = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
         reviewerEmail  = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
@@ -220,6 +322,7 @@ foreach ($row in $indexRows) {
             pdf        = $null
             qcIndexed  = $null
             qcPdfGuid  = ''
+            qcPdfGuidRaw = ''
             qcPdfName  = ''
             indexGuids = [System.Collections.Generic.List[string]]::new()
         }
@@ -238,6 +341,7 @@ foreach ($row in $indexRows) {
     }
 
     if ($row.qcPdfGuid -and -not $g.qcPdfGuid) { $g.qcPdfGuid = $row.qcPdfGuid }
+    if ($row.qcPdfGuidRaw -and -not $g.qcPdfGuidRaw) { $g.qcPdfGuidRaw = $row.qcPdfGuidRaw }
     if ($row.qcPdfName -and -not $g.qcPdfName) { $g.qcPdfName = $row.qcPdfName }
 }
 
@@ -268,40 +372,33 @@ $summary = @{
     stateUpdates      = 0
     dbUpdates         = 0
     errors            = @()
-    dryRun            = [bool]$DryRun.IsPresent
+    invalidGuids      = @()
+    dryRun            = -not $doWrites
+    writeMode         = $doWrites
     details           = @()
 }
 
 try {
     $folderEmailCache = @{}
-    $docByGuid = @{}
+    $invalidGuids = [System.Collections.Generic.List[string]]::new()
+    $guidLoadErrors = [System.Collections.Generic.List[string]]::new()
 
     $allGuids = [System.Collections.Generic.List[string]]::new()
     foreach ($g in $groupList) {
         foreach ($part in @($g.dgn, $g.pdf, $g.qcIndexed)) {
-            if ($part -and $part.documentGuid) { $allGuids.Add($part.documentGuid) | Out-Null }
-        }
-        if ($g.qcPdfGuid) { $allGuids.Add($g.qcPdfGuid) | Out-Null }
-    }
-    $uniqueGuids = @($allGuids | Select-Object -Unique)
-    if ($uniqueGuids.Count -gt 0) {
-        $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
-        if ($guidCmd) {
-            $chunkSize = 200
-            for ($i = 0; $i -lt $uniqueGuids.Count; $i += $chunkSize) {
-                $chunk = @($uniqueGuids[$i..[Math]::Min($i + $chunkSize - 1, $uniqueGuids.Count - 1)])
-                try {
-                    foreach ($doc in @(& $guidCmd -DocumentGUIDs $chunk -ErrorAction Stop)) {
-                        $dg = ''
-                        try { $dg = [string]$doc.DocumentGUID } catch { }
-                        if ($dg) { $docByGuid[$dg.ToLowerInvariant()] = $doc }
-                    }
-                } catch {
-                    $summary.errors += "GUID batch read failed: $($_.Exception.Message)"
-                }
+            if ($part -and (Test-PWValidDocumentGuid -DocumentGuid $part.documentGuid)) {
+                $allGuids.Add($part.documentGuid) | Out-Null
             }
         }
+        if (Test-PWValidDocumentGuid -DocumentGuid $g.qcPdfGuid) { $allGuids.Add($g.qcPdfGuid) | Out-Null }
     }
+    $uniqueGuids = @($allGuids | Select-Object -Unique)
+    $docByGuid = _RSO-LoadPwDocumentsByGuid -DocumentGuids $uniqueGuids -InvalidGuids $invalidGuids -Errors $guidLoadErrors
+    if ($invalidGuids.Count -gt 0) {
+        $summary.invalidGuids = @($invalidGuids | Select-Object -Unique)
+    }
+    foreach ($ge in @($guidLoadErrors)) { $summary.errors += $ge }
+
     $stateByGuid = @{}
     if ($uniqueGuids.Count -gt 0) {
         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $uniqueGuids } catch { }
@@ -331,12 +428,25 @@ try {
         $canonicalReviewer = if ($dgnEmails) { [string]$dgnEmails.reviewerEmail } else { $g.dgn.reviewerEmail }
 
         $qcGuid = ''
-        if ($g.qcIndexed) { $qcGuid = $g.qcIndexed.documentGuid }
-        elseif ($g.qcPdfGuid) { $qcGuid = $g.qcPdfGuid }
+        $qcName = ''
+        if ($g.qcIndexed) {
+            $qcGuid = $g.qcIndexed.documentGuid
+            $qcName = $g.qcIndexed.documentName
+        } elseif ($g.qcPdfGuid) {
+            $qcGuid = $g.qcPdfGuid
+            $qcName = $g.qcPdfName
+        } elseif ($g.qcPdfName) {
+            $qcName = $g.qcPdfName
+        }
         $canonicalState = ''
-        if ($qcGuid) {
+        if (Test-PWValidDocumentGuid -DocumentGuid $qcGuid) {
             $qk = $qcGuid.ToLowerInvariant()
             if ($stateByGuid.ContainsKey($qk)) { $canonicalState = [string]$stateByGuid[$qk] }
+        }
+        if (-not $canonicalState -and $qcName) {
+            try {
+                $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $g.folderPath -DocumentName $qcName -DocumentGuid $qcGuid
+            } catch { }
         }
 
         $detail = [ordered]@{
@@ -384,16 +494,9 @@ try {
             $needsReviewer = (_RSO-Norm $currentReviewer) -ne (_RSO-Norm $canonicalReviewer)
             if (-not $needsDesigner -and -not $needsReviewer) { continue }
 
-            $docObj = $null
-            if ($target.row) {
-                $dg = $target.row.documentGuid.ToLowerInvariant()
-                if ($docByGuid.ContainsKey($dg)) { $docObj = $docByGuid[$dg] }
-                elseif ($emailMap.ContainsKey($target.nameKey)) { $docObj = $emailMap[$target.nameKey].document }
-            } elseif ($target.guid) {
-                $dg = [string]$target.guid.ToLowerInvariant()
-                if ($docByGuid.ContainsKey($dg)) { $docObj = $docByGuid[$dg] }
-                elseif ($emailMap.ContainsKey($target.nameKey)) { $docObj = $emailMap[$target.nameKey].document }
-            }
+            $docObj = _RSO-ResolvePwDocument -DocByGuid $docByGuid -EmailMap $emailMap `
+                -FolderPath $g.folderPath -DocumentName $change.document `
+                -DocumentGuid $(if ($target.row) { $target.row.documentGuid } else { $target.guid })
 
             $change = [ordered]@{
                 role     = $target.role
@@ -439,7 +542,8 @@ try {
                 $currentState = if ($stateByGuid.ContainsKey($dg)) { [string]$stateByGuid[$dg] } else { [string]$target.row.pwStateName }
                 if ((_RSO-Norm $currentState) -eq (_RSO-Norm $canonicalState)) { continue }
 
-                $docObj = if ($docByGuid.ContainsKey($dg)) { $docByGuid[$dg] } else { $null }
+                $docObj = _RSO-ResolvePwDocument -DocByGuid $docByGuid -EmailMap $emailMap `
+                    -FolderPath $g.folderPath -DocumentName $target.row.documentName -DocumentGuid $target.row.documentGuid
                 $change = [ordered]@{
                     role     = $target.role
                     document = $target.row.documentName
@@ -511,10 +615,16 @@ try {
 Write-Host "`n=== Reconcile summary ===" -ForegroundColor Cyan
 Write-Host "  Groups processed: $($summary.groupsProcessed)"
 Write-Host "  Groups skipped:   $($summary.groupsSkipped)"
-Write-Host "  Email updates:    $($summary.emailUpdates)$(if ($DryRun) { ' (planned)' })"
-Write-Host "  State updates:    $($summary.stateUpdates)$(if ($DryRun) { ' (planned)' })"
-Write-Host "  DB row updates:   $($summary.dbUpdates)$(if ($DryRun) { ' (planned)' })"
+Write-Host "  Email updates:    $($summary.emailUpdates)$(if (-not $doWrites) { ' (planned)' })"
+Write-Host "  State updates:    $($summary.stateUpdates)$(if (-not $doWrites) { ' (planned)' })"
+Write-Host "  DB row updates:   $($summary.dbUpdates)$(if (-not $doWrites) { ' (planned)' })"
 Write-Host "  Errors:           $($summary.errors.Count)"
+if ($summary.invalidGuids -and $summary.invalidGuids.Count -gt 0) {
+    Write-Host "  Invalid GUIDs:      $($summary.invalidGuids.Count) (skipped; fix qc_pdf_guid in sheet_index)" -ForegroundColor Yellow
+    foreach ($ig in @($summary.invalidGuids | Select-Object -First 5)) {
+        Write-Host "    $ig" -ForegroundColor DarkYellow
+    }
+}
 foreach ($err in @($summary.errors | Select-Object -First 10)) {
     Write-Host "    $err" -ForegroundColor Red
 }

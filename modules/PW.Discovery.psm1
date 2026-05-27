@@ -449,6 +449,19 @@ function Get-PWDocumentAttributeMap {
     return $map
 }
 
+function Test-PWValidDocumentGuid {
+    [CmdletBinding()]
+    param([AllowNull()][string]$DocumentGuid)
+
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return $false }
+    try {
+        $parsed = [guid]::Parse([string]$DocumentGuid)
+        return $parsed -ne [guid]::Empty
+    } catch {
+        return $false
+    }
+}
+
 function _PWD-GetWorkflowStateFromDocumentRow {
     param([AllowNull()][object]$DocRow)
 
@@ -477,7 +490,7 @@ function Get-PWDocumentWorkflowStateName {
         [string]$DocumentGuid
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
         $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
         if ($guidCmd) {
             try {
@@ -526,7 +539,7 @@ function Get-PWDocumentWorkflowStateMapByGuid {
     $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
     if (-not $guidCmd) { return $map }
 
-    $unique = @($DocumentGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    $unique = @($DocumentGuids | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique)
     if ($unique.Count -eq 0) { return $map }
 
     $chunkSize = 200
@@ -541,7 +554,18 @@ function Get-PWDocumentWorkflowStateMapByGuid {
                 $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
                 if ($state) { $map[$guid.ToLowerInvariant()] = $state }
             }
-        } catch { }
+        } catch {
+            foreach ($oneGuid in $chunk) {
+                try {
+                    $doc = & $guidCmd -DocumentGUIDs @($oneGuid) -ErrorAction Stop | Select-Object -First 1
+                    if (-not $doc) { continue }
+                    $guid = [string]$doc.DocumentGUID
+                    if ([string]::IsNullOrWhiteSpace($guid)) { continue }
+                    $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
+                    if ($state) { $map[$guid.ToLowerInvariant()] = $state }
+                } catch { }
+            }
+        }
     }
     return $map
 }
