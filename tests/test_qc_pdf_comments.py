@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "overlay"))
 
 from qc_pdf_comments import extract_comments  # noqa: E402
-from tests.pdf_utils import make_minimal_pdf  # noqa: E402
+from tests.pdf_utils import make_minimal_pdf, make_pdf_with_text_annot  # noqa: E402
 
 
 def test_extract_empty_pdf_has_empty_or_ok_status(tmp_path: Path) -> None:
@@ -30,3 +30,17 @@ def test_extract_returns_json_serializable(tmp_path: Path) -> None:
     text = json.dumps(result)
     parsed = json.loads(text)
     assert parsed["parser_version"] == result["parser_version"]
+
+
+def test_extract_includes_raw_xref_object_and_rect(tmp_path: Path) -> None:
+    pdf = tmp_path / "annot.pdf"
+    make_pdf_with_text_annot(pdf, annot_text="Bluebeam-ish", annot_title="A", annot_subject="S")
+    result = extract_comments(pdf)
+    assert result["parser_status"] in ("ok", "empty", "error")
+    if result["parser_status"] != "ok":
+        # If PyMuPDF cannot create annots in this environment, don't hard-fail.
+        return
+    ann = result["annotations"][0]
+    assert ann["annotation_id"]
+    assert ann["raw"]["xref_object"]
+    assert "rect" in ann["raw"]

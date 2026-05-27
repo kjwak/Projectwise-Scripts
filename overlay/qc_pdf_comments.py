@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = "1.0.0"
+PARSER_VERSION = "1.1.0"
 
 try:
     import pymupdf as fitz  # type: ignore
@@ -50,6 +50,46 @@ def _xref_key(doc: Any, xref: int, key: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _xref_object(doc: Any, xref: int) -> str | None:
+    try:
+        s = doc.xref_object(xref, compressed=True)
+        if s is None:
+            return None
+        s = str(s).strip()
+        return s or None
+    except Exception:
+        return None
+
+
+def _safe_rect(annot: Any) -> dict[str, float] | None:
+    try:
+        r = annot.rect
+        if not r:
+            return None
+        return {"x0": float(r.x0), "y0": float(r.y0), "x1": float(r.x1), "y1": float(r.y1)}
+    except Exception:
+        return None
+
+
+def _safe_vertices(annot: Any) -> list[float] | None:
+    try:
+        v = getattr(annot, "vertices", None)
+        if not v:
+            return None
+        out: list[float] = []
+        for pt in v:
+            try:
+                out.extend([float(pt.x), float(pt.y)])
+            except Exception:
+                try:
+                    out.extend([float(pt[0]), float(pt[1])])
+                except Exception:
+                    continue
+        return out or None
+    except Exception:
+        return None
 
 
 def _collect_irt_status(doc: Any, page: Any) -> dict[int, dict[str, Any]]:
@@ -121,6 +161,37 @@ def extract_comments(pdf_path: Path) -> dict[str, Any]:
                     "type": atype,
                     "info": dict(info),
                 }
+                raw_obj = _xref_object(doc, xref)
+                if raw_obj:
+                    raw["xref_object"] = raw_obj
+                rect = _safe_rect(annot)
+                if rect:
+                    raw["rect"] = rect
+                verts = _safe_vertices(annot)
+                if verts:
+                    raw["vertices"] = verts
+
+                # Frequently useful raw keys (Bluebeam & general PDF annotation plumbing).
+                # These are redundant with xref_object but much easier to query in PowerBI later.
+                for k in (
+                    "NM",  # unique name
+                    "Subj",
+                    "Contents",
+                    "T",
+                    "M",
+                    "CreationDate",
+                    "CA",  # opacity
+                    "C",   # color array
+                    "RC",  # rich content
+                    "IT",  # intent
+                    "Name",
+                    "State",
+                    "StateModel",
+                    "InReplyTo",
+                ):
+                    v = _xref_key(doc, xref, k)
+                    if v is not None:
+                        raw[f"xref_{k}"] = v
                 if status_info:
                     raw["irt_status"] = status_info
 

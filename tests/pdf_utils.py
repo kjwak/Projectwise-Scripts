@@ -41,6 +41,41 @@ def make_multi_page_pdf(path: Path, n_pages: int) -> None:
     doc.close()
 
 
+def make_pdf_with_text_annot(
+    path: Path,
+    *,
+    label: str = "Page1",
+    annot_text: str = "Hello",
+    annot_title: str = "Reviewer",
+    annot_subject: str = "Note",
+) -> None:
+    """Write a one-page PDF with a single text annotation."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), label)
+
+    annot = page.add_text_annot((72, 120), annot_text)
+    try:
+        annot.set_info(
+            {
+                "title": annot_title,
+                "subject": annot_subject,
+                "content": annot_text,
+            }
+        )
+    except Exception:
+        # Best-effort: older PyMuPDF builds may not support all keys
+        pass
+    try:
+        annot.update()
+    except Exception:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    doc.close()
+
+
 def make_layered_single_page_qc(tmp_path: Path, stem: str = "layered_qc") -> Path:
     """One-page QC-style PDF with Old/New/Current OCGs (overlay_build + layerize_overlay)."""
     from overlay_build import build_overlay
