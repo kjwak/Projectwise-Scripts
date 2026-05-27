@@ -827,7 +827,8 @@ function Write-QCSheetIndex {
         [string]$QcStage,
         [string]$QcStatus,
         [string]$LastAuditEventAt,
-        [string]$FileModifiedAt
+        [string]$FileModifiedAt,
+        [switch]$SetOwnershipFromProjectWise
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return }
     try {
@@ -835,6 +836,7 @@ function Write-QCSheetIndex {
             $ext = [System.IO.Path]::GetExtension($DocumentName)
             if ($ext) { $Extension = $ext.ToLowerInvariant() }
         }
+        $setOwnership = if ($SetOwnershipFromProjectWise) { 1 } else { 0 }
         $sql = @"
 MERGE sheet_index AS tgt
 USING (SELECT @docGuid AS document_guid) AS src ON tgt.document_guid = src.document_guid
@@ -846,9 +848,9 @@ WHEN MATCHED THEN UPDATE SET
     watch_root = COALESCE(@watchRoot, tgt.watch_root),
     extension = COALESCE(@extension, tgt.extension),
     source_type = COALESCE(@sourceType, tgt.source_type),
-    designer_email = COALESCE(@designerEmail, tgt.designer_email),
-    reviewer_email = COALESCE(@reviewerEmail, tgt.reviewer_email),
-    pw_state_name = COALESCE(@pwStateName, tgt.pw_state_name),
+    designer_email = CASE WHEN @setOwnership = 1 THEN @designerEmail ELSE COALESCE(@designerEmail, tgt.designer_email) END,
+    reviewer_email = CASE WHEN @setOwnership = 1 THEN @reviewerEmail ELSE COALESCE(@reviewerEmail, tgt.reviewer_email) END,
+    pw_state_name = CASE WHEN @setOwnership = 1 THEN @pwStateName ELSE COALESCE(@pwStateName, tgt.pw_state_name) END,
     qc_stage = COALESCE(@qcStage, tgt.qc_stage),
     qc_status = COALESCE(@qcStatus, tgt.qc_status),
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -879,6 +881,7 @@ VALUES
             qcStatus         = if ($QcStatus)          { $QcStatus }          else { $null }
             lastAuditEventAt = if ($LastAuditEventAt)  { $LastAuditEventAt }  else { $null }
             fileModifiedAt   = if ($FileModifiedAt)    { $FileModifiedAt }    else { $null }
+            setOwnership     = $setOwnership
         }
         Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
     } catch { }

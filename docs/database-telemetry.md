@@ -164,6 +164,7 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCPollRunTelemetry` | `Watch-QCTrigger.ps1` | Record poll cycle metrics |
 | `Write-QCNotificationTelemetry` | `QC.Notifications.psm1` | Record sent notifications |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
+| `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR` / `DOCUMENT_STATE`, read PW emails and update `sheet_index` when they differ from the database |
 | `Update-QCSheetQcPdf` | `Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1` | Link QC PDF to source document |
 
 ---

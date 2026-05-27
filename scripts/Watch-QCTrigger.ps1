@@ -432,11 +432,22 @@ if ($statusSetRules.Count -ge 0) {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
-                                # Write sheet index for documents in Sheets folders
-                                if ([bool]$ac.isSheetsFolder -and $ac.objGuid) {
-                                    Write-QCSheetIndex -Config $config -DocumentGuid ([string]$ac.objGuid) `
-                                        -DocumentName ([string]$ac.itemName) -FolderPath $fp `
-                                        -LastAuditEventAt ([string]$ac.actTime)
+                                # sheet_index: sync ownership from PW when emails/state differ (DOCUMENT_ATTR, etc.)
+                                if ($ac.objGuid) {
+                                    $acAction = [string]$ac.actionName
+                                    $syncOwnership = $acAction -in @('DOCUMENT_ATTR', 'DOCUMENT_STATE')
+                                    if ($syncOwnership -or [bool]$ac.isSheetsFolder) {
+                                        $acWatchRoot = ''
+                                        try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
+                                        Sync-PWSheetIndexOwnership -Config $config `
+                                            -DocumentGuid ([string]$ac.objGuid) `
+                                            -DocumentName ([string]$ac.itemName) `
+                                            -FolderPath $fp `
+                                            -IsSheetsFolder ([bool]$ac.isSheetsFolder) `
+                                            -WatchRoot $acWatchRoot `
+                                            -LastAuditEventAt ([string]$ac.actTime) `
+                                            -AuditActionName $acAction
+                                    }
                                 }
 
                                 # STATUS_SET_GEN: one per unique Sheets folder

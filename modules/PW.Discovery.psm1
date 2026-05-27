@@ -496,12 +496,125 @@ function Get-PWDocumentEmailContacts {
     $attrs = Get-PWDocumentAttributeMap -DocRow $row
     $designer = if ($attrs.ContainsKey($DesignerEmailColumn)) { [string]$attrs[$DesignerEmailColumn] } else { '' }
     $reviewer = if ($attrs.ContainsKey($ReviewerEmailColumn)) { [string]$attrs[$ReviewerEmailColumn] } else { '' }
+    $pwState = $null
+    try { $pwState = [string]$row.WorkflowState } catch { }
+    if ([string]::IsNullOrWhiteSpace($pwState)) {
+        try { $pwState = [string]$row.StateName } catch { }
+    }
     return @{
         designerEmail = $designer.Trim()
         reviewerEmail = $reviewer.Trim()
+        pwStateName   = if ($pwState) { $pwState.Trim() } else { '' }
         found = $true
         document = $row
         error = $null
+    }
+}
+
+function _PWD-NormalizeSheetIndexValue {
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) { return '' }
+    return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function Sync-PWSheetIndexOwnership {
+    <#
+    .SYNOPSIS
+    Reads designer/reviewer emails and workflow state from ProjectWise and updates sheet_index when they differ from the database.
+    .DESCRIPTION
+    Intended for audit-trail DOCUMENT_ATTR (and DOCUMENT_STATE) events on watchlist documents.
+    Inserts new sheet_index rows only for Sheets-folder paths; updates existing rows for any watchlist path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [bool]$IsSheetsFolder = $false,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [string]$AuditActionName = '',
+        [string]$DesignerEmailColumn = 'EM_Designer_Email',
+        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
+    )
+
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+
+    $pw = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $DocumentName `
+        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
+    if (-not $pw.found) { return }
+
+    $pwDesigner = [string]$pw.designerEmail
+    $pwReviewer = [string]$pw.reviewerEmail
+    $pwState    = [string]$pw.pwStateName
+
+    $dbDesigner = ''
+    $dbReviewer = ''
+    $dbState    = ''
+    $rowExists  = $false
+    try {
+        $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, pw_state_name
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($dbRes.IsSuccess -and $dbRes.Data.table -and $dbRes.Data.table.Rows.Count -gt 0) {
+            $rowExists = $true
+            $r = $dbRes.Data.table.Rows[0]
+            if (-not ($r.designer_email -is [DBNull])) { $dbDesigner = [string]$r.designer_email }
+            if (-not ($r.reviewer_email -is [DBNull])) { $dbReviewer = [string]$r.reviewer_email }
+            if (-not ($r.pw_state_name -is [DBNull])) { $dbState = [string]$r.pw_state_name }
+        }
+    } catch { return }
+
+    if (-not $rowExists -and -not $IsSheetsFolder) { return }
+
+    $emailsDiffer = (_PWD-NormalizeSheetIndexValue $pwDesigner) -ne (_PWD-NormalizeSheetIndexValue $dbDesigner) `
+        -or (_PWD-NormalizeSheetIndexValue $pwReviewer) -ne (_PWD-NormalizeSheetIndexValue $dbReviewer)
+    $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
+
+    if ($rowExists -and -not $emailsDiffer -and -not $stateDiffers) {
+        if ($LastAuditEventAt) {
+            try {
+                Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
+            } catch { }
+        }
+        return
+    }
+
+    $ext = $null
+    if ($DocumentName) {
+        $ext = [System.IO.Path]::GetExtension($DocumentName)
+        if ($ext) { $ext = $ext.ToLowerInvariant() }
+    }
+    $sourceType = $null
+    if ($ext -eq '.pdf') { $sourceType = 'pdf' }
+    elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
+
+    Write-QCSheetIndex -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+        -FolderPath $FolderPath -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType `
+        -DesignerEmail $pwDesigner -ReviewerEmail $pwReviewer -PwStateName $pwState `
+        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_INDEX_SYNC' -Message 'sheet_index ownership synced from ProjectWise.' -Data @{
+            documentGuid    = $DocumentGuid
+            documentName    = $DocumentName
+            folderPath      = $FolderPath
+            auditActionName = $AuditActionName
+            designerEmail   = $pwDesigner
+            reviewerEmail   = $pwReviewer
+            pwStateName     = $pwState
+            wasInsert       = (-not $rowExists)
+            emailsChanged   = $emailsDiffer
+            stateChanged    = $stateDiffers
+        }
     }
 }
 

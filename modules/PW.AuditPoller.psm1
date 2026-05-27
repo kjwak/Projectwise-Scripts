@@ -265,11 +265,13 @@ VALUES
 
         $enableQcPrepend = $false
         $enableStatusSet = $false
+        $watchRootPath = $null
         if ($isWatchMatch) {
             $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
             if ($rootCfg) {
                 try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
                 try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
+                if ($rootCfg.path) { $watchRootPath = [string]$rootCfg.path }
             }
             $candidates += @{
                 objGuid         = $objGuid
@@ -283,6 +285,7 @@ VALUES
                 candidateType   = $candidateType
                 enableQcPrepend = $enableQcPrepend
                 enableStatusSet = $enableStatusSet
+                watchRoot       = $watchRootPath
             }
         }
     }
