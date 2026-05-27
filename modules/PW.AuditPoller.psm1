@@ -275,6 +275,8 @@ function Invoke-AuditTrailScan {
     }
 
     # Build parent-GUID to folder map from resolved documents
+    $dbRows = @()
+
     foreach ($evt in $relevant) {
         $og = [string]$evt.o_objguid
         $pg = [string]$evt.o_parentguid
@@ -325,21 +327,14 @@ function Invoke-AuditTrailScan {
 
         $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
 
-        # Write to audit_events table (fire-and-forget)
+        # Prepare audit_events rows for a set-based insert (fire-and-forget).
         if (Test-QCDatabaseEnabled -Config $Config) {
             $objno = 0;  try { $objno = [int]$evt.o_objno } catch { $objno = 0 }
             $userno = 0; try { $userno = [int]$evt.o_userno } catch { $userno = 0 }
             $itemdesc = $null; if (-not ($evt.o_itemdesc -is [DBNull])) { $itemdesc = [string]$evt.o_itemdesc }
             $textparam = $null; if (-not ($evt.o_textparam -is [DBNull])) { $textparam = [string]$evt.o_textparam }
 
-            $insertSql = @"
-IF NOT EXISTS (SELECT 1 FROM audit_events WHERE pw_acttime = @acttime AND pw_action = @action AND pw_objguid = @objguid)
-INSERT INTO audit_events
-    (pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
-VALUES
-    (@acttime, @action, @actionName, @objtype, @objno, @objguid, @parentguid, @userno, @itemname, @itemdesc, @textparam, @folder, @candidateType)
-"@
-            $params = @{
+            $dbRows += @{
                 acttime       = $actTime
                 action        = $actionCode
                 actionName    = $actionName
@@ -354,10 +349,6 @@ VALUES
                 folder        = $resolvedFolder
                 candidateType = $candidateType
             }
-            try {
-                $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $insertSql -Parameters $params
-                if ($res.IsSuccess) { $stats.dbWrites++ } else { $stats.dbSkipped++ }
-            } catch { $stats.dbSkipped++ }
         }
 
         $enableQcPrepend = $false
@@ -386,6 +377,44 @@ VALUES
                 enableQcCommentSync  = $enableQcCommentSync
                 enableStatusSet      = $enableStatusSet
                 watchRoot            = $watchRootPath
+            }
+        }
+    }
+
+    # Batch insert audit_events for this window (best-effort).
+    if ($dbRows.Count -gt 0 -and (Test-QCDatabaseEnabled -Config $Config)) {
+        $chunkSize = 200
+        for ($i = 0; $i -lt $dbRows.Count; $i += $chunkSize) {
+            $chunk = @($dbRows[$i..[Math]::Min($i + $chunkSize - 1, $dbRows.Count - 1)])
+            $valuesSql = New-Object System.Text.StringBuilder
+            $params = @{}
+            for ($r = 0; $r -lt $chunk.Count; $r++) {
+                $row = $chunk[$r]
+                if ($r -gt 0) { [void]$valuesSql.AppendLine(',') }
+                [void]$valuesSql.Append(("(@acttime{0},@action{0},@actionName{0},@objtype{0},@objno{0},@objguid{0},@parentguid{0},@userno{0},@itemname{0},@itemdesc{0},@textparam{0},@folder{0},@candidateType{0})" -f $r))
+                foreach ($k in @('acttime','action','actionName','objtype','objno','objguid','parentguid','userno','itemname','itemdesc','textparam','folder','candidateType')) {
+                    $params[("$k$r")] = $row[$k]
+                }
+            }
+
+            $insertSql = @"
+INSERT INTO audit_events
+    (pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
+SELECT v.pw_acttime, v.pw_action, v.pw_action_name, v.pw_objtype, v.pw_objno, v.pw_objguid, v.pw_parentguid, v.pw_userno, v.pw_itemname, v.pw_itemdesc, v.pw_textparam, v.resolved_folder, v.candidate_type
+FROM (VALUES
+$($valuesSql.ToString())
+) AS v(pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
+WHERE v.pw_objguid IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events ae
+    WHERE ae.pw_acttime = v.pw_acttime AND ae.pw_action = v.pw_action AND ae.pw_objguid = v.pw_objguid
+  );
+"@
+            try {
+                $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $insertSql -Parameters $params
+                if ($res.IsSuccess) { $stats.dbWrites += [int]$res.Data.rowsAffected } else { $stats.dbSkipped += $chunk.Count }
+            } catch {
+                $stats.dbSkipped += $chunk.Count
             }
         }
     }

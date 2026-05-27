@@ -559,6 +559,52 @@ function _SSS-PWListDocsInFolder([string]$FolderPath, [string[]]$DateCols) {
     return @()
 }
 
+function _SSS-PWListDocsInFolderByExtensions {
+    <#
+    .SYNOPSIS
+    Targeted PW document listing for status-set fingerprinting.
+    .DESCRIPTION
+    Attempts to query only a few wildcard patterns (e.g. *.pdf) via search APIs.
+    Falls back to _SSS-PWListDocsInFolder when patterns are not supported.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string[]]$Extensions,
+        [string[]]$DateCols
+    )
+    if (-not $DateCols -or $DateCols.Count -eq 0) {
+        $DateCols = @('Name','DocumentID','DocumentGUID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size','StateName')
+    }
+
+    $cmdCols = Get-Command -Name Get-PWDocumentsBySearchWithReturnColumns -ErrorAction SilentlyContinue
+    $cmdPlain = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
+    if (-not $cmdCols -and -not $cmdPlain) {
+        return @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols)
+    }
+
+    $all = @()
+    foreach ($ext in @($Extensions | Where-Object { $_ })) {
+        $pattern = "*$ext"
+        try {
+            if ($cmdCols) {
+                $rows = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $FolderPath -JustThisFolder -DocumentName $pattern -ColumnsToReturn $DateCols -PopulatePath -ErrorAction SilentlyContinue
+                if ($rows) { $all += @($rows) }
+                continue
+            }
+        } catch { }
+        try {
+            if ($cmdPlain) {
+                $rows2 = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -DocumentName $pattern -PopulatePath -ErrorAction SilentlyContinue)
+                if ($rows2) { $all += @($rows2) }
+                continue
+            }
+        } catch { }
+        # If we failed to use patterns, fall back once for the whole folder.
+        return @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols)
+    }
+    return @($all)
+}
+
 function Get-StatusSetManifestPathLegacy([string]$FolderPath, [string]$LocalRoot) {
     $safe = (($FolderPath -replace '[\\/:]', '_').Trim())
     if (-not $safe) { $safe = 'default' }
@@ -1277,8 +1323,10 @@ function _SSS-BuildPWStatusSetState {
     }
 
     $docs = @()
+    $dateCols = @('Name','DocumentID','DocumentGUID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size','StateName')
     foreach ($p in @($paths | Select-Object -Unique)) {
-        $docs += @(_SSS-PWListDocsInFolder -FolderPath $p)
+        # Targeted query: only the extensions that can affect pairing/fingerprint.
+        $docs += @(_SSS-PWListDocsInFolderByExtensions -FolderPath $p -Extensions @('.pdf','.dgn','.dwg') -DateCols $dateCols)
     }
     $pdfs = @()
     $dgns = @()

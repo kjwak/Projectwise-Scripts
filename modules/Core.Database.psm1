@@ -229,6 +229,85 @@ function Invoke-QCDatabaseBatch {
 }
 
 # ---------------------------------------------------------------------------
+# Optional connection reuse (high-volume loops)
+# ---------------------------------------------------------------------------
+
+function New-QCDatabaseSession {
+    <#
+    .SYNOPSIS
+    Opens one SqlConnection for repeated calls; caller must Dispose().
+    .DESCRIPTION
+    Returns a QCResult whose Data.session has:
+      - connection: open SqlConnection
+      - Dispose(): closes/cleans up
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $res = Get-QCDatabaseConnection -Config $Config
+    if (-not $res.IsSuccess) { return $res }
+    $conn = $res.Data.connection
+
+    $session = [pscustomobject]@{
+        connection = $conn
+        Dispose = {
+            try { if ($this.connection -and $this.connection.State -eq 'Open') { $this.connection.Close() } } catch { }
+            try { if ($this.connection) { $this.connection.Dispose() } } catch { }
+        }
+    }
+    return New-QCSuccessResult -Code 'DB_SESSION_OK' -Message 'Database session opened.' -Data @{ session = $session }
+}
+
+function Invoke-QCDatabaseNonQueryWithConnection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Data.SqlClient.SqlConnection]$Connection,
+        [Parameter(Mandatory)][string]$Sql,
+        [hashtable]$Parameters = @{},
+        [int]$CommandTimeout = 60
+    )
+    try {
+        $cmd = $Connection.CreateCommand()
+        $cmd.CommandText = $Sql
+        $cmd.CommandTimeout = $CommandTimeout
+        foreach ($key in $Parameters.Keys) {
+            $val = $Parameters[$key]
+            if ($null -eq $val) { $val = [DBNull]::Value }
+            [void]$cmd.Parameters.AddWithValue("@$key", $val)
+        }
+        $rowsAffected = $cmd.ExecuteNonQuery()
+        return New-QCSuccessResult -Code 'DB_NONQUERY_OK' -Message "$rowsAffected rows affected." -Data @{ rowsAffected = $rowsAffected }
+    } catch {
+        return New-QCFailureResult -Code 'DB_NONQUERY_FAILED' -Message "Non-query failed: $($_.Exception.Message)" -Data @{ sql = $Sql; error = $_.Exception.Message }
+    }
+}
+
+function Invoke-QCDatabaseScalarWithConnection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Data.SqlClient.SqlConnection]$Connection,
+        [Parameter(Mandatory)][string]$Sql,
+        [hashtable]$Parameters = @{},
+        [int]$CommandTimeout = 60
+    )
+    try {
+        $cmd = $Connection.CreateCommand()
+        $cmd.CommandText = $Sql
+        $cmd.CommandTimeout = $CommandTimeout
+        foreach ($key in $Parameters.Keys) {
+            $val = $Parameters[$key]
+            if ($null -eq $val) { $val = [DBNull]::Value }
+            [void]$cmd.Parameters.AddWithValue("@$key", $val)
+        }
+        $result = $cmd.ExecuteScalar()
+        if ($result -is [DBNull]) { $result = $null }
+        return New-QCSuccessResult -Code 'DB_SCALAR_OK' -Message 'Scalar query executed.' -Data @{ value = $result }
+    } catch {
+        return New-QCFailureResult -Code 'DB_SCALAR_FAILED' -Message "Scalar query failed: $($_.Exception.Message)" -Data @{ sql = $Sql; error = $_.Exception.Message }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Schema management
 # ---------------------------------------------------------------------------
 
@@ -247,11 +326,12 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.2.0'
+    $targetVersion = '1.3.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
-    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2
+    $schemaV1_3 = _QDB-GetSchemaV1dot3
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -264,7 +344,7 @@ function Initialize-QCDatabaseSchema {
         if ($currentVersion -is [DBNull]) { $currentVersion = $null }
 
         if ($currentVersion -eq $targetVersion) {
-            $patchSql = _QDB-GetSchemaV1dot2Additive
+            $patchSql = _QDB-GetSchemaV1dot3Additive
             $patchBatches = [regex]::Split($patchSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             $patchExecuted = 0
             foreach ($batch in $patchBatches) {
@@ -294,7 +374,7 @@ function Initialize-QCDatabaseSchema {
         $insertCmd = $conn.CreateCommand()
         $insertCmd.CommandText = "INSERT INTO schema_version (version, description) VALUES (@version, @desc)"
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through comment sync tables (qc_comment_*, qc_workflow_events)")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through audit batching + queue/indexing improvements")
         [void]$insertCmd.ExecuteNonQuery()
 
         return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($executed batches)." -Data @{ version = $targetVersion; batchCount = $executed }
@@ -791,6 +871,31 @@ IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1
 '@
 }
 
+function _QDB-GetSchemaV1dot3 {
+    return @'
+
+GO
+
+-- audit_events: enforce natural key uniqueness for fast set-based ingestion
+IF OBJECT_ID('dbo.audit_events', 'U') IS NOT NULL
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_audit_events_natural_key')
+        CREATE UNIQUE INDEX UX_audit_events_natural_key ON audit_events(pw_acttime, pw_action, pw_objguid)
+        WHERE pw_objguid IS NOT NULL;
+END
+
+'@
+}
+
+function _QDB-GetSchemaV1dot3Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.audit_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_audit_events_natural_key')
+    CREATE UNIQUE INDEX UX_audit_events_natural_key ON audit_events(pw_acttime, pw_action, pw_objguid)
+    WHERE pw_objguid IS NOT NULL;
+'@
+}
+
 function Test-QCDatabaseWritesAllowed {
     <#
     .SYNOPSIS
@@ -1115,4 +1220,91 @@ WHERE document_guid = @sourceDocGuid
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Update-QCSheetQcPdf
+function Write-QCSheetIndexBatch {
+    <#
+    .SYNOPSIS
+    Batch upsert into sheet_index for reconciliation scans.
+    .DESCRIPTION
+    Uses a staging table and one MERGE to reduce round trips.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable[]]$Rows
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not $Rows -or $Rows.Count -eq 0) { return }
+    try {
+        $sessRes = New-QCDatabaseSession -Config $Config
+        if (-not $sessRes.IsSuccess) { return }
+        $sess = $sessRes.Data.session
+        $conn = $sess.connection
+        try {
+            $createSql = @"
+IF OBJECT_ID('tempdb..#sheet_index_stage') IS NOT NULL DROP TABLE #sheet_index_stage;
+CREATE TABLE #sheet_index_stage (
+    document_guid NVARCHAR(40) NOT NULL,
+    document_name NVARCHAR(500) NOT NULL,
+    folder_path   NVARCHAR(1000) NOT NULL,
+    watch_root    NVARCHAR(500) NULL,
+    source_type   NVARCHAR(10) NULL,
+    designer_email NVARCHAR(200) NULL,
+    reviewer_email NVARCHAR(200) NULL,
+    pw_state_name  NVARCHAR(100) NULL
+);
+"@
+            [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $createSql -Parameters @{} -CommandTimeout 120)
+
+            $chunkSize = 200
+            for ($i = 0; $i -lt $Rows.Count; $i += $chunkSize) {
+                $chunk = @($Rows[$i..[Math]::Min($i + $chunkSize - 1, $Rows.Count - 1)])
+                $sb = New-Object System.Text.StringBuilder
+                $params = @{}
+                for ($r = 0; $r -lt $chunk.Count; $r++) {
+                    $row = $chunk[$r]
+                    if ($r -gt 0) { [void]$sb.AppendLine(',') }
+                    [void]$sb.Append(("(@docGuid{0},@docName{0},@folderPath{0},@watchRoot{0},@sourceType{0},@designerEmail{0},@reviewerEmail{0},@pwStateName{0})" -f $r))
+                    $params["docGuid$r"] = [string]$row.documentGuid
+                    $params["docName$r"] = [string]$row.documentName
+                    $params["folderPath$r"] = [string]$row.folderPath
+                    $params["watchRoot$r"] = if ($row.watchRoot) { [string]$row.watchRoot } else { $null }
+                    $params["sourceType$r"] = if ($row.sourceType) { [string]$row.sourceType } else { $null }
+                    $params["designerEmail$r"] = if ($row.designerEmail) { [string]$row.designerEmail } else { $null }
+                    $params["reviewerEmail$r"] = if ($row.reviewerEmail) { [string]$row.reviewerEmail } else { $null }
+                    $params["pwStateName$r"] = if ($row.pwStateName) { [string]$row.pwStateName } else { $null }
+                }
+                $insSql = @"
+INSERT INTO #sheet_index_stage
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, pw_state_name)
+VALUES
+$($sb.ToString());
+"@
+                [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $insSql -Parameters $params -CommandTimeout 120)
+            }
+
+            $mergeSql = @"
+MERGE sheet_index AS tgt
+USING #sheet_index_stage AS src
+ON tgt.document_guid = src.document_guid
+WHEN MATCHED THEN UPDATE SET
+    document_name = src.document_name,
+    folder_path = src.folder_path,
+    watch_root = COALESCE(src.watch_root, tgt.watch_root),
+    source_type = COALESCE(src.source_type, tgt.source_type),
+    designer_email = COALESCE(src.designer_email, tgt.designer_email),
+    reviewer_email = COALESCE(src.reviewer_email, tgt.reviewer_email),
+    pw_state_name = COALESCE(src.pw_state_name, tgt.pw_state_name),
+    last_updated_at = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, pw_state_name)
+VALUES
+    (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.pw_state_name);
+"@
+            [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $mergeSql -Parameters @{} -CommandTimeout 120)
+        } finally {
+            try { $sess.Dispose.Invoke() } catch { }
+        }
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetQcPdf

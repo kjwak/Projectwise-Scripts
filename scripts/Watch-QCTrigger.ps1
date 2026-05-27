@@ -253,6 +253,13 @@ $localCacheSkips = 0
 $hashCacheHits = 0
 $hashCacheMisses = 0
 $triggerRuleCacheUses = 0
+$pwDescriptionLookups = 0
+$pwDocEnumerations = 0
+$pwFoldersScanned = 0
+$dedupeChecks = 0
+$dbAuditEventWritesAttempted = 0
+$dbAuditEventWritesSucceeded = 0
+$dbAuditEventWritesSkipped = 0
 $auditPollTelemetry = $null
 $watcherRanReconciliationScan = $false
 
@@ -459,6 +466,13 @@ if ($statusSetRules.Count -ge 0) {
                     } else {
                         $auditData = $auditRes.Data
                         $auditCandidates = @($auditData.candidates)
+                        try {
+                            if ($auditData.stats) {
+                                $dbAuditEventWritesAttempted += ([int]$auditData.stats.dbWrites + [int]$auditData.stats.dbSkipped)
+                                $dbAuditEventWritesSucceeded += [int]$auditData.stats.dbWrites
+                                $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
+                            }
+                        } catch { }
                         $watermarkAfterStr = [string]$auditData.watermarkAfter
                         $capturedThrough = $until
                         try {
@@ -492,6 +506,7 @@ if ($statusSetRules.Count -ge 0) {
                         # Audit-sourced candidates that are in Sheets folders get STATUS_SET_GEN (folder-level).
                         # PDF check-ins with QC_Archivist tag get QC_PREPEND (document-level).
                         $auditFoldersSeen = @{}
+                        $auditDescCache = @{}
                         foreach ($ac in $auditCandidates) {
                             try {
                                 $fp = [string]$ac.resolvedFolder
@@ -548,11 +563,12 @@ if ($statusSetRules.Count -ge 0) {
                                     $job = [hashtable]$jobRes.Data.job
 
                                     $accepted++
+                                    $dedupeChecks++
                                     $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                     if (-not $dupRes.IsSuccess) { continue }
                                     $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
-                                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
+                                    Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
                                         jobId = [string]$job['id']; jobType = [string]$job['type']
                                         sourceFolder = $fp; triggerSource = 'audit_trail'
                                         dryRun = $isDryRun; wouldDedupe = $wouldDedupe
@@ -572,9 +588,21 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     try {
-                                        $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
+                                        $dd = ''
+                                        $descKey = ''
+                                        try {
+                                            if ($ac.objGuid) { $descKey = ('guid|' + [string]$ac.objGuid).ToLowerInvariant() }
+                                            if (-not $descKey) { $descKey = ('path|' + $fp.ToLowerInvariant() + '|' + $itemName.ToLowerInvariant()) }
+                                        } catch { $descKey = ('path|' + $fp.ToLowerInvariant() + '|' + $itemName.ToLowerInvariant()) }
+                                        if ($descKey -and $auditDescCache.ContainsKey($descKey)) {
+                                            $dd = [string]$auditDescCache[$descKey]
+                                        } else {
+                                            $pwDescriptionLookups++
+                                            $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
+                                            if ($descKey) { $auditDescCache[$descKey] = [string]$dd }
+                                        }
                                         if ($dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no QC_Archivist in description).' -Data @{
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no QC_Archivist in description).' -Data @{
                                                 path = ($fp + '\' + $itemName); actionName = $actionName
                                             }
                                             continue
@@ -597,7 +625,7 @@ if ($statusSetRules.Count -ge 0) {
 
                                         $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
                                         if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
-                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
                                                 path = [string]$candidate.path; actionName = $actionName
                                             }
                                             $filtered++
@@ -613,7 +641,7 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                         if (-not [bool]$matchRes.Data.matched) {
                                             $reason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { 'no_match' }
-                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any PW trigger rule.' -Data @{
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any PW trigger rule.' -Data @{
                                                 path = [string]$candidate.path
                                                 actionName = $actionName
                                                 descriptionPreview = if ($dd.Length -gt 120) { $dd.Substring(0, 120) } else { $dd }
@@ -629,10 +657,11 @@ if ($statusSetRules.Count -ge 0) {
                                         if (-not $jobRes.IsSuccess) { continue }
                                         $job = [hashtable]$jobRes.Data.job
                                         $accepted++
+                                        $dedupeChecks++
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                         $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
 
-                                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
                                             jobId          = [string]$job['id']
                                             jobType        = 'QC_PREPEND'
                                             sourcePath     = ($fp + '\' + $itemName)
@@ -706,7 +735,7 @@ if ($statusSetRules.Count -ge 0) {
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                         $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
 
-                                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
                                             jobId           = [string]$job['id']
                                             jobType         = 'QC_COMMENT_STATUS_SYNC'
                                             sourcePath      = ($fp + '\' + $itemName)
@@ -861,6 +890,7 @@ if ($statusSetRules.Count -ge 0) {
                 try {
                     $fp = [string]$entry.FolderPath
                     if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+                    $pwFoldersScanned++
 
                     $oneLevelDeep = $false
                     $enableQcPrepend = $false
@@ -945,30 +975,46 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                 } catch { }
 
+                                $sheetIndexRows = @()
                                 foreach ($ps in @($state.pairedSheets)) {
                                     try {
                                         $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
                                         $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
                                         $pdfGuid = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
+                                        $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
+
                                         if ($pdfName -and $pdfGuid) {
                                             $a = if ($nameToAttrs.ContainsKey($pdfName.ToLowerInvariant())) { $nameToAttrs[$pdfName.ToLowerInvariant()] } else { @{} }
-                                            Write-QCSheetIndex -Config $config -DocumentGuid $pdfGuid `
-                                                -DocumentName $pdfName -FolderPath $fp `
-                                                -SourceType 'pdf' -WatchRoot ([string]$entry.FolderPath) `
-                                                -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
-                                                -PwStateName ([string]$a.workflowState)
-                                        }
-                                        if ($dgnName) {
-                                            $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
-                                            if ($dgnGuid) {
-                                                $a = if ($nameToAttrs.ContainsKey($dgnName.ToLowerInvariant())) { $nameToAttrs[$dgnName.ToLowerInvariant()] } else { @{} }
-                                                Write-QCSheetIndex -Config $config -DocumentGuid $dgnGuid `
-                                                    -DocumentName $dgnName -FolderPath $fp `
-                                                    -SourceType 'dgn' -WatchRoot ([string]$entry.FolderPath) `
-                                                    -DesignerEmail ([string]$a.designerEmail) -ReviewerEmail ([string]$a.reviewerEmail) `
-                                                    -PwStateName ([string]$a.workflowState)
+                                            $sheetIndexRows += @{
+                                                documentGuid = $pdfGuid
+                                                documentName = $pdfName
+                                                folderPath   = $fp
+                                                watchRoot    = [string]$entry.FolderPath
+                                                sourceType   = 'pdf'
+                                                designerEmail = [string]$a.designerEmail
+                                                reviewerEmail = [string]$a.reviewerEmail
+                                                pwStateName   = [string]$a.workflowState
                                             }
                                         }
+                                        if ($dgnName -and $dgnGuid) {
+                                            $a = if ($nameToAttrs.ContainsKey($dgnName.ToLowerInvariant())) { $nameToAttrs[$dgnName.ToLowerInvariant()] } else { @{} }
+                                            $sheetIndexRows += @{
+                                                documentGuid = $dgnGuid
+                                                documentName = $dgnName
+                                                folderPath   = $fp
+                                                watchRoot    = [string]$entry.FolderPath
+                                                sourceType   = 'dgn'
+                                                designerEmail = [string]$a.designerEmail
+                                                reviewerEmail = [string]$a.reviewerEmail
+                                                pwStateName   = [string]$a.workflowState
+                                            }
+                                        }
+                                    } catch { }
+                                }
+
+                                if ($sheetIndexRows.Count -gt 0) {
+                                    try {
+                                        Write-QCSheetIndexBatch -Config $config -Rows $sheetIndexRows
                                     } catch { }
                                 }
 
@@ -1045,7 +1091,7 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                                 elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']
@@ -1083,6 +1129,7 @@ if ($statusSetRules.Count -ge 0) {
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
                             folder = $fp
                         }
+                        $pwDocEnumerations++
                         $docs = Get-PWDocumentsInFolder -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp)
                         $pdfDocs = @()
                         $withDesc = @()
@@ -1123,7 +1170,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ([string]::IsNullOrWhiteSpace($desc)) { continue }
                             if ($desc.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
 
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
+                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
                                 folder = $fp
                                 fileName = $docName
                                 description = $desc
@@ -1160,7 +1207,7 @@ if ($statusSetRules.Count -ge 0) {
                             $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules -TriggerType 'pw'
                             if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
                             if (-not [bool]$matchRes.Data.matched) {
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any PW trigger rule.' -Data @{
+                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any PW trigger rule.' -Data @{
                                     path = [string]$candidate.path
                                     fileName = [string]$candidate.fileName
                                     ruleReason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { '' }
@@ -1176,6 +1223,7 @@ if ($statusSetRules.Count -ge 0) {
                             $job = [hashtable]$jobRes.Data.job
 
                             $accepted++
+                            $dedupeChecks++
                             $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                             if (-not $dupRes.IsSuccess) { throw $dupRes.Message }
                             $wouldDedupe = [bool]$dupRes.Data.isDuplicate
@@ -1184,7 +1232,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
+                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
                                 jobId = [string]$job['id']
                                 jobType = [string]$job['type']
                                 dedupeKey = [string]$job['dedupeKey']
@@ -1252,12 +1300,13 @@ if ($statusSetRules.Count -ge 0) {
                                 if (-not $jobRes.IsSuccess) { continue }
                                 $job = [hashtable]$jobRes.Data.job
                                 $accepted++
+                                $dedupeChecks++
                                 $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                 if (-not $dupRes.IsSuccess) { throw $dupRes.Message }
                                 $wouldDedupe = [bool]$dupRes.Data.isDuplicate
                                 $enqueueSkippedReason = if ($wouldDedupe) { 'duplicate' } elseif ($isDryRun) { 'dryRun' } else { $null }
 
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
+                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']
@@ -1372,6 +1421,7 @@ if ($statusSetRules.Count -ge 0) {
             $job = [hashtable]$jobRes.Data.job
 
             $accepted++
+            $dedupeChecks++
             $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
             if (-not $dupRes.IsSuccess) { throw $dupRes.Message }
             $wouldDedupe = [bool]$dupRes.Data.isDuplicate
@@ -1380,7 +1430,7 @@ if ($statusSetRules.Count -ge 0) {
             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                 jobId = [string]$job['id']
                 jobType = [string]$job['type']
                 dedupeKey = [string]$job['dedupeKey']
@@ -1535,6 +1585,7 @@ foreach ($fi in $fileItems) {
         $job = [hashtable]$jobRes.Data.job
 
         $accepted++
+        $dedupeChecks++
         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
         if (-not $dupRes.IsSuccess) { throw $dupRes.Message }
         $wouldDedupe = [bool]$dupRes.Data.isDuplicate
@@ -1546,7 +1597,7 @@ foreach ($fi in $fileItems) {
             $enqueueSkippedReason = 'dryRun'
         }
 
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
             jobId = [string]$job['id']
             jobType = [string]$job['type']
             dedupeKey = [string]$job['dedupeKey']
@@ -1620,6 +1671,13 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     hashCacheHits = $hashCacheHits
     hashCacheMisses = $hashCacheMisses
     triggerRuleCacheUses = $triggerRuleCacheUses
+    pwDescriptionLookups = $pwDescriptionLookups
+    pwDocEnumerations = $pwDocEnumerations
+    pwFoldersScanned = $pwFoldersScanned
+    dedupeChecks = $dedupeChecks
+    dbAuditEventWritesAttempted = $dbAuditEventWritesAttempted
+    dbAuditEventWritesSucceeded = $dbAuditEventWritesSucceeded
+    dbAuditEventWritesSkipped = $dbAuditEventWritesSkipped
 }
 
 if ($auditPollTelemetry) {

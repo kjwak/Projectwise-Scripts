@@ -99,6 +99,53 @@ function _QCQJ-QueueWriteLockPath([string]$Root) {
     return (Join-Path (Join-Path $Root 'locks') '_queue_write.lock')
 }
 
+function _QCQJ-DedupeIndexPath([string]$Root) {
+    return (Join-Path (Join-Path $Root '_watcher') 'dedupe-index.json')
+}
+
+function _QCQJ-ReadDedupeIndex([string]$Path) {
+    $empty = @{ version = 1; entries = @{}; loadedAtUtc = (Get-QCTimestamp) }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $empty }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $entries = @{}
+        if ($obj -and $obj.entries) {
+            foreach ($prop in @($obj.entries.PSObject.Properties)) {
+                $entries[[string]$prop.Name] = $prop.Value
+            }
+        }
+        return @{ version = 1; entries = $entries; loadedAtUtc = (Get-QCTimestamp) }
+    } catch {
+        return $empty
+    }
+}
+
+function _QCQJ-WriteDedupeIndexAtomic([string]$Path, [hashtable]$Index) {
+    $dir = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = ($Path + '.tmp.' + ([guid]::NewGuid().ToString('N')))
+    $safeEntries = if ($Index -and $Index.ContainsKey('entries')) { $Index.entries } else { @{} }
+    $payload = @{ version = 1; writtenAtUtc = (Get-QCTimestamp); entries = $safeEntries } | ConvertTo-Json -Depth 20
+    $enc = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($tmp, $payload, $enc)
+    _QCQJ-MoveItemWithRetry -LiteralPath $tmp -Destination $Path
+}
+
+function _QCQJ-UpdateDedupeIndexForJob([hashtable]$Config, [string]$Root, [string]$DedupeKey, [string]$JobId, [string]$State) {
+    if (_QCQJ-IsNullOrWhiteSpace $DedupeKey) { return }
+    $path = _QCQJ-DedupeIndexPath -Root $Root
+    $idx = _QCQJ-ReadDedupeIndex -Path $path
+    if (-not $idx.entries) { $idx['entries'] = @{} }
+    $idx.entries[[string]$DedupeKey] = @{
+        jobId = $JobId
+        state = $State
+        updatedAtUtc = (Get-QCTimestamp)
+    }
+    _QCQJ-WriteDedupeIndexAtomic -Path $path -Index $idx
+}
+
 function _QCQJ-IsLockOwnerDead([string]$LockPath) {
     # Returns $true only if we can read the lock file, parse a non-zero owner PID,
     # AND that PID is no longer alive. Returns $false on any uncertainty so we
@@ -345,6 +392,9 @@ function Add-QCQueueJob {
             $Job.status = 'pending'
             $Job.enqueuedAtUtc = (Get-QCTimestamp)
             _QCQJ-WriteJobFileAtomic -Path $dest -Job $Job
+            try {
+                _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey ([string]$Job['dedupeKey']) -JobId $jobId -State 'pending'
+            } catch { }
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
         }
@@ -778,6 +828,17 @@ function Move-QCJob {
                 _QCQJ-WriteJobFileAtomic -Path $src -Job $existing
             }
             _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst
+            try {
+                $dedupeKey = $null
+                if ($PSBoundParameters.ContainsKey('Job') -and $Job) { $dedupeKey = [string]$Job['dedupeKey'] }
+                if (-not $dedupeKey) {
+                    try {
+                        $readBack = _QCQJ-ReadJobFile -Path $dst
+                        if ($readBack -and $readBack.ContainsKey('dedupeKey')) { $dedupeKey = [string]$readBack['dedupeKey'] }
+                    } catch { }
+                }
+                _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey $dedupeKey -JobId $JobId -State $to
+            } catch { }
             return New-QCSuccessResult -Code 'QUEUE_JOB_MOVED' -Message 'Job moved between states.' -Data @{ jobId = $JobId; fromState = $from; toState = $to }
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
@@ -1195,6 +1256,22 @@ function Test-QCDuplicateJob {
         $root = _QCQJ-GetQueueRoot -Config $Config
         _QCQJ-EnsureLayout -Root $root
 
+        $idxPath = _QCQJ-DedupeIndexPath -Root $root
+        $idx = _QCQJ-ReadDedupeIndex -Path $idxPath
+        if ($idx -and $idx.entries -and $idx.entries.ContainsKey($DedupeKey)) {
+            $hit = $idx.entries[$DedupeKey]
+            $state = ''
+            $jobId = ''
+            try { $state = [string]$hit.state } catch { $state = '' }
+            try { $jobId = [string]$hit.jobId } catch { $jobId = '' }
+            return New-QCSuccessResult -Code 'QUEUE_DEDUPE_INDEX_HIT' -Message 'Duplicate check complete (index hit).' -Data @{
+                dedupeKey = $DedupeKey
+                isDuplicate = $true
+                matches = @(@{ jobId = $jobId; state = $state; path = '' })
+                indexPath = $idxPath
+            }
+        }
+
         $matches = @()
         foreach ($s in @('pending', 'running', 'succeeded', 'failed')) {
             $dir = Join-Path $root $s
@@ -1206,6 +1283,14 @@ function Test-QCDuplicateJob {
                     $matches += @{ jobId = [string]$job['id']; state = $s; path = $f.FullName }
                 }
             }
+        }
+
+        if ($matches.Count -gt 0) {
+            try {
+                # Best-effort: self-heal index from scan result
+                $m0 = $matches | Select-Object -First 1
+                _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey $DedupeKey -JobId ([string]$m0.jobId) -State ([string]$m0.state)
+            } catch { }
         }
 
         return New-QCSuccessResult -Code 'QUEUE_DEDUPE_CHECKED' -Message 'Duplicate check complete.' -Data @{
