@@ -361,28 +361,31 @@ VALUES
         }
 
         $enableQcPrepend = $false
+        $enableQcCommentSync = $false
         $enableStatusSet = $false
         $watchRootPath = $null
         if ($isWatchMatch) {
             $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
             if ($rootCfg) {
                 try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
+                try { if ($rootCfg.enableQcCommentSync) { $enableQcCommentSync = [bool]$rootCfg.enableQcCommentSync } } catch { }
                 try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
                 if ($rootCfg.path) { $watchRootPath = [string]$rootCfg.path }
             }
             $candidates += @{
-                objGuid         = $objGuid
-                parentGuid      = $parentGuid
-                actionCode      = $actionCode
-                actionName      = $actionName
-                itemName        = [string]$evt.o_itemname
-                actTime         = $actTime
-                resolvedFolder  = $resolvedFolder
-                isSheetsFolder  = $isSheetsFolder
-                candidateType   = $candidateType
-                enableQcPrepend = $enableQcPrepend
-                enableStatusSet = $enableStatusSet
-                watchRoot       = $watchRootPath
+                objGuid              = $objGuid
+                parentGuid           = $parentGuid
+                actionCode           = $actionCode
+                actionName           = $actionName
+                itemName             = [string]$evt.o_itemname
+                actTime              = $actTime
+                resolvedFolder       = $resolvedFolder
+                isSheetsFolder       = $isSheetsFolder
+                candidateType        = $candidateType
+                enableQcPrepend      = $enableQcPrepend
+                enableQcCommentSync  = $enableQcCommentSync
+                enableStatusSet      = $enableStatusSet
+                watchRoot            = $watchRootPath
             }
         }
     }

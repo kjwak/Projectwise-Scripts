@@ -93,4 +93,18 @@ $candidateNo = @{ path='Documents\AZDOT 2024\ProjA\CADD\Sheets\A101.dgn'; fileNa
 $no = Resolve-QCTriggerMatch -Candidate $candidateNo -Config $triggerConfig
 Assert-True ($no.IsSuccess -and $no.Code -eq 'IGNORED_NO_MATCH' -and $no.Data.action -eq 'ignore') 'No match should return ignored/no_match'
 
+# triggerType filter: fs-only rule must not match PW evaluation
+$pwFsConfig = @{
+    triggers = @{
+        rules = @(
+            @{ id='pw-desc'; enabled=$true; priority=110; jobType='QC_PREPEND'; triggerType='pw'; when=@{ extensions=@('.pdf'); descriptionContainsAny=@('QC_Archivist') }; requireAll=@('extensions','descriptionContainsAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@() } },
+            @{ id='fs-any-pdf'; enabled=$true; priority=100; jobType='QC_PREPEND'; triggerType='fs'; when=@{ extensions=@('.pdf'); fileNameRegexAny=@('(?i)\.pdf$') }; requireAll=@('extensions','fileNameRegexAny'); exclude=@{ pathRegexAny=@(); fileNameRegexAny=@('(?i)^_StatusSet\.pdf$') } }
+        )
+    }
+}
+$statusSetCand = @{ path='Documents\AZDOT\Proj\CADD\Sheets\_StatusSet.pdf'; fileName='_StatusSet.pdf'; description='' }
+$pwOnly = Test-QCTriggerCandidate -Candidate $statusSetCand -Config $pwFsConfig -TriggerType 'pw'
+Assert-True ($pwOnly.IsSuccess -and -not $pwOnly.Data.matched) 'PW trigger pass must not match _StatusSet.pdf via fs rule'
+Assert-True (Test-QCIsStatusSetOutputPdfName -FileName '_StatusSet.pdf') 'Status set output name helper'
+
 Write-Host 'All foundation module tests passed.' -ForegroundColor Green
