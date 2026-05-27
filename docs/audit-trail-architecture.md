@@ -1,10 +1,32 @@
 # ProjectWise Audit Trail Architecture — From Directory Polling to Event-Driven Processing
 
+## Implementation Status (May 2026)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1: Instrument and Observe | **Complete** | `Test-AuditEventIngestion.ps1` validated audit coverage |
+| Phase 2: Audit-Primary with Directory Fallback | **Operational** | `PW.AuditPoller.psm1` + hybrid mode in `Watch-QCTrigger.ps1` |
+| Phase 3: Database-Backed Dashboard | **In Progress** | SQL Server (not SQLite) telemetry layer operational; Power BI connected |
+| Phase 4: Optimize and Scale | Not started | — |
+
+Key implementation differences from the original proposal below:
+
+- **SQL Server 2025 Express** is used instead of SQLite (on `localhost\SQLEXPRESS`, database `QC_Pipeline`).
+- **`PW.AuditPoller.psm1`** is a single module (not `PW.AuditPoller.psm1` + `PW.AuditPoller.Schema.psm1`).
+- **Schema management** lives in `Core.Database.psm1`, not a separate schema module.
+- **Watermark** is stored in the `poll_runs` database table, not a JSON file.
+- **Reconciliation** runs every 20 watcher ticks (configurable), not on a fixed hour interval.
+- **`sheet_index`** table was added (schema v1.1.0) for project status tracking.
+
+For the current operational architecture, see `docs/hybrid-polling.md` and `docs/database-telemetry.md`.
+
+---
+
 ## 1. Executive Summary
 
-This document evaluates replacing the current recursive directory polling model with a ProjectWise audit-trail-driven event architecture. The analysis covers available `pwps_dab` audit cmdlets, the `dms_audt` table structure, integration points with the existing watcher/queue/worker pipeline, proposed database schemas, migration phases, and operational risk assessment.
+This document was the original analysis evaluating replacing the current recursive directory polling model with a ProjectWise audit-trail-driven event architecture. The analysis covers available `pwps_dab` audit cmdlets, the `dms_audt` table structure, integration points with the existing watcher/queue/worker pipeline, proposed database schemas, migration phases, and operational risk assessment.
 
-**Recommendation**: Adopt a hybrid architecture — audit trail polling as the primary trigger source with periodic directory reconciliation as a safety net. This reduces ProjectWise API calls by 80-95% during steady state while preserving the correctness guarantees of the current system.
+**Recommendation** (adopted): Hybrid architecture — audit trail polling as the primary trigger source with periodic directory reconciliation as a safety net. This reduces ProjectWise API calls by 80-95% during steady state while preserving the correctness guarantees of the current system.
 
 ---
 

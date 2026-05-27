@@ -334,6 +334,36 @@ if (-not $haveQpdf) {
 
 # Load module + connect IMS
 Import-Module pwps_dab -Force
+$repoRootForMods = Split-Path -Parent $PSScriptRoot
+$pwDiscoveryMod = Join-Path $repoRootForMods 'modules\PW.Discovery.psm1'
+if (Test-Path -LiteralPath $pwDiscoveryMod) {
+  Import-Module $pwDiscoveryMod -Force -ErrorAction SilentlyContinue
+}
+
+function Sync-PrependQcPdfEmailAttributes {
+  param(
+    [Parameter(Mandatory)][string]$FolderPath,
+    [Parameter(Mandatory)][string]$SourceDocumentName,
+    [Parameter(Mandatory)][string]$QcDocumentName
+  )
+  if (-not (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue)) {
+    Write-Log 'Email attribute sync skipped: PW.Discovery module not loaded.' -Severity WARNING
+    return
+  }
+  try {
+    $sync = Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath `
+      -SourceDocumentName $SourceDocumentName -QcDocumentName $QcDocumentName -PassThru
+    if ($sync.updated) {
+      $written = @($sync.attributesWritten) -join ', '
+      Write-Log "Synced QC PDF email attributes from source PDF ($written)."
+    } elseif ($sync.reason) {
+      Write-Log "Email attribute sync: $($sync.reason)"
+    }
+  } catch {
+    Write-Log "Email attribute sync failed: $($_.Exception.Message)" -Severity WARNING
+  }
+}
+
 #Write-Log "Connecting via IMS..."
 #Open-PWConnection -DatasourceName $DatasourceName -BentleyIMS | Out-Null
 Write-Log "Connecting with stored credential..."
@@ -412,6 +442,7 @@ if (-not $historyDoc) {
     Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
     New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
     Write-Log "Created history document."
+    Sync-PrependQcPdfEmailAttributes -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
     if (Test-Path $localIncoming) { Remove-ItemWithRetry $localIncoming }
   } else {
     Write-Log "WhatIf: would create history document."
@@ -560,6 +591,7 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
   Update-PWDocumentFile @pwUpdateFileParams | Out-Null
 
   Write-Log "Updated history document."
+  Sync-PrependQcPdfEmailAttributes -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
   # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
   @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {

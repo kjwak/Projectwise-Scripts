@@ -293,6 +293,11 @@ try {
     }
 } catch { }
 
+$statusRuleObj = $null
+if ($statusSetRules.Count -gt 0) {
+    $statusRuleObj = ($statusSetRules | Sort-Object -Property @{ Expression = { [int]$_.priority }; Descending = $true } | Select-Object -First 1)
+}
+
 # ProjectWise watchList processing (STATUS_SET_GEN and/or QC_PREPEND).
 # This must run even when STATUS_SET_GEN rules are disabled, because QC_PREPEND can be PW-triggered too.
 if ($statusSetRules.Count -ge 0) {
@@ -435,7 +440,9 @@ if ($statusSetRules.Count -ge 0) {
                                 }
 
                                 # STATUS_SET_GEN: one per unique Sheets folder
-                                if ([bool]$ac.isSheetsFolder -and $statusRuleObj -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
+                                $acEnableStatusSet = $true
+                                try { if ($null -ne $ac.enableStatusSet) { $acEnableStatusSet = [bool]$ac.enableStatusSet } } catch { }
+                                if ([bool]$ac.isSheetsFolder -and $acEnableStatusSet -and $statusRuleObj -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
                                     $auditFoldersSeen[$fp.ToLowerInvariant()] = $true
 
                                     $allowRes = Test-QCPathAllowed -CandidatePath $fp -Config $config
@@ -481,56 +488,88 @@ if ($statusSetRules.Count -ge 0) {
                                     } elseif ($wouldDedupe) { $duplicates++ }
                                 }
 
-                                # QC_PREPEND: check if the document is a PDF with QC_Archivist tag
+                                # QC_PREPEND: evaluate PDFs via trigger rules (description tag, etc.)
+                                $acEnableQcPrepend = $true
+                                try { if ($null -ne $ac.enableQcPrepend) { $acEnableQcPrepend = [bool]$ac.enableQcPrepend } } catch { }
                                 $itemName = [string]$ac.itemName
-                                if ($itemName -match '(?i)\.pdf$') {
+                                $actionName = [string]$ac.actionName
+                                if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
                                     try {
-                                        $doc = Get-PWDocumentsByGUIDs -DocumentGUIDs @([string]$ac.objGuid) -ErrorAction SilentlyContinue
-                                        if ($doc) {
-                                            $dd = Get-PWDocDescription -Doc $doc
-                                            if ($dd -and $dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                                                $candidate = @{
-                                                    path = ($fp + '\' + $itemName)
-                                                    fileName = $itemName
-                                                    description = [string]$dd
-                                                    detectedAtUtc = (Get-QCTimestamp)
-                                                    sourceFolder = $fp
-                                                    datasourceName = $ds
-                                                    triggerSource = 'audit_trail'
-                                                    file = @{
-                                                        fullName = ($fp + '\' + $itemName)
-                                                        length = 0
-                                                        lastWriteTimeUtc = (Get-QCTimestamp)
-                                                    }
-                                                }
-                                                $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config
-                                                if ($matchRes.IsSuccess -and [bool]$matchRes.Data.matched) {
-                                                    $ruleObj = $matchRes.Data.rule
-                                                    if ([string]$ruleObj.jobType -eq 'QC_PREPEND') {
-                                                        $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
-                                                        if ($jobRes.IsSuccess) {
-                                                            $job = [hashtable]$jobRes.Data.job
-                                                            $accepted++
-                                                            $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
-                                                            $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
-
-                                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
-                                                                jobId = [string]$job['id']; jobType = 'QC_PREPEND'
-                                                                sourcePath = ($fp + '\' + $itemName)
-                                                                triggerSource = 'audit_trail'
-                                                                dryRun = $isDryRun; wouldDedupe = $wouldDedupe
-                                                            }
-
-                                                            if (-not $isDryRun -and -not $wouldDedupe) {
-                                                                $enqRes = Add-QCQueueJob -Job $job -Config $config
-                                                                if ($enqRes.IsSuccess) { $enqueued++ }
-                                                            } elseif ($wouldDedupe) { $duplicates++ }
-                                                        }
-                                                    }
-                                                }
+                                        $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
+                                        $candidate = @{
+                                            path            = ($fp + '\' + $itemName)
+                                            fileName        = $itemName
+                                            description     = [string]$dd
+                                            detectedAtUtc   = (Get-QCTimestamp)
+                                            sourceFolder    = $fp
+                                            datasourceName  = $ds
+                                            triggerSource   = 'audit_trail'
+                                            auditActionName = $actionName
+                                            file            = @{
+                                                fullName         = ($fp + '\' + $itemName)
+                                                length           = 0
+                                                lastWriteTimeUtc = (Get-QCTimestamp)
                                             }
                                         }
-                                    } catch { }
+
+                                        $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
+                                        if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
+                                                path = [string]$candidate.path; actionName = $actionName
+                                            }
+                                            $filtered++
+                                            continue
+                                        }
+
+                                        $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config
+                                        if (-not $matchRes.IsSuccess) {
+                                            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Trigger evaluation failed for audit PDF.' -Data @{
+                                                path = [string]$candidate.path; actionName = $actionName; error = $matchRes.Message
+                                            }
+                                            continue
+                                        }
+                                        if (-not [bool]$matchRes.Data.matched) {
+                                            $reason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { 'no_match' }
+                                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any trigger rule.' -Data @{
+                                                path = [string]$candidate.path
+                                                actionName = $actionName
+                                                descriptionPreview = if ($dd.Length -gt 120) { $dd.Substring(0, 120) } else { $dd }
+                                                reason = $reason
+                                            }
+                                            continue
+                                        }
+
+                                        $ruleObj = $matchRes.Data.rule
+                                        if ([string]$ruleObj.jobType -ne 'QC_PREPEND') { continue }
+
+                                        $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
+                                        if (-not $jobRes.IsSuccess) { continue }
+                                        $job = [hashtable]$jobRes.Data.job
+                                        $accepted++
+                                        $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                        $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
+
+                                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
+                                            jobId          = [string]$job['id']
+                                            jobType        = 'QC_PREPEND'
+                                            sourcePath     = ($fp + '\' + $itemName)
+                                            triggerSource  = 'audit_trail'
+                                            auditActionName = $actionName
+                                            dryRun         = $isDryRun
+                                            wouldDedupe    = $wouldDedupe
+                                        }
+
+                                        if (-not $isDryRun -and -not $wouldDedupe) {
+                                            $enqRes = Add-QCQueueJob -Job $job -Config $config
+                                            if ($enqRes.IsSuccess) { $enqueued++ }
+                                        } elseif ($wouldDedupe) { $duplicates++ }
+                                    } catch {
+                                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_PREPEND evaluation threw.' -Data @{
+                                            path = ($fp + '\' + $itemName)
+                                            actionName = $actionName
+                                            error = $_.Exception.Message
+                                        }
+                                    }
                                 }
                             } catch {
                                 $errors++
@@ -654,8 +693,6 @@ if ($statusSetRules.Count -ge 0) {
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
 
-            # Select-Object -First 1 already yields a single hashtable (or $null). Avoid @() which forces object[].
-            $statusRuleObj = ($statusSetRules | Sort-Object -Property priority | Select-Object -First 1)
             foreach ($entry in @($pwFolders)) {
                 try {
                     $fp = [string]$entry.FolderPath

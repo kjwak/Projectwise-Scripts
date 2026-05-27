@@ -110,6 +110,64 @@ function Get-PWDocDescription {
     return ''
 }
 
+function Get-PWDocumentDescriptionForFolder {
+    <#
+    .SYNOPSIS
+    Reads document Description reliably for audit-trail processing (GUID lookup, then folder search).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = ''
+    )
+
+    if ($DocumentGuid) {
+        try {
+            $byGuid = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($DocumentGuid) -ErrorAction SilentlyContinue)
+            if ($byGuid -and $byGuid.Count -gt 0) {
+                $dd = Get-PWDocDescription -Doc $byGuid[0]
+                if (-not [string]::IsNullOrWhiteSpace($dd)) { return $dd }
+            }
+        } catch { }
+    }
+
+    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+
+    $cmd = Get-Command -Name 'Get-PWDocumentsBySearchWithReturnColumns' -ErrorAction SilentlyContinue
+    if ($cmd) {
+        try {
+            $params = @{
+                FolderPath     = $apiPath
+                JustThisFolder = $true
+                DocumentName   = $DocumentName
+                ErrorAction    = 'SilentlyContinue'
+            }
+            if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
+                $params['ColumnsToReturn'] = @('Description', 'Name', 'DocumentName')
+            } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
+                $params['ReturnColumns'] = @('Description', 'Name', 'DocumentName')
+            }
+            $row = & $cmd @params | Select-Object -First 1
+            if ($row) {
+                $dd = Get-PWDocDescription -Doc $row
+                if (-not [string]::IsNullOrWhiteSpace($dd)) { return $dd }
+            }
+        } catch { }
+    }
+
+    try {
+        $doc = Get-PWDocumentsBySearch -FolderPath $apiPath -JustThisFolder -DocumentName $DocumentName -PopulatePath -ErrorAction SilentlyContinue
+        if ($doc) {
+            $dd = Get-PWDocDescription -Doc $doc
+            if (-not [string]::IsNullOrWhiteSpace($dd)) { return $dd }
+        }
+    } catch { }
+
+    return ''
+}
+
 function Get-PWDocLastModifiedUtc {
     [CmdletBinding()]
     param([AllowNull()][object]$Doc)
@@ -369,6 +427,208 @@ function Find-PWSheetsFoldersUnderRoot {
         $list += @{ DatasourceName = $DatasourceName; FolderPath = $folderPath; OneLevelDeep = $true }
     }
     return $list
+}
+
+function Get-PWDocumentAttributeMap {
+    <#
+    .SYNOPSIS
+    Parses .Attributes sorted-list bags from a Get-PWDocumentsBySearchWithReturnColumns row into a hashtable.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][object]$DocRow)
+
+    $map = @{}
+    if (-not $DocRow -or -not $DocRow.Attributes) { return $map }
+    foreach ($bag in @($DocRow.Attributes)) {
+        if ($bag -is [System.Collections.IDictionary]) {
+            foreach ($k in $bag.Keys) {
+                $map[[string]$k] = [string]$bag[$k]
+            }
+        }
+    }
+    return $map
+}
+
+function Get-PWDocumentEmailContacts {
+    <#
+    .SYNOPSIS
+    Reads EM_Designer_Email and EM_Reviewer_Email from a document in a folder via search-with-columns API.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DesignerEmailColumn = 'EM_Designer_Email',
+        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
+    )
+
+    $cmd = Get-Command -Name 'Get-PWDocumentsBySearchWithReturnColumns' -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = 'Get-PWDocumentsBySearchWithReturnColumns not available' }
+    }
+
+    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+
+    $cols = @($DesignerEmailColumn, $ReviewerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $row = $null
+    try {
+        $params = @{
+            FolderPath = $apiPath
+            JustThisFolder = $true
+            DocumentName = $DocumentName
+            ErrorAction = 'Stop'
+        }
+        if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
+            $params['ColumnsToReturn'] = $cols
+        } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
+            $params['ReturnColumns'] = $cols
+        }
+        $row = & $cmd @params | Select-Object -First 1
+    } catch {
+        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = $_.Exception.Message }
+    }
+
+    if (-not $row) {
+        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = 'Document not found' }
+    }
+
+    $attrs = Get-PWDocumentAttributeMap -DocRow $row
+    $designer = if ($attrs.ContainsKey($DesignerEmailColumn)) { [string]$attrs[$DesignerEmailColumn] } else { '' }
+    $reviewer = if ($attrs.ContainsKey($ReviewerEmailColumn)) { [string]$attrs[$ReviewerEmailColumn] } else { '' }
+    return @{
+        designerEmail = $designer.Trim()
+        reviewerEmail = $reviewer.Trim()
+        found = $true
+        document = $row
+        error = $null
+    }
+}
+
+function _PWD-InvokeUpdatePWDocumentAttributes {
+    param(
+        [Parameter(Mandatory)][object]$Document,
+        [Parameter(Mandatory)][hashtable]$Attributes
+    )
+
+    $cmd = Get-Command -Name 'Update-PWDocumentAttributes' -ErrorAction SilentlyContinue
+    if (-not $cmd) { throw 'Update-PWDocumentAttributes is not available.' }
+    if (-not $Attributes -or $Attributes.Keys.Count -eq 0) { return $false }
+
+    $args = @{}
+    $docParam = if ($cmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' }
+        elseif ($cmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' }
+        elseif ($cmd.Parameters.ContainsKey('Document')) { 'Document' }
+        else { $null }
+    $attrsParam = if ($cmd.Parameters.ContainsKey('Attributes')) { 'Attributes' } else { $null }
+    if ($docParam) { $args[$docParam] = @($Document) }
+    if ($attrsParam) { $args[$attrsParam] = $Attributes }
+    if ($cmd.Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
+
+    if ($docParam -and $attrsParam) {
+        $r = & $cmd @args -ErrorAction Stop
+        if ($null -ne $r -and $r -is [bool]) { return $r }
+        return $true
+    }
+    if ($attrsParam) {
+        & $cmd $Document @args -ErrorAction Stop | Out-Null
+        return $true
+    }
+    & $cmd $Document $Attributes -ErrorAction Stop | Out-Null
+    return $true
+}
+
+function Sync-PWQcPdfEmailAttributesFromSourcePdf {
+    <#
+    .SYNOPSIS
+    Copies EM_Designer_Email and EM_Reviewer_Email from the source sheet PDF to the matching *-qc.pdf document.
+    .DESCRIPTION
+    The source .pdf is the source of truth. When the QC PDF is missing these values or they differ,
+    updates the QC PDF environment attributes to match the source.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][string]$QcDocumentName,
+        [string]$DesignerEmailColumn = 'EM_Designer_Email',
+        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email',
+        [switch]$PassThru
+    )
+
+    $result = @{
+        updated = $false
+        skipped = $true
+        reason = ''
+        sourceDesignerEmail = ''
+        sourceReviewerEmail = ''
+        qcDesignerEmailBefore = ''
+        qcReviewerEmailBefore = ''
+        attributesWritten = @()
+    }
+
+    $source = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $SourceDocumentName `
+        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
+    if (-not $source.found) {
+        $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $result.sourceDesignerEmail = [string]$source.designerEmail
+    $result.sourceReviewerEmail = [string]$source.reviewerEmail
+
+    $qc = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $QcDocumentName `
+        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
+    if (-not $qc.found) {
+        $result.reason = if ($qc.error) { "QC PDF not found or unreadable: $($qc.error)" } else { 'QC PDF not found.' }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $qcDoc = $qc.document
+    $result.qcDesignerEmailBefore = [string]$qc.designerEmail
+    $result.qcReviewerEmailBefore = [string]$qc.reviewerEmail
+
+    $toWrite = @{}
+    $sourceDesigner = [string]$source.designerEmail
+    $sourceReviewer = [string]$source.reviewerEmail
+    $qcDesigner = [string]$qc.designerEmail
+    $qcReviewer = [string]$qc.reviewerEmail
+
+    if ($sourceDesigner -ne $qcDesigner) {
+        $toWrite[$DesignerEmailColumn] = $sourceDesigner
+        $result.attributesWritten += $DesignerEmailColumn
+    }
+    if ($sourceReviewer -ne $qcReviewer) {
+        $toWrite[$ReviewerEmailColumn] = $sourceReviewer
+        $result.attributesWritten += $ReviewerEmailColumn
+    }
+
+    if ($toWrite.Keys.Count -eq 0) {
+        $result.skipped = $true
+        $result.reason = 'QC PDF email attributes already match source PDF.'
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $target = "$FolderPath\$QcDocumentName"
+    if ($PSCmdlet.ShouldProcess($target, "Sync email attributes from $SourceDocumentName")) {
+        try {
+            [void]_PWD-InvokeUpdatePWDocumentAttributes -Document $qcDoc -Attributes $toWrite
+            $result.updated = $true
+            $result.skipped = $false
+            $result.reason = 'Updated QC PDF email attributes from source PDF.'
+        } catch {
+            $result.reason = "Failed to update QC PDF attributes: $($_.Exception.Message)"
+        }
+    } else {
+        $result.skipped = $true
+        $result.reason = 'WhatIf: would update QC PDF email attributes from source PDF.'
+        $result.attributesWritten = @($toWrite.Keys)
+    }
+
+    if ($PassThru) { return $result }
 }
 
 Export-ModuleMember -Function *

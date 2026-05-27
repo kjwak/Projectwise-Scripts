@@ -17,24 +17,31 @@ After re-checking the latest branch, the original conclusion still stands: the r
 
 ## Updated recommendations (same direction, tightened scope)
 
-### Priority 1: runtime foundation module
-Create `modules/Core.Runtime.psm1` with:
+### Priority 1: runtime foundation module — DONE
+~~Create `modules/Core.Runtime.psm1`~~ with:
 - `ConvertTo-HashtableDeep`
 - `Read-QCAppSettings`
 - `Write-QCJsonLog`
+- `Get-QCTimestamp` (MST/MDT standardized timestamps)
 
-Then replace local copies in all scripts.
+`Core.Runtime.psm1` exists and is imported by all scripts. Local `_ToHashtable` / `_Read-AppSettings` copies have been removed from most scripts.
+
+### Priority 1b: database telemetry module — DONE
+`modules/Core.Database.psm1` created with SQL Server connectivity, schema management, and fire-and-forget telemetry writers. Wired into `Watch-QCTrigger.ps1` and `Run-QCProcessor.ps1`.
+
+### Priority 1c: audit poller module — DONE
+`modules/PW.AuditPoller.psm1` created with audit-trail scanning, watermark management, and watch-root matching. Integrated into `Watch-QCTrigger.ps1` as the primary trigger source.
 
 ### Priority 2: PW discovery utilities
 Extend `modules/PW.Discovery.psm1` with:
 - metadata helpers (`Get-PWDocName`, `Get-PWDocDescription`, `Get-PWDocLastModifiedUtc`)
 - folder traversal helpers used by watcher discovery
 
-### Priority 3: hashing utilities
-Create `modules/Core.Hashing.psm1` and move SHA helpers there.
+### Priority 3: hashing utilities — DONE
+`modules/Core.Hashing.psm1` exists and is used by status-set processing.
 
-### Priority 4: worker policy extraction
-Add `modules/QC.Worker.psm1` (or extend queue module) for lock-retry + transition policy currently in `Run-QCProcessor.ps1`.
+### Priority 4: worker policy extraction — DONE
+`modules/QC.Worker.psm1` exists with lock-retry and transition policy.
 
 ## What should remain in scripts
 Keep scripts as thin entrypoints only:
@@ -44,11 +51,21 @@ Keep scripts as thin entrypoints only:
 - process exit code.
 
 ## Proposed acceptance criteria for completion
-1. No `_ToHashtable` defined in `scripts/*.ps1`.
-2. No script-local `_Read-AppSettings*` implementation.
-3. Watcher-specific algorithmic helpers moved to modules.
-4. Worker retry/transition logic callable from module API.
-5. Existing script behavior unchanged (log codes and job-state transitions preserved).
+1. No `_ToHashtable` defined in `scripts/*.ps1`. — **Mostly done** (some legacy scripts remain)
+2. No script-local `_Read-AppSettings*` implementation. — **Mostly done**
+3. Watcher-specific algorithmic helpers moved to modules. — **Partially done** (audit poller extracted; some PW discovery helpers remain in Watch-QCTrigger)
+4. Worker retry/transition logic callable from module API. — **Done** (`QC.Worker.psm1`)
+5. Existing script behavior unchanged (log codes and job-state transitions preserved). — **Verified**
+
+## Current module inventory (30 modules)
+
+**Core**: `Core.Config`, `Core.Database`, `Core.Hashing`, `Core.Logging`, `Core.Metrics`, `Core.Paths`, `Core.Results`, `Core.Runtime`
+
+**QC**: `QC.Filters`, `QC.JobFactory`, `QC.Notifications`, `QC.NotificationGraph`, `QC.NotificationMock`, `QC.NotificationTemplates`, `QC.Processors`, `QC.Queue.Json`, `QC.Reporting`, `QC.StatusSet`, `QC.Triggers`, `QC.Worker`, `QC.Workflow`
+
+**PW**: `PW.AuditPoller`, `PW.Connection`, `PW.Discovery`
+
+**Orchestrator**: `Orchestrator.Pipeline`
 
 ## Bottom line
-Reassessment confirms the previous guidance is still correct on the latest branch; the key next step is execution: consolidate duplicated helpers into modules and keep scripts as thin entrypoints.
+Most Priority 1 items are complete. Remaining work is consolidating PW discovery helpers (Priority 2) and cleaning up the few remaining legacy script-local helper copies.

@@ -8,11 +8,14 @@
 # global-scope exports.
 
 $script:QCRelevantActions = @{
+    1001 = 'DOCUMENT_CREATE'
     1002 = 'DOCUMENT_MODIFY'
     1003 = 'DOCUMENT_ATTR'
+    1006 = 'DOCUMENT_FILE_REP'
     1007 = 'DOCUMENT_CIN'
     1012 = 'DOCUMENT_STATE'
     1015 = 'DOCUMENT_VERSION'
+    1020 = 'DOCUMENT_DELETE'
 }
 
 function _AuditPoller-BuildMatchRoots {
@@ -35,6 +38,23 @@ function _AuditPoller-MatchesWatchRoot {
         if ($FolderPath -like "$root*") { return $true }
     }
     return $false
+}
+
+function _AuditPoller-GetWatchRootConfigForFolder {
+    param([string]$FolderPath, [array]$WatchRootConfigs)
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
+    foreach ($cfg in @($WatchRootConfigs)) {
+        if (-not $cfg) { continue }
+        $rootPath = [string]$cfg.path
+        if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+        $testRoots = @($rootPath)
+        if ($rootPath -like 'Documents\*') { $testRoots += $rootPath.Substring('Documents\'.Length) }
+        else { $testRoots += "Documents\$rootPath" }
+        foreach ($tr in $testRoots) {
+            if ($FolderPath -like "$tr*") { return $cfg }
+        }
+    }
+    return $null
 }
 
 function _AuditPoller-GetSheetsSubpath {
@@ -108,7 +128,8 @@ function Invoke-AuditTrailScan {
 
     # 1. Query dms_audt
     $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
-    $sql = "SELECT o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE o_acttime >= '$sinceStr' ORDER BY o_acttime DESC"
+    $actionList = (@($script:QCRelevantActions.Keys) | Sort-Object) -join ','
+    $sql = "SELECT o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE o_acttime >= '$sinceStr' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime DESC"
 
     $allEvents = @()
     try {
@@ -242,17 +263,26 @@ VALUES
             } catch { $stats.dbSkipped++ }
         }
 
+        $enableQcPrepend = $false
+        $enableStatusSet = $false
         if ($isWatchMatch) {
+            $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
+            if ($rootCfg) {
+                try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
+                try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
+            }
             $candidates += @{
-                objGuid        = $objGuid
-                parentGuid     = $parentGuid
-                actionCode     = $actionCode
-                actionName     = $actionName
-                itemName       = [string]$evt.o_itemname
-                actTime        = $actTime
-                resolvedFolder = $resolvedFolder
-                isSheetsFolder = $isSheetsFolder
-                candidateType  = $candidateType
+                objGuid         = $objGuid
+                parentGuid      = $parentGuid
+                actionCode      = $actionCode
+                actionName      = $actionName
+                itemName        = [string]$evt.o_itemname
+                actTime         = $actTime
+                resolvedFolder  = $resolvedFolder
+                isSheetsFolder  = $isSheetsFolder
+                candidateType   = $candidateType
+                enableQcPrepend = $enableQcPrepend
+                enableStatusSet = $enableStatusSet
             }
         }
     }

@@ -226,8 +226,33 @@ Run under the same PowerShell host / MTA profile used by QC workers (`pwps_dab`)
 
 ---
 
+## Integration in Pipeline
+
+The email attribute extraction method documented above is used in:
+
+- **`legacy/prepend_qc.ps1` (QC print)** — After each successful QC prepend (create or update `*-qc.pdf`), `Sync-PWQcPdfEmailAttributesFromSourcePdf` copies `EM_Designer_Email` and `EM_Reviewer_Email` from the **source sheet PDF** to the **QC PDF**. The source `.pdf` is the source of truth; the QC PDF is updated when those attributes are missing or differ.
+- **`Watch-QCTrigger.ps1`** — During both full reconciliation scans and audit-trail scans, `Get-PWDocumentsBySearchWithReturnColumns` is called with `EM_Designer_Email` and `EM_Reviewer_Email` as return columns. Extracted values are written to the `sheet_index` database table via `Write-QCSheetIndex`.
+- **`Test-SheetIndexAndAuditPoller.ps1`** — Validation script uses the same extraction pattern to populate `sheet_index` during testing.
+- **`QC.Notifications.psm1`** — Uses the `_QCN-GetAttributeValue` helper to read email attributes from document objects for notification routing.
+
+The `sheet_index` table (`docs/database-telemetry.md`) stores extracted emails in `designer_email` and `reviewer_email` columns, and workflow state in `pw_state_name`.
+
+### Module helpers (`PW.Discovery.psm1`)
+
+| Function | Purpose |
+| --- | --- |
+| `Get-PWDocumentAttributeMap` | Parse `.Attributes` bags from a search row |
+| `Get-PWDocumentEmailContacts` | Read designer/reviewer emails for one document |
+| `Sync-PWQcPdfEmailAttributesFromSourcePdf` | Copy emails from source PDF to matching `*-qc.pdf` |
+
+### Diagnostic Script
+
+`tools/discovery/Test-PWDocumentProperties.ps1` can be used to enumerate all properties, attributes, and environment columns available on documents in the current PW environment. Run this when email attributes are not populating as expected.
+
 ## Change log
 
 | Date | Change |
 | --- | --- |
 | 2026-05-19 | Initial write-up from `Seg_1` verification; multi-environment column map and config schema. |
+| 2026-05-26 | Added pipeline integration notes; documented `sheet_index` usage and diagnostic script. |
+| 2026-05-26 | QC print sync: source PDF → `*-qc.pdf` via `Sync-PWQcPdfEmailAttributesFromSourcePdf`. |

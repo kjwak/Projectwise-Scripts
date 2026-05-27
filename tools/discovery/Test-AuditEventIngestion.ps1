@@ -50,11 +50,14 @@ foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1
 }
 
 $QCRelevantActions = @{
+    1001 = 'DOCUMENT_CREATE'
     1002 = 'DOCUMENT_MODIFY'
     1003 = 'DOCUMENT_ATTR'
+    1006 = 'DOCUMENT_FILE_REP'
     1007 = 'DOCUMENT_CIN'
     1012 = 'DOCUMENT_STATE'
     1015 = 'DOCUMENT_VERSION'
+    1020 = 'DOCUMENT_DELETE'
 }
 
 $AllActionMap = @{
