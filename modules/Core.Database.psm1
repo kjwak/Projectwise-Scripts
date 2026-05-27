@@ -1189,6 +1189,33 @@ VALUES
     } catch { }
 }
 
+function Update-QCSheetIndexPwStateName {
+    <#
+    .SYNOPSIS
+    Updates only pw_state_name for one sheet_index row. Does not touch email columns.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$PwStateName
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    try {
+        $sql = @"
+UPDATE sheet_index
+SET pw_state_name = @pwStateName,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@
+        $params = @{
+            docGuid     = $DocumentGuid
+            pwStateName = $PwStateName
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
 function Update-QCSheetQcPdf {
     <#
     .SYNOPSIS
@@ -1307,4 +1334,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetQcPdf
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf

@@ -18,6 +18,14 @@ $script:QCRelevantActions = @{
     1020 = 'DOCUMENT_DELETE'
 }
 
+function _AuditPoller-NormalizeFolderPath {
+    param([AllowNull()][string]$FolderPath)
+    $t = ($FolderPath -as [string]).Trim().TrimEnd('\').Replace('/', '\')
+    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+    if ($t -match '^(?i)documents\\') { return $t }
+    return ('Documents\' + $t)
+}
+
 function _AuditPoller-BuildMatchRoots {
     param([string[]]$WatchRoots)
     $matchRoots = [System.Collections.Generic.List[string]]::new()
@@ -34,15 +42,19 @@ function _AuditPoller-BuildMatchRoots {
 
 function _AuditPoller-MatchesWatchRoot {
     param([string]$FolderPath, [System.Collections.Generic.List[string]]$MatchRoots)
+    $fp = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if (-not $fp) { return $false }
     foreach ($root in $MatchRoots) {
-        if ($FolderPath -like "$root*") { return $true }
+        $r = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$root)
+        if ($r -and $fp -like "$r*") { return $true }
     }
     return $false
 }
 
 function _AuditPoller-GetWatchRootConfigForFolder {
     param([string]$FolderPath, [array]$WatchRootConfigs)
-    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
+    $fp = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if (-not $fp) { return $null }
     foreach ($cfg in @($WatchRootConfigs)) {
         if (-not $cfg) { continue }
         $rootPath = [string]$cfg.path
@@ -51,7 +63,8 @@ function _AuditPoller-GetWatchRootConfigForFolder {
         if ($rootPath -like 'Documents\*') { $testRoots += $rootPath.Substring('Documents\'.Length) }
         else { $testRoots += "Documents\$rootPath" }
         foreach ($tr in $testRoots) {
-            if ($FolderPath -like "$tr*") { return $cfg }
+            $nr = _AuditPoller-NormalizeFolderPath -FolderPath $tr
+            if ($nr -and $fp -like "$nr*") { return $cfg }
         }
     }
     return $null
@@ -59,6 +72,8 @@ function _AuditPoller-GetWatchRootConfigForFolder {
 
 function _AuditPoller-GetSheetsSubpath {
     param([string]$FolderPath, [array]$WatchRootConfigs, [System.Collections.Generic.List[string]]$MatchRoots)
+    $fp = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if (-not $fp) { return $false }
     foreach ($cfg in $WatchRootConfigs) {
         $rootPath = [string]$cfg.path
         $suffix = if ($cfg.sheetsPathFromProject) { [string]$cfg.sheetsPathFromProject } else { 'CADD\Sheets' }
@@ -66,7 +81,8 @@ function _AuditPoller-GetSheetsSubpath {
         if ($rootPath -like 'Documents\*') { $testRoots += $rootPath.Substring('Documents\'.Length) }
         else { $testRoots += "Documents\$rootPath" }
         foreach ($tr in $testRoots) {
-            if ($FolderPath -like "$tr*" -and $FolderPath -like "*$suffix*") {
+            $nr = _AuditPoller-NormalizeFolderPath -FolderPath $tr
+            if ($nr -and $fp -like "$nr*" -and $fp -like "*$suffix*") {
                 return $true
             }
         }
@@ -267,8 +283,11 @@ function Invoke-AuditTrailScan {
                     $fp = [System.IO.Path]::GetDirectoryName($full) -replace '/', '\'
                 }
                 if ($fp) {
-                    $docToFolder[$dg] = $fp
-                    $stats.foldersResolved++
+                    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $fp
+                    if ($canonical) {
+                        $docToFolder[$dg] = $canonical
+                        $stats.foldersResolved++
+                    }
                 }
             }
         } catch { }

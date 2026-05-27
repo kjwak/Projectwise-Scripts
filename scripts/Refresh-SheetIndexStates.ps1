@@ -175,14 +175,7 @@ try {
             $target = "$($row.folderPath)\$($row.documentName)"
             if ($PSCmdlet.ShouldProcess($target, "Update sheet_index.pw_state_name to '$pwState'")) {
                 try {
-                    Write-QCSheetIndex -Config $config `
-                        -DocumentGuid $dg `
-                        -DocumentName $row.documentName `
-                        -FolderPath $row.folderPath `
-                        -Extension $row.extension `
-                        -SourceType $row.sourceType `
-                        -PwStateName $pwState `
-                        -SetOwnershipFromProjectWise
+                    Update-QCSheetIndexPwStateName -Config $config -DocumentGuid $dg -PwStateName $pwState
                     $summary.dbUpdatesApplied++
                 } catch {
                     $summary.errors += "DB update failed for $dg : $($_.Exception.Message)"

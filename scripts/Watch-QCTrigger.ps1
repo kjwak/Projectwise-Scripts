@@ -516,6 +516,16 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($ac.objGuid) {
                                     $acAction = [string]$ac.actionName
                                     $syncOwnership = $acAction -in @('DOCUMENT_ATTR', 'DOCUMENT_STATE')
+                                    if ($syncOwnership) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist folder.' -Data @{
+                                            actionName     = $acAction
+                                            documentName   = [string]$ac.itemName
+                                            folderPath     = $fp
+                                            documentGuid   = [string]$ac.objGuid
+                                            isSheetsFolder = [bool]$ac.isSheetsFolder
+                                            triggerSource  = 'audit_trail'
+                                        }
+                                    }
                                     if ($syncOwnership -or [bool]$ac.isSheetsFolder) {
                                         $acWatchRoot = ''
                                         try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
@@ -691,7 +701,7 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($config.ContainsKey('qcCommentSync') -and $config.qcCommentSync) {
                                     try { $commentSyncEnabled = [bool]$config.qcCommentSync.enabled } catch { $commentSyncEnabled = $true }
                                 }
-                                $auditActionsAllowed = @('DOCUMENT_MODIFY', 'DOCUMENT_FILE_REP', 'DOCUMENT_VERSION')
+                                $auditActionsAllowed = @('DOCUMENT_MODIFY', 'DOCUMENT_FILE_REP', 'DOCUMENT_VERSION', 'DOCUMENT_ATTR', 'DOCUMENT_STATE')
                                 if ($config.qcCommentSync -and $config.qcCommentSync.auditActions) {
                                     $auditActionsAllowed = @($config.qcCommentSync.auditActions | ForEach-Object { [string]$_ })
                                 }
