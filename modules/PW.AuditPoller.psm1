@@ -74,7 +74,13 @@ function _AuditPoller-GetSheetsSubpath {
     return $false
 }
 
-function Get-AuditTrailHighWaterMark {
+function _AuditPoller-ParseActTime {
+    param([string]$ActTime)
+    if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
+    try { return [DateTime]::Parse($ActTime) } catch { return $null }
+}
+
+function Get-AuditTrailHighWaterMarkFromDatabase {
     <#
     .SYNOPSIS
     Reads the most recent successful poll_runs watermark_after from the database.
@@ -85,12 +91,97 @@ function Get-AuditTrailHighWaterMark {
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
     try {
-        $res = Invoke-QCDatabaseScalar -Config $Config -Sql "SELECT TOP 1 watermark_after FROM poll_runs WHERE error_message IS NULL ORDER BY started_at DESC"
+        $res = Invoke-QCDatabaseScalar -Config $Config -Sql "SELECT TOP 1 watermark_after FROM poll_runs WHERE error_message IS NULL AND watermark_after IS NOT NULL ORDER BY started_at DESC"
         if ($res.IsSuccess -and $res.Data.value) {
-            try { return [DateTime]::Parse([string]$res.Data.value) } catch { return $null }
+            return _AuditPoller-ParseActTime -ActTime ([string]$res.Data.value)
         }
     } catch { }
     return $null
+}
+
+function Get-AuditTrailCaptureWatermark {
+    <#
+    .SYNOPSIS
+    Returns the latest audit capture timestamp from the local watermark file and/or poll_runs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$WatermarkPath = ''
+    )
+
+    $found = @()
+    if ($WatermarkPath -and (Test-Path -LiteralPath $WatermarkPath)) {
+        try {
+            $raw = (Get-Content -LiteralPath $WatermarkPath -Raw -ErrorAction Stop).Trim()
+            $parsed = _AuditPoller-ParseActTime -ActTime $raw
+            if ($parsed) { $found += $parsed }
+        } catch { }
+    }
+    $db = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
+    if ($db) { $found += $db }
+    if ($found.Count -eq 0) { return $null }
+    return ($found | Sort-Object -Descending | Select-Object -First 1)
+}
+
+function Get-AuditTrailHighWaterMark {
+    <#
+    .SYNOPSIS
+    Back-compat alias for Get-AuditTrailCaptureWatermark (database only when no path given).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$WatermarkPath = ''
+    )
+    return Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
+}
+
+function Set-AuditTrailCaptureWatermark {
+    <#
+    .SYNOPSIS
+    Persists the audit capture high-water mark to the local watermark file.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WatermarkPath,
+        [Parameter(Mandatory)][DateTime]$CapturedThrough
+    )
+
+    try {
+        $dir = Split-Path -Parent $WatermarkPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $value = $CapturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+        Set-Content -LiteralPath $WatermarkPath -Value $value -Encoding UTF8 -NoNewline
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-AuditTrailPollWindow {
+    <#
+    .SYNOPSIS
+    Computes the audit poll interval: (last capture, now], or lookback on first run.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$WatermarkPath = '',
+        [int]$LookbackSeconds = 120
+    )
+
+    $until = Get-Date
+    $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
+    $since = if ($lastCapture) { $lastCapture } else { $until.AddSeconds(-$LookbackSeconds) }
+    $watermarkBefore = if ($lastCapture) { $lastCapture.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+
+    return @{
+        since           = $since
+        until           = $until
+        watermarkBefore = $watermarkBefore
+        isFirstCapture  = (-not $lastCapture)
+    }
 }
 
 function Invoke-AuditTrailScan {
@@ -112,6 +203,7 @@ function Invoke-AuditTrailScan {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][DateTime]$Since,
+        [Parameter()][DateTime]$Until = [DateTime]::Now,
         [array]$WatchRootConfigs = @()
     )
 
@@ -126,10 +218,11 @@ function Invoke-AuditTrailScan {
         dbSkipped       = 0
     }
 
-    # 1. Query dms_audt
+    # 1. Query dms_audt — exclusive lower bound (last capture), inclusive upper bound (poll start time)
     $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
+    $untilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
     $actionList = (@($script:QCRelevantActions.Keys) | Sort-Object) -join ','
-    $sql = "SELECT o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE o_acttime >= '$sinceStr' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime DESC"
+    $sql = "SELECT TOP 500 o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE o_acttime > '$sinceStr' AND o_acttime <= '$untilStr' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime ASC"
 
     $allEvents = @()
     try {
@@ -149,7 +242,8 @@ function Invoke-AuditTrailScan {
         $sw.Stop()
         return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No QC-relevant audit events in window.' -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
-            watermarkAfter = $sinceStr; durationMs = [int]$sw.ElapsedMilliseconds
+            watermarkAfter = $untilStr; durationMs = [int]$sw.ElapsedMilliseconds
+            pollWindow = @{ since = $sinceStr; until = $untilStr }
         }
     }
 
@@ -200,7 +294,8 @@ function Invoke-AuditTrailScan {
     $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
 
     $candidates = @()
-    $watermarkAfter = $sinceStr
+    $watermarkAfter = $untilStr
+    $sinceDt = _AuditPoller-ParseActTime -ActTime $sinceStr
 
     foreach ($evt in $relevant) {
         $actionCode = [int]$evt.o_action
@@ -224,7 +319,9 @@ function Invoke-AuditTrailScan {
         }
 
         $actTime = [string]$evt.o_acttime
-        if ($actTime -gt $watermarkAfter) { $watermarkAfter = $actTime }
+        $actDt = _AuditPoller-ParseActTime -ActTime $actTime
+        if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
+        if ($sinceDt -and $actDt -and ($actDt -le $sinceDt)) { continue }
 
         $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
 
@@ -298,6 +395,7 @@ VALUES
         stats          = $stats
         watermarkAfter = $watermarkAfter
         durationMs     = [int]$sw.ElapsedMilliseconds
+        pollWindow     = @{ since = $sinceStr; until = $untilStr }
     }
 }
 
@@ -329,4 +427,4 @@ function Reset-AuditPollCycleCounter {
     try { Set-Content -LiteralPath $CounterPath -Value '0' -Encoding UTF8 } catch { }
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter
+Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter

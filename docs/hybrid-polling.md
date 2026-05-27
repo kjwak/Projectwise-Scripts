@@ -12,11 +12,12 @@ The pipeline uses a **hybrid polling** model where ProjectWise audit-trail event
 
 On each watcher tick, `Invoke-AuditTrailScan` (from `PW.AuditPoller.psm1`) queries the `dms_audt` table via `Select-PWSQL`:
 
-1. Read the high-water mark from the `poll_runs` database table (or look back `lookbackSeconds` on first run).
-2. `SELECT TOP 500` from `dms_audt` where `o_acttime > @watermark` and action is in the relevant set.
-3. Resolve document GUIDs to folder paths via batched `Get-PWDocumentsByGUIDs` (chunks of 200).
-4. Match resolved folders against configured watch roots.
-5. Return structured candidates with action name, document info, and folder path.
+1. Read the capture watermark from `queue/_watcher/audit-capture-watermark.txt` and/or `poll_runs.watermark_after` (whichever is latest). On first run, look back `lookbackSeconds`.
+2. `SELECT TOP 500` from `dms_audt` where `o_acttime > @lastCapture` and `o_acttime <= @pollStart` and action is in the relevant set.
+3. After a successful scan, persist the new watermark so the next tick only queries and processes events in `(lastCapture, now]`.
+4. Resolve document GUIDs to folder paths via batched `Get-PWDocumentsByGUIDs` (chunks of 200).
+5. Match resolved folders against configured watch roots.
+6. Return structured candidates with action name, document info, and folder path.
 
 Relevant audit actions monitored:
 
@@ -54,7 +55,10 @@ If `Invoke-AuditTrailScan` fails (database unreachable, PW SQL error, etc.) and 
 | Function | Purpose |
 |----------|---------|
 | `Invoke-AuditTrailScan` | Core audit poll: query `dms_audt`, resolve GUIDs, match watch roots, return candidates |
-| `Get-AuditTrailHighWaterMark` | Read latest `watermark_after` from `poll_runs` table |
+| `Get-AuditTrailPollWindow` | Compute `(since, until]` from last capture + lookback on first run |
+| `Get-AuditTrailCaptureWatermark` | Read latest capture time from file and/or `poll_runs` |
+| `Set-AuditTrailCaptureWatermark` | Write capture time to `audit-capture-watermark.txt` |
+| `Get-AuditTrailHighWaterMark` | Alias for `Get-AuditTrailCaptureWatermark` |
 | `Get-AuditPollCycleCounter` | Read current cycle counter (initializes to 0 for first-run reconciliation) |
 | `Reset-AuditPollCycleCounter` | Reset cycle counter after reconciliation |
 
@@ -81,7 +85,8 @@ Each tick:
        → Invoke-AuditTrailScan
        → Process candidates (STATUS_SET_GEN, QC_PREPEND)
        → Populate sheet_index for sheets found in audit events
-  3. Write poll_runs telemetry to database
+  3. `Invoke-QCQueueStartupCheck` — queue stats + stale/orphan `running\` recovery (also in `run_prepend_qc -NoDashboard`)
+  4. Write poll_runs telemetry to database
 ```
 
 ### QC_PREPEND Trigger

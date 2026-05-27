@@ -82,13 +82,38 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 $watcher = Join-Path $PSScriptRoot 'Watch-QCTrigger.ps1'
 $worker = Join-Path $PSScriptRoot 'Run-QCProcessor.ps1'
 
+$cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath
+try {
+  $startupRes = Invoke-QCQueueStartupCheck -Config $cfg -ClearWatcherActive
+  $startupData = if ($startupRes.IsSuccess) { $startupRes.Data } else { @{} }
+  $qStates = $null
+  if ($startupData.queueStats -and $startupData.queueStats.states) { $qStates = $startupData.queueStats.states }
+  $pend = 0; $run = 0
+  if ($qStates) {
+    try { $pend = [int]$qStates.pending } catch { }
+    try { $run = [int]$qStates.running } catch { }
+  }
+  $rec = $startupData.recovery
+  $requeued = 0; $failedRec = 0; $orphans = 0
+  if ($rec) {
+    try { $requeued = [int]$rec.recoveredToPending } catch { }
+    try { $failedRec = [int]$rec.recoveredToFailed } catch { }
+    try { $orphans = [int]$rec.recoveredOrphan } catch { }
+  }
+  Write-Host ("Queue startup: pending={0} running={1} | recovery requeued={2} failed={3} orphans={4}" -f $pend, $run, $requeued, $failedRec, $orphans) -ForegroundColor Cyan
+  if ($startupData.errors -and @($startupData.errors).Count -gt 0) {
+    Write-Warning ("Queue startup partial errors: {0}" -f (($startupData.errors | ForEach-Object { [string]$_ }) -join '; '))
+  }
+} catch {
+  Write-Warning ("Queue startup check failed: {0}" -f $_.Exception.Message)
+}
+
 while ($true) {
   # 1) detect/enqueue
   & $watcher -AppSettingsPath $AppSettingsPath
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # 2) process queue until empty (bounded per poll)
-  $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath
   $processed = 0
   while ($processed -lt $MaxJobsPerPoll) {
     $stats = Get-QCQueueStats -Config $cfg

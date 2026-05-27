@@ -735,15 +735,17 @@ function Write-QCPollRunTelemetry {
         [int]$JobsEnqueued = 0,
         [Nullable[int]]$DurationMs,
         [string]$ErrorMessage,
+        [string]$WatermarkBefore,
+        [string]$WatermarkAfter,
         [bool]$IsReconciliation = $false
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return }
     try {
         $sql = @"
 INSERT INTO poll_runs
-    (started_at, completed_at, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation)
+    (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation)
 VALUES
-    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation)
+    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation)
 "@
         $params = @{
             eventsFetched     = $EventsFetched
@@ -752,6 +754,8 @@ VALUES
             jobsEnqueued      = $JobsEnqueued
             durationMs        = if ($null -ne $DurationMs) { $DurationMs } else { 0 }
             errorMessage      = if ($ErrorMessage) { $ErrorMessage } else { $null }
+            watermarkBefore   = if ($WatermarkBefore) { $WatermarkBefore } else { $null }
+            watermarkAfter    = if ($WatermarkAfter) { $WatermarkAfter } else { $null }
             isReconciliation  = if ($IsReconciliation) { 1 } else { 0 }
         }
         Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null

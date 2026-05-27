@@ -253,8 +253,48 @@ $localCacheSkips = 0
 $hashCacheHits = 0
 $hashCacheMisses = 0
 $triggerRuleCacheUses = 0
+$auditPollTelemetry = $null
+$watcherRanReconciliationScan = $false
 
 $queueRoot = _Get-WatcherQueueRoot -Config $config
+
+try {
+    $startupRes = Invoke-QCQueueStartupCheck -Config $config -ClearWatcherActive
+    $startupData = if ($startupRes.IsSuccess) { $startupRes.Data } else { @{} }
+    $qStates = $null
+    if ($startupData.queueStats -and $startupData.queueStats.states) { $qStates = $startupData.queueStats.states }
+    $sqPending = 0; $sqRunning = 0; $sqSucceeded = 0; $sqFailed = 0
+    if ($qStates) {
+        try { $sqPending = [int]$qStates.pending } catch { }
+        try { $sqRunning = [int]$qStates.running } catch { }
+        try { $sqSucceeded = [int]$qStates.succeeded } catch { }
+        try { $sqFailed = [int]$qStates.failed } catch { }
+    }
+    $sqRec = $startupData.recovery
+    $sqRequeued = 0; $sqFailedRec = 0; $sqOrphans = 0
+    if ($sqRec) {
+        try { $sqRequeued = [int]$sqRec.recoveredToPending } catch { }
+        try { $sqFailedRec = [int]$sqRec.recoveredToFailed } catch { }
+        try { $sqOrphans = [int]$sqRec.recoveredOrphan } catch { }
+    }
+    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QUEUE_STARTUP' -Message 'Queue startup check completed.' -Data @{
+        queueRoot            = $queueRoot
+        pending              = $sqPending
+        running              = $sqRunning
+        succeeded            = $sqSucceeded
+        failed               = $sqFailed
+        recoveredToPending   = $sqRequeued
+        recoveredToFailed    = $sqFailedRec
+        recoveredOrphan      = $sqOrphans
+        startupErrors        = @($startupData.errors)
+    }
+} catch {
+    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_QUEUE_STARTUP_FAILED' -Message 'Queue startup check threw.' -Data @{
+        queueRoot = $queueRoot
+        error     = [string]$_.Exception.Message
+    }
+}
+
 $localCachePath = Join-Path (Join-Path $queueRoot '_watcher') 'local-file-cache.json'
 $triggerFilterConfigHash = _Get-WatcherConfigHash -Config $config
 $localWatcherCache = _Read-LocalWatcherCache -Path $localCachePath
@@ -385,8 +425,10 @@ if ($statusSetRules.Count -ge 0) {
                         try { $lookbackSeconds = [int]$auditPollerCfg.lookbackSeconds } catch { $lookbackSeconds = 120 }
                     }
 
-                    $hwm = Get-AuditTrailHighWaterMark -Config $config
-                    $since = if ($hwm) { $hwm.AddSeconds(-10) } else { (Get-Date).AddSeconds(-$lookbackSeconds) }
+                    $watermarkPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
+                    $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds
+                    $since = $pollWindow.since
+                    $until = $pollWindow.until
 
                     $watchRootConfigs = @()
                     if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
@@ -395,11 +437,14 @@ if ($statusSetRules.Count -ge 0) {
 
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
                         since = $since.ToString('yyyy-MM-dd HH:mm:ss')
+                        until = $until.ToString('yyyy-MM-dd HH:mm:ss')
+                        watermarkBefore = $pollWindow.watermarkBefore
+                        isFirstCapture = [bool]$pollWindow.isFirstCapture
                         cycleNum = $cycleNum
                         reconcileEvery = $reconcileEvery
                     }
 
-                    $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -WatchRootConfigs $watchRootConfigs
+                    $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
                         $fallback = $true
@@ -413,6 +458,23 @@ if ($statusSetRules.Count -ge 0) {
                     } else {
                         $auditData = $auditRes.Data
                         $auditCandidates = @($auditData.candidates)
+                        $watermarkAfterStr = [string]$auditData.watermarkAfter
+                        $capturedThrough = $until
+                        try {
+                            $parsedWm = [DateTime]::Parse($watermarkAfterStr)
+                            if ($parsedWm -gt $capturedThrough) { $capturedThrough = $parsedWm }
+                        } catch { }
+                        [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
+
+                        $auditPollTelemetry = @{
+                            eventsFetched     = [int]$auditData.stats.totalEvents
+                            eventsRelevant    = [int]$auditData.stats.relevantEvents
+                            candidatesCreated = [int]$auditCandidates.Count
+                            watermarkBefore   = $pollWindow.watermarkBefore
+                            watermarkAfter    = $watermarkAfterStr
+                            durationMs        = [int]$auditData.durationMs
+                        }
+
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
                             totalEvents    = $auditData.stats.totalEvents
                             relevantEvents = $auditData.stats.relevantEvents
@@ -420,7 +482,9 @@ if ($statusSetRules.Count -ge 0) {
                             sheetsMatches  = $auditData.stats.sheetsMatches
                             candidates     = $auditCandidates.Count
                             durationMs     = $auditData.durationMs
-                            watermarkAfter = $auditData.watermarkAfter
+                            watermarkBefore = $pollWindow.watermarkBefore
+                            watermarkAfter = $watermarkAfterStr
+                            capturedThrough = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.
@@ -598,6 +662,7 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             if ($isReconciliationCycle) {
+                $watcherRanReconciliationScan = $true
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message 'Running full folder scan (reconciliation cycle).' -Data @{
                     cycleNum = $cycleNum; reconcileEvery = $reconcileEvery
                 }
@@ -1395,13 +1460,25 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     triggerRuleCacheUses = $triggerRuleCacheUses
 }
 
-Write-QCPollRunTelemetry -Config $config `
-    -EventsFetched $fileItems.Count `
-    -EventsRelevant $matched `
-    -CandidatesCreated $accepted `
-    -JobsEnqueued $enqueued `
-    -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
-    -IsReconciliation:$ReconcileStatusSetsFirst.IsPresent
+if ($auditPollTelemetry) {
+    Write-QCPollRunTelemetry -Config $config `
+        -EventsFetched $auditPollTelemetry.eventsFetched `
+        -EventsRelevant $auditPollTelemetry.eventsRelevant `
+        -CandidatesCreated $auditPollTelemetry.candidatesCreated `
+        -JobsEnqueued $enqueued `
+        -DurationMs $auditPollTelemetry.durationMs `
+        -WatermarkBefore $auditPollTelemetry.watermarkBefore `
+        -WatermarkAfter $auditPollTelemetry.watermarkAfter `
+        -IsReconciliation:$false
+} else {
+    Write-QCPollRunTelemetry -Config $config `
+        -EventsFetched $fileItems.Count `
+        -EventsRelevant $matched `
+        -CandidatesCreated $accepted `
+        -JobsEnqueued $enqueued `
+        -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
+        -IsReconciliation:$watcherRanReconciliationScan
+}
 
 exit 0
 

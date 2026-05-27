@@ -1120,6 +1120,50 @@ function Recover-QCStaleJobs {
     }
 }
 
+function Invoke-QCQueueStartupCheck {
+    <#
+    .SYNOPSIS
+    Startup hygiene: queue stats, stale/orphan running-job recovery, optional watcher-active clear.
+    .DESCRIPTION
+    Call once before the first watcher tick or worker loop so stuck running\ jobs from a prior
+    session are requeued/failed and operators can see pending backlog counts.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [switch]$ClearWatcherActive
+    )
+
+    $out = @{
+        queueStats = $null
+        recovery   = $null
+        errors     = [System.Collections.Generic.List[string]]::new()
+    }
+
+    try {
+        $stats = Get-QCQueueStats -Config $Config
+        if ($stats.IsSuccess) { $out.queueStats = $stats.Data } else { [void]$out.errors.Add([string]$stats.Message) }
+    } catch {
+        [void]$out.errors.Add([string]$_.Exception.Message)
+    }
+
+    try {
+        $rec = Recover-QCStaleJobs -Config $Config
+        if ($rec.IsSuccess) { $out.recovery = $rec.Data } else { [void]$out.errors.Add([string]$rec.Message) }
+    } catch {
+        [void]$out.errors.Add([string]$_.Exception.Message)
+    }
+
+    if ($ClearWatcherActive) {
+        try { Clear-QCWatcherActive -Config $Config | Out-Null } catch {
+            [void]$out.errors.Add([string]$_.Exception.Message)
+        }
+    }
+
+    return New-QCSuccessResult -Code 'QUEUE_STARTUP_CHECK_OK' -Message 'Queue startup check completed.' -Data $out
+}
+
 function Test-QCDuplicateJob {
     <#
     .SYNOPSIS
