@@ -97,20 +97,43 @@ function Get-QCCommentSyncPwDocument {
 
     $block = {
         $doc = $null
-        if (-not [string]::IsNullOrWhiteSpace($script:qcDocGuid) -and (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) {
-            try {
-                $found = Get-PWDocumentsBySearch -DocumentGUID $script:qcDocGuid -ErrorAction SilentlyContinue
-                if ($found) { $doc = @($found) | Select-Object -First 1 }
-            } catch { }
+        if (-not [string]::IsNullOrWhiteSpace($script:qcDocGuid)) {
+            # Prefer GUID lookup to avoid path normalization issues.
+            $cmdByGuids = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+            if ($cmdByGuids) {
+                try {
+                    $byGuid = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($script:qcDocGuid) -ErrorAction SilentlyContinue)
+                    if ($byGuid -and $byGuid.Count -gt 0) { $doc = $byGuid[0] }
+                } catch { }
+            }
         }
+
         if (-not $doc -and (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) {
-            try {
-                $found = Get-PWDocumentsBySearch -FolderPath $script:qcFolder -JustThisFolder -DocumentName $script:qcDocName -PopulatePath -ErrorAction Stop
-                if ($found) { $doc = @($found) | Select-Object -First 1 }
-            } catch { }
+            # Normalize internal folder path ("Documents\...") to what PW cmdlets accept.
+            $apiFolder = $null
+            if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
+                try { $apiFolder = ConvertTo-PWCmdletFolderPath -InternalFolderPath $script:qcFolder } catch { }
+            }
+            if ([string]::IsNullOrWhiteSpace($apiFolder)) { $apiFolder = $script:qcFolder }
+
+            foreach ($p in @($apiFolder, ('Documents\' + $apiFolder.TrimStart('\')))) {
+                if ([string]::IsNullOrWhiteSpace($p)) { continue }
+                try {
+                    $found = Get-PWDocumentsBySearch -FolderPath $p -JustThisFolder -DocumentName $script:qcDocName -PopulatePath -ErrorAction Stop
+                    if ($found) { $doc = @($found) | Select-Object -First 1; break }
+                } catch { }
+            }
         }
+
         if (-not $doc -and (Get-Command -Name 'Get-PWDocumentsInFolder' -ErrorAction SilentlyContinue)) {
-            $docs = @(Get-PWDocumentsInFolder -FolderPath $script:qcFolder)
+            $folderForList = $script:qcFolder
+            if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
+                try {
+                    $tmp = ConvertTo-PWCmdletFolderPath -InternalFolderPath $script:qcFolder
+                    if (-not [string]::IsNullOrWhiteSpace($tmp)) { $folderForList = $tmp }
+                } catch { }
+            }
+            $docs = @(Get-PWDocumentsInFolder -FolderPath $folderForList)
             foreach ($d in $docs) {
                 $n = $null
                 if (Get-Command Get-PWDocName -ErrorAction SilentlyContinue) { $n = Get-PWDocName -Doc $d }
