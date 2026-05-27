@@ -191,23 +191,23 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = (Join-Path $repoRoot 'appsettings.json')
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
 }
-Import-Module $pwConnPath -Force | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
+Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
@@ -351,7 +351,7 @@ if ($statusSetRules.Count -ge 0) {
             $watchList = ConvertTo-HashtableDeep -Value $pwCfg.watchList
 
             # Re-import here to avoid any odd module/session state where exports are not visible.
-            Import-Module $pwConnPath -Force | Out-Null
+            Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
             Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
@@ -413,8 +413,9 @@ if ($statusSetRules.Count -ge 0) {
             if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
                 try { $reconcileEvery = [int]$auditPollerCfg.reconcileEveryNCycles } catch { $reconcileEvery = 20 }
             }
-            $isReconciliationCycle = (($cycleNum % $reconcileEvery) -eq 0)
-            $runFullScan = (-not $useAuditScan) -or $isReconciliationCycle
+            $isReconciliationCycle = ($cycleNum -ge $reconcileEvery) -and (($cycleNum % $reconcileEvery) -eq 0)
+            # First dashboard tick already runs Invoke-StatusSetReconcile via -ReconcileStatusSetsFirst; skip duplicate full PW walk.
+            $runFullScan = ((-not $useAuditScan) -or $isReconciliationCycle) -and (-not $ReconcileStatusSetsFirst.IsPresent)
 
             if ($useAuditScan -and -not $isReconciliationCycle) {
                 # --- AUDIT TRAIL SCAN (primary path) ---

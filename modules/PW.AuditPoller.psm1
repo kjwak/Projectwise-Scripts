@@ -408,10 +408,11 @@ function Get-AuditPollCycleCounter {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$CounterPath)
 
-    $counter = 0
+    # 1-based: first tick returns 1 so cycle 0 does not force an immediate full-folder reconciliation.
+    $counter = 1
     if (Test-Path -LiteralPath $CounterPath) {
         try { $counter = [int](Get-Content -LiteralPath $CounterPath -Raw -ErrorAction Stop).Trim() + 1 }
-        catch { $counter = 0 }
+        catch { $counter = 1 }
     }
     try {
         $dir = Split-Path -Parent $CounterPath

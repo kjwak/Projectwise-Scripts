@@ -40,7 +40,7 @@ Every Nth cycle (configured by `auditPoller.reconcileEveryNCycles`, default 20),
 - Populates the `sheet_index` database table with document metadata.
 - Runs STATUS_SET_GEN manifest comparison for all watched folders.
 
-The first watcher tick always triggers a full reconciliation scan.
+Full folder reconciliation runs every `reconcileEveryNCycles` audit ticks (default 20), not on the first audit tick.
 
 ### Fallback Behavior
 
@@ -77,8 +77,9 @@ The watcher orchestrates both modes:
 ```
 Each tick:
   1. Increment cycle counter
-  2. If (counter % reconcileEveryNCycles == 0) OR first run:
+  2. If (counter >= reconcileEveryNCycles AND counter % reconcileEveryNCycles == 0):
        → Full folder scan (reconciliation)
+     First dashboard tick uses audit scan only (status-set reconcile is separate via `-ReconcileStatusSetsFirst`).
        → Populate sheet_index from paired sheets
        → Link QC PDFs to source documents
      Else:

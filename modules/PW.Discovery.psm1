@@ -728,7 +728,7 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     $target = "$FolderPath\$QcDocumentName"
     if ($PSCmdlet.ShouldProcess($target, "Sync email attributes from $SourceDocumentName")) {
         try {
-            [void]_PWD-InvokeUpdatePWDocumentAttributes -Document $qcDoc -Attributes $toWrite
+            [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $qcDoc -Attributes $toWrite)
             $result.updated = $true
             $result.skipped = $false
             $result.reason = 'Updated QC PDF email attributes from source PDF.'
