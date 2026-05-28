@@ -59,20 +59,19 @@ Write-Host "Test: worker success-path persists full result data" -ForegroundColo
 $wp = Join-Path $root 'scripts\Run-QCProcessor.ps1'
 $wsrc = Get-Content -LiteralPath $wp -Raw
 
-# The success path must call Update-QCJob BEFORE Move-QCJob so $Job['result'] is
-# persisted to disk (Move only relocates the existing file).
-_Assert ($wsrc -match [regex]::Escape('Update-QCJob -Job $Job -Config $Config')) "Update-QCJob is invoked on success path"
-$idxUpdate = $wsrc.IndexOf('Update-QCJob -Job $Job -Config $Config')
-$idxMoveSuccess = $wsrc.IndexOf("Move-QCJob -JobId `$jobId -FromState 'running' -ToState 'succeeded'")
-_Assert (($idxUpdate -gt 0) -and ($idxMoveSuccess -gt $idxUpdate)) "Update-QCJob precedes Move-QCJob to succeeded"
-_Assert ($wsrc -match [regex]::Escape("completedAtUtc = (Get-QCTimestamp)")) "result.completedAtUtc is recorded"
+# Success path stamps $Job['result'] in memory, then one Move-QCJob -Job call persists + relocates.
+$idxResult = $wsrc.IndexOf('$Job[''result''] = @{')
+$idxMove = $wsrc.IndexOf('Move-QCJobWithLockRetries -JobId $jobId -FromState ''running'' -ToState ''succeeded''')
+_Assert (($idxResult -gt 0) -and ($idxMove -gt $idxResult)) "Job result block is built before Move-QCJobWithLockRetries to succeeded"
+_Assert ($wsrc -notmatch [regex]::Escape('Update-QCJob -Job $Job -Config $Config')) "success path does not use separate Update-QCJob (single move persists result)"
+_Assert ($wsrc -match [regex]::Escape("Move-QCJobWithLockRetries -JobId `$jobId -FromState 'running' -ToState 'succeeded'")) "success path uses Move-QCJobWithLockRetries"
+_Assert ($wsrc -match [regex]::Escape("completedAtUtc = Get-QCTimestamp")) "result.completedAtUtc is recorded"
 _Assert ($wsrc -match [regex]::Escape('data           = $resultData')) "result.data captures the processor's Data hashtable"
 
 Write-Host ""
 Write-Host "Test: WORKER_SUCCEEDED log includes pwUpload diagnostics" -ForegroundColor Cyan
 _Assert ($wsrc -match [regex]::Escape("foreach (`$k in 'pwUpload','writeBackToPW','needsFullRebuild','changedCount'")) "WORKER_SUCCEEDED log forwards the key processor fields"
-_Assert ($wsrc -match 'WORKER_RESULT_PERSIST_FAILED') "warning is logged when the persist fails"
-_Assert ($wsrc -match 'WORKER_MOVE_FAILED') "warning is logged when the move fails"
+_Assert ($wsrc -match 'WORKER_MOVE_FAILED') "error is logged when the move to succeeded fails"
 
 if ($failures -gt 0) { Write-Host "`nFAILED ($failures)" -ForegroundColor Red; exit 1 }
 Write-Host "`nPASSED" -ForegroundColor Green
