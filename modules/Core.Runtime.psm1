@@ -4,52 +4,113 @@
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
 # ---------------------------------------------------------------------------
-# Timezone utilities -- all timestamps standardized to Mountain Time (MST/MDT)
+# Timezone utilities -- wall-clock display from appsettings runtime.displayTimeZoneId
 # ---------------------------------------------------------------------------
 
-$script:_QCTimezone = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
+$script:_QCTimezoneId = 'US Mountain Standard Time'
+$script:_QCTimezone = [TimeZoneInfo]::FindSystemTimeZoneById($script:_QCTimezoneId)
+
+function Get-QCDisplayTimeZoneIdFromConfig {
+    <#
+    .SYNOPSIS
+    Resolves Windows time zone id: runtime.displayTimeZoneId, then auditPoller.displayTimeZoneId, then module default.
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    foreach ($sectionKey in @('runtime', 'auditPoller')) {
+        try {
+            if (-not $Config -or -not $Config.ContainsKey($sectionKey)) { continue }
+            $sec = $Config[$sectionKey]
+            if ($null -eq $sec) { continue }
+            $id = $null
+            if ($sec -is [hashtable] -and $sec.ContainsKey('displayTimeZoneId') -and $sec.displayTimeZoneId) {
+                $id = [string]$sec.displayTimeZoneId
+            } elseif ($sec.PSObject -and $null -ne $sec.displayTimeZoneId -and [string]$sec.displayTimeZoneId) {
+                $id = [string]$sec.displayTimeZoneId
+            }
+            if (-not [string]::IsNullOrWhiteSpace($id)) { return $id.Trim() }
+        } catch { }
+    }
+    return $script:_QCTimezoneId
+}
+
+function Set-QCDisplayTimeZone {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$TimeZoneId)
+    $script:_QCTimezoneId = $TimeZoneId.Trim()
+    $script:_QCTimezone = [TimeZoneInfo]::FindSystemTimeZoneById($script:_QCTimezoneId)
+}
+
+function Set-QCDisplayTimeZoneFromConfig {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    Set-QCDisplayTimeZone -TimeZoneId (Get-QCDisplayTimeZoneIdFromConfig -Config $Config)
+}
+
+function Get-QCDisplayTimeZone {
+    <#
+    .SYNOPSIS
+    Active display time zone (set via Set-QCDisplayTimeZoneFromConfig after loading appsettings).
+    #>
+    if (-not $script:_QCTimezone) {
+        $script:_QCTimezone = [TimeZoneInfo]::FindSystemTimeZoneById($script:_QCTimezoneId)
+    }
+    return $script:_QCTimezone
+}
+
+function Get-QCWallClockNow {
+    <#
+    .SYNOPSIS
+    Current UTC instant as DateTime in the configured display time zone (Unspecified Kind, wall clock).
+    #>
+    return [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, (Get-QCDisplayTimeZone))
+}
 
 function Get-QCTimestamp {
     <#
     .SYNOPSIS
-    Returns the current time in Mountain Time as an ISO 8601 string with offset.
+    Returns the current time in the configured display zone as an ISO 8601 string with offset.
     #>
     $utcNow = [DateTime]::UtcNow
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $script:_QCTimezone)
-    $offset = $script:_QCTimezone.GetUtcOffset($mt)
-    return ([DateTimeOffset]::new($mt, $offset)).ToString('o')
+    $tz = Get-QCDisplayTimeZone
+    $local = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $tz)
+    $offset = $tz.GetUtcOffset($local)
+    return ([DateTimeOffset]::new($local, $offset)).ToString('o')
 }
 
 function ConvertTo-QCTimestamp {
     <#
     .SYNOPSIS
-    Converts a DateTime to Mountain Time as an ISO 8601 string with offset.
+    Converts a DateTime to the configured display zone as an ISO 8601 string with offset.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][DateTime]$DateTime)
     $utc = $DateTime.ToUniversalTime()
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $script:_QCTimezone)
-    $offset = $script:_QCTimezone.GetUtcOffset($mt)
-    return ([DateTimeOffset]::new($mt, $offset)).ToString('o')
+    $tz = Get-QCDisplayTimeZone
+    $local = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $tz)
+    $offset = $tz.GetUtcOffset($local)
+    return ([DateTimeOffset]::new($local, $offset)).ToString('o')
 }
 
 function Format-QCTimestamp {
     <#
     .SYNOPSIS
-    Parses an ISO 8601 string and formats it for display in Mountain Time (yyyy-MM-dd HH:mm:ss).
+    Parses an ISO 8601 string and formats it for display in the configured zone (yyyy-MM-dd HH:mm:ss).
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$IsoString)
     if ([string]::IsNullOrWhiteSpace($IsoString)) { return '' }
     try {
         $dto = [DateTimeOffset]::Parse($IsoString, [System.Globalization.CultureInfo]::InvariantCulture)
-        $mt = [TimeZoneInfo]::ConvertTime($dto, $script:_QCTimezone)
-        return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+        $tz = Get-QCDisplayTimeZone
+        $local = [TimeZoneInfo]::ConvertTime($dto, $tz)
+        return $local.ToString('yyyy-MM-dd HH:mm:ss')
     } catch {
         try {
             $dt = [DateTime]::Parse($IsoString, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
-            $mt = [TimeZoneInfo]::ConvertTimeFromUtc($dt.ToUniversalTime(), $script:_QCTimezone)
-            return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+            $local = [TimeZoneInfo]::ConvertTimeFromUtc($dt.ToUniversalTime(), (Get-QCDisplayTimeZone))
+            return $local.ToString('yyyy-MM-dd HH:mm:ss')
         } catch { return $IsoString }
     }
 }
@@ -57,11 +118,9 @@ function Format-QCTimestamp {
 function Get-QCTimestampShort {
     <#
     .SYNOPSIS
-    Returns current Mountain Time as a compact stamp for file naming (yyyyMMdd_HHmmss).
+    Returns current display-zone time as a compact stamp for file naming (yyyyMMdd_HHmmss).
     #>
-    $utcNow = [DateTime]::UtcNow
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $script:_QCTimezone)
-    return $mt.ToString('yyyyMMdd_HHmmss')
+    return (Get-QCWallClockNow).ToString('yyyyMMdd_HHmmss')
 }
 
 function ConvertTo-HashtableDeep {
@@ -170,7 +229,9 @@ function Read-QCAppSettings {
         $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
         $json = Remove-QCJsonComments -Text $raw
         $obj = $json | ConvertFrom-Json -ErrorAction Stop
-        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = (ConvertTo-HashtableDeep -Value $obj); path = $Path }
+        $cfg = ConvertTo-HashtableDeep -Value $obj
+        Set-QCDisplayTimeZoneFromConfig -Config $cfg
+        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = $cfg; path = $Path }
     } catch {
         return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{ path = $Path; errorMessage = $_.Exception.Message; error = $_ }
     }
@@ -196,6 +257,7 @@ function Get-QCAppSettingsConfig {
         if (-not $cfg.ContainsKey('dryRun')) { $cfg['dryRun'] = $false }
         $cfg['dryRun'] = $true
     }
+    Set-QCDisplayTimeZoneFromConfig -Config $cfg
     return $cfg
 }
 

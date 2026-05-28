@@ -104,22 +104,12 @@ function _AuditPoller-GetSheetsSubpath {
 }
 
 function _AuditPoller-GetDisplayTimeZone {
-    <#
-    Wall-clock zone for audit_events.pw_acttime and logs (matches Core.Runtime Get-QCTimestamp).
-    #>
     param([hashtable]$Config = @{})
-    $id = 'Mountain Standard Time'
-    try {
-        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
-            $ap = $Config.auditPoller
-            if ($ap -is [hashtable] -and $ap.ContainsKey('displayTimeZoneId') -and $ap.displayTimeZoneId) {
-                $id = [string]$ap.displayTimeZoneId
-            } elseif ($ap.PSObject -and $ap.displayTimeZoneId) {
-                $id = [string]$ap.displayTimeZoneId
-            }
-        }
-    } catch { }
-    return [TimeZoneInfo]::FindSystemTimeZoneById($id)
+    if ($Config -and $Config.Count -gt 0) {
+        $id = Get-QCDisplayTimeZoneIdFromConfig -Config $Config
+        return [TimeZoneInfo]::FindSystemTimeZoneById($id)
+    }
+    return Get-QCDisplayTimeZone
 }
 
 function _AuditPoller-AssumeUtcFromPw {

@@ -277,7 +277,7 @@ function New-QCReportingScanJob {
         [Parameter(Mandatory)]
         [string]$SourceFolder
     )
-    $bucket = ([TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))).ToString('yyyyMMddHH')
+    $bucket = (Get-QCWallClockNow).ToString('yyyyMMddHH')
     $safe = _QCR-SafeName $Project
     return @{
         id = ('qc_reporting_' + $safe + '_' + $bucket)

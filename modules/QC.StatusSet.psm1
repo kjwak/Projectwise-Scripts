@@ -201,8 +201,7 @@ function _SSS-CleanupExpiredStatusSetStaging {
     )
     if ($RetentionDays -lt 1) { $RetentionDays = 1 }
     if (-not (Test-Path -LiteralPath $WorkspaceDir)) { return }
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))
-    $cutoff = $mt.AddDays(-1 * $RetentionDays)
+    $cutoff = (Get-QCWallClockNow).AddDays(-1 * $RetentionDays)
     $patterns = @('_export_*', '_render', '_render_*', '_pw_status_chunk_*.pdf', '*.next.*.pdf')
     foreach ($pattern in $patterns) {
         $items = @(Get-ChildItem -LiteralPath $WorkspaceDir -Filter $pattern -Force -ErrorAction SilentlyContinue)
@@ -2534,7 +2533,7 @@ function Invoke-StatusSetNativeJob {
         $renderTag = [string]$Job['id']
         if (_SSS-IsNullOrWhiteSpace $renderTag) { $renderTag = [guid]::NewGuid().ToString('N') }
         $renderTag = ($renderTag -replace '[^a-zA-Z0-9._-]', '_')
-        $utcNow = [DateTime]::UtcNow; $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')); $renderStamp = $mt.ToString('yyyyMMddHHmmssfff')
+        $renderStamp = (Get-QCWallClockNow).ToString('yyyyMMddHHmmssfff')
         $renderPdf = if ($atomicReplaceEnabled) { Join-Path $renderDir ($statusPdfName + '.next.' + $renderTag + '.' + $renderStamp + '.pdf') } else { $outPdf }
         _SSS-AddStatusSetOperation -Report $operationReport -Kind 'writes' -Operation @{ action='qpdf-merge'; output=$renderPdf; inputCount=$orderedPaths.Count }
         $merge = Merge-StatusSetPdfWithQpdf -OrderedInputPdfPaths $orderedPaths -OutputPdf $renderPdf -QpdfExe $qpdfExe

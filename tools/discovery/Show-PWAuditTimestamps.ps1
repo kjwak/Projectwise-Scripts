@@ -33,15 +33,7 @@ foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'PW.Connection.psm1
 $config = Get-QCAppSettingsConfig -Path $AppSettingsPath
 if ($config -isnot [hashtable]) { $config = ConvertTo-HashtableDeep -Value $config }
 
-$mtTz = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
-
-function _GetDisplayTimeZone([hashtable]$Cfg) {
-    $id = 'Mountain Standard Time'
-    try {
-        if ($Cfg.auditPoller.displayTimeZoneId) { $id = [string]$Cfg.auditPoller.displayTimeZoneId }
-    } catch { }
-    return [TimeZoneInfo]::FindSystemTimeZoneById($id)
-}
+$displayTz = Get-QCDisplayTimeZone
 
 function _PwActTimeToUtc([DateTime]$dt) {
     if ($dt.Kind -eq [DateTimeKind]::Utc) { return $dt }
@@ -49,14 +41,14 @@ function _PwActTimeToUtc([DateTime]$dt) {
     return [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
 }
 
-function _FmtMtFromPw([DateTime]$dt) {
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $dt), $mtTz)
-    return $mt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT'
+function _FmtDisplayFromPw([DateTime]$dt) {
+    $local = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $dt), $displayTz)
+    return $local.ToString('yyyy-MM-dd HH:mm:ss') + ' (' + $displayTz.Id + ')'
 }
 
-function _FmtPipelinePwActTime([object]$Raw, [hashtable]$Cfg) {
+function _FmtPipelinePwActTime([object]$Raw) {
     if ($null -eq $Raw -or $Raw -is [DBNull]) { return $null }
-    $tz = _GetDisplayTimeZone -Cfg $Cfg
+    $tz = $displayTz
     if ($Raw -is [DateTime]) {
         $mt = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $Raw), $tz)
         return $mt.ToString('yyyy-MM-dd HH:mm:ss')
@@ -82,7 +74,7 @@ function _DescribeActTime($raw) {
             $raw.ToUniversalTime()
         }
         $out.utcAssumed = $utcAssumed.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC (PW Unspecified treated as UTC)'
-        $out.mt = _FmtMtFromPw $raw
+        $out.display = _FmtDisplayFromPw $raw
         $out.wrongLocalAsUtc = $raw.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + ' UTC (WRONG: ToUniversalTime on Unspecified uses machine local)'
         $out.toStringLocal = $raw.ToString('yyyy-MM-dd HH:mm:ss') + ' (DateTime.ToString on this machine)'
     }
@@ -92,11 +84,11 @@ function _DescribeActTime($raw) {
 # Clocks
 $nowLocal = [DateTimeOffset]::Now
 $nowUtc = [DateTimeOffset]::UtcNow
-$nowMt = [TimeZoneInfo]::ConvertTimeFromUtc($nowUtc.UtcDateTime, $mtTz)
+$nowDisplay = [TimeZoneInfo]::ConvertTimeFromUtc($nowUtc.UtcDateTime, $displayTz)
 Write-Host "=== Clocks (compare to PW o_acttime) ===" -ForegroundColor Cyan
 Write-Host ("  Windows local:     {0}" -f $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz'))
 Write-Host ("  UTC:               {0}" -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' Z')
-Write-Host ("  Mountain (QC logs): {0}" -f $nowMt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT')
+Write-Host ("  Display (config):  {0} ({1})" -f $nowDisplay.ToString('yyyy-MM-dd HH:mm:ss'), $displayTz.Id)
 Write-Host ("  Get-QCTimestamp:   {0}" -f (Get-QCTimestamp))
 
 $sinceUtc = $nowUtc.UtcDateTime.AddHours(-$Hours).ToString('yyyy-MM-dd HH:mm:ss')
@@ -189,13 +181,13 @@ try {
         if ($desc.kind) {
             Write-Host ("    DateTime Kind: {0}" -f $desc.kind)
             Write-Host ("    UTC (assumed): {0}" -f $desc.utcAssumed)
-            Write-Host ("    Mountain:      {0}" -f $desc.mt)
+            Write-Host ("    Display zone:  {0}" -f $desc.display)
             Write-Host ("    ToString:      {0}" -f $desc.toStringLocal)
             if ($desc.wrongLocalAsUtc) {
                 Write-Host ("    (misread):     {0}" -f $desc.wrongLocalAsUtc) -ForegroundColor DarkGray
             }
         }
-        $stored = _FmtPipelinePwActTime -Raw $actRaw -Cfg $config
+        $stored = _FmtPipelinePwActTime -Raw $actRaw
         $inPoll = $false
         if ($actRaw -is [DateTime] -and $poll.untilUtc -and $poll.sinceUtc) {
             $pwStr = (_PwActTimeToUtc $actRaw).ToString('yyyy-MM-dd HH:mm:ss')
@@ -212,4 +204,4 @@ try {
     try { Disconnect-PW | Out-Null } catch { }
 }
 
-Write-Host "`nDone. PW o_acttime uses UTC wall clock; poll bounds and watermark use UTC; pw_acttime in SQL is Mountain (displayTimeZoneId)." -ForegroundColor Cyan
+Write-Host "`nDone. PW o_acttime uses UTC wall clock; poll bounds use UTC; pw_acttime/logs use runtime.displayTimeZoneId ($($displayTz.Id))." -ForegroundColor Cyan

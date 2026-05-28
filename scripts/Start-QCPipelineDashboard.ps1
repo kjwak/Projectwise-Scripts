@@ -663,11 +663,12 @@ function _Get-FrameLines([hashtable]$Cfg) {
     $lines = New-Object System.Collections.Generic.List[string]
     $width = _Get-TerminalWidth
     $wideMax = [Math]::Max(48, $width - 2)
-    $now = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time'))
+    $now = Get-QCWallClockNow
+    $tzLabel = (Get-QCDisplayTimeZone).Id
     $dry = $false
     try { $dry = [bool]$Cfg.dryRun } catch { $dry = $false }
 
-    $lines.Add(("QC Pipeline Dashboard   {0} MST   DryRun={1}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dry)) | Out-Null
+    $lines.Add(("QC Pipeline Dashboard   {0} {1}   DryRun={2}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $tzLabel, $dry)) | Out-Null
     $lines.Add(("Config: {0}" -f $AppSettingsPath)) | Out-Null
 
     $status = 'Status: ' + (_Compute-PhaseText -Cfg $Cfg)
