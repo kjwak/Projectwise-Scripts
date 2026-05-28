@@ -202,7 +202,19 @@ function Get-AuditTrailPollWindow {
     } catch { }
     if ($initialLookbackSeconds -lt 1) { $initialLookbackSeconds = $LookbackSeconds }
 
-    $since = if ($lastCapture) { $lastCapture } else { $until.AddSeconds(-$initialLookbackSeconds) }
+    $overlapSeconds = $LookbackSeconds
+    if ($overlapSeconds -lt 1) { $overlapSeconds = 1 }
+
+    $since = if ($lastCapture) {
+        # Steady-state: overlap by lookbackSeconds so late-indexed PW events are not missed
+        # (watermark is second-precision; polls are sub-second apart).
+        $lastCapture.AddSeconds(-$overlapSeconds)
+    } else {
+        $until.AddSeconds(-$initialLookbackSeconds)
+    }
+    if ($since -ge $until) {
+        $since = $until.AddSeconds(-$overlapSeconds)
+    }
     $watermarkBefore = if ($lastCapture) { $lastCapture.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
 
     return @{
@@ -210,7 +222,7 @@ function Get-AuditTrailPollWindow {
         until           = $until
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
-        lookbackSecondsUsed = if ($lastCapture) { $LookbackSeconds } else { $initialLookbackSeconds }
+        lookbackSecondsUsed = if ($lastCapture) { $overlapSeconds } else { $initialLookbackSeconds }
     }
 }
 
@@ -330,7 +342,6 @@ function Invoke-AuditTrailScan {
 
     $candidates = @()
     $watermarkAfter = $untilStr
-    $sinceDt = _AuditPoller-ParseActTime -ActTime $sinceStr
 
     foreach ($evt in $relevant) {
         $actionCode = [int]$evt.o_action
@@ -356,7 +367,6 @@ function Invoke-AuditTrailScan {
         $actTime = [string]$evt.o_acttime
         $actDt = _AuditPoller-ParseActTime -ActTime $actTime
         if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
-        if ($sinceDt -and $actDt -and ($actDt -le $sinceDt)) { continue }
 
         $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
 
@@ -425,9 +435,18 @@ function Invoke-AuditTrailScan {
                 $stats.dbSkipped += [int]$dbRes.Data.skipped
             } else {
                 $stats.dbSkipped += $dbRows.Count
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_FAILED' -Message "Write-QCAuditEventRows failed: $($dbRes.Message)" -Data @{
+                        code = [string]$dbRes.Code
+                        rowCount = $dbRows.Count
+                    }
+                }
             }
         } catch {
             $stats.dbSkipped += $dbRows.Count
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count }
+            }
         }
         foreach ($row in $dbRows) {
             $u = 0

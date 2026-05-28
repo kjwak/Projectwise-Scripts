@@ -579,6 +579,8 @@ if ($statusSetRules.Count -ge 0) {
                             watchMatches   = $auditData.stats.watchMatches
                             sheetsMatches  = $auditData.stats.sheetsMatches
                             candidates     = $auditCandidates.Count
+                            dbWrites       = [int]$auditData.stats.dbWrites
+                            dbSkipped      = [int]$auditData.stats.dbSkipped
                             durationMs     = $auditData.durationMs
                             watermarkBefore = $pollWindow.watermarkBefore
                             watermarkAfter = $watermarkAfterStr

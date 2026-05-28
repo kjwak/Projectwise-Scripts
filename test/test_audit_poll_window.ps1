@@ -35,7 +35,7 @@ try {
 
     $w2 = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 60
     _Assert (-not $w2.isFirstCapture) 'second run should see prior capture'
-    _Assert ($w2.since -eq $captured) 'since should equal last capture'
+    _Assert ($w2.since -eq $captured.AddSeconds(-60)) 'since should overlap last capture by lookbackSeconds'
     _Assert ($w2.watermarkBefore -eq '2026-05-26 10:00:00') 'watermarkBefore string should match'
 
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
