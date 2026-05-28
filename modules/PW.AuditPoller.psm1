@@ -109,6 +109,18 @@ function _AuditPoller-ParseActTime {
     try { return [DateTime]::Parse($ActTime) } catch { return $null }
 }
 
+function _AuditPoller-TryAdvanceWatermarkAfter {
+    param(
+        [Parameter(Mandatory)][string]$Current,
+        [AllowNull()][string]$Candidate
+    )
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { return $Current }
+    $curDt = _AuditPoller-ParseActTime -ActTime $Current
+    $candDt = _AuditPoller-ParseActTime -ActTime $Candidate
+    if ($candDt -and (-not $curDt -or $candDt -gt $curDt)) { return $Candidate }
+    return $Current
+}
+
 function _AuditPoller-GetRowValue {
     param($Row, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Row) { return $null }
@@ -140,6 +152,8 @@ function _AuditPoller-FormatActTime {
     if ($Value -is [DateTime]) { return $Value.ToString('yyyy-MM-dd HH:mm:ss') }
     $s = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    $parsed = _AuditPoller-ParseActTime -ActTime $s
+    if ($parsed) { return $parsed.ToString('yyyy-MM-dd HH:mm:ss') }
     return $s
 }
 
@@ -455,10 +469,7 @@ function Invoke-AuditTrailScan {
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
             $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
-            if ($actTime) {
-                $actDt = _AuditPoller-ParseActTime -ActTime $actTime
-                if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
-            }
+            if ($actTime) { $watermarkAfter = _AuditPoller-TryAdvanceWatermarkAfter -Current $watermarkAfter -Candidate $actTime }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
         }
     } else {

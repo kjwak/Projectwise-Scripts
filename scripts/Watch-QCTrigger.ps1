@@ -556,21 +556,33 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        $watermarkAfterStr = [string]$auditData.watermarkAfter
+                        $watermarkAfterStr = $null
+                        if ($auditData -is [hashtable] -and $auditData.ContainsKey('watermarkAfter')) {
+                            $watermarkAfterStr = [string]$auditData['watermarkAfter']
+                        } else {
+                            try { $watermarkAfterStr = [string]$auditData.watermarkAfter } catch { $watermarkAfterStr = '' }
+                        }
                         $capturedThrough = $until
                         try {
-                            $parsedWm = [DateTime]::Parse($watermarkAfterStr)
-                            if ($parsedWm -gt $capturedThrough) { $capturedThrough = $parsedWm }
+                            if (-not [string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
+                                $parsedWm = [DateTime]::Parse($watermarkAfterStr)
+                                if ($parsedWm -gt $capturedThrough) { $capturedThrough = $parsedWm }
+                            }
                         } catch { }
+                        if ([string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
+                            $watermarkAfterStr = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+                        }
                         [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
 
-                        $auditPollTelemetry = @{
+                        $script:auditPollTelemetry = @{
                             eventsFetched     = [int]$auditData.stats.totalEvents
                             eventsRelevant    = [int]$auditData.stats.relevantEvents
                             candidatesCreated = [int]$auditCandidates.Count
                             watermarkBefore   = $pollWindow.watermarkBefore
                             watermarkAfter    = $watermarkAfterStr
                             durationMs        = [int]$auditData.durationMs
+                            dbWrites          = [int]$auditData.stats.dbWrites
+                            dbSkipped         = [int]$auditData.stats.dbSkipped
                         }
 
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
@@ -1903,13 +1915,13 @@ $queueWriteSec = if ($phaseMs.ContainsKey('queueWrite')) { [math]::Round(([decim
 $cleanupSec = if ($phaseMs.ContainsKey('localCacheWrite')) { [math]::Round(([decimal]$phaseMs['localCacheWrite']/1000),3) } else { $null }
 $sleepThrottleSec = if ($phaseMs.ContainsKey('sleepThrottle')) { [math]::Round(([decimal]$phaseMs['sleepThrottle']/1000),3) } else { 0 }
 $telemetryRes = Write-QCPollRunTelemetry -Config $config `
-    -EventsFetched $(if($auditPollTelemetry){$auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
-    -EventsRelevant $(if($auditPollTelemetry){$auditPollTelemetry.eventsRelevant}else{$matched}) `
-    -CandidatesCreated $(if($auditPollTelemetry){$auditPollTelemetry.candidatesCreated}else{$accepted}) `
+    -EventsFetched $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
+    -EventsRelevant $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsRelevant}else{$matched}) `
+    -CandidatesCreated $(if($script:auditPollTelemetry){$script:auditPollTelemetry.candidatesCreated}else{$accepted}) `
     -JobsEnqueued $enqueued `
     -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
-    -WatermarkBefore $(if($auditPollTelemetry){$auditPollTelemetry.watermarkBefore}else{$null}) `
-    -WatermarkAfter $(if($auditPollTelemetry){$auditPollTelemetry.watermarkAfter}else{$null}) `
+    -WatermarkBefore $(if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkBefore}else{$null}) `
+    -WatermarkAfter $(if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkAfter}else{$null}) `
     -IsReconciliation:$watcherRanReconciliationScan `
     -PassNumber $watcherPassNumber `
     -RunMode $runMode `
