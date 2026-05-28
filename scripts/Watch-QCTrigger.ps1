@@ -40,7 +40,8 @@ $watchRunSw = [System.Diagnostics.Stopwatch]::StartNew()
 $phaseMs = @{}
 $phaseCounts = @{}
 
-$watcherPassNumber = 0
+$watcherPassNumber = $null
+$passNumberSource = 'unset'
 $runMode = 'manual'
 $reconciliationReason = $null
 $counterPath = $null
@@ -429,7 +430,7 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             $counterPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-poll-cycle.txt'
-            try { $watcherPassNumber = [int](Get-AuditPollCycleCounter -CounterPath $counterPath) } catch { $watcherPassNumber = 0 }
+            try { $watcherPassNumber = [int](Get-AuditPollCycleCounter -CounterPath $counterPath); $passNumberSource='counter' } catch { $watcherPassNumber = $null; $passNumberSource='error'; Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath=$counterPath } }
             $cycleNum = Get-AuditPollCycleCounter -CounterPath $counterPath
             $reconcileEvery = 20
             if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
@@ -1724,6 +1725,13 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     dbAuditEventWritesSkipped = $dbAuditEventWritesSkipped
 }
 
+
+$telemetryFailOnWriteError = $false
+if ($config.ContainsKey('telemetry') -and $config.telemetry -and $config.telemetry.ContainsKey('failOnWriteError')) {
+    try { $telemetryFailOnWriteError = [bool]$config.telemetry.failOnWriteError } catch { $telemetryFailOnWriteError = $false }
+}
+$runId = [guid]::NewGuid().ToString('N')
+
 $dbWriteSw = [System.Diagnostics.Stopwatch]::StartNew()
 $auditDurationSec = if ($phaseMs.ContainsKey('auditTrailScan')) { [math]::Round(([decimal]$phaseMs['auditTrailScan']/1000),3) } else { $null }
 $reconDurationSec = if ($phaseMs.ContainsKey('fullPwScan')) { [math]::Round(([decimal]$phaseMs['fullPwScan']/1000),3) } else { $null }
@@ -1732,7 +1740,7 @@ $dedupeSec = if ($phaseMs.ContainsKey('dedupeChecks')) { [math]::Round(([decimal
 $queueWriteSec = if ($phaseMs.ContainsKey('queueWrite')) { [math]::Round(([decimal]$phaseMs['queueWrite']/1000),3) } else { $null }
 $cleanupSec = if ($phaseMs.ContainsKey('localCacheWrite')) { [math]::Round(([decimal]$phaseMs['localCacheWrite']/1000),3) } else { $null }
 $sleepThrottleSec = if ($phaseMs.ContainsKey('sleepThrottle')) { [math]::Round(([decimal]$phaseMs['sleepThrottle']/1000),3) } else { 0 }
-Write-QCPollRunTelemetry -Config $config `
+$telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -EventsFetched $(if($auditPollTelemetry){$auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
     -EventsRelevant $(if($auditPollTelemetry){$auditPollTelemetry.eventsRelevant}else{$matched}) `
     -CandidatesCreated $(if($auditPollTelemetry){$auditPollTelemetry.candidatesCreated}else{$accepted}) `
@@ -1763,8 +1771,14 @@ Write-QCPollRunTelemetry -Config $config `
     -AuditGapDetected:$auditGapDetected `
     -WatcherPhase 'telemetry_publish' `
     -ThrottleWaitSeconds $sleepThrottleSec `
-    -QueueDepthSnapshot $queueDepthSnapshot
+    -QueueDepthSnapshot $queueDepthSnapshot `
+    -RunId $runId `
+    -PassNumberSource $passNumberSource
 $dbWriteSw.Stop()
+if (-not $telemetryRes.IsSuccess) {
+    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_TELEMETRY_WRITE_FAILED' -Message $telemetryRes.Message -Data @{ runId=$runId; passNumber=$watcherPassNumber; watcherName='qc_watcher' }
+    if ($telemetryFailOnWriteError) { throw ('Telemetry write failed: ' + $telemetryRes.Message) }
+}
 
 exit 0
 
