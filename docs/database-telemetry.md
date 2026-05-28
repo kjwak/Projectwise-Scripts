@@ -45,6 +45,8 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | 1.0.0 | Core tables: `audit_events`, `document_activity`, `document_state_history`, `transition_events`, `poll_runs`, `processing_jobs`, `notification_log` |
 | 1.1.0 | Added `sheet_index` table and `v_sheet_status` view |
 | 1.2.0 | Comment sync: `qc_comment_runs`, `qc_comments`, `qc_comment_status_history`, `qc_workflow_events` |
+| 1.3.0 | Audit natural-key index (`UX_audit_events_natural_key`) |
+| 1.4.0 | `pw_users` lookup + `v_audit_events_with_user` view |
 
 ### Schema 1.2.0 — comment sync (see `docs/qc-comment-status-sync.md`)
 
@@ -84,6 +86,27 @@ Raw ProjectWise audit trail records captured from `dms_audt` during audit pollin
 | `candidate_type` | NVARCHAR(50) | Classified trigger type |
 | `processed` | BIT | Whether the event was processed |
 | `poll_run_id` | INT | FK to `poll_runs` |
+| `pw_userno` | INT | ProjectWise user number (`o_userno` from `dms_audt`) |
+
+Join to human-readable identity via `pw_users` or view `v_audit_events_with_user`.
+
+### `pw_users`
+Maps ProjectWise `pw_userno` to login and email (resolved via `Get-PWUser -UserID`).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `pw_userno` | INT | Primary key; matches `audit_events.pw_userno` |
+| `pw_username` | NVARCHAR(128) | ProjectWise login name |
+| `pw_user_email` | NVARCHAR(320) | Email from PW user record |
+| `display_name` | NVARCHAR(256) | PW description / display name |
+| `first_seen_at` | DATETIMEOFFSET(3) | First time this user was stored |
+| `last_synced_at` | DATETIMEOFFSET(3) | Last successful PW lookup |
+
+**Population:** The audit poller calls `Sync-PWUserDirectory` for user numbers in each ingest batch (up to 25 per scan). Backfill historical users:
+
+```powershell
+.\scripts\Sync-PWUserDirectory.ps1 -FromAuditEventsOnly
+```
 
 ### `document_activity`
 Enriched per-document summary, upserted on each event. Keyed by `document_guid` (unique constraint).

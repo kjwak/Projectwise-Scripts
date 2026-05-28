@@ -326,12 +326,13 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.3.0'
+    $targetVersion = '1.4.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
     $schemaV1_3 = _QDB-GetSchemaV1dot3
-    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3
+    $schemaV1_4 = _QDB-GetSchemaV1dot4
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -344,7 +345,7 @@ function Initialize-QCDatabaseSchema {
         if ($currentVersion -is [DBNull]) { $currentVersion = $null }
 
         if ($currentVersion -eq $targetVersion) {
-            $patchSql = _QDB-GetSchemaV1dot3Additive
+            $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive)
             $patchBatches = [regex]::Split($patchSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             $patchExecuted = 0
             foreach ($batch in $patchBatches) {
@@ -374,7 +375,7 @@ function Initialize-QCDatabaseSchema {
         $insertCmd = $conn.CreateCommand()
         $insertCmd.CommandText = "INSERT INTO schema_version (version, description) VALUES (@version, @desc)"
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through audit batching + queue/indexing improvements")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through pw_users lookup + audit batching")
         [void]$insertCmd.ExecuteNonQuery()
 
         return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($executed batches)." -Data @{ version = $targetVersion; batchCount = $executed }
@@ -952,6 +953,157 @@ IF OBJECT_ID('dbo.audit_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM 
     CREATE UNIQUE INDEX UX_audit_events_natural_key ON audit_events(pw_acttime, pw_action, pw_objguid)
     WHERE pw_objguid IS NOT NULL;
 '@
+}
+
+function _QDB-GetSchemaV1dot4 {
+    return @'
+
+GO
+
+-- pw_users: map ProjectWise o_userno to login name and email
+IF OBJECT_ID('dbo.pw_users', 'U') IS NULL
+CREATE TABLE pw_users (
+    pw_userno       INT NOT NULL PRIMARY KEY,
+    pw_username     NVARCHAR(128) NULL,
+    pw_user_email   NVARCHAR(320) NULL,
+    display_name    NVARCHAR(256) NULL,
+    first_seen_at   DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    last_synced_at  DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+IF OBJECT_ID('dbo.pw_users', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_users_username')
+    CREATE INDEX IX_pw_users_username ON pw_users(pw_username) WHERE pw_username IS NOT NULL;
+IF OBJECT_ID('dbo.pw_users', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_users_email')
+    CREATE INDEX IX_pw_users_email ON pw_users(pw_user_email) WHERE pw_user_email IS NOT NULL;
+
+GO
+
+IF OBJECT_ID('dbo.v_audit_events_with_user', 'V') IS NULL
+EXEC('CREATE VIEW v_audit_events_with_user AS
+SELECT ae.id, ae.captured_at, ae.poll_run_id, ae.pw_acttime, ae.pw_action, ae.pw_action_name,
+       ae.pw_objguid, ae.pw_parentguid, ae.pw_userno, pu.pw_username, pu.pw_user_email, pu.display_name,
+       ae.pw_itemname, ae.pw_itemdesc, ae.resolved_folder, ae.candidate_type, ae.processed
+FROM audit_events ae
+LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno');
+
+'@
+}
+
+function _QDB-GetSchemaV1dot4Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.pw_users', 'U') IS NULL
+CREATE TABLE pw_users (
+    pw_userno       INT NOT NULL PRIMARY KEY,
+    pw_username     NVARCHAR(128) NULL,
+    pw_user_email   NVARCHAR(320) NULL,
+    display_name    NVARCHAR(256) NULL,
+    first_seen_at   DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    last_synced_at  DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+IF OBJECT_ID('dbo.pw_users', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_users_username')
+    CREATE INDEX IX_pw_users_username ON pw_users(pw_username) WHERE pw_username IS NOT NULL;
+IF OBJECT_ID('dbo.pw_users', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_users_email')
+    CREATE INDEX IX_pw_users_email ON pw_users(pw_user_email) WHERE pw_user_email IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_audit_events_with_user', 'V') IS NULL
+EXEC('CREATE VIEW v_audit_events_with_user AS
+SELECT ae.id, ae.captured_at, ae.poll_run_id, ae.pw_acttime, ae.pw_action, ae.pw_action_name,
+       ae.pw_objguid, ae.pw_parentguid, ae.pw_userno, pu.pw_username, pu.pw_user_email, pu.display_name,
+       ae.pw_itemname, ae.pw_itemdesc, ae.resolved_folder, ae.candidate_type, ae.processed
+FROM audit_events ae
+LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno');
+'@
+}
+
+function Get-QCPWUnresolvedUserNumbers {
+    <#
+    .SYNOPSIS
+    Returns pw_userno values present in audit_events but not yet in pw_users.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$MaxCount = 100
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled.' -Data @{}
+    }
+    $sql = @"
+SELECT DISTINCT TOP (@maxCount) ae.pw_userno
+FROM audit_events ae
+WHERE ae.pw_userno IS NOT NULL AND ae.pw_userno > 0
+  AND NOT EXISTS (SELECT 1 FROM pw_users pu WHERE pu.pw_userno = ae.pw_userno)
+ORDER BY ae.pw_userno;
+"@
+    $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters @{ maxCount = $MaxCount }
+    if (-not $res.IsSuccess) { return $res }
+    $numbers = @()
+    $table = $res.Data.table
+    if ($table) {
+        foreach ($row in $table.Rows) {
+            if ($null -eq $row -or $row.IsNull('pw_userno')) { continue }
+            try { $numbers += [int]$row['pw_userno'] } catch { }
+        }
+    }
+    return New-QCSuccessResult -Code 'PW_USER_NUMBERS_OK' -Message "Found $($numbers.Count) unresolved user number(s)." -Data @{ numbers = $numbers }
+}
+
+function Write-QCPWUserDirectory {
+    <#
+    .SYNOPSIS
+    Upserts ProjectWise user identity rows into dbo.pw_users.
+  Each item in -Users should be a hashtable with pw_userno and optional pw_username, pw_user_email, display_name.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][array]$Users
+    )
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'PW_USER_WRITE_SKIPPED' -Message 'Database writes not allowed.' -Data @{ rowsAffected = 0 }
+    }
+    $valid = @($Users | Where-Object { $_ -and $_.pw_userno -gt 0 })
+    if ($valid.Count -eq 0) {
+        return New-QCSuccessResult -Code 'PW_USER_WRITE_NONE' -Message 'No valid user rows.' -Data @{ rowsAffected = 0 }
+    }
+
+    $chunkSize = 50
+    $totalAffected = 0
+    for ($i = 0; $i -lt $valid.Count; $i += $chunkSize) {
+        $chunk = @($valid[$i..[Math]::Min($i + $chunkSize - 1, $valid.Count - 1)])
+        $valuesSql = New-Object System.Text.StringBuilder
+        $params = @{}
+        for ($r = 0; $r -lt $chunk.Count; $r++) {
+            $row = $chunk[$r]
+            if ($r -gt 0) { [void]$valuesSql.AppendLine(',') }
+            [void]$valuesSql.Append(("(@userno{0},@username{0},@email{0},@display{0})" -f $r))
+            $params["userno$r"] = [int]$row.pw_userno
+            $params["username$r"] = if ($row.pw_username) { [string]$row.pw_username } else { $null }
+            $params["email$r"] = if ($row.pw_user_email) { [string]$row.pw_user_email } else { $null }
+            $params["display$r"] = if ($row.display_name) { [string]$row.display_name } else { $null }
+        }
+
+        $sql = @"
+MERGE pw_users AS tgt
+USING (VALUES
+$($valuesSql.ToString())
+) AS src(pw_userno, pw_username, pw_user_email, display_name)
+ON tgt.pw_userno = src.pw_userno
+WHEN MATCHED THEN UPDATE SET
+    pw_username = COALESCE(src.pw_username, tgt.pw_username),
+    pw_user_email = COALESCE(src.pw_user_email, tgt.pw_user_email),
+    display_name = COALESCE(src.display_name, tgt.display_name),
+    last_synced_at = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT (pw_userno, pw_username, pw_user_email, display_name)
+VALUES (src.pw_userno, src.pw_username, src.pw_user_email, src.display_name);
+"@
+        $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $res.IsSuccess) { return $res }
+        if ($res.Data.rowsAffected) { $totalAffected += [int]$res.Data.rowsAffected }
+    }
+
+    return New-QCSuccessResult -Code 'PW_USER_WRITE_OK' -Message "Upserted user directory ($totalAffected row(s) affected)." -Data @{ rowsAffected = $totalAffected; userCount = $valid.Count }
 }
 
 function Test-QCDatabaseWritesAllowed {
@@ -1562,4 +1714,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
