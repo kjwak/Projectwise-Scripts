@@ -21,3 +21,12 @@ def test_watcher_uses_counterpath_and_fail_on_write_error() -> None:
     assert 'WATCH_PASS_COUNTER_READ_FAILED' in WATCHER
     assert 'telemetry.failOnWriteError' in WATCHER
     assert 'if ($telemetryFailOnWriteError) { throw' in WATCHER
+
+
+def test_poll_run_validation_not_used_for_job_or_sheet_telemetry() -> None:
+    job_fn = DB.split('function Write-QCJobTelemetry', 1)[1].split('function Test-QCPollRunTelemetryInsertShape', 1)[0]
+    sheet_fn = DB.split('function Write-QCSheetIndex', 1)[1].split('function Update-QCSheetIndexPwStateName', 1)[0]
+    assert 'Test-QCPollRunTelemetryInsertShape' not in job_fn
+    assert 'Test-QCPollRunTelemetryInsertShape' not in sheet_fn
+    poll_fn = DB.split('function Write-QCPollRunTelemetry', 1)[1].split('function Write-QCNotificationTelemetry', 1)[0]
+    assert 'Test-QCPollRunTelemetryInsertShape' in poll_fn
