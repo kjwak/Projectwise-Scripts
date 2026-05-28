@@ -257,9 +257,12 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
                 try { if ($mv.Data -and $mv.Data.error) { $innerErr = [string]$mv.Data.error } } catch { }
-                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\.' -Data @{
+                $logLevel = 'Error'
+                if ([string]$mv.Code -eq 'QUEUE_JOB_WRONG_STATE') { $logLevel = 'Warning' }
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level $logLevel -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\.' -Data @{
                     jobId = $jobId; fromState = 'running'; toState = 'succeeded'
                     errorCode = [string]$mv.Code; errorMessage = [string]$mv.Message; errorData = $innerErr
+                    actualState = if ($mv.Data -and $mv.Data.actualState) { [string]$mv.Data.actualState } else { $null }
                 }
                 # The job is still in running\. Treat as a transient failure so the
                 # recovery sweep (or next worker tick) can retry the move; do NOT

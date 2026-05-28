@@ -868,6 +868,30 @@ function Move-QCJob {
         try {
             $src = _QCQJ-JobFilePath -Root $root -State $from -JobId $JobId
             if (-not (Test-Path -LiteralPath $src)) {
+                $loc = _QCQJ-FindJobFile -Root $root -JobId $JobId
+                if ($loc -and ([string]$loc.state) -eq $to) {
+                    # Idempotent: a prior move (or retry) already placed the job in the target folder.
+                    if ($PSBoundParameters.ContainsKey('Job') -and $Job) {
+                        $Job.status = $to
+                        $Job.updatedAtUtc = (Get-QCTimestamp)
+                        if (-not $Job.ContainsKey('id') -or [string]::IsNullOrWhiteSpace([string]$Job.id)) { $Job.id = $JobId }
+                        _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job
+                        try {
+                            $dedupeKey = [string]$Job['dedupeKey']
+                            if ($dedupeKey) {
+                                _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey $dedupeKey -JobId $JobId -State $to
+                            }
+                        } catch { }
+                    }
+                    return New-QCSuccessResult -Code 'QUEUE_JOB_ALREADY_MOVED' -Message 'Job already in target state.' -Data @{
+                        jobId = $JobId; fromState = $from; toState = $to; path = $loc.path; idempotent = $true
+                    }
+                }
+                if ($loc) {
+                    return New-QCFailureResult -Code 'QUEUE_JOB_WRONG_STATE' -Message "Job is in '$($loc.state)', not source '$from'." -Data @{
+                        jobId = $JobId; fromState = $from; actualState = [string]$loc.state; toState = $to; path = $loc.path
+                    }
+                }
                 return New-QCFailureResult -Code 'QUEUE_JOB_NOT_FOUND' -Message 'Job file not found in source state.' -Data @{ jobId = $JobId; fromState = $from; path = $src }
             }
             $dst = _QCQJ-JobFilePath -Root $root -State $to -JobId $JobId

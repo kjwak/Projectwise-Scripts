@@ -55,6 +55,21 @@ try {
     _Assert ($null -ne $written.updatedAtUtc)                  "updatedAtUtc stamped"
 
     Write-Host ""
+    Write-Host "Test: Move-QCJob idempotent when job already in succeeded\" -ForegroundColor Cyan
+    $jobId2 = 'qc_test_already_succeeded'
+    $sucOnly = Join-Path $qroot ("succeeded\$jobId2.json")
+    @{ id = $jobId2; type = 'STATUS_SET_GEN'; status = 'succeeded' } | ConvertTo-Json | Set-Content -LiteralPath $sucOnly -Encoding UTF8
+    $job2 = @{
+        id = $jobId2; type = 'STATUS_SET_GEN'; status = 'succeeded'
+        result = @{ code = 'STATUS_SET_OK'; message = 'ok'; data = @{ pwUpload = 'YES' } }
+    }
+    $mv2 = Move-QCJob -JobId $jobId2 -FromState 'running' -ToState 'succeeded' -Config $config -Job $job2
+    _Assert ($mv2.IsSuccess) "Idempotent move from running when file is already in succeeded\"
+    _Assert ($mv2.Code -eq 'QUEUE_JOB_ALREADY_MOVED') "Idempotent code is QUEUE_JOB_ALREADY_MOVED"
+    $w2 = Get-Content -LiteralPath $sucOnly -Raw | ConvertFrom-Json
+    _Assert ($w2.result.data.pwUpload -eq 'YES') "Idempotent move refreshes result payload on disk"
+
+    Write-Host ""
     Write-Host "Test: Move-QCJob -Job rejects mismatched Job.id" -ForegroundColor Cyan
     $jobBad = @{ id = 'qc_some_other_id'; status = 'running' }
     $rmRun = Join-Path $qroot ("running\qc_test_mismatch.json")
