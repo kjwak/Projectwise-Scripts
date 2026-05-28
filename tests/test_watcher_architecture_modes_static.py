@@ -9,7 +9,16 @@ ORCH = (REPO / 'modules' / 'QC.WatcherOrchestration.psm1').read_text(encoding='u
 def test_orchestration_module_defines_modes_and_plan() -> None:
     assert "function Get-QCWatcherMode" in ORCH
     assert "function Get-QCReconciliationPlan" in ORCH
+    assert "function Get-QCWatcherContinuousSettings" in ORCH
     assert "audit_only" in ORCH and "reconciliation" in ORCH and "recovery" in ORCH and "hybrid" in ORCH
+
+
+def test_watcher_supports_continuous_pw_session() -> None:
+    assert "Get-QCWatcherContinuousSettings" in WATCHER
+    assert "-Continuous" in WATCHER
+    assert "WATCH_TICK_START" in WATCHER
+    assert "WATCH_PW_DISCONNECT" in WATCHER
+    assert "} while ($watcherContinuous)" in WATCHER
 
 
 def test_watcher_imports_orchestration_module() -> None:

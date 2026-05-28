@@ -1366,6 +1366,11 @@ $nextWorkerIndex = 1
 $lastSpawnAt = [DateTime]::MinValue
 $lastRecoveryAt = [DateTime]::UtcNow
 $watcherChild = $null
+$watcherContinuous = $false
+try {
+    $dashCont = Get-QCWatcherContinuousSettings -Config $bootCfg
+    $watcherContinuous = [bool]$dashCont.continuous
+} catch { $watcherContinuous = $false }
 # Reconcile-on-first-watcher only (same as prior single outer-pass behavior), unless disabled in appsettings.
 $reconcileStatusSetsOnStart = Get-QCReconcileStatusSetsOnStart -Config $bootCfg
 $watcherReconcileNext = $reconcileStatusSetsOnStart -and (-not $SkipReconcileStatusSetsFirst.IsPresent)
@@ -1454,8 +1459,13 @@ while ($true) {
                 $watcherChild = $null
                 $state.watcherAlive = $false
                 $state.watcherPid = 0
-                if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
-                else { Start-Sleep -Milliseconds ([int]$wc.watcherIdleSleepMs) }
+                if (-not $watcherContinuous) {
+                    if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
+                    else { Start-Sleep -Milliseconds ([int]$wc.watcherIdleSleepMs) }
+                } else {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_CONTINUOUS_EXIT' -Message 'Continuous watcher exited unexpectedly; respawning after delay.' -Data @{ exitCode = $exit }
+                    Start-Sleep -Milliseconds ([int]$wc.watcherIdleSleepMs)
+                }
             }
         }
 
@@ -1475,6 +1485,7 @@ while ($true) {
                 $wArgs += '-ReconcileStatusSetsFirst'
                 $watcherReconcileNext = $false
             }
+            if ($watcherContinuous) { $wArgs += '-Continuous' }
 
             $watcherChild = _Start-Child -ScriptPath $watcher -ScriptArgs $wArgs -Mta
             $state.awaitingWatcherSpawn = $false

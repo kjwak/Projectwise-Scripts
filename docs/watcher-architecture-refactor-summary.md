@@ -100,6 +100,13 @@ The watcher must behave differently depending on the selected `run_mode` (canoni
 - **If** `run_mode` is `hybrid` **then** plan may return `should_reconcile = true` when a gap/downtime/explicit trigger is detected, but must remain bounded and observable via telemetry.
 - **If** `reconciliation.enabled = false` **then** plan may return intent metadata but execution must be skipped (see disablement behavior).
 
+## Continuous watcher (persistent PW session)
+
+- `watcher.continuous: true` (or `-Continuous`) keeps one `Watch-QCTrigger.ps1` process alive.
+- ProjectWise connects once per process (`WATCH_PW_CONNECT_*` on tick 1 only); disconnect on process exit (`WATCH_PW_DISCONNECT`).
+- Poll interval: `watcher.idleSleepMs` (default 750ms) between ticks; dashboard does not respawn the watcher while it stays running.
+- Status-set reconcile on start still runs only on tick 1 when enabled.
+
 ## Future orchestration direction
 - Move reconciliation execution into a dedicated scheduled/maintenance script (nightly/manual/recovery policy driven).
 - Keep watcher in `audit_only` for production steady-state.

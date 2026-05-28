@@ -13,7 +13,7 @@ Loads appsettings.json, scans configured watchFolders once, applies:
 Constraints:
   - No ProjectWise writes
   - No processor execution
-  - Run-once only (no continuous loop)
+  - Run-once by default; use -Continuous or watcher.continuous to keep one PW session open.
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,14 @@ param(
     # every restart re-checks every manifest). Pass this on the first invocation
     # after restart; omit it from subsequent watcher ticks to skip the re-walk.
     [Parameter(Mandatory = $false)]
-    [switch]$ReconcileStatusSetsFirst
+    [switch]$ReconcileStatusSetsFirst,
+
+    # Keep process alive: connect to PW once, poll in a loop, disconnect on exit.
+    [Parameter(Mandatory = $false)]
+    [switch]$Continuous,
+
+    [Parameter(Mandatory = $false)]
+    [int]$PollIntervalMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -198,6 +205,44 @@ function _Set-LocalWatcherCacheEntry {
     $Cache.entries[$Key] = $entry
 }
 
+function _Reset-WatcherPassState {
+    $script:phaseMs = @{}
+    $script:phaseCounts = @{}
+    $script:watchRunSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:accepted = 0
+    $script:ignored = 0
+    $script:filtered = 0
+    $script:matched = 0
+    $script:enqueued = 0
+    $script:duplicates = 0
+    $script:skippedStatusSetCurrent = 0
+    $script:errors = 0
+    $script:localCacheHits = 0
+    $script:localCacheMisses = 0
+    $script:localCacheSkips = 0
+    $script:hashCacheHits = 0
+    $script:hashCacheMisses = 0
+    $script:triggerRuleCacheUses = 0
+    $script:pwDescriptionLookups = 0
+    $script:pwDocEnumerations = 0
+    $script:pwFoldersScanned = 0
+    $script:dedupeChecks = 0
+    $script:dbAuditEventWritesAttempted = 0
+    $script:dbAuditEventWritesSucceeded = 0
+    $script:dbAuditEventWritesSkipped = 0
+    $script:auditPollTelemetry = $null
+    $script:watcherRanReconciliationScan = $false
+    $script:watcherPassNumber = $null
+    $script:passNumberSource = 'unset'
+    $script:runMode = 'manual'
+    $script:reconciliationReason = $null
+    $script:reconciliationTriggerSource = $null
+    $script:downtimeSeconds = 0
+    $script:auditGapDetected = $false
+    $script:watcherPhase = 'session/connect'
+    $script:queueDepthSnapshot = $null
+}
+
 $scriptDir = _Get-ThisScriptDir
 $repoRoot = Split-Path -Parent $scriptDir
 if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
@@ -233,6 +278,10 @@ if ($DryRun.IsPresent) { $config['dryRun'] = $true }
 $isDryRun = [bool]$config['dryRun']
 $watcherMode = Get-QCWatcherMode -Config $config -ReconcileStatusSetsFirst:$ReconcileStatusSetsFirst.IsPresent
 $reconcileStatusSetsOnStart = Get-QCReconcileStatusSetsOnStart -Config $config
+$pollIntervalOverride = if ($PollIntervalMs -gt 0) { [int]$PollIntervalMs } else { $null }
+$watcherContinuousSettings = Get-QCWatcherContinuousSettings -Config $config -ContinuousSwitch:$Continuous.IsPresent -PollIntervalMsOverride $pollIntervalOverride
+$watcherContinuous = [bool]$watcherContinuousSettings.continuous
+$watcherPollSleepMs = [int]$watcherContinuousSettings.pollSleepMs
 
 $ignoreSampleEvery = 50
 if ($config.ContainsKey('logging') -and $config.logging -and $config.logging.ContainsKey('ignoredSampleEvery') -and $config.logging.ignoredSampleEvery) {
@@ -254,31 +303,9 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch 
     watchFolderCount = $watchFolders.Count
     maxFiles = $MaxFiles
     ignoredSampleEvery = $ignoreSampleEvery
+    continuous = $watcherContinuous
+    pollSleepMs = $watcherPollSleepMs
 }
-
-$accepted = 0
-$ignored = 0
-$filtered = 0
-$matched = 0
-$enqueued = 0
-$duplicates = 0
-$skippedStatusSetCurrent = 0
-$errors = 0
-$localCacheHits = 0
-$localCacheMisses = 0
-$localCacheSkips = 0
-$hashCacheHits = 0
-$hashCacheMisses = 0
-$triggerRuleCacheUses = 0
-$pwDescriptionLookups = 0
-$pwDocEnumerations = 0
-$pwFoldersScanned = 0
-$dedupeChecks = 0
-$dbAuditEventWritesAttempted = 0
-$dbAuditEventWritesSucceeded = 0
-$dbAuditEventWritesSkipped = 0
-$auditPollTelemetry = $null
-$watcherRanReconciliationScan = $false
 
 $queueRoot = _Get-WatcherQueueRoot -Config $config
 
@@ -362,6 +389,19 @@ if ($statusSetRules.Count -gt 0) {
     $statusRuleObj = ($statusSetRules | Sort-Object -Property @{ Expression = { [int]$_.priority }; Descending = $true } | Select-Object -First 1)
 }
 
+$watcherTick = 0
+$pwSessionOpen = $false
+do {
+    $watcherTick++
+    _Reset-WatcherPassState
+    if ($watcherContinuous) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_START' -Message 'Watcher poll tick started.' -Data @{
+            tick = $watcherTick
+            pollSleepMs = $watcherPollSleepMs
+            pwSessionOpen = $pwSessionOpen
+        }
+    }
+
 # ProjectWise watchList processing (STATUS_SET_GEN and/or QC_PREPEND).
 # This must run even when STATUS_SET_GEN rules are disabled, because QC_PREPEND can be PW-triggered too.
 if ($statusSetRules.Count -ge 0) {
@@ -378,22 +418,28 @@ if ($statusSetRules.Count -ge 0) {
             Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
-                datasourceName = $ds
-                credentialPath = $credPath
-            }
-            $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
-            if (-not $connRes.IsSuccess) { throw ($connRes.Code + ': ' + $connRes.Message) }
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
-                datasourceName = $ds
-                userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
+            if (-not $pwSessionOpen) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
+                    datasourceName = $ds
+                    credentialPath = $credPath
+                    continuous = $watcherContinuous
+                    tick = $watcherTick
+                }
+                $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+                if (-not $connRes.IsSuccess) { throw ($connRes.Code + ': ' + $connRes.Message) }
+                $pwSessionOpen = $true
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
+                    datasourceName = $ds
+                    userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
+                    continuous = $watcherContinuous
+                }
             }
 
             # One-shot reconciliation: walk every locally-built _StatusSet.pdf
             # and push to PW when the local copy is newer / PW is missing it.
             # Gated by reconciliation.reconcileStatusSetsOnStart (appsettings) and
             # -ReconcileStatusSetsFirst (dashboard first pass only).
-            $runStatusSetReconcile = $reconcileStatusSetsOnStart -and (
+            $runStatusSetReconcile = $reconcileStatusSetsOnStart -and ($watcherTick -eq 1) -and (
                 ($watcherMode -in @('reconciliation','hybrid')) -or $ReconcileStatusSetsFirst.IsPresent
             )
             if ($runStatusSetReconcile) {
@@ -1395,9 +1441,13 @@ if ($statusSetRules.Count -ge 0) {
 
             } # end if ($runFullScan)
 
-            Disconnect-PW | Out-Null
+            if (-not $watcherContinuous) {
+                Disconnect-PW | Out-Null
+                $pwSessionOpen = $false
+            }
         } catch {
             $errors++
+            if ($watcherContinuous) { $pwSessionOpen = $false }
             Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{ errorMessage = [string]$_.Exception.Message; scriptStackTrace = [string]$_.ScriptStackTrace }
         } finally {
             $pwWatchSw.Stop()
@@ -1784,6 +1834,29 @@ $dbWriteSw.Stop()
 if (-not $telemetryRes.IsSuccess) {
     Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_TELEMETRY_WRITE_FAILED' -Message $telemetryRes.Message -Data @{ runId=$runId; passNumber=$watcherPassNumber; watcherName='qc_watcher' }
     if ($telemetryFailOnWriteError) { throw ('Telemetry write failed: ' + $telemetryRes.Message) }
+}
+
+    if ($watcherContinuous) {
+        $sleepSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Start-Sleep -Milliseconds $watcherPollSleepMs
+        $sleepSw.Stop()
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_SLEEP' -Message 'Watcher poll tick sleeping.' -Data @{
+            tick = $watcherTick
+            pollSleepMs = $watcherPollSleepMs
+            sleptMs = [int]$sleepSw.ElapsedMilliseconds
+            pwSessionOpen = $pwSessionOpen
+        }
+    }
+} while ($watcherContinuous)
+
+if ($pwSessionOpen) {
+    try {
+        Disconnect-PW | Out-Null
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT' -Message 'ProjectWise session closed.' -Data @{ continuous = $watcherContinuous; ticks = $watcherTick }
+    } catch {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_FAILED' -Message 'ProjectWise disconnect failed on watcher exit.' -Data @{ error = [string]$_.Exception.Message }
+    }
+    $pwSessionOpen = $false
 }
 
 exit 0

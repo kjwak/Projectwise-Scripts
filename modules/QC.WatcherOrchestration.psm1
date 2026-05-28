@@ -17,6 +17,31 @@ function Get-QCReconcileStatusSetsOnStart {
     return $onStart
 }
 
+function Get-QCWatcherContinuousSettings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$ContinuousSwitch,
+        [Nullable[int]]$PollIntervalMsOverride
+    )
+    $continuous = $false
+    $pollSleepMs = 750
+    try {
+        if ($Config.ContainsKey('workers') -and $Config.workers -and $Config.workers.idleSleepMs) {
+            $pollSleepMs = [int]$Config.workers.idleSleepMs
+        }
+        if ($Config.ContainsKey('watcher') -and $Config.watcher) {
+            $w = $Config.watcher
+            if ($w.ContainsKey('continuous')) { $continuous = [bool]$w.continuous }
+            if ($w.ContainsKey('idleSleepMs') -and $null -ne $w.idleSleepMs) { $pollSleepMs = [int]$w.idleSleepMs }
+        }
+    } catch { }
+    if ($ContinuousSwitch.IsPresent) { $continuous = $true }
+    if ($null -ne $PollIntervalMsOverride -and $PollIntervalMsOverride -gt 0) { $pollSleepMs = [int]$PollIntervalMsOverride }
+    if ($pollSleepMs -lt 100) { $pollSleepMs = 100 }
+    return @{ continuous = $continuous; pollSleepMs = $pollSleepMs }
+}
+
 function Get-QCWatcherMode {
     [CmdletBinding()]
     param(
@@ -81,4 +106,4 @@ function Get-QCReconciliationPlan {
     return @{ shouldRun = $false; reason = 'audit_only'; triggerSource = 'none'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings
