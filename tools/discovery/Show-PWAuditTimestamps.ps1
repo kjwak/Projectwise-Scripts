@@ -1,0 +1,177 @@
+<#
+.SYNOPSIS
+Direct dms_audt query: show raw o_acttime from ProjectWise vs pipeline clocks.
+
+.PARAMETER Hours
+How far back to query (default 48, to catch "yesterday" events appearing today).
+
+.PARAMETER Top
+Number of newest rows to print (default 25).
+
+.PARAMETER ItemNameLike
+Optional SQL LIKE filter on o_itemname, e.g. '%YourSheet.pdf%'.
+#>
+[CmdletBinding()]
+param(
+    [string]$AppSettingsPath = '',
+    [int]$Hours = 48,
+    [int]$Top = 25,
+    [string]$ItemNameLike = ''
+)
+
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
+    $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
+}
+
+foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'PW.Connection.psm1', 'PW.AuditPoller.psm1')) {
+    Import-Module (Join-Path $repoRoot "modules\$mod") -Force -WarningAction SilentlyContinue
+}
+
+$config = Get-QCAppSettingsConfig -Path $AppSettingsPath
+if ($config -isnot [hashtable]) { $config = ConvertTo-HashtableDeep -Value $config }
+
+$mtTz = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
+function _FmtMt([DateTime]$dt) {
+    $utc = if ($dt.Kind -eq [DateTimeKind]::Unspecified) {
+        [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
+    } else {
+        $dt.ToUniversalTime()
+    }
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $mtTz)
+    return $mt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT'
+}
+
+function _DescribeActTime($raw) {
+    if ($null -eq $raw -or $raw -is [DBNull]) { return @{ raw = ''; type = 'null' } }
+    $typeName = $raw.GetType().FullName
+    $out = @{ raw = [string]$raw; type = $typeName }
+    if ($raw -is [DateTime]) {
+        $out.kind = [string]$raw.Kind
+        $out.local = $raw.ToString('yyyy-MM-dd HH:mm:ss') + ' (DateTime.ToString local)'
+        $out.utc = $raw.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + ' UTC'
+        $out.mt = _FmtMt $raw
+    }
+    return $out
+}
+
+# Clocks
+$nowLocal = [DateTimeOffset]::Now
+$nowUtc = [DateTimeOffset]::UtcNow
+$nowMt = [TimeZoneInfo]::ConvertTimeFromUtc($nowUtc.UtcDateTime, $mtTz)
+Write-Host "=== Clocks (compare to PW o_acttime) ===" -ForegroundColor Cyan
+Write-Host ("  Windows local:     {0}" -f $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Write-Host ("  UTC:               {0}" -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' Z')
+Write-Host ("  Mountain (QC logs): {0}" -f $nowMt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT')
+Write-Host ("  Get-QCTimestamp:   {0}" -f (Get-QCTimestamp))
+
+$sinceLocal = $nowLocal.LocalDateTime.AddHours(-$Hours).ToString('yyyy-MM-dd HH:mm:ss')
+Write-Host ""
+Write-Host "  SQL filter (machine local): o_acttime >= '$sinceLocal'  (${Hours}h lookback)" -ForegroundColor DarkGray
+
+# Poll window (what watcher uses)
+$wmPath = Join-Path (Join-Path $config.queue.rootDir '_watcher') 'audit-capture-watermark.txt'
+$poll = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 1200
+Write-Host "`n=== Watcher poll window (Get-AuditTrailPollWindow) ===" -ForegroundColor Cyan
+Write-Host ("  since (local):  {0}" -f $poll.since.ToString('yyyy-MM-dd HH:mm:ss'))
+Write-Host ("  until (local):  {0}" -f $poll.until.ToString('yyyy-MM-dd HH:mm:ss'))
+Write-Host ("  watermarkBefore: {0}" -f $(if ($poll.watermarkBefore) { $poll.watermarkBefore } else { '(none)' }))
+
+# Connect PW
+$pw = $config.projectWise
+$ds = [string]$pw.datasourceName
+$credPath = if ($pw.credentialPath) { [string]$pw.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+Write-Host "`n=== ProjectWise dms_audt ===" -ForegroundColor Cyan
+Write-Host "  Datasource: $ds"
+
+$credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+if (-not $credRes.IsSuccess) { throw $credRes.Message }
+$connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
+if (-not $connRes.IsSuccess) { throw $connRes.Message }
+Write-Host "  Connected." -ForegroundColor Green
+
+$nameFilter = ''
+if (-not [string]::IsNullOrWhiteSpace($ItemNameLike)) {
+    $esc = $ItemNameLike.Replace("'", "''")
+    $nameFilter = " AND o_itemname LIKE '$esc'"
+}
+
+$sql = @"
+SELECT TOP $($Top * 3) o_acttime, o_action, o_objtype, o_objguid, o_itemname
+FROM dms_audt
+WHERE o_acttime >= '$sinceLocal'$nameFilter
+ORDER BY o_acttime DESC
+"@
+
+try {
+    $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
+    $rows = @()
+    if ($result.PSObject.Properties.Name -contains 'Rows' -and $result.Rows) {
+        $rows = @($result.Rows)
+    } elseif ($result -is [System.Data.DataTable]) {
+        $rows = @($result.Rows)
+    } else {
+        $rows = @($result)
+    }
+    Write-Host ("  Rows returned: {0}" -f $rows.Count)
+
+    $actionNames = @{
+        1020 = 'DOCUMENT_DELETE'; 1007 = 'DOCUMENT_CIN'; 1006 = 'DOCUMENT_FILE_REP'
+        1002 = 'DOCUMENT_MODIFY'; 1003 = 'DOCUMENT_ATTR'; 1012 = 'DOCUMENT_STATE'
+    }
+
+    $n = 0
+    foreach ($row in $rows) {
+        if ($n -ge $Top) { break }
+        $n++
+        $actRaw = $null
+        $action = 0
+        $item = ''
+        $guid = ''
+        foreach ($col in $row.Table.Columns) {
+            $cn = [string]$col.ColumnName
+            $v = $row[$col]
+            switch -Regex ($cn) {
+                '^o_acttime$' { $actRaw = $v }
+                '^o_action$'  { try { $action = [int]$v } catch { } }
+                '^o_itemname$'  { $item = [string]$v }
+                '^o_objguid$'   { $guid = [string]$v }
+            }
+        }
+        $actName = if ($actionNames.ContainsKey($action)) { $actionNames[$action] } else { "ACTION_$action" }
+        $desc = _DescribeActTime $actRaw
+
+        Write-Host ""
+        Write-Host ("--- [{0}] {1}  {2}" -f $n, $actName, $item) -ForegroundColor Yellow
+        Write-Host ("    o_objguid: {0}" -f $guid)
+        Write-Host ("    PW raw:    type={0}  value={1}" -f $desc.type, $desc.raw)
+        if ($desc.kind) {
+            Write-Host ("    DateTime Kind: {0}" -f $desc.kind)
+            Write-Host ("    as UTC:        {0}" -f $desc.utc)
+            Write-Host ("    as MT:         {0}" -f $desc.mt)
+            Write-Host ("    ToString:      {0}" -f $desc.local)
+        }
+        # What pipeline would store (FormatActTime logic)
+        $stored = $null
+        if ($actRaw -is [DateTime]) {
+            $stored = $actRaw.ToString('yyyy-MM-dd HH:mm:ss')
+        } else {
+            $s = ([string]$actRaw).Trim()
+            try {
+                $parsed = [DateTime]::Parse($s)
+                $stored = $parsed.ToString('yyyy-MM-dd HH:mm:ss')
+            } catch { $stored = $s }
+        }
+        Write-Host ("    audit_events pw_acttime would be: {0}" -f $stored) -ForegroundColor $(if ($desc.mt -and $stored -ne $desc.mt) { 'Red' } else { 'Green' })
+    }
+
+    if ($n -eq 0) {
+        Write-Host "  No rows in window. Widen -Hours or check ItemNameLike." -ForegroundColor DarkYellow
+    }
+} finally {
+    try { Disconnect-PW | Out-Null } catch { }
+}
+
+Write-Host "`nDone. If PW raw times are ~24h behind MT/local 'now', poll bounds must use the same clock as o_acttime." -ForegroundColor Cyan
