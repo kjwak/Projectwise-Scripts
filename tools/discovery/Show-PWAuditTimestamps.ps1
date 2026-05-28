@@ -34,14 +34,40 @@ $config = Get-QCAppSettingsConfig -Path $AppSettingsPath
 if ($config -isnot [hashtable]) { $config = ConvertTo-HashtableDeep -Value $config }
 
 $mtTz = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
+
+function _GetDisplayTimeZone([hashtable]$Cfg) {
+    $id = 'Mountain Standard Time'
+    try {
+        if ($Cfg.auditPoller.displayTimeZoneId) { $id = [string]$Cfg.auditPoller.displayTimeZoneId }
+    } catch { }
+    return [TimeZoneInfo]::FindSystemTimeZoneById($id)
+}
+
+function _PwActTimeToUtc([DateTime]$dt) {
+    if ($dt.Kind -eq [DateTimeKind]::Utc) { return $dt }
+    if ($dt.Kind -eq [DateTimeKind]::Local) { return $dt.ToUniversalTime() }
+    return [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
+}
+
 function _FmtMtFromPw([DateTime]$dt) {
-    $utc = if ($dt.Kind -eq [DateTimeKind]::Unspecified) {
-        [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
-    } else {
-        $dt.ToUniversalTime()
-    }
-    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $mtTz)
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $dt), $mtTz)
     return $mt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT'
+}
+
+function _FmtPipelinePwActTime([object]$Raw, [hashtable]$Cfg) {
+    if ($null -eq $Raw -or $Raw -is [DBNull]) { return $null }
+    $tz = _GetDisplayTimeZone -Cfg $Cfg
+    if ($Raw -is [DateTime]) {
+        $mt = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $Raw), $tz)
+        return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+    }
+    $s = ([string]$Raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    try {
+        $parsed = [DateTime]::Parse($s)
+        $mt = [TimeZoneInfo]::ConvertTimeFromUtc((_PwActTimeToUtc $parsed), $tz)
+        return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+    } catch { return $s }
 }
 
 function _DescribeActTime($raw) {
@@ -90,7 +116,7 @@ Write-Host ("  untilUtc:        {0}" -f $poll.untilUtc)
 Write-Host ("  sinceDisplay:    {0} ({1})" -f $poll.sinceDisplay, $poll.displayTimeZoneId)
 Write-Host ("  untilDisplay:    {0}" -f $poll.untilDisplay)
 Write-Host ("  watermarkBefore: {0}" -f $(if ($poll.watermarkBefore) { $poll.watermarkBefore } else { '(none)' }))
-Write-Host "  (Events with PW o_acttime > untilUtc are excluded until UTC catches up.)" -ForegroundColor DarkGray
+Write-Host "  (First run: sinceUtc uses initialLookbackSeconds from appsettings when watermark is absent.)" -ForegroundColor DarkGray
 
 # Connect PW
 $pw = $config.projectWise
@@ -169,15 +195,10 @@ try {
                 Write-Host ("    (misread):     {0}" -f $desc.wrongLocalAsUtc) -ForegroundColor DarkGray
             }
         }
-        $stored = _AuditPoller-FormatActTime -Value $actRaw -Config $config
+        $stored = _FmtPipelinePwActTime -Raw $actRaw -Cfg $config
         $inPoll = $false
         if ($actRaw -is [DateTime] -and $poll.untilUtc -and $poll.sinceUtc) {
-            $pwUtc = if ($actRaw.Kind -eq [DateTimeKind]::Unspecified) {
-                [DateTime]::SpecifyKind($actRaw, [DateTimeKind]::Utc)
-            } else {
-                $actRaw.ToUniversalTime()
-            }
-            $pwStr = $pwUtc.ToString('yyyy-MM-dd HH:mm:ss')
+            $pwStr = (_PwActTimeToUtc $actRaw).ToString('yyyy-MM-dd HH:mm:ss')
             $inPoll = ($pwStr -gt $poll.sinceUtc) -and ($pwStr -le $poll.untilUtc)
         }
         Write-Host ("    audit_events pw_acttime (pipeline): {0}" -f $stored) -ForegroundColor Green
