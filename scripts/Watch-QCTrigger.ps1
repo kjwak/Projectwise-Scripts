@@ -40,6 +40,12 @@ $watchRunSw = [System.Diagnostics.Stopwatch]::StartNew()
 $phaseMs = @{}
 $phaseCounts = @{}
 
+$watcherPassNumber = 0
+$runMode = 'manual'
+$reconciliationReason = $null
+$counterPath = $null
+
+
 function _Get-ThisScriptDir {
     try {
         if ($PSScriptRoot -and -not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $PSScriptRoot }
@@ -415,6 +421,7 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             $counterPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-poll-cycle.txt'
+            try { $watcherPassNumber = [int](Get-AuditPollCycleCounter -CounterPath $counterPath) } catch { $watcherPassNumber = 0 }
             $cycleNum = Get-AuditPollCycleCounter -CounterPath $counterPath
             $reconcileEvery = 20
             if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
@@ -452,6 +459,7 @@ if ($statusSetRules.Count -ge 0) {
                         reconcileEvery = $reconcileEvery
                     }
 
+                    $runMode = 'audit'
                     $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
@@ -784,6 +792,8 @@ if ($statusSetRules.Count -ge 0) {
 
             if ($isReconciliationCycle) {
                 $watcherRanReconciliationScan = $true
+                $runMode = 'reconciliation'
+                $reconciliationReason = 'scheduled_cycle'
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message 'Running full folder scan (reconciliation cycle).' -Data @{
                     cycleNum = $cycleNum; reconcileEvery = $reconcileEvery
                 }
@@ -1700,25 +1710,41 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch r
     dbAuditEventWritesSkipped = $dbAuditEventWritesSkipped
 }
 
-if ($auditPollTelemetry) {
-    Write-QCPollRunTelemetry -Config $config `
-        -EventsFetched $auditPollTelemetry.eventsFetched `
-        -EventsRelevant $auditPollTelemetry.eventsRelevant `
-        -CandidatesCreated $auditPollTelemetry.candidatesCreated `
-        -JobsEnqueued $enqueued `
-        -DurationMs $auditPollTelemetry.durationMs `
-        -WatermarkBefore $auditPollTelemetry.watermarkBefore `
-        -WatermarkAfter $auditPollTelemetry.watermarkAfter `
-        -IsReconciliation:$false
-} else {
-    Write-QCPollRunTelemetry -Config $config `
-        -EventsFetched $fileItems.Count `
-        -EventsRelevant $matched `
-        -CandidatesCreated $accepted `
-        -JobsEnqueued $enqueued `
-        -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
-        -IsReconciliation:$watcherRanReconciliationScan
-}
+$dbWriteSw = [System.Diagnostics.Stopwatch]::StartNew()
+$auditDurationSec = if ($phaseMs.ContainsKey('auditTrailScan')) { [math]::Round(([decimal]$phaseMs['auditTrailScan']/1000),3) } else { $null }
+$reconDurationSec = if ($phaseMs.ContainsKey('fullPwScan')) { [math]::Round(([decimal]$phaseMs['fullPwScan']/1000),3) } else { $null }
+$triggerEvalSec = if ($phaseMs.ContainsKey('localProcess')) { [math]::Round(([decimal]$phaseMs['localProcess']/1000),3) } else { $null }
+$dedupeSec = if ($phaseMs.ContainsKey('dedupeChecks')) { [math]::Round(([decimal]$phaseMs['dedupeChecks']/1000),3) } else { $null }
+$queueWriteSec = if ($phaseMs.ContainsKey('queueWrite')) { [math]::Round(([decimal]$phaseMs['queueWrite']/1000),3) } else { $null }
+$cleanupSec = if ($phaseMs.ContainsKey('localCacheWrite')) { [math]::Round(([decimal]$phaseMs['localCacheWrite']/1000),3) } else { $null }
+$sleepThrottleSec = if ($phaseMs.ContainsKey('sleepThrottle')) { [math]::Round(([decimal]$phaseMs['sleepThrottle']/1000),3) } else { 0 }
+Write-QCPollRunTelemetry -Config $config `
+    -EventsFetched $(if($auditPollTelemetry){$auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
+    -EventsRelevant $(if($auditPollTelemetry){$auditPollTelemetry.eventsRelevant}else{$matched}) `
+    -CandidatesCreated $(if($auditPollTelemetry){$auditPollTelemetry.candidatesCreated}else{$accepted}) `
+    -JobsEnqueued $enqueued `
+    -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
+    -WatermarkBefore $(if($auditPollTelemetry){$auditPollTelemetry.watermarkBefore}else{$null}) `
+    -WatermarkAfter $(if($auditPollTelemetry){$auditPollTelemetry.watermarkAfter}else{$null}) `
+    -IsReconciliation:$watcherRanReconciliationScan `
+    -PassNumber $watcherPassNumber `
+    -RunMode $runMode `
+    -RunStatus $(if($errors -gt 0){'failed'}else{'succeeded'}) `
+    -TotalDurationSeconds ([math]::Round(([decimal]$watchRunSw.ElapsedMilliseconds/1000),3)) `
+    -AuditQueryDurationSeconds $auditDurationSec `
+    -ReconciliationDurationSeconds $reconDurationSec `
+    -TriggerEvalDurationSeconds $triggerEvalSec `
+    -DedupeDurationSeconds $dedupeSec `
+    -QueueWriteDurationSeconds $queueWriteSec `
+    -CleanupDurationSeconds $cleanupSec `
+    -SleepThrottleDurationSeconds $sleepThrottleSec `
+    -CandidateDocumentsEvaluated $accepted `
+    -TriggerMatches $matched `
+    -JobsSkippedDedupe $duplicates `
+    -WarningCount 0 `
+    -ErrorCount $errors `
+    -ReconciliationReason $reconciliationReason
+$dbWriteSw.Stop()
 
 exit 0
 
