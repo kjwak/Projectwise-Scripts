@@ -45,4 +45,17 @@ function New-QCFailureResult {
     return New-QCResult -IsSuccess $false -Code $Code -Message $Message -Data $Data
 }
 
+function New-QCErrorResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Code,
+        [Parameter(Mandatory)]
+        [string]$Message,
+        [object]$Data
+    )
+
+    return New-QCFailureResult -Code $Code -Message $Message -Data $Data
+}
+
 Export-ModuleMember -Function *
