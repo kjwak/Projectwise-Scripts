@@ -99,6 +99,59 @@ function ConvertTo-HashtableDeep {
     }
 }
 
+function Remove-QCJsonComments {
+    <#
+    .SYNOPSIS
+    Strips // line and /* block */ comments so appsettings.json can be documented inline.
+  .DESCRIPTION
+    String literals are preserved. Used by Read-QCAppSettings before ConvertFrom-Json.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+
+    $sb = New-Object System.Text.StringBuilder
+    $len = $Text.Length
+    $inString = $false
+    $escape = $false
+    $i = 0
+    while ($i -lt $len) {
+        $c = $Text[$i]
+        if ($inString) {
+            [void]$sb.Append($c)
+            if ($escape) { $escape = $false }
+            elseif ($c -eq '\') { $escape = $true }
+            elseif ($c -eq '"') { $inString = $false }
+            $i++
+            continue
+        }
+        if ($c -eq '"') {
+            $inString = $true
+            [void]$sb.Append($c)
+            $i++
+            continue
+        }
+        if ($c -eq '/' -and ($i + 1) -lt $len) {
+            $n = $Text[$i + 1]
+            if ($n -eq '/') {
+                $i += 2
+                while ($i -lt $len -and $Text[$i] -ne "`n" -and $Text[$i] -ne "`r") { $i++ }
+                continue
+            }
+            if ($n -eq '*') {
+                $i += 2
+                while ($i + 1 -lt $len -and -not ($Text[$i] -eq '*' -and $Text[$i + 1] -eq '/')) { $i++ }
+                $i += 2
+                continue
+            }
+        }
+        [void]$sb.Append($c)
+        $i++
+    }
+    return $sb.ToString()
+}
+
 function Read-QCAppSettings {
     <#
     .SYNOPSIS
@@ -115,7 +168,8 @@ function Read-QCAppSettings {
     }
     try {
         $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $json = Remove-QCJsonComments -Text $raw
+        $obj = $json | ConvertFrom-Json -ErrorAction Stop
         return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = (ConvertTo-HashtableDeep -Value $obj); path = $Path }
     } catch {
         return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{ path = $Path; errorMessage = $_.Exception.Message; error = $_ }
