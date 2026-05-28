@@ -12,12 +12,13 @@ The pipeline uses a **hybrid polling** model where ProjectWise audit-trail event
 
 On each watcher tick, `Invoke-AuditTrailScan` (from `PW.AuditPoller.psm1`) queries the `dms_audt` table via `Select-PWSQL`:
 
-1. Read the capture watermark from `queue/_watcher/audit-capture-watermark.txt` and/or `poll_runs.watermark_after` (whichever is latest). On first run, look back `lookbackSeconds`.
-2. `SELECT TOP 500` from `dms_audt` where `o_acttime > @lastCapture` and `o_acttime <= @pollStart` and action is in the relevant set.
-3. After a successful scan, persist the new watermark so the next tick only queries and processes events in `(lastCapture, now]`.
-4. Resolve document GUIDs to folder paths via batched `Get-PWDocumentsByGUIDs` (chunks of 200).
-5. Match resolved folders against configured watch roots.
-6. Return structured candidates with action name, document info, and folder path.
+1. Read the capture watermark from `queue/_watcher/audit-capture-watermark.txt` and/or `poll_runs.watermark_after` (whichever is latest when the file exists). On first run, look back `initialLookbackSeconds`.
+2. Query `dms_audt` with `o_acttime` in `(lastCapture − lookbackSeconds, pollEnd]` (overlap on steady-state ticks). Paginated ASC; all actions are ingested to `audit_events`; QC triggers filter afterward.
+3. After a successful scan, persist **poll end time** (watcher clock) to `audit-capture-watermark.txt`. `poll_runs.watermark_before` / `watermark_after` mirror that capture clock on audit ticks (reconciliation ticks copy the file value; failed audit ticks leave `watermark_after` unchanged).
+4. **Timezone:** SQL bounds and the capture file use the **watcher machine clock**. `pw_acttime` in the DB is whatever PW/SQL returns—run the watcher in the **same timezone as the PW datasource/SQL Server** so string comparisons on `o_acttime` match. `maxPwActTime` in logs is informational only and does not advance the capture file.
+5. Resolve document GUIDs to folder paths via batched `Get-PWDocumentsByGUIDs` (chunks of 200).
+6. Match resolved folders against configured watch roots.
+7. Return structured candidates with action name, document info, and folder path.
 
 Relevant audit actions monitored:
 

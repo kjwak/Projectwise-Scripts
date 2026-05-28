@@ -1399,8 +1399,8 @@ VALUES
             jobsEnqueued      = $JobsEnqueued
             durationMs        = if ($null -ne $DurationMs) { $DurationMs } else { 0 }
             errorMessage      = if ($ErrorMessage) { $ErrorMessage } else { $null }
-            watermarkBefore   = if ($WatermarkBefore) { $WatermarkBefore } else { $null }
-            watermarkAfter    = if ($WatermarkAfter) { $WatermarkAfter } else { $null }
+            watermarkBefore   = if (-not [string]::IsNullOrWhiteSpace($WatermarkBefore)) { $WatermarkBefore.Trim() } else { $null }
+            watermarkAfter    = if (-not [string]::IsNullOrWhiteSpace($WatermarkAfter)) { $WatermarkAfter.Trim() } else { $null }
             isReconciliation  = if ($IsReconciliation) { 1 } else { 0 }
 
             watcherName = if ($WatcherName) { $WatcherName } else { $null }

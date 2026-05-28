@@ -205,6 +205,24 @@ function _Set-LocalWatcherCacheEntry {
     $Cache.entries[$Key] = $entry
 }
 
+function _Set-WatcherAuditPollTelemetryFromFile {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$QueueRoot
+    )
+    $wmPath = Join-Path (Join-Path $QueueRoot '_watcher') 'audit-capture-watermark.txt'
+    $wc = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $wmPath
+    $ws = if ($wc) { $wc.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+    $script:auditPollTelemetry = @{
+        eventsFetched     = 0
+        eventsRelevant    = 0
+        candidatesCreated = 0
+        watermarkBefore   = $ws
+        watermarkAfter    = $ws
+        durationMs        = 0
+    }
+}
+
 function _Reset-WatcherPassState {
     $script:phaseMs = @{}
     $script:phaseCounts = @{}
@@ -538,6 +556,18 @@ if ($statusSetRules.Count -ge 0) {
                     $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
+                        $wmAfterFail = $pollWindow.watermarkBefore
+                        if ([string]::IsNullOrWhiteSpace($wmAfterFail)) {
+                            $wmAfterFail = $until.ToString('yyyy-MM-dd HH:mm:ss')
+                        }
+                        $script:auditPollTelemetry = @{
+                            eventsFetched     = 0
+                            eventsRelevant    = 0
+                            candidatesCreated = 0
+                            watermarkBefore   = $pollWindow.watermarkBefore
+                            watermarkAfter    = $wmAfterFail
+                            durationMs        = 0
+                        }
                         $fallback = $true
                         if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('fallbackToFullScan')) {
                             try { $fallback = [bool]$auditPollerCfg.fallbackToFullScan } catch { $fallback = $true }
@@ -556,22 +586,15 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        $watermarkAfterStr = $null
-                        if ($auditData -is [hashtable] -and $auditData.ContainsKey('watermarkAfter')) {
-                            $watermarkAfterStr = [string]$auditData['watermarkAfter']
-                        } else {
-                            try { $watermarkAfterStr = [string]$auditData.watermarkAfter } catch { $watermarkAfterStr = '' }
-                        }
+                        # Capture watermark = end of this poll tick (watcher clock), not max PW o_acttime (may use another TZ).
                         $capturedThrough = $until
+                        $watermarkAfterStr = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+                        $maxPwActTime = $null
                         try {
-                            if (-not [string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
-                                $parsedWm = [DateTime]::Parse($watermarkAfterStr)
-                                if ($parsedWm -gt $capturedThrough) { $capturedThrough = $parsedWm }
+                            if ($auditData.stats -and $auditData.stats.maxPwActTime) {
+                                $maxPwActTime = [string]$auditData.stats.maxPwActTime
                             }
                         } catch { }
-                        if ([string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
-                            $watermarkAfterStr = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
-                        }
                         [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
 
                         $script:auditPollTelemetry = @{
@@ -602,6 +625,7 @@ if ($statusSetRules.Count -ge 0) {
                             watermarkBefore = $pollWindow.watermarkBefore
                             watermarkAfter = $watermarkAfterStr
                             capturedThrough = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+                            maxPwActTime = $maxPwActTime
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.
@@ -924,6 +948,8 @@ if ($statusSetRules.Count -ge 0) {
                     $auditScanSw.Stop()
                     _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'auditTrailScan' -Stopwatch $auditScanSw
                 }
+            } elseif ($useAuditScan -and -not $script:auditPollTelemetry) {
+                _Set-WatcherAuditPollTelemetryFromFile -Config $config -QueueRoot $queueRoot
             }
 
             if ($isReconciliationCycle) {

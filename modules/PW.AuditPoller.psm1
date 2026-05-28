@@ -406,8 +406,10 @@ function Invoke-AuditTrailScan {
     }
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
+    # SQL bounds use the poll window (watcher local clock). PW o_acttime must be comparable to these strings
+    # (typically: run the watcher in the same timezone as the PW/SQL datasource).
     $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
-    $untilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
+    $queryUntilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
     $pageSize = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'pageSize' -Default 500
     $maxPages = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxPagesPerPoll' -Default 100
     if ($pageSize -lt 1) { $pageSize = 500 }
@@ -420,7 +422,7 @@ function Invoke-AuditTrailScan {
     try {
         while ($pageNum -lt $maxPages) {
             $pageNum++
-            $untilStr = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+            $untilStr = $queryUntilStr
             $lowerBoundSql = if ($cursorGuid) {
                 $t = _AuditPoller-EscapeSqlLiteral -Value $cursorSince
                 $g = _AuditPoller-EscapeSqlLiteral -Value $cursorGuid
@@ -458,18 +460,19 @@ function Invoke-AuditTrailScan {
         $sw.Stop()
         return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No audit events in window.' -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
-            watermarkAfter = $untilStr; durationMs = [int]$sw.ElapsedMilliseconds
-            pollWindow = @{ since = $sinceStr; until = $untilStr }
+            watermarkAfter = $queryUntilStr; durationMs = [int]$sw.ElapsedMilliseconds
+            pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
         }
     }
 
     # 2. Ingest every fetched row into audit_events (no QC/watch/action filtering).
-    $watermarkAfter = $untilStr
+    $maxPwActTime = $null
+    $watermarkAfter = $queryUntilStr
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
             $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
-            if ($actTime) { $watermarkAfter = _AuditPoller-TryAdvanceWatermarkAfter -Current $watermarkAfter -Candidate $actTime }
+            if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $(if ($maxPwActTime) { $maxPwActTime } else { '' }) -Candidate $actTime }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
         }
     } else {
@@ -525,6 +528,8 @@ function Invoke-AuditTrailScan {
         }
     }
 
+    if ($maxPwActTime) { $stats.maxPwActTime = $maxPwActTime }
+
     # 3. QC trigger pipeline — filter applies only to job candidates, not audit_events ingestion.
     $relevant = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
     $stats.relevantEvents = $relevant.Count
@@ -537,7 +542,7 @@ function Invoke-AuditTrailScan {
         return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit ingest complete: $($stats.totalEvents) fetched, 0 QC-relevant for triggers." -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
             watermarkAfter = $watermarkAfter; durationMs = [int]$sw.ElapsedMilliseconds
-            pollWindow = @{ since = $sinceStr; until = $untilStr }
+            pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
         }
     }
 
@@ -660,7 +665,7 @@ function Invoke-AuditTrailScan {
         stats          = $stats
         watermarkAfter = $watermarkAfter
         durationMs     = [int]$sw.ElapsedMilliseconds
-        pollWindow     = @{ since = $sinceStr; until = $untilStr }
+        pollWindow     = @{ since = $sinceStr; until = $queryUntilStr }
     }
 }
 
