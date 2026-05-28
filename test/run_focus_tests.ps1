@@ -11,7 +11,9 @@ $tests = @(
     'test\test_pw_writeback_failure.ps1',
     'test\test_qc_workflow.ps1',
     'test\test_move_qcjob_with_job.ps1',
-    'test\test_statusset_reconcile.ps1'
+    'test\test_statusset_reconcile.ps1',
+    'test\test_audit_poll_window.ps1',
+    'test\test_audit_events_db.ps1'
 )
 $fail = 0
 foreach ($t in $tests) {

@@ -1126,6 +1126,77 @@ function Test-QCDatabaseWritesAllowed {
     return $true
 }
 
+function Write-QCAuditEventRows {
+    <#
+    .SYNOPSIS
+    Batch-insert PW audit trail rows into audit_events (deduped by natural key).
+    .OUTPUTS
+    QCResult with Data: @{ written; skipped; chunks }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][array]$Rows,
+        [int]$ChunkSize = 200
+    )
+
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; chunks = 0 }
+    }
+    if (-not $Rows -or $Rows.Count -eq 0) {
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; chunks = 0 }
+    }
+
+    $written = 0
+    $skipped = 0
+    $chunks = 0
+    for ($i = 0; $i -lt $Rows.Count; $i += $ChunkSize) {
+        $chunk = @($Rows[$i..[Math]::Min($i + $ChunkSize - 1, $Rows.Count - 1)])
+        $valuesSql = New-Object System.Text.StringBuilder
+        $params = @{}
+        for ($r = 0; $r -lt $chunk.Count; $r++) {
+            $row = $chunk[$r]
+            if ($r -gt 0) { [void]$valuesSql.AppendLine(',') }
+            [void]$valuesSql.Append(("(@acttime{0},@action{0},@actionName{0},@objtype{0},@objno{0},@objguid{0},@parentguid{0},@userno{0},@itemname{0},@itemdesc{0},@textparam{0},@folder{0},@candidateType{0})" -f $r))
+            foreach ($k in @('acttime','action','actionName','objtype','objno','objguid','parentguid','userno','itemname','itemdesc','textparam','folder','candidateType')) {
+                $params[("$k$r")] = $row[$k]
+            }
+        }
+
+        $insertSql = @"
+INSERT INTO audit_events
+    (pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
+SELECT v.pw_acttime, v.pw_action, v.pw_action_name, v.pw_objtype, v.pw_objno, v.pw_objguid, v.pw_parentguid, v.pw_userno, v.pw_itemname, v.pw_itemdesc, v.pw_textparam, v.resolved_folder, v.candidate_type
+FROM (VALUES
+$($valuesSql.ToString())
+) AS v(pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
+WHERE v.pw_objguid IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events ae
+    WHERE ae.pw_acttime = v.pw_acttime AND ae.pw_action = v.pw_action AND ae.pw_objguid = v.pw_objguid
+  );
+"@
+        $chunks++
+        try {
+            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $insertSql -Parameters $params
+            if ($res.IsSuccess) {
+                $written += [int]$res.Data.rowsAffected
+                $skipped += ($chunk.Count - [int]$res.Data.rowsAffected)
+            } else {
+                $skipped += $chunk.Count
+            }
+        } catch {
+            $skipped += $chunk.Count
+        }
+    }
+
+    return New-QCSuccessResult -Code 'AUDIT_EVENTS_WRITTEN' -Message "Audit events: $written inserted, $skipped skipped/duplicate." -Data @{
+        written = $written
+        skipped = $skipped
+        chunks  = $chunks
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Fire-and-forget telemetry writers
 # These silently no-op when the database is disabled or unreachable.
@@ -1689,4 +1760,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
