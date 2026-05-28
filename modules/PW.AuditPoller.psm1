@@ -111,10 +111,14 @@ function _AuditPoller-ParseActTime {
 
 function _AuditPoller-TryAdvanceWatermarkAfter {
     param(
-        [Parameter(Mandatory)][string]$Current,
+        [AllowNull()][string]$Current,
         [AllowNull()][string]$Candidate
     )
-    if ([string]::IsNullOrWhiteSpace($Candidate)) { return $Current }
+    if ([string]::IsNullOrWhiteSpace($Candidate)) {
+        if ([string]::IsNullOrWhiteSpace($Current)) { return $null }
+        return $Current
+    }
+    if ([string]::IsNullOrWhiteSpace($Current)) { return $Candidate }
     $curDt = _AuditPoller-ParseActTime -ActTime $Current
     $candDt = _AuditPoller-ParseActTime -ActTime $Candidate
     if ($candDt -and (-not $curDt -or $candDt -gt $curDt)) { return $Candidate }
@@ -472,7 +476,7 @@ function Invoke-AuditTrailScan {
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
             $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
-            if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $(if ($maxPwActTime) { $maxPwActTime } else { '' }) -Candidate $actTime }
+            if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTime -Candidate $actTime }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
         }
     } else {
