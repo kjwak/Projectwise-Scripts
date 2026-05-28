@@ -41,6 +41,13 @@ try {
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
     _Assert ($read -eq $captured) 'read watermark should match written value'
 
+    # Missing watermark file => no capture point (DB watermark ignored when file absent).
+    Remove-Item -LiteralPath $wmPath -Force
+    $readMissing = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
+    _Assert ($null -eq $readMissing) 'missing watermark file should not use poll_runs-only state'
+    $w3 = Get-AuditTrailPollWindow -Config $configInitial -WatermarkPath $wmPath -LookbackSeconds 60
+    _Assert ($w3.isFirstCapture) 'no watermark file should trigger initial lookback'
+
     Write-Host 'OK: audit poll window / watermark tests passed.' -ForegroundColor Green
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

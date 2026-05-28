@@ -581,7 +581,9 @@ if ($statusSetRules.Count -ge 0) {
                             candidates     = $auditCandidates.Count
                             dbWrites       = [int]$auditData.stats.dbWrites
                             dbSkipped      = [int]$auditData.stats.dbSkipped
-                            durationMs     = $auditData.durationMs
+                            pagesFetched   = [int]$auditData.stats.pagesFetched
+                            eventsTruncated = [bool]$auditData.stats.eventsTruncated
+                            durationMs     = [int]$auditData.durationMs
                             watermarkBefore = $pollWindow.watermarkBefore
                             watermarkAfter = $watermarkAfterStr
                             capturedThrough = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')

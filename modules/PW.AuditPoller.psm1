@@ -119,6 +119,11 @@ function Get-AuditTrailCaptureWatermark {
     <#
     .SYNOPSIS
     Returns the latest audit capture timestamp from the local watermark file and/or poll_runs.
+
+    .DESCRIPTION
+    poll_runs.watermark_after is only consulted when audit-capture-watermark.txt exists.
+    Deleting queue/_watcher (no file) resets capture to initialLookbackSeconds even if poll_runs
+    still has rows — avoids a stale DB watermark after a queue reset.
     #>
     [CmdletBinding()]
     param(
@@ -127,17 +132,36 @@ function Get-AuditTrailCaptureWatermark {
     )
 
     $found = @()
-    if ($WatermarkPath -and (Test-Path -LiteralPath $WatermarkPath)) {
+    $watermarkFileExists = ($WatermarkPath -and (Test-Path -LiteralPath $WatermarkPath))
+    if ($watermarkFileExists) {
         try {
             $raw = (Get-Content -LiteralPath $WatermarkPath -Raw -ErrorAction Stop).Trim()
             $parsed = _AuditPoller-ParseActTime -ActTime $raw
             if ($parsed) { $found += $parsed }
         } catch { }
+        $db = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
+        if ($db) { $found += $db }
     }
-    $db = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
-    if ($db) { $found += $db }
     if ($found.Count -eq 0) { return $null }
     return ($found | Sort-Object -Descending | Select-Object -First 1)
+}
+
+function _AuditPoller-EscapeSqlLiteral {
+    param([string]$Value)
+    if ($null -eq $Value) { return '' }
+    return ([string]$Value).Replace("'", "''")
+}
+
+function _AuditPoller-GetAuditPollerInt {
+    param([hashtable]$Config, [string]$Key, [int]$Default)
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            if ($ap -is [hashtable] -and $ap.ContainsKey($Key) -and $null -ne $ap[$Key]) { return [int]$ap[$Key] }
+            if ($ap.PSObject -and $null -ne $ap.$Key) { return [int]$ap.$Key }
+        }
+    } catch { }
+    return $Default
 }
 
 function Get-AuditTrailHighWaterMark {
@@ -258,25 +282,59 @@ function Invoke-AuditTrailScan {
         sheetsMatches   = 0
         dbWrites        = 0
         dbSkipped       = 0
+        pagesFetched    = 0
+        eventsTruncated = $false
     }
 
-    # 1. Query dms_audt — exclusive lower bound (last capture), inclusive upper bound (poll start time)
+    # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
     $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
     $untilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
     $actionList = (@($script:QCRelevantActions.Keys) | Sort-Object) -join ','
-    $sql = "SELECT TOP 500 o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE o_acttime > '$sinceStr' AND o_acttime <= '$untilStr' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime ASC"
+    $pageSize = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'pageSize' -Default 500
+    $maxPages = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxPagesPerPoll' -Default 100
+    if ($pageSize -lt 1) { $pageSize = 500 }
+    if ($maxPages -lt 1) { $maxPages = 100 }
 
-    $allEvents = @()
+    $allEvents = [System.Collections.Generic.List[object]]::new()
+    $cursorSince = $sinceStr
+    $cursorGuid = ''
+    $pageNum = 0
     try {
-        $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
-        $allEvents = @($result.Rows)
+        while ($pageNum -lt $maxPages) {
+            $pageNum++
+            $lowerBoundSql = if ($cursorGuid) {
+                $t = _AuditPoller-EscapeSqlLiteral -Value $cursorSince
+                $g = _AuditPoller-EscapeSqlLiteral -Value $cursorGuid
+                "(o_acttime > '$t' OR (o_acttime = '$t' AND o_objguid > '$g'))"
+            } else {
+                "o_acttime > '$(_AuditPoller-EscapeSqlLiteral -Value $cursorSince)'"
+            }
+            $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime ASC, o_objguid ASC"
+            $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
+            $batch = @($result.Rows)
+            if ($batch.Count -eq 0) { break }
+            foreach ($row in $batch) { [void]$allEvents.Add($row) }
+            $last = $batch[$batch.Count - 1]
+            $cursorSince = [string]$last.o_acttime
+            $cursorGuid = [string]$last.o_objguid
+            if ($batch.Count -lt $pageSize) { break }
+        }
+        if ($pageNum -ge $maxPages -and $allEvents.Count -gt 0) {
+            $stats.eventsTruncated = $true
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_QUERY_TRUNCATED' -Message "dms_audt page cap reached ($maxPages x $pageSize); re-run will continue from watermark overlap." -Data @{
+                    since = $sinceStr; until = $untilStr; pagesFetched = $pageNum; eventsFetched = $allEvents.Count
+                }
+            }
+        }
     } catch {
         $sw.Stop()
         return New-QCFailureResult -Code 'AUDIT_QUERY_FAILED' -Message "dms_audt query failed: $($_.Exception.Message)" -Data @{ durationMs = [int]$sw.ElapsedMilliseconds }
     }
+    $stats.pagesFetched = $pageNum
     $stats.totalEvents = $allEvents.Count
 
-    # 2. Filter QC-relevant actions
+    # 2. Filter QC-relevant actions (SQL already filters; keep for safety)
     $relevant = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey([int]$_.o_action) })
     $stats.relevantEvents = $relevant.Count
 
