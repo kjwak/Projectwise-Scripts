@@ -47,13 +47,17 @@ function Get-QCReconciliationPlan {
         return @{ shouldRun = $false; reason = 'disabled'; triggerSource = 'config'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc }
     }
     if ($WatcherMode -eq 'reconciliation') { return @{ shouldRun = $true; reason = 'explicit_mode'; triggerSource = 'manual'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc } }
-    if ($WatcherMode -eq 'hybrid') { return @{ shouldRun = $true; reason = 'compatibility_mode'; triggerSource = 'compat'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc } }
-    if ($WatcherMode -eq 'recovery') {
+    if ($WatcherMode -in @('hybrid','recovery')) {
         if ($LastSuccessfulAuditWatermark) {
             $downtimeSeconds = [int][Math]::Max(0, ($NowUtc.Value - $LastSuccessfulAuditWatermark.Value).TotalSeconds)
         }
         if ($maxDowntime -gt 0 -and $downtimeSeconds -ge $maxDowntime) {
             $run = $true; $reason = 'downtime_threshold'; $triggerSource = 'scheduler'; $auditGapDetected = $true
+        } else {
+            $run = $false
+            $reason = if ($WatcherMode -eq 'hybrid') { 'hybrid_audit_first' } else { 'recovery_no_gap' }
+            $triggerSource = 'none'
+            $auditGapDetected = $false
         }
         return @{ shouldRun = $run; reason = $reason; triggerSource = $triggerSource; downtimeSeconds = $downtimeSeconds; auditGapDetected = $auditGapDetected; lastReconciliationUtc = $lastReconUtc }
     }

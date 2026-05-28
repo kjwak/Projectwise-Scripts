@@ -812,6 +812,7 @@ if ($statusSetRules.Count -ge 0) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message 'Running full folder scan (reconciliation cycle).' -Data @{
                     cycleNum = $cycleNum; reconcileEvery = $reconcileEvery
                 }
+                $runFullScan = $true
                 Reset-AuditPollCycleCounter -CounterPath $counterPath
             }
 
