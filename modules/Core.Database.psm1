@@ -526,8 +526,64 @@ CREATE TABLE poll_runs (
     jobs_enqueued       INT NOT NULL DEFAULT 0,
     duration_ms         INT,
     error_message       NVARCHAR(2000),
-    is_reconciliation   BIT NOT NULL DEFAULT 0
+    is_reconciliation   BIT NOT NULL DEFAULT 0,
+    watcher_name        NVARCHAR(120),
+    service_name        NVARCHAR(120),
+    pass_number         INT,
+    run_mode            NVARCHAR(40),
+    run_status          NVARCHAR(20),
+    total_duration_seconds DECIMAL(18,3),
+    audit_query_duration_seconds DECIMAL(18,3),
+    reconciliation_duration_seconds DECIMAL(18,3),
+    trigger_eval_duration_seconds DECIMAL(18,3),
+    dedupe_duration_seconds DECIMAL(18,3),
+    queue_write_duration_seconds DECIMAL(18,3),
+    database_write_duration_seconds DECIMAL(18,3),
+    cleanup_duration_seconds DECIMAL(18,3),
+    sleep_throttle_duration_seconds DECIMAL(18,3),
+    candidate_documents_evaluated INT NOT NULL DEFAULT 0,
+    trigger_matches INT NOT NULL DEFAULT 0,
+    jobs_skipped_dedupe INT NOT NULL DEFAULT 0,
+    warning_count INT NOT NULL DEFAULT 0,
+    error_count INT NOT NULL DEFAULT 0,
+    reconciliation_reason NVARCHAR(200),
+    reconciliation_trigger_source NVARCHAR(80),
+    downtime_seconds INT,
+    audit_gap_detected BIT NOT NULL DEFAULT 0,
+    watcher_phase NVARCHAR(80),
+    throttle_wait_seconds DECIMAL(18,3),
+    queue_depth_snapshot INT
 );
+
+
+IF COL_LENGTH('dbo.poll_runs','watcher_name') IS NULL ALTER TABLE dbo.poll_runs ADD watcher_name NVARCHAR(120) NULL;
+IF COL_LENGTH('dbo.poll_runs','service_name') IS NULL ALTER TABLE dbo.poll_runs ADD service_name NVARCHAR(120) NULL;
+IF COL_LENGTH('dbo.poll_runs','pass_number') IS NULL ALTER TABLE dbo.poll_runs ADD pass_number INT NULL;
+IF COL_LENGTH('dbo.poll_runs','run_mode') IS NULL ALTER TABLE dbo.poll_runs ADD run_mode NVARCHAR(40) NULL;
+IF COL_LENGTH('dbo.poll_runs','run_status') IS NULL ALTER TABLE dbo.poll_runs ADD run_status NVARCHAR(20) NULL;
+IF COL_LENGTH('dbo.poll_runs','total_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD total_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','audit_query_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD audit_query_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','reconciliation_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD reconciliation_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','trigger_eval_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD trigger_eval_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','dedupe_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD dedupe_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','queue_write_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD queue_write_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','database_write_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD database_write_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','cleanup_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD cleanup_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','sleep_throttle_duration_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD sleep_throttle_duration_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','candidate_documents_evaluated') IS NULL ALTER TABLE dbo.poll_runs ADD candidate_documents_evaluated INT NOT NULL CONSTRAINT DF_poll_runs_candidate_documents_evaluated DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','trigger_matches') IS NULL ALTER TABLE dbo.poll_runs ADD trigger_matches INT NOT NULL CONSTRAINT DF_poll_runs_trigger_matches DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','jobs_skipped_dedupe') IS NULL ALTER TABLE dbo.poll_runs ADD jobs_skipped_dedupe INT NOT NULL CONSTRAINT DF_poll_runs_jobs_skipped_dedupe DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','warning_count') IS NULL ALTER TABLE dbo.poll_runs ADD warning_count INT NOT NULL CONSTRAINT DF_poll_runs_warning_count DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','error_count') IS NULL ALTER TABLE dbo.poll_runs ADD error_count INT NOT NULL CONSTRAINT DF_poll_runs_error_count DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','reconciliation_reason') IS NULL ALTER TABLE dbo.poll_runs ADD reconciliation_reason NVARCHAR(200) NULL;
+
+
+IF COL_LENGTH('dbo.poll_runs','reconciliation_trigger_source') IS NULL ALTER TABLE dbo.poll_runs ADD reconciliation_trigger_source NVARCHAR(80) NULL;
+IF COL_LENGTH('dbo.poll_runs','downtime_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD downtime_seconds INT NULL;
+IF COL_LENGTH('dbo.poll_runs','audit_gap_detected') IS NULL ALTER TABLE dbo.poll_runs ADD audit_gap_detected BIT NOT NULL CONSTRAINT DF_poll_runs_audit_gap_detected DEFAULT 0;
+IF COL_LENGTH('dbo.poll_runs','watcher_phase') IS NULL ALTER TABLE dbo.poll_runs ADD watcher_phase NVARCHAR(80) NULL;
+IF COL_LENGTH('dbo.poll_runs','throttle_wait_seconds') IS NULL ALTER TABLE dbo.poll_runs ADD throttle_wait_seconds DECIMAL(18,3) NULL;
+IF COL_LENGTH('dbo.poll_runs','queue_depth_snapshot') IS NULL ALTER TABLE dbo.poll_runs ADD queue_depth_snapshot INT NULL;
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_poll_runs_started')
     CREATE INDEX idx_poll_runs_started ON poll_runs(started_at);
@@ -1035,15 +1091,41 @@ function Write-QCPollRunTelemetry {
         [string]$ErrorMessage,
         [string]$WatermarkBefore,
         [string]$WatermarkAfter,
-        [bool]$IsReconciliation = $false
+        [bool]$IsReconciliation = $false,
+        [string]$WatcherName = 'qc_watcher',
+        [string]$ServiceName = 'qc_pipeline',
+        [Nullable[int]]$PassNumber,
+        [string]$RunMode = 'audit',
+        [string]$RunStatus = 'succeeded',
+        [Nullable[decimal]]$TotalDurationSeconds,
+        [Nullable[decimal]]$AuditQueryDurationSeconds,
+        [Nullable[decimal]]$ReconciliationDurationSeconds,
+        [Nullable[decimal]]$TriggerEvalDurationSeconds,
+        [Nullable[decimal]]$DedupeDurationSeconds,
+        [Nullable[decimal]]$QueueWriteDurationSeconds,
+        [Nullable[decimal]]$DatabaseWriteDurationSeconds,
+        [Nullable[decimal]]$CleanupDurationSeconds,
+        [Nullable[decimal]]$SleepThrottleDurationSeconds,
+        [int]$CandidateDocumentsEvaluated = 0,
+        [int]$TriggerMatches = 0,
+        [int]$JobsSkippedDedupe = 0,
+        [int]$WarningCount = 0,
+        [int]$ErrorCount = 0,
+        [string]$ReconciliationReason,
+        [string]$ReconciliationTriggerSource,
+        [Nullable[int]]$DowntimeSeconds,
+        [bool]$AuditGapDetected = $false,
+        [string]$WatcherPhase,
+        [Nullable[decimal]]$ThrottleWaitSeconds,
+        [Nullable[int]]$QueueDepthSnapshot
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return }
     try {
         $sql = @"
 INSERT INTO poll_runs
-    (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation)
+    (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation, watcher_name, service_name, pass_number, run_mode, run_status, total_duration_seconds, audit_query_duration_seconds, reconciliation_duration_seconds, trigger_eval_duration_seconds, dedupe_duration_seconds, queue_write_duration_seconds, database_write_duration_seconds, cleanup_duration_seconds, sleep_throttle_duration_seconds, candidate_documents_evaluated, trigger_matches, jobs_skipped_dedupe, warning_count, error_count, reconciliation_reason, reconciliation_trigger_source, downtime_seconds, audit_gap_detected, watcher_phase, throttle_wait_seconds, queue_depth_snapshot)
 VALUES
-    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation)
+    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation, @watcherName, @serviceName, @passNumber, @runMode, @runStatus, @totalDurationSeconds, @auditQueryDurationSeconds, @reconciliationDurationSeconds, @triggerEvalDurationSeconds, @dedupeDurationSeconds, @queueWriteDurationSeconds, @databaseWriteDurationSeconds, @cleanupDurationSeconds, @sleepThrottleDurationSeconds, @candidateDocumentsEvaluated, @triggerMatches, @jobsSkippedDedupe, @warningCount, @errorCount, @reconciliationReason, @reconciliationTriggerSource, @downtimeSeconds, @auditGapDetected, @watcherPhase, @throttleWaitSeconds, @queueDepthSnapshot)
 "@
         $params = @{
             eventsFetched     = $EventsFetched
@@ -1055,6 +1137,34 @@ VALUES
             watermarkBefore   = if ($WatermarkBefore) { $WatermarkBefore } else { $null }
             watermarkAfter    = if ($WatermarkAfter) { $WatermarkAfter } else { $null }
             isReconciliation  = if ($IsReconciliation) { 1 } else { 0 }
+
+            watcherName = if ($WatcherName) { $WatcherName } else { $null }
+            serviceName = if ($ServiceName) { $ServiceName } else { $null }
+            passNumber = if ($null -ne $PassNumber) { $PassNumber } else { $null }
+            runMode = if ($RunMode) { $RunMode } else { $null }
+            runStatus = if ($RunStatus) { $RunStatus } else { $null }
+            totalDurationSeconds = if ($null -ne $TotalDurationSeconds) { $TotalDurationSeconds } else { $null }
+            auditQueryDurationSeconds = if ($null -ne $AuditQueryDurationSeconds) { $AuditQueryDurationSeconds } else { $null }
+            reconciliationDurationSeconds = if ($null -ne $ReconciliationDurationSeconds) { $ReconciliationDurationSeconds } else { $null }
+            triggerEvalDurationSeconds = if ($null -ne $TriggerEvalDurationSeconds) { $TriggerEvalDurationSeconds } else { $null }
+            dedupeDurationSeconds = if ($null -ne $DedupeDurationSeconds) { $DedupeDurationSeconds } else { $null }
+            queueWriteDurationSeconds = if ($null -ne $QueueWriteDurationSeconds) { $QueueWriteDurationSeconds } else { $null }
+            databaseWriteDurationSeconds = if ($null -ne $DatabaseWriteDurationSeconds) { $DatabaseWriteDurationSeconds } else { $null }
+            cleanupDurationSeconds = if ($null -ne $CleanupDurationSeconds) { $CleanupDurationSeconds } else { $null }
+            sleepThrottleDurationSeconds = if ($null -ne $SleepThrottleDurationSeconds) { $SleepThrottleDurationSeconds } else { $null }
+            candidateDocumentsEvaluated = $CandidateDocumentsEvaluated
+            triggerMatches = $TriggerMatches
+            jobsSkippedDedupe = $JobsSkippedDedupe
+            warningCount = $WarningCount
+            errorCount = $ErrorCount
+            reconciliationReason = if ($ReconciliationReason) { $ReconciliationReason } else { $null }
+            reconciliationTriggerSource = if ($ReconciliationTriggerSource) { $ReconciliationTriggerSource } else { $null }
+            downtimeSeconds = if ($null -ne $DowntimeSeconds) { $DowntimeSeconds } else { $null }
+            auditGapDetected = if ($AuditGapDetected) { 1 } else { 0 }
+            watcherPhase = if ($WatcherPhase) { $WatcherPhase } else { $null }
+            throttleWaitSeconds = if ($null -ne $ThrottleWaitSeconds) { $ThrottleWaitSeconds } else { $null }
+            queueDepthSnapshot = if ($null -ne $QueueDepthSnapshot) { $QueueDepthSnapshot } else { $null }
+
         }
         Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
     } catch { }
