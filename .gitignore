@@ -12,5 +12,5 @@ env/
 
 # --- PyInstaller (keep *.spec in git for reproducible builds) ---
 
-
+db/
 
