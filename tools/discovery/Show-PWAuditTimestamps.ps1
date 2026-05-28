@@ -34,7 +34,7 @@ $config = Get-QCAppSettingsConfig -Path $AppSettingsPath
 if ($config -isnot [hashtable]) { $config = ConvertTo-HashtableDeep -Value $config }
 
 $mtTz = [TimeZoneInfo]::FindSystemTimeZoneById('Mountain Standard Time')
-function _FmtMt([DateTime]$dt) {
+function _FmtMtFromPw([DateTime]$dt) {
     $utc = if ($dt.Kind -eq [DateTimeKind]::Unspecified) {
         [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
     } else {
@@ -50,9 +50,15 @@ function _DescribeActTime($raw) {
     $out = @{ raw = [string]$raw; type = $typeName }
     if ($raw -is [DateTime]) {
         $out.kind = [string]$raw.Kind
-        $out.local = $raw.ToString('yyyy-MM-dd HH:mm:ss') + ' (DateTime.ToString local)'
-        $out.utc = $raw.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + ' UTC'
-        $out.mt = _FmtMt $raw
+        $utcAssumed = if ($raw.Kind -eq [DateTimeKind]::Unspecified) {
+            [DateTime]::SpecifyKind($raw, [DateTimeKind]::Utc)
+        } else {
+            $raw.ToUniversalTime()
+        }
+        $out.utcAssumed = $utcAssumed.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC (PW Unspecified treated as UTC)'
+        $out.mt = _FmtMtFromPw $raw
+        $out.wrongLocalAsUtc = $raw.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + ' UTC (WRONG: ToUniversalTime on Unspecified uses machine local)'
+        $out.toStringLocal = $raw.ToString('yyyy-MM-dd HH:mm:ss') + ' (DateTime.ToString on this machine)'
     }
     return $out
 }
@@ -67,17 +73,24 @@ Write-Host ("  UTC:               {0}" -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss'
 Write-Host ("  Mountain (QC logs): {0}" -f $nowMt.ToString('yyyy-MM-dd HH:mm:ss') + ' MT')
 Write-Host ("  Get-QCTimestamp:   {0}" -f (Get-QCTimestamp))
 
-$sinceLocal = $nowLocal.LocalDateTime.AddHours(-$Hours).ToString('yyyy-MM-dd HH:mm:ss')
+$sinceUtc = $nowUtc.UtcDateTime.AddHours(-$Hours).ToString('yyyy-MM-dd HH:mm:ss')
 Write-Host ""
-Write-Host "  SQL filter (machine local): o_acttime >= '$sinceLocal'  (${Hours}h lookback)" -ForegroundColor DarkGray
+Write-Host "  SQL filter (UTC, matches watcher): o_acttime >= '$sinceUtc'  (${Hours}h lookback)" -ForegroundColor DarkGray
 
 # Poll window (what watcher uses)
 $wmPath = Join-Path (Join-Path $config.queue.rootDir '_watcher') 'audit-capture-watermark.txt'
-$poll = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 1200
+$lookback = 1200
+try {
+    if ($config.auditPoller.lookbackSeconds) { $lookback = [int]$config.auditPoller.lookbackSeconds }
+} catch { }
+$poll = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds $lookback
 Write-Host "`n=== Watcher poll window (Get-AuditTrailPollWindow) ===" -ForegroundColor Cyan
-Write-Host ("  since (local):  {0}" -f $poll.since.ToString('yyyy-MM-dd HH:mm:ss'))
-Write-Host ("  until (local):  {0}" -f $poll.until.ToString('yyyy-MM-dd HH:mm:ss'))
+Write-Host ("  sinceUtc:        {0}" -f $poll.sinceUtc)
+Write-Host ("  untilUtc:        {0}" -f $poll.untilUtc)
+Write-Host ("  sinceDisplay:    {0} ({1})" -f $poll.sinceDisplay, $poll.displayTimeZoneId)
+Write-Host ("  untilDisplay:    {0}" -f $poll.untilDisplay)
 Write-Host ("  watermarkBefore: {0}" -f $(if ($poll.watermarkBefore) { $poll.watermarkBefore } else { '(none)' }))
+Write-Host "  (Events with PW o_acttime > untilUtc are excluded until UTC catches up.)" -ForegroundColor DarkGray
 
 # Connect PW
 $pw = $config.projectWise
@@ -101,7 +114,7 @@ if (-not [string]::IsNullOrWhiteSpace($ItemNameLike)) {
 $sql = @"
 SELECT TOP $($Top * 3) o_acttime, o_action, o_objtype, o_objguid, o_itemname
 FROM dms_audt
-WHERE o_acttime >= '$sinceLocal'$nameFilter
+WHERE o_acttime >= '$sinceUtc'$nameFilter
 ORDER BY o_acttime DESC
 "@
 
@@ -149,22 +162,26 @@ try {
         Write-Host ("    PW raw:    type={0}  value={1}" -f $desc.type, $desc.raw)
         if ($desc.kind) {
             Write-Host ("    DateTime Kind: {0}" -f $desc.kind)
-            Write-Host ("    as UTC:        {0}" -f $desc.utc)
-            Write-Host ("    as MT:         {0}" -f $desc.mt)
-            Write-Host ("    ToString:      {0}" -f $desc.local)
+            Write-Host ("    UTC (assumed): {0}" -f $desc.utcAssumed)
+            Write-Host ("    Mountain:      {0}" -f $desc.mt)
+            Write-Host ("    ToString:      {0}" -f $desc.toStringLocal)
+            if ($desc.wrongLocalAsUtc) {
+                Write-Host ("    (misread):     {0}" -f $desc.wrongLocalAsUtc) -ForegroundColor DarkGray
+            }
         }
-        # What pipeline would store (FormatActTime logic)
-        $stored = $null
-        if ($actRaw -is [DateTime]) {
-            $stored = $actRaw.ToString('yyyy-MM-dd HH:mm:ss')
-        } else {
-            $s = ([string]$actRaw).Trim()
-            try {
-                $parsed = [DateTime]::Parse($s)
-                $stored = $parsed.ToString('yyyy-MM-dd HH:mm:ss')
-            } catch { $stored = $s }
+        $stored = _AuditPoller-FormatActTime -Value $actRaw -Config $config
+        $inPoll = $false
+        if ($actRaw -is [DateTime] -and $poll.untilUtc -and $poll.sinceUtc) {
+            $pwUtc = if ($actRaw.Kind -eq [DateTimeKind]::Unspecified) {
+                [DateTime]::SpecifyKind($actRaw, [DateTimeKind]::Utc)
+            } else {
+                $actRaw.ToUniversalTime()
+            }
+            $pwStr = $pwUtc.ToString('yyyy-MM-dd HH:mm:ss')
+            $inPoll = ($pwStr -gt $poll.sinceUtc) -and ($pwStr -le $poll.untilUtc)
         }
-        Write-Host ("    audit_events pw_acttime would be: {0}" -f $stored) -ForegroundColor $(if ($desc.mt -and $stored -ne $desc.mt) { 'Red' } else { 'Green' })
+        Write-Host ("    audit_events pw_acttime (pipeline): {0}" -f $stored) -ForegroundColor Green
+        Write-Host ("    in current poll window (UTC):       {0}" -f $(if ($inPoll) { 'YES' } else { 'no' }))
     }
 
     if ($n -eq 0) {
@@ -174,4 +191,4 @@ try {
     try { Disconnect-PW | Out-Null } catch { }
 }
 
-Write-Host "`nDone. If PW raw times are ~24h behind MT/local 'now', poll bounds must use the same clock as o_acttime." -ForegroundColor Cyan
+Write-Host "`nDone. PW o_acttime uses UTC wall clock; poll bounds and watermark use UTC; pw_acttime in SQL is Mountain (displayTimeZoneId)." -ForegroundColor Cyan

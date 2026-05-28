@@ -546,8 +546,10 @@ if ($statusSetRules.Count -ge 0) {
                     }
 
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
-                        since = $since.ToString('yyyy-MM-dd HH:mm:ss')
-                        until = $until.ToString('yyyy-MM-dd HH:mm:ss')
+                        sinceUtc = $pollWindow.sinceUtc
+                        untilUtc = $pollWindow.untilUtc
+                        sinceDisplay = $pollWindow.sinceDisplay
+                        untilDisplay = $pollWindow.untilDisplay
                         watermarkBefore = $pollWindow.watermarkBefore
                         isFirstCapture = [bool]$pollWindow.isFirstCapture
                         cycleNum = $cycleNum
@@ -560,7 +562,7 @@ if ($statusSetRules.Count -ge 0) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
                         $wmAfterFail = $pollWindow.watermarkBefore
                         if ([string]::IsNullOrWhiteSpace($wmAfterFail)) {
-                            $wmAfterFail = $until.ToString('yyyy-MM-dd HH:mm:ss')
+                            $wmAfterFail = $pollWindow.untilUtc
                         }
                         $script:auditPollTelemetry = @{
                             eventsFetched     = 0
@@ -588,9 +590,9 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        # Capture watermark = end of this poll tick (watcher clock), not max PW o_acttime (may use another TZ).
+                        # Capture watermark = end of this poll tick (UTC, matches dms_audt o_acttime clock).
                         $capturedThrough = $until
-                        $watermarkAfterStr = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+                        $watermarkAfterStr = $pollWindow.untilUtc
                         $maxPwActTime = $null
                         try {
                             if ($auditData.stats -and $auditData.stats.maxPwActTime) {

@@ -30,16 +30,18 @@ try {
     _Assert ($w1.isFirstCapture) 'first run should have no prior capture'
     _Assert (($w1.until - $w1.since).TotalSeconds -ge 59) 'first run should use lookback window'
 
-    $captured = Get-Date '2026-05-26 10:00:00'
+    $captured = [DateTime]::SpecifyKind([DateTime]::Parse('2026-05-26 10:00:00'), [DateTimeKind]::Utc)
     _Assert (Set-AuditTrailCaptureWatermark -WatermarkPath $wmPath -CapturedThrough $captured) 'watermark write should succeed'
+    $wmRaw = (Get-Content -LiteralPath $wmPath -Raw).Trim()
+    _Assert ($wmRaw.EndsWith('Z')) 'watermark file should store UTC with Z suffix'
 
     $w2 = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 60
     _Assert (-not $w2.isFirstCapture) 'second run should see prior capture'
     _Assert ($w2.since -eq $captured.AddSeconds(-60)) 'since should overlap last capture by lookbackSeconds'
-    _Assert ($w2.watermarkBefore -eq '2026-05-26 10:00:00') 'watermarkBefore string should match'
+    _Assert ($w2.watermarkBefore -eq '2026-05-26 10:00:00') 'watermarkBefore string should match UTC clock'
 
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
-    _Assert ($read -eq $captured) 'read watermark should match written value'
+    _Assert ($read.ToUniversalTime() -eq $captured) 'read watermark should match written UTC value'
 
     # Missing watermark file => no capture point (DB watermark ignored when file absent).
     Remove-Item -LiteralPath $wmPath -Force

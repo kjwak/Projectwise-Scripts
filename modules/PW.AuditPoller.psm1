@@ -103,6 +103,70 @@ function _AuditPoller-GetSheetsSubpath {
     return $false
 }
 
+function _AuditPoller-GetDisplayTimeZone {
+    <#
+    Wall-clock zone for audit_events.pw_acttime and logs (matches Core.Runtime Get-QCTimestamp).
+    #>
+    param([hashtable]$Config = @{})
+    $id = 'Mountain Standard Time'
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            if ($ap -is [hashtable] -and $ap.ContainsKey('displayTimeZoneId') -and $ap.displayTimeZoneId) {
+                $id = [string]$ap.displayTimeZoneId
+            } elseif ($ap.PSObject -and $ap.displayTimeZoneId) {
+                $id = [string]$ap.displayTimeZoneId
+            }
+        }
+    } catch { }
+    return [TimeZoneInfo]::FindSystemTimeZoneById($id)
+}
+
+function _AuditPoller-AssumeUtcFromPw {
+    param([DateTime]$DateTime)
+    if ($DateTime.Kind -eq [DateTimeKind]::Utc) { return $DateTime }
+    if ($DateTime.Kind -eq [DateTimeKind]::Local) { return $DateTime.ToUniversalTime() }
+    # PW Select-PWSQL returns o_acttime as Unspecified with UTC wall-clock components.
+    return [DateTime]::SpecifyKind($DateTime, [DateTimeKind]::Utc)
+}
+
+function _AuditPoller-ParseWatermarkToUtc {
+    param([string]$Raw)
+    if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
+    try {
+        $s = $Raw.Trim()
+        if ($s.EndsWith('Z', [StringComparison]::OrdinalIgnoreCase)) {
+            return [DateTime]::Parse(
+                $s,
+                $null,
+                [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+            )
+        }
+        $dt = [DateTime]::Parse($s)
+        if ($dt.Kind -eq [DateTimeKind]::Unspecified) {
+            # Legacy watermark files used machine LocalDateTime before UTC poll bounds fix.
+            $dt = [DateTime]::SpecifyKind($dt, [DateTimeKind]::Local)
+        }
+        return $dt.ToUniversalTime()
+    } catch { return $null }
+}
+
+function _AuditPoller-FormatSqlUtc {
+    param([DateTime]$Utc)
+    $u = $Utc.ToUniversalTime()
+    return $u.ToString('yyyy-MM-dd HH:mm:ss')
+}
+
+function _AuditPoller-FormatDisplayTime {
+    param(
+        [DateTime]$Utc,
+        [hashtable]$Config = @{}
+    )
+    $tz = _AuditPoller-GetDisplayTimeZone -Config $Config
+    $mt = [TimeZoneInfo]::ConvertTimeFromUtc($Utc.ToUniversalTime(), $tz)
+    return $mt.ToString('yyyy-MM-dd HH:mm:ss')
+}
+
 function _AuditPoller-ParseActTime {
     param([string]$ActTime)
     if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
@@ -150,15 +214,23 @@ function _AuditPoller-GetRowValue {
 }
 
 function _AuditPoller-FormatActTime {
-    param([AllowNull()][object]$Value)
+    param(
+        [AllowNull()][object]$Value,
+        [hashtable]$Config = @{}
+    )
     if ($null -eq $Value) { return $null }
     if ($Value -is [DBNull]) { return $null }
-    if ($Value -is [DateTime]) { return $Value.ToString('yyyy-MM-dd HH:mm:ss') }
+    if ($Value -is [DateTime]) {
+        $utc = _AuditPoller-AssumeUtcFromPw -DateTime $Value
+        return _AuditPoller-FormatDisplayTime -Utc $utc -Config $Config
+    }
     $s = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($s)) { return $null }
-    $parsed = _AuditPoller-ParseActTime -ActTime $s
-    if ($parsed) { return $parsed.ToString('yyyy-MM-dd HH:mm:ss') }
-    return $s
+    try {
+        $parsed = [DateTime]::Parse($s)
+        $utc = _AuditPoller-AssumeUtcFromPw -DateTime $parsed
+        return _AuditPoller-FormatDisplayTime -Utc $utc -Config $Config
+    } catch { return $s }
 }
 
 function _AuditPoller-GetSqlResultRows {
@@ -197,6 +269,7 @@ function _AuditPoller-NormalizeGuid {
 function _AuditPoller-NewAuditEventDbRow {
     param(
         $Evt,
+        [hashtable]$Config = @{},
         [AllowNull()][string]$ResolvedFolder = $null,
         [AllowNull()][string]$CandidateType = $null
     )
@@ -207,7 +280,7 @@ function _AuditPoller-NewAuditEventDbRow {
     $textparam = _AuditPoller-GetRowValue -Row $Evt -Name 'o_textparam'
     $objtype = 0; try { $objtype = [int](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objtype') } catch { $objtype = 0 }
     return @{
-        acttime       = (_AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $Evt -Name 'o_acttime'))
+        acttime       = (_AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $Evt -Name 'o_acttime') -Config $Config)
         action        = $actionCode
         actionName    = (_AuditPoller-GetActionName -ActionCode $actionCode)
         objtype       = $objtype
@@ -236,7 +309,7 @@ function Get-AuditTrailHighWaterMarkFromDatabase {
     try {
         $res = Invoke-QCDatabaseScalar -Config $Config -Sql "SELECT TOP 1 watermark_after FROM poll_runs WHERE error_message IS NULL AND watermark_after IS NOT NULL ORDER BY started_at DESC"
         if ($res.IsSuccess -and $res.Data.value) {
-            return _AuditPoller-ParseActTime -ActTime ([string]$res.Data.value)
+            return _AuditPoller-ParseWatermarkToUtc -Raw ([string]$res.Data.value)
         }
     } catch { }
     return $null
@@ -263,7 +336,7 @@ function Get-AuditTrailCaptureWatermark {
     if ($watermarkFileExists) {
         try {
             $raw = (Get-Content -LiteralPath $WatermarkPath -Raw -ErrorAction Stop).Trim()
-            $parsed = _AuditPoller-ParseActTime -ActTime $raw
+            $parsed = _AuditPoller-ParseWatermarkToUtc -Raw $raw
             if ($parsed) { $found += $parsed }
         } catch { }
         $db = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
@@ -318,7 +391,7 @@ function Set-AuditTrailCaptureWatermark {
     try {
         $dir = Split-Path -Parent $WatermarkPath
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $value = $CapturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+        $value = (_AuditPoller-FormatSqlUtc -Utc $CapturedThrough.ToUniversalTime()) + 'Z'
         Set-Content -LiteralPath $WatermarkPath -Value $value -Encoding UTF8 -NoNewline
         return $true
     } catch {
@@ -338,7 +411,8 @@ function Get-AuditTrailPollWindow {
         [int]$LookbackSeconds = 120
     )
 
-    $until = [DateTimeOffset]::Now.LocalDateTime
+    # dms_audt o_acttime compares as UTC wall clock; do not use machine LocalDateTime for SQL bounds.
+    $until = [DateTime]::UtcNow
     $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
     $initialLookbackSeconds = $LookbackSeconds
     try {
@@ -366,14 +440,20 @@ function Get-AuditTrailPollWindow {
     if ($since -ge $until) {
         $since = $until.AddSeconds(-$overlapSeconds)
     }
-    $watermarkBefore = if ($lastCapture) { $lastCapture.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+    $tz = _AuditPoller-GetDisplayTimeZone -Config $Config
+    $watermarkBefore = if ($lastCapture) { _AuditPoller-FormatSqlUtc -Utc $lastCapture } else { $null }
 
     return @{
         since           = $since
         until           = $until
+        sinceUtc        = _AuditPoller-FormatSqlUtc -Utc $since
+        untilUtc        = _AuditPoller-FormatSqlUtc -Utc $until
+        sinceDisplay    = _AuditPoller-FormatDisplayTime -Utc $since -Config $Config
+        untilDisplay    = _AuditPoller-FormatDisplayTime -Utc $until -Config $Config
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
         lookbackSecondsUsed = if ($lastCapture) { $overlapSeconds } else { $initialLookbackSeconds }
+        displayTimeZoneId = $tz.Id
     }
 }
 
@@ -417,10 +497,11 @@ function Invoke-AuditTrailScan {
     }
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
-    # SQL bounds use the poll window (watcher local clock). PW o_acttime must be comparable to these strings
-    # (typically: run the watcher in the same timezone as the PW/SQL datasource).
-    $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
-    $queryUntilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
+    # SQL bounds in UTC to match PW o_acttime (Unspecified DateTime with UTC wall-clock components).
+    $sinceUtc = if ($Since.Kind -eq [DateTimeKind]::Utc) { $Since.ToUniversalTime() } else { _AuditPoller-AssumeUtcFromPw -DateTime $Since }
+    $untilUtc = if ($Until.Kind -eq [DateTimeKind]::Utc) { $Until.ToUniversalTime() } else { _AuditPoller-AssumeUtcFromPw -DateTime $Until }
+    $sinceStr = _AuditPoller-FormatSqlUtc -Utc $sinceUtc
+    $queryUntilStr = _AuditPoller-FormatSqlUtc -Utc $untilUtc
     $pageSize = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'pageSize' -Default 500
     $maxPages = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxPagesPerPoll' -Default 100
     if ($pageSize -lt 1) { $pageSize = 500 }
@@ -447,7 +528,12 @@ function Invoke-AuditTrailScan {
             if ($batch.Count -eq 0) { break }
             foreach ($row in $batch) { [void]$allEvents.Add($row) }
             $last = $batch[$batch.Count - 1]
-            $cursorSince = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $last -Name 'o_acttime')
+            $lastAct = _AuditPoller-GetRowValue -Row $last -Name 'o_acttime'
+            $cursorSince = if ($lastAct -is [DateTime]) {
+                _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $lastAct)
+            } else {
+                _AuditPoller-FormatActTime -Value $lastAct -Config $Config
+            }
             if ([string]::IsNullOrWhiteSpace($cursorSince)) { break }
             $cursorGuid = [string](_AuditPoller-GetRowValue -Row $last -Name 'o_objguid')
             if ($batch.Count -lt $pageSize) { break }
@@ -482,9 +568,9 @@ function Invoke-AuditTrailScan {
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
-            $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
+            $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime') -Config $Config
             if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTime -Candidate $actTime }
-            $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
+            $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt -Config $Config)
         }
     } else {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
