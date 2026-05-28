@@ -176,6 +176,7 @@ function _Get-WorkerStageText([hashtable]$Worker) {
         'WORKER_SUCCEEDED'      { return 'completed job; polling queue' }
         'WORKER_FAILED'         { return 'job failed; polling queue' }
         'WORKER_NO_JOB'         { return 'idle; waiting for pending jobs' }
+        'WORKER_CLAIMING'       { return 'claiming job lock' }
         'WORKER_LOCK_RACE'      { return 'lock race; trying next job' }
         'WORKER_BUDGET'         { return 'max-jobs budget reached' }
         'WORKER_LEASE'          { return 'lease budget reached' }
@@ -1013,6 +1014,21 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             $w.updatedAtUtc = Get-QCTimestamp
                             switch ([string]$o.code) {
                                 'WORKER_START'   { $w.state = 'IDLE' }
+                                'WORKER_CLAIMING' {
+                                    $w.state = 'CLAIMING'
+                                    if ($o.data) {
+                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                                        if ($o.data.sourceFolder) {
+                                            $w.sourceFolder = [string]$o.data.sourceFolder
+                                            try {
+                                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                                                $w.projectName = if ($pn) { [string]$pn } else { '' }
+                                            } catch { }
+                                        }
+                                    }
+                                    $w.stage = 'waiting for exclusive job lock'
+                                }
                                 'WORKER_SELECTED' {
                                     $w.state = 'RUNNING'
                                     if ($o.data) {
@@ -1046,7 +1062,15 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                                 'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
                                 'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
                                 'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'idle; waiting for pending jobs' }
-                                'WORKER_LOCK_RACE' { $w.state = 'IDLE'; $w.stage = 'lock race; trying next job' }
+                                'WORKER_LOCK_RACE' {
+                                    $w.state = 'IDLE'
+                                    $w.jobId = ''
+                                    $w.jobType = ''
+                                    $w.sourceFolder = ''
+                                    $w.projectName = ''
+                                    $w.startedAtUtc = $null
+                                    $w.stage = 'lock race; trying next job'
+                                }
                                 'WORKER_BUDGET'    { $w.state = 'EXITING'; $w.stage = 'max-jobs budget reached' }
                                 'WORKER_LEASE'     { $w.state = 'EXITING'; $w.stage = 'lease budget reached' }
                             }

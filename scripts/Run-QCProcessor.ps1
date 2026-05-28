@@ -167,6 +167,12 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
     }
 
+    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_CLAIMING' -Message 'Attempting to lock job (not running yet).' -Data @{
+        jobId = $jobId
+        jobType = $jobType
+        handler = $Handler
+        sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
+    }
     Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
@@ -196,6 +202,16 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
         $Job = [hashtable]$loaded.Data.job
+
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Job locked and running (exclusive owner).' -Data @{
+            jobId = $jobId
+            jobType = $jobType
+            dedupeKey = if ($Job.ContainsKey('dedupeKey')) { [string]$Job['dedupeKey'] } else { '' }
+            handler = $Handler
+            sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
+            sourcePath = if ($Job.ContainsKey('sourcePath')) { [string]$Job['sourcePath'] } else { '' }
+            sourceName = if ($Job.ContainsKey('sourceName')) { [string]$Job['sourceName'] } else { '' }
+        }
 
         if ($IsDryRun) {
             Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler
@@ -392,16 +408,6 @@ while ($true) {
     $job = [hashtable]$next.Data.job
     $jobId = [string]$job['id']
     $handler = _Resolve-Handler -Job $job -Config $config
-    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Selected job.' -Data @{
-        jobId = $jobId
-        jobType = [string]$job['type']
-        dedupeKey = [string]$job['dedupeKey']
-        handler = $handler
-        sourceFolder = [string]$job['sourceFolder']
-        sourcePath = [string]$job['sourcePath']
-        sourceName = [string]$job['sourceName']
-    }
-    Write-WorkerStage -Stage ("selected; dispatching to $handler") -JobId $jobId -JobType ([string]$job['type']) -Handler $handler
 
     $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
 
