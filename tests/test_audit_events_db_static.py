@@ -24,6 +24,13 @@ def test_audit_poller_reads_sql_rows_case_insensitively() -> None:
     assert "AUDIT_EVENTS_INGEST" in POLLER
 
 
+def test_audit_events_insert_respects_sql_parameter_limit() -> None:
+    body = DB.split("function Write-QCAuditEventRows", 1)[1].split("function _QDB-SafeWrite", 1)[0]
+    assert "_QDB-GetMaxRowsForSqlParameters" in body
+    assert "auditParamsPerRow = 13" in body
+    assert "ChunkSize = 150" in body
+
+
 def test_audit_events_insert_uses_dedupe_guard() -> None:
     assert "UX_audit_events_natural_key" in DB or "NOT EXISTS" in DB
     body = DB.split("function Write-QCAuditEventRows", 1)[1].split("function _QDB-SafeWrite", 1)[0]

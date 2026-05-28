@@ -1126,6 +1126,19 @@ function Test-QCDatabaseWritesAllowed {
     return $true
 }
 
+function _QDB-GetMaxRowsForSqlParameters {
+    <#
+    SQL Server caps parameters at 2100 per batch. Used to size multi-row VALUES inserts.
+    #>
+    param(
+        [Parameter(Mandatory)][int]$ParametersPerRow,
+        [int]$Reserved = 10,
+        [int]$ServerMax = 2100
+    )
+    $ppr = [Math]::Max(1, $ParametersPerRow)
+    return [Math]::Max(1, [int][Math]::Floor(($ServerMax - $Reserved) / $ppr))
+}
+
 function _QDB-PrepareAuditEventRowsForInsert {
     param([array]$Rows)
     $prepared = [System.Collections.Generic.List[object]]::new()
@@ -1158,8 +1171,12 @@ function Write-QCAuditEventRows {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][array]$Rows,
-        [int]$ChunkSize = 200
+        [int]$ChunkSize = 150
     )
+
+    $auditParamsPerRow = 13
+    $maxChunk = _QDB-GetMaxRowsForSqlParameters -ParametersPerRow $auditParamsPerRow
+    if ($ChunkSize -lt 1 -or $ChunkSize -gt $maxChunk) { $ChunkSize = $maxChunk }
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; chunks = 0 }
@@ -1745,7 +1762,9 @@ CREATE TABLE #sheet_index_stage (
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $createSql -Parameters @{} -CommandTimeout 120)
 
-            $chunkSize = 200
+            $sheetParamsPerRow = 8
+            $chunkSize = _QDB-GetMaxRowsForSqlParameters -ParametersPerRow $sheetParamsPerRow
+            if ($chunkSize -gt 200) { $chunkSize = 200 }
             for ($i = 0; $i -lt $Rows.Count; $i += $chunkSize) {
                 $chunk = @($Rows[$i..[Math]::Min($i + $chunkSize - 1, $Rows.Count - 1)])
                 $sb = New-Object System.Text.StringBuilder
