@@ -249,6 +249,8 @@ function _Reset-WatcherPassState {
     $script:dbAuditEventWritesSucceeded = 0
     $script:dbAuditEventWritesSkipped = 0
     $script:auditPollTelemetry = $null
+    $script:pollRunWatermarkBefore = $null
+    $script:pollRunWatermarkAfter = $null
     $script:watcherRanReconciliationScan = $false
     $script:watcherPassNumber = $null
     $script:passNumberSource = 'unset'
@@ -596,6 +598,9 @@ if ($statusSetRules.Count -ge 0) {
                             }
                         } catch { }
                         [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
+
+                        $script:pollRunWatermarkBefore = $pollWindow.watermarkBefore
+                        $script:pollRunWatermarkAfter = $watermarkAfterStr
 
                         $script:auditPollTelemetry = @{
                             eventsFetched     = [int]$auditData.stats.totalEvents
@@ -1946,8 +1951,8 @@ $telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -CandidatesCreated $(if($script:auditPollTelemetry){$script:auditPollTelemetry.candidatesCreated}else{$accepted}) `
     -JobsEnqueued $enqueued `
     -DurationMs ([int]$watchRunSw.ElapsedMilliseconds) `
-    -WatermarkBefore $(if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkBefore}else{$null}) `
-    -WatermarkAfter $(if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkAfter}else{$null}) `
+    -WatermarkBefore $(if($script:pollRunWatermarkAfter -or $script:pollRunWatermarkBefore){$script:pollRunWatermarkBefore}else{if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkBefore}else{$null}}) `
+    -WatermarkAfter $(if($script:pollRunWatermarkAfter){$script:pollRunWatermarkAfter}else{if($script:auditPollTelemetry){$script:auditPollTelemetry.watermarkAfter}else{$null}}) `
     -IsReconciliation:$watcherRanReconciliationScan `
     -PassNumber $watcherPassNumber `
     -RunMode $runMode `

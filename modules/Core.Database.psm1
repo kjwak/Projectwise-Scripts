@@ -1126,12 +1126,33 @@ function Test-QCDatabaseWritesAllowed {
     return $true
 }
 
+function _QDB-PrepareAuditEventRowsForInsert {
+    param([array]$Rows)
+    $prepared = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $skippedNoGuid = 0
+    $skippedDupInBatch = 0
+    foreach ($row in $Rows) {
+        $g = [string]$row.objguid
+        if ([string]::IsNullOrWhiteSpace($g)) { $skippedNoGuid++; continue }
+        $key = ([string]$row.acttime) + '|' + [string]$row.action + '|' + $g.Trim()
+        if (-not $seen.Add($key)) { $skippedDupInBatch++; continue }
+        $prepared.Add($row)
+    }
+    return @{
+        rows              = @($prepared)
+        skippedNoGuid     = $skippedNoGuid
+        skippedDupInBatch = $skippedDupInBatch
+    }
+}
+
 function Write-QCAuditEventRows {
     <#
     .SYNOPSIS
     Batch-insert PW audit trail rows into audit_events (deduped by natural key).
+    Rows without a document GUID are skipped (USER_LOGIN etc. use empty guid and break UX_audit_events_natural_key).
     .OUTPUTS
-    QCResult with Data: @{ written; skipped; chunks }
+    QCResult with Data: @{ written; skipped; skippedNoGuid; skippedDupInBatch; chunks; lastError }
     #>
     [CmdletBinding()]
     param(
@@ -1147,12 +1168,21 @@ function Write-QCAuditEventRows {
         return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; chunks = 0 }
     }
 
+    $prep = _QDB-PrepareAuditEventRowsForInsert -Rows $Rows
+    $insertRows = @($prep.rows)
+    $skipped = [int]$prep.skippedNoGuid + [int]$prep.skippedDupInBatch
+    if ($insertRows.Count -eq 0) {
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE_INSERTABLE' -Message 'No audit rows with document GUID to insert.' -Data @{
+            written = 0; skipped = $skipped; skippedNoGuid = [int]$prep.skippedNoGuid
+            skippedDupInBatch = [int]$prep.skippedDupInBatch; chunks = 0; lastError = $null
+        }
+    }
+
     $written = 0
-    $skipped = 0
     $chunks = 0
     $lastError = $null
-    for ($i = 0; $i -lt $Rows.Count; $i += $ChunkSize) {
-        $chunk = @($Rows[$i..[Math]::Min($i + $ChunkSize - 1, $Rows.Count - 1)])
+    for ($i = 0; $i -lt $insertRows.Count; $i += $ChunkSize) {
+        $chunk = @($insertRows[$i..[Math]::Min($i + $ChunkSize - 1, $insertRows.Count - 1)])
         $valuesSql = New-Object System.Text.StringBuilder
         $params = @{}
         for ($r = 0; $r -lt $chunk.Count; $r++) {
@@ -1171,7 +1201,7 @@ SELECT v.pw_acttime, v.pw_action, v.pw_action_name, v.pw_objtype, v.pw_objno, v.
 FROM (VALUES
 $($valuesSql.ToString())
 ) AS v(pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid, pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type)
-WHERE v.pw_objguid IS NOT NULL
+WHERE NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM audit_events ae
     WHERE ae.pw_acttime = v.pw_acttime AND ae.pw_action = v.pw_action AND ae.pw_objguid = v.pw_objguid
@@ -1195,10 +1225,12 @@ WHERE v.pw_objguid IS NOT NULL
     }
 
     return New-QCSuccessResult -Code 'AUDIT_EVENTS_WRITTEN' -Message "Audit events: $written inserted, $skipped skipped/duplicate." -Data @{
-        written   = $written
-        skipped   = $skipped
-        chunks    = $chunks
-        lastError = $lastError
+        written           = $written
+        skipped           = $skipped
+        skippedNoGuid     = [int]$prep.skippedNoGuid
+        skippedDupInBatch = [int]$prep.skippedDupInBatch
+        chunks            = $chunks
+        lastError         = $lastError
     }
 }
 

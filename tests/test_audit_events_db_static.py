@@ -29,4 +29,5 @@ def test_audit_events_insert_uses_dedupe_guard() -> None:
     body = DB.split("function Write-QCAuditEventRows", 1)[1].split("function _QDB-SafeWrite", 1)[0]
     assert "INSERT INTO audit_events" in body
     assert "NOT EXISTS" in body
-    assert "pw_objguid IS NOT NULL" in body
+    assert "NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL" in body
+    assert "_QDB-PrepareAuditEventRowsForInsert" in body

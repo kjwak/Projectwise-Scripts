@@ -187,6 +187,13 @@ function _AuditPoller-GetActionName {
     return "UNKNOWN_$ActionCode"
 }
 
+function _AuditPoller-NormalizeGuid {
+    param([AllowNull()]$Value)
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    return $s.Trim()
+}
+
 function _AuditPoller-NewAuditEventDbRow {
     param(
         $Evt,
@@ -205,8 +212,8 @@ function _AuditPoller-NewAuditEventDbRow {
         actionName    = (_AuditPoller-GetActionName -ActionCode $actionCode)
         objtype       = $objtype
         objno         = $objno
-        objguid       = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objguid')
-        parentguid    = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_parentguid')
+        objguid       = (_AuditPoller-NormalizeGuid (_AuditPoller-GetRowValue -Row $Evt -Name 'o_objguid'))
+        parentguid    = (_AuditPoller-NormalizeGuid (_AuditPoller-GetRowValue -Row $Evt -Name 'o_parentguid'))
         userno        = $userno
         itemname      = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_itemname')
         itemdesc      = if ($null -eq $itemdesc) { $null } else { [string]$itemdesc }
@@ -331,7 +338,7 @@ function Get-AuditTrailPollWindow {
         [int]$LookbackSeconds = 120
     )
 
-    $until = Get-Date
+    $until = [DateTimeOffset]::Now.LocalDateTime
     $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
     $initialLookbackSeconds = $LookbackSeconds
     try {
@@ -515,13 +522,18 @@ function Invoke-AuditTrailScan {
             }
         }
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            $ingestLevel = if ($stats.dbWrites -gt 0) { 'Information' } elseif ($stats.dbRowsPrepared -gt 0) { 'Warning' } else { 'Information' }
+            $ingestSkippedNoGuid = 0
+            try {
+                if ($dbRes -and $dbRes.Data -and $null -ne $dbRes.Data.skippedNoGuid) { $ingestSkippedNoGuid = [int]$dbRes.Data.skippedNoGuid }
+            } catch { }
+            $ingestLevel = if ($stats.dbLastError) { 'Warning' } else { 'Information' }
             Write-QCJsonLog -Flush -Level $ingestLevel -Code 'AUDIT_EVENTS_INGEST' -Message "audit_events ingest: $($stats.dbWrites) written, $($stats.dbSkipped) skipped/duplicate." -Data @{
                 eventsFetched = $stats.totalEvents
                 rowsPrepared  = $stats.dbRowsPrepared
                 rowsNullGuid  = $stats.dbRowsNullGuid
                 written       = $stats.dbWrites
                 skipped       = $stats.dbSkipped
+                skippedNoGuid = $ingestSkippedNoGuid
                 lastError     = $stats.dbLastError
             }
         }
