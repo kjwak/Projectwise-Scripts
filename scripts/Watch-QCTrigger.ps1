@@ -481,8 +481,17 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             $counterPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-poll-cycle.txt'
-            try { $watcherPassNumber = [int](Get-AuditPollCycleCounter -CounterPath $counterPath); $passNumberSource='counter' } catch { $watcherPassNumber = $null; $passNumberSource='error'; Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath=$counterPath } }
-            $cycleNum = Get-AuditPollCycleCounter -CounterPath $counterPath
+            $cycleNum = $null
+            try {
+                # Single increment per tick: pass_number in poll_runs must match cycleNum (was double-called before).
+                $cycleNum = [int](Get-AuditPollCycleCounter -CounterPath $counterPath)
+                $watcherPassNumber = $cycleNum
+                $passNumberSource = 'counter'
+            } catch {
+                $watcherPassNumber = $null
+                $passNumberSource = 'error'
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath = $counterPath }
+            }
             $reconcileEvery = 20
             if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
                 try { $reconcileEvery = [int]$auditPollerCfg.reconcileEveryNCycles } catch { $reconcileEvery = 20 }

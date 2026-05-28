@@ -21,6 +21,9 @@ def test_watcher_uses_counterpath_and_fail_on_write_error() -> None:
     assert 'WATCH_PASS_COUNTER_READ_FAILED' in WATCHER
     assert 'telemetry.failOnWriteError' in WATCHER
     assert 'if ($telemetryFailOnWriteError) { throw' in WATCHER
+    # One increment per tick (pass_number must match cycleNum).
+    assert WATCHER.count('Get-AuditPollCycleCounter -CounterPath $counterPath') == 1
+    assert '$watcherPassNumber = $cycleNum' in WATCHER
 
 
 def test_poll_run_validation_not_used_for_job_or_sheet_telemetry() -> None:
