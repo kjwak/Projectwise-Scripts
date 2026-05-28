@@ -637,6 +637,15 @@ if ($statusSetRules.Count -ge 0) {
 
                                     $acOneLevelDeep = $true
                                     try { if ($null -ne $ac.oneLevelDeep) { $acOneLevelDeep = [bool]$ac.oneLevelDeep } } catch { }
+                                    $acInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
+                                    if ($acInFlightRes.IsSuccess -and [bool]$acInFlightRes.Data.inFlight) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_IN_FLIGHT' -Message 'Audit STATUS_SET_GEN skipped: job already pending or running for folder.' -Data @{
+                                            folder = $fp
+                                            jobId = [string]$acInFlightRes.Data.jobId
+                                            queueState = [string]$acInFlightRes.Data.queueState
+                                        }
+                                        continue
+                                    }
                                     $acState = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$acOneLevelDeep
                                     $acListingMethod = ''
                                     try { $acListingMethod = [string]$acState.docListingMethod } catch { }
@@ -1055,6 +1064,14 @@ if ($statusSetRules.Count -ge 0) {
                             continue
                         }
 
+                        $ssInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
+                        if ($ssInFlightRes.IsSuccess -and [bool]$ssInFlightRes.Data.inFlight) {
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT' -Message 'STATUS_SET_GEN already pending or running for folder; skipping PW scan and sheet index.' -Data @{
+                                folder = $fp
+                                jobId = [string]$ssInFlightRes.Data.jobId
+                                queueState = [string]$ssInFlightRes.Data.queueState
+                            }
+                        } else {
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
@@ -1148,7 +1165,10 @@ if ($statusSetRules.Count -ge 0) {
                             }
 
                             # Sheet index is telemetry only — run after enqueue so large folders do not block STATUS_SET_GEN.
-                            if ($state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
+                            $skipSheetIndex = $false
+                            $idxInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
+                            if ($idxInFlightRes.IsSuccess -and [bool]$idxInFlightRes.Data.inFlight) { $skipSheetIndex = $true }
+                            if (-not $skipSheetIndex -and $state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
                                 $folderPhase = 'statusset_sheet_index'
                                 $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
                                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_START' -Message 'Indexing paired sheets for sheet_index (after enqueue gate).' -Data @{
@@ -1294,6 +1314,7 @@ if ($statusSetRules.Count -ge 0) {
                                 oneLevelDeepRetry = $oneLevelRetry
                             }
                         }
+                        } # end: not in-flight STATUS_SET_GEN
                     }
 
                     # QC_PREPEND (description tag)

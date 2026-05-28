@@ -1236,6 +1236,9 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                             }
                         } catch { }
                     }
+                    if ($o.code -eq 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT') {
+                        $state.currentScanStage = "skipped (STATUS_SET_GEN in progress): $([string]$o.data.folder)"
+                    }
                     if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_START') { $state.currentScanStage = "querying status set: $([string]$o.data.folder)" }
                     if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_DONE') { $state.currentScanStage = "status set done: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
                     if ($o.code -eq 'WATCH_PW_STATUSSET_INDEX_START') { $state.currentScanStage = "sheet index: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }

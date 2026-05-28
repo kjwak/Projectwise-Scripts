@@ -596,6 +596,64 @@ function Clear-QCWatcherActive {
     }
 }
 
+function _QCQJ-NormalizeFolderKey([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    return ([string]$Path).Trim().TrimEnd('\', '/').Replace('/', '\').ToLowerInvariant()
+}
+
+function Test-QCStatusSetJobInFlight {
+    <#
+    .SYNOPSIS
+    Returns whether a STATUS_SET_GEN job is already pending or running for a Sheets folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+
+        [Parameter(Mandatory)]
+        [string]$SourceFolder
+    )
+    try {
+        $want = _QCQJ-NormalizeFolderKey $SourceFolder
+        if (-not $want) {
+            return New-QCSuccessResult -Code 'QUEUE_STATUSSET_NOT_IN_FLIGHT' -Message 'No source folder to match.' -Data @{ inFlight = $false }
+        }
+
+        $root = _QCQJ-GetQueueRoot -Config $Config
+        foreach ($state in @('pending', 'running')) {
+            $dir = Join-Path $root $state
+            if (-not (Test-Path -LiteralPath $dir)) { continue }
+            $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+            foreach ($f in $files) {
+                $job = _QCQJ-ReadJobFile -Path $f.FullName
+                $jt = ''
+                try { $jt = [string]$job.type } catch { $jt = '' }
+                if ($jt -ne 'STATUS_SET_GEN') { continue }
+
+                $sf = ''
+                try { $sf = [string]$job.sourceFolder } catch { $sf = '' }
+                if (-not $sf) {
+                    try { $sf = [string]$job.sourcePath } catch { $sf = '' }
+                }
+                if ((_QCQJ-NormalizeFolderKey $sf) -ne $want) { continue }
+
+                $jobId = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+                return New-QCSuccessResult -Code 'QUEUE_STATUSSET_IN_FLIGHT' -Message 'STATUS_SET_GEN already queued or running for folder.' -Data @{
+                    inFlight = $true
+                    queueState = $state
+                    jobId = $jobId
+                    sourceFolder = $sf
+                }
+            }
+        }
+
+        return New-QCSuccessResult -Code 'QUEUE_STATUSSET_NOT_IN_FLIGHT' -Message 'No in-flight STATUS_SET_GEN for folder.' -Data @{ inFlight = $false }
+    } catch {
+        return New-QCFailureResult -Code 'QUEUE_STATUSSET_IN_FLIGHT_ERROR' -Message 'Failed to check in-flight STATUS_SET_GEN.' -Data @{ error = $_ }
+    }
+}
+
 function Get-QCJobById {
     <#
     .SYNOPSIS
