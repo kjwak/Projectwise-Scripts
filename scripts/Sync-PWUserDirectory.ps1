@@ -54,9 +54,16 @@ try {
     $params = @{ Config = $config; MaxUsers = $MaxUsers }
     if ($UserNumber.Count -gt 0) { $params.UserNumbers = $UserNumber }
     if ($FromAuditEventsOnly -or $UserNumber.Count -eq 0) { $params.ResolveFromAuditEvents = $true }
-    $sync = Sync-PWUserDirectory @params
+    $sync = Sync-PWUserDirectory @params -Verbose:$VerbosePreference
     if (-not $sync.IsSuccess) { throw "User directory sync failed: $($sync.Message)" }
     Write-Host $sync.Message
+    if ($sync.Data.requested) {
+        Write-Host ("  requested={0} sqlResolved={1} synced={2} skipped={3}" -f `
+            $sync.Data.requested, $sync.Data.sqlResolved, $sync.Data.synced, $sync.Data.skipped)
+    }
+    if ($sync.Code -eq 'PW_USER_SYNC_EMPTY' -and $sync.Data.sampleIds) {
+        Write-Warning ("Sample unresolved pw_userno: {0}" -f ($sync.Data.sampleIds -join ', '))
+    }
 } finally {
     Disconnect-PW | Out-Null
 }

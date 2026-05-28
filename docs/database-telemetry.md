@@ -91,7 +91,7 @@ Raw ProjectWise audit trail records captured from `dms_audt` during audit pollin
 Join to human-readable identity via `pw_users` or view `v_audit_events_with_user`.
 
 ### `pw_users`
-Maps ProjectWise `pw_userno` to login and email (resolved via `Get-PWUser -UserID`).
+Maps ProjectWise `pw_userno` to login and email (resolved via `Select-PWSQL` on `dms_user`, then `Get-PWUsersByMatch` as fallback).
 
 | Column | Type | Description |
 |--------|------|-------------|
