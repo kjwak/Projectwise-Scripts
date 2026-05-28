@@ -581,6 +581,9 @@ if ($statusSetRules.Count -ge 0) {
                             candidates     = $auditCandidates.Count
                             dbWrites       = [int]$auditData.stats.dbWrites
                             dbSkipped      = [int]$auditData.stats.dbSkipped
+                            dbRowsPrepared = [int]$auditData.stats.dbRowsPrepared
+                            dbRowsNullGuid = [int]$auditData.stats.dbRowsNullGuid
+                            dbLastError    = if ($auditData.stats.dbLastError) { [string]$auditData.stats.dbLastError } else { $null }
                             pagesFetched   = [int]$auditData.stats.pagesFetched
                             eventsTruncated = [bool]$auditData.stats.eventsTruncated
                             durationMs     = [int]$auditData.durationMs

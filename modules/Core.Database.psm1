@@ -1150,6 +1150,7 @@ function Write-QCAuditEventRows {
     $written = 0
     $skipped = 0
     $chunks = 0
+    $lastError = $null
     for ($i = 0; $i -lt $Rows.Count; $i += $ChunkSize) {
         $chunk = @($Rows[$i..[Math]::Min($i + $ChunkSize - 1, $Rows.Count - 1)])
         $valuesSql = New-Object System.Text.StringBuilder
@@ -1184,16 +1185,20 @@ WHERE v.pw_objguid IS NOT NULL
                 $skipped += ($chunk.Count - [int]$res.Data.rowsAffected)
             } else {
                 $skipped += $chunk.Count
+                $lastError = [string]$res.Message
+                if ($res.Data -and $res.Data.error) { $lastError = "$lastError ($($res.Data.error))" }
             }
         } catch {
             $skipped += $chunk.Count
+            $lastError = [string]$_.Exception.Message
         }
     }
 
     return New-QCSuccessResult -Code 'AUDIT_EVENTS_WRITTEN' -Message "Audit events: $written inserted, $skipped skipped/duplicate." -Data @{
-        written = $written
-        skipped = $skipped
-        chunks  = $chunks
+        written   = $written
+        skipped   = $skipped
+        chunks    = $chunks
+        lastError = $lastError
     }
 }
 

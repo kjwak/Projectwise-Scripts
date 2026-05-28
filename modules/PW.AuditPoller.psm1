@@ -114,20 +114,45 @@ function _AuditPoller-GetRowValue {
     if ($null -eq $Row) { return $null }
     try {
         if ($Row -is [System.Data.DataRow]) {
-            if ($Row.Table.Columns.Contains($Name)) {
-                $v = $Row[$Name]
+            foreach ($col in $Row.Table.Columns) {
+                if ([string]::Equals([string]$col.ColumnName, $Name, [StringComparison]::OrdinalIgnoreCase)) {
+                    $v = $Row[$col]
+                    if ($v -is [DBNull]) { return $null }
+                    return $v
+                }
+            }
+        }
+        foreach ($prop in $Row.PSObject.Properties) {
+            if ([string]::Equals([string]$prop.Name, $Name, [StringComparison]::OrdinalIgnoreCase)) {
+                $v = $prop.Value
                 if ($v -is [DBNull]) { return $null }
                 return $v
             }
         }
-        $prop = $Row.PSObject.Properties[$Name]
-        if ($prop) {
-            $v = $prop.Value
-            if ($v -is [DBNull]) { return $null }
-            return $v
-        }
     } catch { }
     return $null
+}
+
+function _AuditPoller-FormatActTime {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DBNull]) { return $null }
+    if ($Value -is [DateTime]) { return $Value.ToString('yyyy-MM-dd HH:mm:ss') }
+    $s = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    return $s
+}
+
+function _AuditPoller-GetSqlResultRows {
+    param($Result)
+    if ($null -eq $Result) { return @() }
+    try {
+        if ($Result.PSObject.Properties.Name -contains 'Rows' -and $null -ne $Result.Rows) {
+            return @($Result.Rows)
+        }
+    } catch { }
+    if ($Result -is [System.Data.DataTable]) { return @($Result.Rows) }
+    return @($Result)
 }
 
 function _AuditPoller-GetActionCode {
@@ -157,7 +182,7 @@ function _AuditPoller-NewAuditEventDbRow {
     $textparam = _AuditPoller-GetRowValue -Row $Evt -Name 'o_textparam'
     $objtype = 0; try { $objtype = [int](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objtype') } catch { $objtype = 0 }
     return @{
-        acttime       = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_acttime')
+        acttime       = (_AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $Evt -Name 'o_acttime'))
         action        = $actionCode
         actionName    = (_AuditPoller-GetActionName -ActionCode $actionCode)
         objtype       = $objtype
@@ -359,8 +384,11 @@ function Invoke-AuditTrailScan {
         sheetsMatches   = 0
         dbWrites        = 0
         dbSkipped       = 0
+        dbRowsPrepared  = 0
+        dbRowsNullGuid  = 0
         pagesFetched    = 0
         eventsTruncated = $false
+        dbLastError     = $null
     }
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
@@ -378,6 +406,7 @@ function Invoke-AuditTrailScan {
     try {
         while ($pageNum -lt $maxPages) {
             $pageNum++
+            $untilStr = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
             $lowerBoundSql = if ($cursorGuid) {
                 $t = _AuditPoller-EscapeSqlLiteral -Value $cursorSince
                 $g = _AuditPoller-EscapeSqlLiteral -Value $cursorGuid
@@ -387,12 +416,13 @@ function Invoke-AuditTrailScan {
             }
             $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' ORDER BY o_acttime ASC, o_objguid ASC"
             $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
-            $batch = @($result.Rows)
+            $batch = @(_AuditPoller-GetSqlResultRows -Result $result)
             if ($batch.Count -eq 0) { break }
             foreach ($row in $batch) { [void]$allEvents.Add($row) }
             $last = $batch[$batch.Count - 1]
-            $cursorSince = [string]$last.o_acttime
-            $cursorGuid = [string]$last.o_objguid
+            $cursorSince = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $last -Name 'o_acttime')
+            if ([string]::IsNullOrWhiteSpace($cursorSince)) { break }
+            $cursorGuid = [string](_AuditPoller-GetRowValue -Row $last -Name 'o_objguid')
             if ($batch.Count -lt $pageSize) { break }
         }
         if ($pageNum -ge $maxPages -and $allEvents.Count -gt 0) {
@@ -424,12 +454,21 @@ function Invoke-AuditTrailScan {
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
-            $actTime = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
-            $actDt = _AuditPoller-ParseActTime -ActTime $actTime
-            if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
+            $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
+            if ($actTime) {
+                $actDt = _AuditPoller-ParseActTime -ActTime $actTime
+                if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
+            }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
         }
+    } else {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_INGEST_DISABLED' -Message 'database.enabled is false; audit_events not written.' -Data @{ eventsFetched = $allEvents.Count }
+        }
     }
+
+    $stats.dbRowsPrepared = $dbRows.Count
+    $stats.dbRowsNullGuid = @($dbRows | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.objguid) }).Count
 
     $userNumbersToSync = [System.Collections.Generic.HashSet[int]]::new()
     if ($dbRows.Count -gt 0) {
@@ -438,19 +477,34 @@ function Invoke-AuditTrailScan {
             if ($dbRes.IsSuccess -and $dbRes.Data) {
                 $stats.dbWrites += [int]$dbRes.Data.written
                 $stats.dbSkipped += [int]$dbRes.Data.skipped
+                if ($dbRes.Data.lastError) { $stats.dbLastError = [string]$dbRes.Data.lastError }
             } else {
                 $stats.dbSkipped += $dbRows.Count
+                $stats.dbLastError = [string]$dbRes.Message
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                     Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_FAILED' -Message "Write-QCAuditEventRows failed: $($dbRes.Message)" -Data @{
                         code = [string]$dbRes.Code
                         rowCount = $dbRows.Count
+                        nullGuid = $stats.dbRowsNullGuid
                     }
                 }
             }
         } catch {
             $stats.dbSkipped += $dbRows.Count
+            $stats.dbLastError = [string]$_.Exception.Message
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count }
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count; nullGuid = $stats.dbRowsNullGuid }
+            }
+        }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            $ingestLevel = if ($stats.dbWrites -gt 0) { 'Information' } elseif ($stats.dbRowsPrepared -gt 0) { 'Warning' } else { 'Information' }
+            Write-QCJsonLog -Flush -Level $ingestLevel -Code 'AUDIT_EVENTS_INGEST' -Message "audit_events ingest: $($stats.dbWrites) written, $($stats.dbSkipped) skipped/duplicate." -Data @{
+                eventsFetched = $stats.totalEvents
+                rowsPrepared  = $stats.dbRowsPrepared
+                rowsNullGuid  = $stats.dbRowsNullGuid
+                written       = $stats.dbWrites
+                skipped       = $stats.dbSkipped
+                lastError     = $stats.dbLastError
             }
         }
         foreach ($row in $dbRows) {

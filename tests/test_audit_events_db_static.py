@@ -18,6 +18,12 @@ def test_audit_poller_delegates_to_database_writer() -> None:
     assert "Ingest every fetched row into audit_events" in scan
 
 
+def test_audit_poller_reads_sql_rows_case_insensitively() -> None:
+    assert "OrdinalIgnoreCase" in POLLER
+    assert "_AuditPoller-GetSqlResultRows" in POLLER
+    assert "AUDIT_EVENTS_INGEST" in POLLER
+
+
 def test_audit_events_insert_uses_dedupe_guard() -> None:
     assert "UX_audit_events_natural_key" in DB or "NOT EXISTS" in DB
     body = DB.split("function Write-QCAuditEventRows", 1)[1].split("function _QDB-SafeWrite", 1)[0]
