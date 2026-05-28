@@ -188,7 +188,7 @@ function _Get-LineColor([string]$Line) {
     if ($l -match '(?i)\b(ERROR|failed|Fail [1-9]|WORKER_FAILED|MOVE_FAILED)\b') { return 'Red' }
     if ($l -match '(?i)\b(warning|WARN)\b') { return 'Yellow' }
     if ($l -match '(?i)\b(succeeded|SESSION ACTIVE|OK [1-9]|completed job)\b') { return 'Green' }
-    if ($l -match '(?i)\b(RUNNING|processing|querying|scanning|CONNECTING|Run [1-9])\b') { return 'Cyan' }
+    if ($l -match '(?i)\b(RUNNING|processing|querying|scanning|audit|reconcil|CONNECTING|Run [1-9])\b') { return 'Cyan' }
     if ($l -match '(?i)\b(PENDING|Pend [1-9]|waiting|idle)\b') { return 'Yellow' }
     if ($l -match '^\| (QC Pipeline Dashboard|Status:|Watcher|Workers|Recent|Processor|Warnings)') { return 'White' }
     return 'Gray'
@@ -1072,8 +1072,71 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                         }
                     }
                     if ($o.code -eq 'WATCH_PW_CONNECT_OK') {
-                        $state.currentScanStage = 'connected; preparing watch list'
+                        $state.currentScanStage = 'connected to ProjectWise'
                         $state.pwConnectOkSeen = $true
+                    }
+                    if ($o.code -eq 'WATCH_RECONCILE_START') {
+                        $state.currentScanStage = 'reconciling local _StatusSet.pdf copies to ProjectWise'
+                    }
+                    if ($o.code -eq 'WATCH_RECONCILE_UPDATED') {
+                        try {
+                            $pf = ''
+                            if ($o.data.pwFolder) { $pf = [string]$o.data.pwFolder }
+                            elseif ($o.data.sheetsFolder) { $pf = [string]$o.data.sheetsFolder }
+                            if ($pf) {
+                                $state.currentScanStage = "reconciling status set: $pf"
+                                _State-SetScanContext -FolderPath $pf
+                            }
+                        } catch { }
+                    }
+                    if ($o.code -eq 'WATCH_RECONCILE_DONE') {
+                        $updated = 0
+                        try { if ($o.data.counts) { $updated = [int]$o.data.counts.updated } } catch { }
+                        $state.currentScanStage = if ($updated -gt 0) {
+                            "status set reconcile done ($updated updated)"
+                        } else {
+                            'status set reconcile done'
+                        }
+                    }
+                    if ($o.code -eq 'WATCH_RECONCILE_FAILED') {
+                        $state.currentScanStage = 'status set reconcile failed (see watcher log)'
+                    }
+                    if ($o.code -eq 'WATCH_AUDIT_SCAN_START') {
+                        $since = ''; $until = ''
+                        try {
+                            if ($o.data.since) { $since = [string]$o.data.since }
+                            if ($o.data.until) { $until = [string]$o.data.until }
+                        } catch { }
+                        if ($since -and $until) {
+                            $state.currentScanStage = "audit trail scan ($since to $until)"
+                        } else {
+                            $state.currentScanStage = 'audit trail scan starting'
+                        }
+                    }
+                    if ($o.code -eq 'WATCH_AUDIT_SCAN_DONE') {
+                        $rel = 0; $tot = 0; $cand = 0
+                        try {
+                            $rel = [int]$o.data.relevantEvents
+                            $tot = [int]$o.data.totalEvents
+                            $cand = [int]$o.data.candidates
+                        } catch { }
+                        $state.currentScanStage = "audit scan done ($rel relevant / $tot events, $cand candidates)"
+                    }
+                    if ($o.code -eq 'WATCH_AUDIT_SCAN_FAILED' -or $o.code -eq 'WATCH_AUDIT_SCAN_ERROR') {
+                        $state.currentScanStage = 'audit trail scan failed (see watcher log)'
+                    }
+                    if ($o.code -eq 'WATCH_AUDIT_FALLBACK') {
+                        $state.currentScanStage = 'audit scan failed; falling back to full folder scan'
+                        $state.pwFoldersPreparedSeen = $false
+                    }
+                    if ($o.code -eq 'WATCH_RECONCILE_CYCLE') {
+                        $cn = 0; $every = 20
+                        try {
+                            $cn = [int]$o.data.cycleNum
+                            $every = [int]$o.data.reconcileEvery
+                        } catch { }
+                        $state.currentScanStage = "scheduled full folder scan (cycle $cn, every $every)"
+                        $state.pwFoldersPreparedSeen = $false
                     }
                     if ($o.code -eq 'WATCH_PW_ERROR') {
                         $em = ''
