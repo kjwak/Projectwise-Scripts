@@ -400,6 +400,8 @@ function Invoke-AuditTrailScan {
         }
     }
 
+    $userNumbersToSync = [System.Collections.Generic.HashSet[int]]::new()
+
     # Batch insert audit_events for this window (best-effort).
     if ($dbRows.Count -gt 0 -and (Test-QCDatabaseEnabled -Config $Config)) {
         $chunkSize = 200
@@ -435,7 +437,18 @@ WHERE v.pw_objguid IS NOT NULL
             } catch {
                 $stats.dbSkipped += $chunk.Count
             }
+            foreach ($row in $chunk) {
+                $u = 0
+                try { $u = [int]$row.userno } catch { $u = 0 }
+                if ($u -gt 0) { [void]$userNumbersToSync.Add($u) }
+            }
         }
+    }
+
+    if ($userNumbersToSync.Count -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
+        try {
+            Sync-PWUserDirectory -Config $Config -UserNumbers @($userNumbersToSync) -MaxUsers 25 | Out-Null
+        } catch { }
     }
 
     $sw.Stop()

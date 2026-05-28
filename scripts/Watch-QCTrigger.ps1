@@ -213,6 +213,7 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force -WarningAc
 Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\PW.Users.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
