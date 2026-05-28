@@ -1166,9 +1166,10 @@ function Write-QCPollRunTelemetry {
 INSERT INTO poll_runs
     (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation, watcher_name, service_name, pass_number, run_mode, run_status, total_duration_seconds, audit_query_duration_seconds, reconciliation_duration_seconds, trigger_eval_duration_seconds, dedupe_duration_seconds, queue_write_duration_seconds, database_write_duration_seconds, cleanup_duration_seconds, sleep_throttle_duration_seconds, candidate_documents_evaluated, trigger_matches, jobs_skipped_dedupe, warning_count, error_count, reconciliation_reason, reconciliation_trigger_source, downtime_seconds, audit_gap_detected, watcher_phase, throttle_wait_seconds, queue_depth_snapshot, pass_number_source)
 VALUES
-    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation, @watcherName, @serviceName, @passNumber, @runMode, @runStatus, @totalDurationSeconds, @auditQueryDurationSeconds, @reconciliationDurationSeconds, @triggerEvalDurationSeconds, @dedupeDurationSeconds, @queueWriteDurationSeconds, @databaseWriteDurationSeconds, @cleanupDurationSeconds, @sleepThrottleDurationSeconds, @candidateDocumentsEvaluated, @triggerMatches, @jobsSkippedDedupe, @warningCount, @errorCount, @reconciliationReason, @reconciliationTriggerSource, @downtimeSeconds, @auditGapDetected, @watcherPhase, @throttleWaitSeconds, @queueDepthSnapshot, @passNumberSource)
+    (@startedAt, @completedAt, @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation, @watcherName, @serviceName, @passNumber, @runMode, @runStatus, @totalDurationSeconds, @auditQueryDurationSeconds, @reconciliationDurationSeconds, @triggerEvalDurationSeconds, @dedupeDurationSeconds, @queueWriteDurationSeconds, @databaseWriteDurationSeconds, @cleanupDurationSeconds, @sleepThrottleDurationSeconds, @candidateDocumentsEvaluated, @triggerMatches, @jobsSkippedDedupe, @warningCount, @errorCount, @reconciliationReason, @reconciliationTriggerSource, @downtimeSeconds, @auditGapDetected, @watcherPhase, @throttleWaitSeconds, @queueDepthSnapshot, @passNumberSource)
 "@
         $params = @{
+            completedAt       = [DateTimeOffset]::Now
             eventsFetched     = $EventsFetched
             eventsRelevant    = $EventsRelevant
             candidatesCreated = $CandidatesCreated
@@ -1207,6 +1208,11 @@ VALUES
             queueDepthSnapshot = if ($null -ne $QueueDepthSnapshot) { $QueueDepthSnapshot } else { $null }
             passNumberSource = if ($PassNumberSource) { $PassNumberSource } else { $null }
 
+        }
+        try {
+            $params['startedAt'] = ([DateTimeOffset]$params.completedAt).AddMilliseconds(-1 * [int]$params.durationMs)
+        } catch {
+            $params['startedAt'] = [DateTimeOffset]::Now.AddMilliseconds(-1 * [int]$params.durationMs)
         }
         $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
         if (-not $shape.IsSuccess) {
