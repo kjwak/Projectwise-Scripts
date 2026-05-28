@@ -1214,6 +1214,12 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                     }
                     if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_START') { $state.currentScanStage = "querying status set: $([string]$o.data.folder)" }
                     if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_DONE') { $state.currentScanStage = "status set done: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
+                    if ($o.code -eq 'WATCH_PW_STATUSSET_INDEX_START') { $state.currentScanStage = "sheet index: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
+                    if ($o.code -eq 'WATCH_ACCEPTED' -and [string]$o.data.jobType -eq 'STATUS_SET_GEN') {
+                        $we = $false
+                        try { $we = [bool]$o.data.wouldEnqueue } catch { }
+                        $state.currentScanStage = if ($we) { "enqueued STATUS_SET_GEN: $([string]$o.data.sourceFolder)" } else { "STATUS_SET_GEN accepted (not enqueued): $([string]$o.data.enqueueSkippedReason)" }
+                    }
                     if ($o.code -eq 'WATCH_PW_DOC_SCAN_START') { $state.currentScanStage = "querying documents: $([string]$o.data.folder)" }
                     if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.currentScanStage = "documents done: $([string]$o.data.folder) ($([int]$o.data.pdfCount) PDFs, $([int]$o.data.qcArchivistCount) tagged)" }
                     if ($o.code -eq 'WATCH_PW_FOLDER_DONE' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') {
