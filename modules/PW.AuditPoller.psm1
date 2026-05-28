@@ -189,7 +189,20 @@ function Get-AuditTrailPollWindow {
 
     $until = Get-Date
     $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
-    $since = if ($lastCapture) { $lastCapture } else { $until.AddSeconds(-$LookbackSeconds) }
+    $initialLookbackSeconds = $LookbackSeconds
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            if ($ap -is [hashtable] -and $ap.ContainsKey('initialLookbackSeconds') -and $null -ne $ap.initialLookbackSeconds) {
+                $initialLookbackSeconds = [int]$ap.initialLookbackSeconds
+            } elseif ($ap.PSObject -and $ap.initialLookbackSeconds) {
+                $initialLookbackSeconds = [int]$ap.initialLookbackSeconds
+            }
+        }
+    } catch { }
+    if ($initialLookbackSeconds -lt 1) { $initialLookbackSeconds = $LookbackSeconds }
+
+    $since = if ($lastCapture) { $lastCapture } else { $until.AddSeconds(-$initialLookbackSeconds) }
     $watermarkBefore = if ($lastCapture) { $lastCapture.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
 
     return @{
@@ -197,6 +210,7 @@ function Get-AuditTrailPollWindow {
         until           = $until
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
+        lookbackSecondsUsed = if ($lastCapture) { $LookbackSeconds } else { $initialLookbackSeconds }
     }
 }
 
