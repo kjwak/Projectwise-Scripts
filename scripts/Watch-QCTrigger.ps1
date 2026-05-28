@@ -1016,6 +1016,7 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             foreach ($entry in @($pwFolders)) {
+                $folderPhase = 'folder_init'
                 try {
                     $fp = [string]$entry.FolderPath
                     if ([string]::IsNullOrWhiteSpace($fp)) { continue }
@@ -1040,6 +1041,7 @@ if ($statusSetRules.Count -ge 0) {
 
                     # STATUS_SET_GEN (folder-level)
                     if ($enableStatusSet -and $statusRuleObj) {
+                        $folderPhase = 'statusset_path_allowed'
                         $allowRes = Test-QCPathAllowed -CandidatePath $fp -Config $config
                         if (-not $allowRes.IsSuccess) { throw $allowRes.Message }
                         if (-not [bool]$allowRes.Data.allowed) {
@@ -1057,6 +1059,7 @@ if ($statusSetRules.Count -ge 0) {
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                         }
+                        $folderPhase = 'statusset_pw_state'
                         $state = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
                         $listingMethod = ''
                         $oneLevelRetry = $false
@@ -1168,7 +1171,13 @@ if ($statusSetRules.Count -ge 0) {
                                     foreach ($qc in @($state.qcPdfDocs)) {
                                         try {
                                             $qcStem = [string]$qc.stem
-                                            $srcSheet = $state.pairedSheets | Where-Object { $_.stem -eq $qcStem } | Select-Object -First 1
+                                            $srcSheet = $null
+                                            foreach ($row in @($state.pairedSheets)) {
+                                                $rowStem = $null
+                                                if ($row -is [hashtable] -and $row.ContainsKey('stem')) { $rowStem = [string]$row['stem'] }
+                                                elseif ($row -and $row.PSObject) { try { $rowStem = [string]$row.stem } catch { } }
+                                                if ($rowStem -and $rowStem -eq $qcStem) { $srcSheet = $row; break }
+                                            }
                                             if ($srcSheet) {
                                                 if ($srcSheet.pdf -and $srcSheet.pdf.documentGuid) {
                                                     Update-QCSheetQcPdf -Config $config `
@@ -1201,6 +1210,7 @@ if ($statusSetRules.Count -ge 0) {
                                     compareReasons = if ($gateRes.Data.compare -and $gateRes.Data.compare.reasons) { @($gateRes.Data.compare.reasons) } else { @() }
                                 }
                             } else {
+                                $folderPhase = 'statusset_enqueue'
                                 $candidate = @{
                                     path = $fp
                                     fileName = '_folder_'
@@ -1214,7 +1224,6 @@ if ($statusSetRules.Count -ge 0) {
                                     statusSet = @{
                                         pairedCount = [int]$state.pairedCount
                                         orderKey = [string]$state.orderKey
-                                        pairedSheets = @($state.pairedSheets)
                                     }
                                     file = @{
                                         fullName = $fp
@@ -1279,6 +1288,7 @@ if ($statusSetRules.Count -ge 0) {
 
                     # QC_PREPEND (description tag)
                     if ([bool]$entry.EnableQcPrepend) {
+                        $folderPhase = 'qc_prepend_doc_scan'
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
                             folder = $fp
                         }
@@ -1486,8 +1496,11 @@ if ($statusSetRules.Count -ge 0) {
                 } catch {
                     $errors++
                     $ex = $_.Exception
-                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW folder for STATUS_SET_GEN.' -Data @{
+                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW watch folder.' -Data @{
                         folder = [string]$entry.FolderPath
+                        phase = [string]$folderPhase
+                        enableStatusSet = $enableStatusSet
+                        enableQcPrepend = $enableQcPrepend
                         errorMessage = [string]$_.Exception.Message
                         errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
                         scriptStackTrace = [string]$_.ScriptStackTrace
@@ -1564,7 +1577,6 @@ if ($statusSetRules.Count -ge 0) {
                 statusSet = @{
                     pairedCount = [int]$state.pairedCount
                     orderKey = [string]$state.orderKey
-                    pairedSheets = @($state.pairedSheets)
                 }
                 file = @{
                     fullName = $folder

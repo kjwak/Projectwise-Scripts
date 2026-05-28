@@ -1,5 +1,18 @@
-# Unit test: extension suffix filter logic (mirrors _SSS-FilterDocsByExtensions).
+# Unit test: extension suffix filter + empty-array parameter binding (PS mandatory [object[]]).
 $ErrorActionPreference = 'Stop'
+
+function _Test-AcceptsEmptyDocs {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Docs
+    )
+    if (-not $Docs -or @($Docs).Count -eq 0) { return @() }
+    return @($Docs)
+}
+$empty = @(_Test-AcceptsEmptyDocs -Docs @())
+if ($empty.Count -ne 0) { throw 'AllowEmptyCollection regression: empty Docs must bind' }
+
 
 function _Test-FilterByExt($Docs, $Extensions) {
     $suffixes = @($Extensions | ForEach-Object {

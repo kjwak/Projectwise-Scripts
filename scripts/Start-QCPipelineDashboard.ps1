@@ -1217,7 +1217,11 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                     if ($o.code -eq 'WATCH_PW_DOC_SCAN_START') { $state.currentScanStage = "querying documents: $([string]$o.data.folder)" }
                     if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.currentScanStage = "documents done: $([string]$o.data.folder) ($([int]$o.data.pdfCount) PDFs, $([int]$o.data.qcArchivistCount) tagged)" }
                     if ($o.code -eq 'WATCH_PW_FOLDER_DONE' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') {
-                        $state.currentScanStage = if ($o.code -eq 'WATCH_PW_FOLDER_ERROR') { "folder error: $([string]$o.data.folder)" } else { "folder done: $([string]$o.data.folder)" }
+                        $state.currentScanStage = if ($o.code -eq 'WATCH_PW_FOLDER_ERROR') {
+                            $ph = ''
+                            try { $ph = [string]$o.data.phase } catch { }
+                            if ($ph) { "folder error ($ph): $([string]$o.data.folder)" } else { "folder error: $([string]$o.data.folder)" }
+                        } else { "folder done: $([string]$o.data.folder)" }
                     }
                     if ($o.code -eq 'WATCH_DONE') {
                         try {

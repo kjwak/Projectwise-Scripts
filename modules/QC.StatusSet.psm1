@@ -561,9 +561,12 @@ function _SSS-PWListDocsInFolder([string]$FolderPath, [string[]]$DateCols) {
 
 function _SSS-FilterDocsByExtensions {
     param(
-        [Parameter(Mandatory)][object[]]$Docs,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Docs,
         [Parameter(Mandatory)][string[]]$Extensions
     )
+    if (-not $Docs -or @($Docs).Count -eq 0) { return @() }
     $suffixes = @($Extensions | Where-Object { $_ } | ForEach-Object {
         $e = [string]$_
         if (-not $e.StartsWith('.')) { $e = '.' + $e }
@@ -584,7 +587,12 @@ function _SSS-FilterDocsByExtensions {
 }
 
 function _SSS-DedupePwDocRows {
-    param([Parameter(Mandatory)][object[]]$Docs)
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Docs
+    )
+    if (-not $Docs -or @($Docs).Count -eq 0) { return @() }
     $seen = @{}
     $out = @()
     foreach ($d in @($Docs)) {
@@ -674,17 +682,24 @@ function _SSS-PWListDocsInFolderByExtensions {
         return @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols) -Extensions $Extensions)
     }
 
-    $all = @(_SSS-DedupePwDocRows -Docs $all)
-    if ($all.Count -gt 0) { return $all }
+    if (@($all).Count -gt 0) {
+        $all = @(_SSS-DedupePwDocRows -Docs $all)
+        if ($all.Count -gt 0) { return $all }
+    }
 
     $script:_SSS_LastDocListingMethod = 'folder_full'
     $fromFolder = @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols) -Extensions $Extensions)
-    $fromFolder = @(_SSS-DedupePwDocRows -Docs $fromFolder)
-    if ($fromFolder.Count -gt 0) { return $fromFolder }
+    if (@($fromFolder).Count -gt 0) {
+        $fromFolder = @(_SSS-DedupePwDocRows -Docs $fromFolder)
+        if ($fromFolder.Count -gt 0) { return $fromFolder }
+    }
 
     $script:_SSS_LastDocListingMethod = 'discovery_folder'
     $fromDisc = @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolderViaDiscovery -FolderPath $FolderPath) -Extensions $Extensions)
-    return @(_SSS-DedupePwDocRows -Docs $fromDisc)
+    if (@($fromDisc).Count -gt 0) {
+        return @(_SSS-DedupePwDocRows -Docs $fromDisc)
+    }
+    return @()
 }
 
 function Get-StatusSetManifestPathLegacy([string]$FolderPath, [string]$LocalRoot) {
@@ -1494,7 +1509,9 @@ function _SSS-BuildPWStatusSetState {
     $hash = _SSS-Sha256TextHex -Text $stable
 
     $sortedRows = @($pairRows | Sort-Object -Property Dir, Stem)
-    $pairedSheets = foreach ($r in $sortedRows) {
+    # Must be @(...) — a lone foreach result is one hashtable; piping that hashtable
+    # iterates values (not rows) and breaks orderKey / watcher QC-PDF linking.
+    $pairedSheets = @(foreach ($r in $sortedRows) {
         @{
             stem = $r.Stem
             dir = $r.Dir
@@ -1517,7 +1534,7 @@ function _SSS-BuildPWStatusSetState {
                 doc = $r.DgnDoc
             }
         }
-    }
+    })
     $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
     $orderedPdfDocs = if ($IncludeOrderedPdfDocuments) { @($sortedRows | ForEach-Object { $_.PdfDoc }) } else { @() }
 
