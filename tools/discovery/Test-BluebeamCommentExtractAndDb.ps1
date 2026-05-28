@@ -13,6 +13,9 @@ param(
 
     # Optional: override config path (defaults to repo appsettings.json)
     [string]$ConfigPath = ''
+
+    ,[switch]$SkipDatabase
+    ,[string]$OutputJsonPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,12 +25,29 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -ErrorAction Stop
-Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -ErrorAction Stop
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -ErrorAction Stop
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentExtract.psm1') -Force -ErrorAction Stop
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentSync.Database.psm1') -Force -ErrorAction Stop
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -Global -ErrorAction Stop | Out-Null
+
+$coreDbPath = (Join-Path $repoRoot 'modules\Core.Database.psm1')
+$coreDbModule = $null
+try {
+    $coreDbModule = Import-Module $coreDbPath -Force -Global -ErrorAction Stop -PassThru
+} catch {
+    $coreDbModule = $null
+}
+if ($coreDbModule) {
+    try {
+        Write-Host ("Loaded module: {0} ({1})" -f $coreDbModule.Name, $coreDbModule.Path) -ForegroundColor DarkGray
+    } catch { }
+}
+
+if (-not (Test-Path -LiteralPath $coreDbPath)) {
+    throw "Core.Database.psm1 not found: $coreDbPath"
+}
+
+Import-Module (Join-Path $repoRoot 'modules\QC.CommentExtract.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\QC.CommentSync.Database.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force -Global -ErrorAction SilentlyContinue | Out-Null
 
 function Assert-True($Condition, $Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
 
@@ -36,15 +56,43 @@ Assert-True $configRes.IsSuccess "Config load failed: $($configRes.Message)"
 $config = $configRes.Data.config
 
 if (-not $config.database) { $config['database'] = @{} }
-$config.database.enabled = $true
+if (-not $SkipDatabase) {
+    $config.database.enabled = $true
+}
 
-Assert-True ([bool](Get-Command -Name 'Initialize-QCDatabaseSchema' -ErrorAction SilentlyContinue)) `
-    ("Initialize-QCDatabaseSchema is missing; verify module load: " + (Join-Path $repoRoot 'modules\Core.Database.psm1'))
+$initCmd = Get-Command -Name 'Initialize-QCDatabaseSchema' -ErrorAction SilentlyContinue
+$initViaExport = $null
+if (-not $initCmd -and $coreDbModule -and $coreDbModule.ExportedCommands -and $coreDbModule.ExportedCommands.ContainsKey('Initialize-QCDatabaseSchema')) {
+    $initViaExport = $coreDbModule.ExportedCommands['Initialize-QCDatabaseSchema']
+}
+if (-not $initCmd -and -not $initViaExport) {
+    Write-Host "Initialize-QCDatabaseSchema not found. Diagnostics:" -ForegroundColor Red
+    Write-Host ("  coreDbPath: " + $coreDbPath) -ForegroundColor Yellow
+    if ($coreDbModule) {
+        try {
+            Write-Host ("  Import-Module -PassThru returned: {0} ({1})" -f $coreDbModule.Name, $coreDbModule.Path) -ForegroundColor Yellow
+            Write-Host ("  Exported cmd count: " + @($coreDbModule.ExportedCommands.Keys).Count) -ForegroundColor DarkGray
+            Write-Host ("  Exported cmd names: " + (@($coreDbModule.ExportedCommands.Keys) -join ', ')) -ForegroundColor DarkGray
+        } catch { }
+    }
+    $mods = @(Get-Module | Where-Object { $_.Name -like '*Database*' -or ($_.Path -and $_.Path -like '*Database*') })
+    Write-Host ("  Loaded '*Database*' modules: " + ($mods | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ') -ForegroundColor Yellow
+    throw "Initialize-QCDatabaseSchema is missing after module import."
+}
 
-Write-Host "[1] Initializing DB schema (if needed)..." -ForegroundColor Yellow
-$schemaRes = Initialize-QCDatabaseSchema -Config $config
-Assert-True $schemaRes.IsSuccess "Schema init failed: $($schemaRes.Message)"
-Write-Host ("  Schema: " + $schemaRes.Message) -ForegroundColor Green
+if (-not $SkipDatabase) {
+    Write-Host "[1] Initializing DB schema (if needed)..." -ForegroundColor Yellow
+    $schemaRes = if ($initCmd) {
+        Initialize-QCDatabaseSchema -Config $config
+    } else {
+        # Workaround for environments where exported functions aren't discoverable in script scope.
+        & $initViaExport -Config $config
+    }
+    Assert-True $schemaRes.IsSuccess "Schema init failed: $($schemaRes.Message)"
+    Write-Host ("  Schema: " + $schemaRes.Message) -ForegroundColor Green
+} else {
+    Write-Host "[1] Skipping DB work (per -SkipDatabase)." -ForegroundColor Yellow
+}
 
 $pdfPathToUse = $LocalPdfPath
 if ([string]::IsNullOrWhiteSpace($pdfPathToUse)) {
@@ -89,7 +137,7 @@ if ([string]::IsNullOrWhiteSpace($pdfPathToUse)) {
     Write-Host ("  Exported to: " + $pdfPathToUse) -ForegroundColor Green
 }
 
-if (-not [string]::IsNullOrWhiteSpace($SheetGuid)) {
+if (-not $SkipDatabase -and -not [string]::IsNullOrWhiteSpace($SheetGuid)) {
     if ([string]::IsNullOrWhiteSpace($SheetName)) { $SheetName = 'ManualSheet.pdf' }
     if ([string]::IsNullOrWhiteSpace($SheetFolderPath)) { $SheetFolderPath = 'Documents\\Manual\\Sheets' }
 
@@ -106,7 +154,41 @@ $ann = @($extractRes.Data.annotations)
 Write-Host ("  Extracted: {0} annotation(s), parser_status={1}, parser_version={2}" -f $ann.Count, $extractRes.Data.parserStatus, $extractRes.Data.parserVersion) -ForegroundColor Green
 Assert-True ($ann.Count -gt 0) "No annotations found. Confirm the PDF actually contains Bluebeam markups/comments."
 
-Write-Host "[5] Writing a qc_comment_runs row + qc_comments snapshots..." -ForegroundColor Yellow
+if ($OutputJsonPath) {
+    try {
+        $outObj = @{
+            qc_pdf_guid = $QcPdfGuid
+            extracted_at_utc = [DateTimeOffset]::UtcNow
+            parser_status = $extractRes.Data.parserStatus
+            parser_version = $extractRes.Data.parserVersion
+            annotations = $ann
+        }
+        $json = ($outObj | ConvertTo-Json -Depth 18)
+        $dir = Split-Path -Parent $OutputJsonPath
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Set-Content -LiteralPath $OutputJsonPath -Value $json -Encoding UTF8
+        Write-Host ("[5] Wrote extraction JSON: " + $OutputJsonPath) -ForegroundColor Green
+    } catch {
+        Write-Host ("[5] Failed writing JSON: " + $_.Exception.Message) -ForegroundColor Red
+    }
+}
+
+Write-Host "[5] First few annotations (including raw attributes)..." -ForegroundColor Yellow
+$preview = @($ann | Select-Object -First 5)
+foreach ($a in $preview) {
+    try {
+        Write-Host ($a | ConvertTo-Json -Depth 18) -ForegroundColor DarkGray
+    } catch {
+        Write-Host ("<failed to serialize annotation: " + $_.Exception.Message + ">") -ForegroundColor DarkGray
+    }
+}
+
+if ($SkipDatabase) {
+    Write-Host "OK (extracted, no DB) Test-BluebeamCommentExtractAndDb.ps1" -ForegroundColor Green
+    return
+}
+
+Write-Host "[6] Writing a qc_comment_runs row + qc_comments snapshots..." -ForegroundColor Yellow
 $jobId = 'manual-' + [guid]::NewGuid().ToString('N')
 $runRecord = @{
     job_id = $jobId
@@ -136,7 +218,7 @@ $writeHist = Write-QCCommentStatusHistoryRows -Config $config -RunId $runId -Doc
 Assert-True $writeHist.IsSuccess "History insert failed: $($writeHist.Message)"
 Write-Host ("  " + $writeHist.Message) -ForegroundColor Green
 
-Write-Host "[6] Verifying rows in DB..." -ForegroundColor Yellow
+Write-Host "[7] Verifying rows in DB..." -ForegroundColor Yellow
 $q = Invoke-QCDatabaseScalar -Config $config -Sql "SELECT COUNT(*) FROM qc_comments WHERE run_id = @r" -Parameters @{ r = $runId }
 Assert-True $q.IsSuccess "DB query failed: $($q.Message)"
 Assert-True ([int]$q.Data.value -gt 0) 'Expected qc_comments rows for this run'
