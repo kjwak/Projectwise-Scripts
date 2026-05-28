@@ -232,6 +232,7 @@ if (-not $config.ContainsKey('dryRun')) { $config['dryRun'] = $false }
 if ($DryRun.IsPresent) { $config['dryRun'] = $true }
 $isDryRun = [bool]$config['dryRun']
 $watcherMode = Get-QCWatcherMode -Config $config -ReconcileStatusSetsFirst:$ReconcileStatusSetsFirst.IsPresent
+$reconcileStatusSetsOnStart = Get-QCReconcileStatusSetsOnStart -Config $config
 
 $ignoreSampleEvery = 50
 if ($config.ContainsKey('logging') -and $config.logging -and $config.logging.ContainsKey('ignoredSampleEvery') -and $config.logging.ignoredSampleEvery) {
@@ -390,9 +391,12 @@ if ($statusSetRules.Count -ge 0) {
 
             # One-shot reconciliation: walk every locally-built _StatusSet.pdf
             # and push to PW when the local copy is newer / PW is missing it.
-            # Gated by -ReconcileStatusSetsFirst so it runs once per restart,
-            # not on every watcher tick (and never blocks normal triggering).
-            if ($watcherMode -in @('reconciliation','hybrid') -or $ReconcileStatusSetsFirst.IsPresent) {
+            # Gated by reconciliation.reconcileStatusSetsOnStart (appsettings) and
+            # -ReconcileStatusSetsFirst (dashboard first pass only).
+            $runStatusSetReconcile = $reconcileStatusSetsOnStart -and (
+                ($watcherMode -in @('reconciliation','hybrid')) -or $ReconcileStatusSetsFirst.IsPresent
+            )
+            if ($runStatusSetReconcile) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_START' -Message 'Reconciling local status sets to ProjectWise.' -Data @{}
                 try {
                     $cb = {

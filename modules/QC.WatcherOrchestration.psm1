@@ -1,6 +1,22 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-QCReconcileStatusSetsOnStart {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $onStart = $true
+    try {
+        if ($Config.ContainsKey('reconciliation') -and $Config.reconciliation) {
+            $rc = $Config.reconciliation
+            if ($rc.ContainsKey('reconcileStatusSetsOnStart')) { return [bool]$rc.reconcileStatusSetsOnStart }
+        }
+        if ($Config.ContainsKey('statusSet') -and $Config.statusSet -and $Config.statusSet.ContainsKey('reconcileOnWatcherStart')) {
+            return [bool]$Config.statusSet.reconcileOnWatcherStart
+        }
+    } catch { }
+    return $onStart
+}
+
 function Get-QCWatcherMode {
     [CmdletBinding()]
     param(
@@ -13,7 +29,8 @@ function Get-QCWatcherMode {
             $mode = ([string]$Config.watcher.mode).Trim().ToLowerInvariant()
         }
     } catch { }
-    if ($ReconcileStatusSetsFirst.IsPresent -and $mode -eq 'audit_only') { $mode = 'hybrid' }
+    $reconcileOnStart = Get-QCReconcileStatusSetsOnStart -Config $Config
+    if ($ReconcileStatusSetsFirst.IsPresent -and $reconcileOnStart -and $mode -eq 'audit_only') { $mode = 'hybrid' }
     if ($mode -notin @('audit_only','reconciliation','recovery','hybrid')) { $mode = 'audit_only' }
     return $mode
 }
@@ -64,4 +81,4 @@ function Get-QCReconciliationPlan {
     return @{ shouldRun = $false; reason = 'audit_only'; triggerSource = 'none'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart

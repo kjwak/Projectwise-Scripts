@@ -59,6 +59,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 
 function _Pause-IfInteractiveConsole {
     # Double-click / powershell.exe -File closes the window as soon as the script exits.
@@ -1365,8 +1366,9 @@ $nextWorkerIndex = 1
 $lastSpawnAt = [DateTime]::MinValue
 $lastRecoveryAt = [DateTime]::UtcNow
 $watcherChild = $null
-# Reconcile-on-first-watcher only (same as prior single outer-pass behavior).
-$watcherReconcileNext = -not $SkipReconcileStatusSetsFirst.IsPresent
+# Reconcile-on-first-watcher only (same as prior single outer-pass behavior), unless disabled in appsettings.
+$reconcileStatusSetsOnStart = Get-QCReconcileStatusSetsOnStart -Config $bootCfg
+$watcherReconcileNext = $reconcileStatusSetsOnStart -and (-not $SkipReconcileStatusSetsFirst.IsPresent)
 
 function _Spawn-Worker([hashtable]$Cfg, [hashtable]$WC, [string]$Label) {
     $xArgs = @(

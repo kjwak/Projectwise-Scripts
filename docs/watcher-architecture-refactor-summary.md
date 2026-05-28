@@ -42,6 +42,7 @@ The watcher must behave differently depending on the selected `run_mode` (canoni
 - Decided by orchestration layer (`Get-QCReconciliationPlan`)
 - Executed by explicit mode (`reconciliation`) or compatibility mode (`hybrid`)
 - Supports disablement through config (`reconciliation.enabled = false`)
+- Startup status-set push to PW can be disabled via `reconciliation.reconcileStatusSetsOnStart = false` (dashboard no longer passes `-ReconcileStatusSetsFirst` on first pass)
 
 #### Disablement behavior (`reconciliation.enabled = false`)
 - Orchestration may still *detect* that reconciliation would be appropriate (so intent is visible),
