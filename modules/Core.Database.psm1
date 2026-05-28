@@ -546,7 +546,8 @@ CREATE TABLE poll_runs (
     jobs_skipped_dedupe INT NOT NULL DEFAULT 0,
     warning_count INT NOT NULL DEFAULT 0,
     error_count INT NOT NULL DEFAULT 0,
-    reconciliation_reason NVARCHAR(200)
+    reconciliation_reason NVARCHAR(200),
+    pass_number_source  NVARCHAR(30)
 );
 
 
@@ -570,6 +571,7 @@ IF COL_LENGTH('dbo.poll_runs','jobs_skipped_dedupe') IS NULL ALTER TABLE dbo.pol
 IF COL_LENGTH('dbo.poll_runs','warning_count') IS NULL ALTER TABLE dbo.poll_runs ADD warning_count INT NOT NULL CONSTRAINT DF_poll_runs_warning_count DEFAULT 0;
 IF COL_LENGTH('dbo.poll_runs','error_count') IS NULL ALTER TABLE dbo.poll_runs ADD error_count INT NOT NULL CONSTRAINT DF_poll_runs_error_count DEFAULT 0;
 IF COL_LENGTH('dbo.poll_runs','reconciliation_reason') IS NULL ALTER TABLE dbo.poll_runs ADD reconciliation_reason NVARCHAR(200) NULL;
+IF COL_LENGTH('dbo.poll_runs','pass_number_source') IS NULL ALTER TABLE dbo.poll_runs ADD pass_number_source NVARCHAR(30) NULL;
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_poll_runs_started')
     CREATE INDEX idx_poll_runs_started ON poll_runs(started_at);
@@ -966,7 +968,7 @@ function Test-QCDatabaseWritesAllowed {
 
 function _QDB-SafeWrite {
     param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters)
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try { Invoke-QCDatabaseNonQuery -Config $Config -Sql $Sql -Parameters $Parameters | Out-Null }
     catch { }
 }
@@ -1023,7 +1025,7 @@ function Write-QCJobTelemetry {
         [string]$ErrorMessage,
         [string]$ResultData
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
     try {
         $sql = @"
@@ -1056,8 +1058,45 @@ VALUES
             errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
             resultData    = if ($ResultData)    { $ResultData }    else { $null }
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
+}
+
+
+function Test-QCPollRunTelemetryInsertShape {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Sql,
+        [Parameter(Mandatory)][hashtable]$Parameters,
+        [string[]]$RequiredParameterNames = @('durationMs','eventsFetched','eventsRelevant','candidatesCreated','jobsEnqueued','isReconciliation')
+    )
+    $mCols = [regex]::Match($Sql, 'INSERT\s+INTO\s+poll_runs\s*\((?<cols>.*?)\)\s*VALUES', [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $mVals = [regex]::Match($Sql, 'VALUES\s*\((?<vals>.*?)\)\s*$', [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $mCols.Success -or -not $mVals.Success) {
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_SQL_PARSE_FAILED' -Message 'Could not parse poll_runs insert statement.'
+    }
+    $cols = @($mCols.Groups['cols'].Value.Split(',') | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+    $paramRefs = [regex]::Matches($mVals.Groups['vals'].Value, '@([A-Za-z0-9_]+)') | ForEach-Object { $_.Groups[1].Value }
+    $distinctCols = @($cols | Select-Object -Unique)
+    if ($distinctCols.Count -ne $cols.Count) { return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_DUPLICATE_COLUMNS' -Message 'Duplicate columns detected in poll_runs insert.' -Data @{ columns = $cols } }
+    if ($cols.Count -ne $paramRefs.Count) { return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_COLUMN_VALUE_MISMATCH' -Message "poll_runs insert has $($cols.Count) columns but $($paramRefs.Count) value parameters." -Data @{ columns = $cols.Count; params = $paramRefs.Count } }
+    foreach ($rp in @($RequiredParameterNames)) { if (-not $Parameters.ContainsKey($rp)) { return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_REQUIRED_PARAM_MISSING' -Message "Missing required telemetry parameter: $rp" } }
+    foreach ($pn in @($paramRefs)) { if (-not $Parameters.ContainsKey($pn)) { return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_PARAM_REF_MISSING' -Message "SQL references @${pn} but params has no key '${pn}'." } }
+    return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_INSERT_VALID' -Message 'poll_runs insert shape validated.' -Data @{ columnCount = $cols.Count; paramCount = $paramRefs.Count }
 }
 
 function Write-QCPollRunTelemetry {
@@ -1097,15 +1136,17 @@ function Write-QCPollRunTelemetry {
         [int]$JobsSkippedDedupe = 0,
         [int]$WarningCount = 0,
         [int]$ErrorCount = 0,
-        [string]$ReconciliationReason
+        [string]$ReconciliationReason,
+        [string]$RunId,
+        [string]$PassNumberSource
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
         $sql = @"
 INSERT INTO poll_runs
-    (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation, watcher_name, service_name, pass_number, run_mode, run_status, total_duration_seconds, audit_query_duration_seconds, reconciliation_duration_seconds, trigger_eval_duration_seconds, dedupe_duration_seconds, queue_write_duration_seconds, database_write_duration_seconds, cleanup_duration_seconds, sleep_throttle_duration_seconds, candidate_documents_evaluated, trigger_matches, jobs_skipped_dedupe, warning_count, error_count, reconciliation_reason)
+    (started_at, completed_at, watermark_before, watermark_after, events_fetched, events_relevant, candidates_created, jobs_enqueued, duration_ms, error_message, is_reconciliation, watcher_name, service_name, pass_number, run_mode, run_status, total_duration_seconds, audit_query_duration_seconds, reconciliation_duration_seconds, trigger_eval_duration_seconds, dedupe_duration_seconds, queue_write_duration_seconds, database_write_duration_seconds, cleanup_duration_seconds, sleep_throttle_duration_seconds, candidate_documents_evaluated, trigger_matches, jobs_skipped_dedupe, warning_count, error_count, reconciliation_reason, pass_number_source)
 VALUES
-    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation, @watcherName, @serviceName, @passNumber, @runMode, @runStatus, @totalDurationSeconds, @auditQueryDurationSeconds, @reconciliationDurationSeconds, @triggerEvalDurationSeconds, @dedupeDurationSeconds, @queueWriteDurationSeconds, @databaseWriteDurationSeconds, @cleanupDurationSeconds, @sleepThrottleDurationSeconds, @candidateDocumentsEvaluated, @triggerMatches, @jobsSkippedDedupe, @warningCount, @errorCount, @reconciliationReason)
+    (DATEADD(MILLISECOND, -@durationMs, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), @watermarkBefore, @watermarkAfter, @eventsFetched, @eventsRelevant, @candidatesCreated, @jobsEnqueued, @durationMs, @errorMessage, @isReconciliation, @watcherName, @serviceName, @passNumber, @runMode, @runStatus, @totalDurationSeconds, @auditQueryDurationSeconds, @reconciliationDurationSeconds, @triggerEvalDurationSeconds, @dedupeDurationSeconds, @queueWriteDurationSeconds, @databaseWriteDurationSeconds, @cleanupDurationSeconds, @sleepThrottleDurationSeconds, @candidateDocumentsEvaluated, @triggerMatches, @jobsSkippedDedupe, @warningCount, @errorCount, @reconciliationReason, @passNumberSource)
 "@
         $params = @{
             eventsFetched     = $EventsFetched
@@ -1138,10 +1179,25 @@ VALUES
             warningCount = $WarningCount
             errorCount = $ErrorCount
             reconciliationReason = if ($ReconciliationReason) { $ReconciliationReason } else { $null }
+            passNumberSource = if ($PassNumberSource) { $PassNumberSource } else { $null }
 
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
 }
 
 function Write-QCNotificationTelemetry {
@@ -1165,7 +1221,7 @@ function Write-QCNotificationTelemetry {
         [string]$ErrorMessage,
         [Nullable[int]]$TransitionId
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
         $sql = @"
 INSERT INTO notification_log
@@ -1186,8 +1242,22 @@ VALUES
             errorMessage = if ($ErrorMessage) { $ErrorMessage } else { $null }
             transitionId = if ($null -ne $TransitionId) { $TransitionId } else { $null }
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
 }
 
 function Write-QCSheetIndex {
@@ -1216,7 +1286,7 @@ function Write-QCSheetIndex {
         [string]$FileModifiedAt,
         [switch]$SetOwnershipFromProjectWise
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
         if (-not $Extension -and $DocumentName) {
             $ext = [System.IO.Path]::GetExtension($DocumentName)
@@ -1269,8 +1339,22 @@ VALUES
             fileModifiedAt   = if ($FileModifiedAt)    { $FileModifiedAt }    else { $null }
             setOwnership     = $setOwnership
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
 }
 
 function Update-QCSheetIndexPwStateName {
@@ -1284,7 +1368,7 @@ function Update-QCSheetIndexPwStateName {
         [Parameter(Mandatory)][string]$DocumentGuid,
         [Parameter(Mandatory)][string]$PwStateName
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
         $sql = @"
 UPDATE sheet_index
@@ -1296,8 +1380,22 @@ WHERE document_guid = @docGuid
             docGuid     = $DocumentGuid
             pwStateName = $PwStateName
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
 }
 
 function Update-QCSheetQcPdf {
@@ -1313,7 +1411,7 @@ function Update-QCSheetQcPdf {
         [string]$QcPdfGuid,
         [string]$QcPdfName
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
         $sql = @"
 UPDATE sheet_index
@@ -1327,8 +1425,22 @@ WHERE document_guid = @sourceDocGuid
             qcPdfGuid     = if ($QcPdfGuid) { $QcPdfGuid } else { $null }
             qcPdfName     = if ($QcPdfName) { $QcPdfName } else { $null }
         }
-        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
-    } catch { }
+        $shape = Test-QCPollRunTelemetryInsertShape -Sql $sql -Parameters $params
+        if (-not $shape.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_VALIDATION_FAILED' -Message $shape.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName; details=$shape.Data }
+            return $shape
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+            return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        }
+        return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_WRITTEN' -Message 'Poll run telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+    } catch {
+        $msg=[string]$_.Exception.Message
+        Write-QCJsonLog -Flush -Level 'Error' -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+        return New-QCErrorResult -Code 'POLL_RUN_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_poll_runs'; runId=$RunId; passNumber=$PassNumber; watcherName=$WatcherName }
+    }
 }
 
 function Write-QCSheetIndexBatch {
@@ -1343,7 +1455,7 @@ function Write-QCSheetIndexBatch {
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][hashtable[]]$Rows
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     if (-not $Rows -or $Rows.Count -eq 0) { return }
     try {
         $sessRes = New-QCDatabaseSession -Config $Config

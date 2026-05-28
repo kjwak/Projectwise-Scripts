@@ -42,5 +42,5 @@ def test_watcher_writes_extended_poll_run_metrics() -> None:
 
 
 def test_poll_run_insert_values_match_extended_columns() -> None:
-    assert '@reconciliationReason)' in DB
+    assert '@reconciliationReason, @passNumberSource)' in DB
     assert '@databaseWriteDurationSeconds' in DB
