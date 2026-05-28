@@ -18,6 +18,19 @@ $script:QCRelevantActions = @{
     1020 = 'DOCUMENT_DELETE'
 }
 
+# Full PW action map for audit_events ingestion (telemetry is unfiltered; triggers use QCRelevantActions only).
+$script:AuditActionNames = @{
+    1    = 'FOLDER_CREATE';     2    = 'FOLDER_MODIFY';     3    = 'FOLDER_WFLOW'
+    4    = 'FOLDER_DELETE';     5    = 'FOLDER_STATE'
+    1001 = 'DOCUMENT_CREATE';   1002 = 'DOCUMENT_MODIFY';   1003 = 'DOCUMENT_ATTR'
+    1004 = 'DOCUMENT_FILE_ADD'; 1005 = 'DOCUMENT_FILE_REM'; 1006 = 'DOCUMENT_FILE_REP'
+    1007 = 'DOCUMENT_CIN';     1008 = 'DOCUMENT_VIEW';     1009 = 'DOCUMENT_CHOUT'
+    1010 = 'DOCUMENT_CPOUT';   1011 = 'DOCUMENT_GOUT';     1012 = 'DOCUMENT_STATE'
+    1013 = 'DOCUMENT_FINAL_S'; 1014 = 'DOCUMENT_FINAL_R'; 1015 = 'DOCUMENT_VERSION'
+    1016 = 'DOCUMENT_MOVE';    1020 = 'DOCUMENT_DELETE';    1022 = 'DOCUMENT_FREE'
+    1027 = 'DOCUMENT_IMPORT'; 3001 = 'USER_LOGIN';        3002 = 'USER_LOGOUT'
+}
+
 function _AuditPoller-NormalizeFolderPath {
     param([AllowNull()][string]$FolderPath)
     $t = ($FolderPath -as [string]).Trim().TrimEnd('\').Replace('/', '\')
@@ -94,6 +107,70 @@ function _AuditPoller-ParseActTime {
     param([string]$ActTime)
     if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
     try { return [DateTime]::Parse($ActTime) } catch { return $null }
+}
+
+function _AuditPoller-GetRowValue {
+    param($Row, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Row) { return $null }
+    try {
+        if ($Row -is [System.Data.DataRow]) {
+            if ($Row.Table.Columns.Contains($Name)) {
+                $v = $Row[$Name]
+                if ($v -is [DBNull]) { return $null }
+                return $v
+            }
+        }
+        $prop = $Row.PSObject.Properties[$Name]
+        if ($prop) {
+            $v = $prop.Value
+            if ($v -is [DBNull]) { return $null }
+            return $v
+        }
+    } catch { }
+    return $null
+}
+
+function _AuditPoller-GetActionCode {
+    param($Row)
+    $v = _AuditPoller-GetRowValue -Row $Row -Name 'o_action'
+    if ($null -eq $v) { return 0 }
+    try { return [int]$v } catch { return 0 }
+}
+
+function _AuditPoller-GetActionName {
+    param([int]$ActionCode)
+    if ($script:QCRelevantActions.ContainsKey($ActionCode)) { return $script:QCRelevantActions[$ActionCode] }
+    if ($script:AuditActionNames.ContainsKey($ActionCode)) { return $script:AuditActionNames[$ActionCode] }
+    return "UNKNOWN_$ActionCode"
+}
+
+function _AuditPoller-NewAuditEventDbRow {
+    param(
+        $Evt,
+        [AllowNull()][string]$ResolvedFolder = $null,
+        [AllowNull()][string]$CandidateType = $null
+    )
+    $actionCode = _AuditPoller-GetActionCode -Row $Evt
+    $objno = 0;  try { $objno = [int](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objno') } catch { $objno = 0 }
+    $userno = 0; try { $userno = [int](_AuditPoller-GetRowValue -Row $Evt -Name 'o_userno') } catch { $userno = 0 }
+    $itemdesc = _AuditPoller-GetRowValue -Row $Evt -Name 'o_itemdesc'
+    $textparam = _AuditPoller-GetRowValue -Row $Evt -Name 'o_textparam'
+    $objtype = 0; try { $objtype = [int](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objtype') } catch { $objtype = 0 }
+    return @{
+        acttime       = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_acttime')
+        action        = $actionCode
+        actionName    = (_AuditPoller-GetActionName -ActionCode $actionCode)
+        objtype       = $objtype
+        objno         = $objno
+        objguid       = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_objguid')
+        parentguid    = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_parentguid')
+        userno        = $userno
+        itemname      = [string](_AuditPoller-GetRowValue -Row $Evt -Name 'o_itemname')
+        itemdesc      = if ($null -eq $itemdesc) { $null } else { [string]$itemdesc }
+        textparam     = if ($null -eq $textparam) { $null } else { [string]$textparam }
+        folder        = $ResolvedFolder
+        candidateType = $CandidateType
+    }
 }
 
 function Get-AuditTrailHighWaterMarkFromDatabase {
@@ -289,7 +366,6 @@ function Invoke-AuditTrailScan {
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
     $sinceStr = $Since.ToString('yyyy-MM-dd HH:mm:ss')
     $untilStr = $Until.ToString('yyyy-MM-dd HH:mm:ss')
-    $actionList = (@($script:QCRelevantActions.Keys) | Sort-Object) -join ','
     $pageSize = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'pageSize' -Default 500
     $maxPages = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxPagesPerPoll' -Default 100
     if ($pageSize -lt 1) { $pageSize = 500 }
@@ -309,7 +385,7 @@ function Invoke-AuditTrailScan {
             } else {
                 "o_acttime > '$(_AuditPoller-EscapeSqlLiteral -Value $cursorSince)'"
             }
-            $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' AND o_objtype = 2 AND o_action IN ($actionList) ORDER BY o_acttime ASC, o_objguid ASC"
+            $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' ORDER BY o_acttime ASC, o_objguid ASC"
             $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
             $batch = @($result.Rows)
             if ($batch.Count -eq 0) { break }
@@ -334,21 +410,74 @@ function Invoke-AuditTrailScan {
     $stats.pagesFetched = $pageNum
     $stats.totalEvents = $allEvents.Count
 
-    # 2. Filter QC-relevant actions (SQL already filters; keep for safety)
-    $relevant = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey([int]$_.o_action) })
-    $stats.relevantEvents = $relevant.Count
-
-    if ($relevant.Count -eq 0) {
+    if ($allEvents.Count -eq 0) {
         $sw.Stop()
-        return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No QC-relevant audit events in window.' -Data @{
+        return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No audit events in window.' -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
             watermarkAfter = $untilStr; durationMs = [int]$sw.ElapsedMilliseconds
             pollWindow = @{ since = $sinceStr; until = $untilStr }
         }
     }
 
-    # 3. Resolve folders via document GUIDs (batched)
-    $docGuids = @($relevant | ForEach-Object { [string]$_.o_objguid } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
+    # 2. Ingest every fetched row into audit_events (no QC/watch/action filtering).
+    $watermarkAfter = $untilStr
+    $dbRows = @()
+    if (Test-QCDatabaseEnabled -Config $Config) {
+        foreach ($evt in $allEvents) {
+            $actTime = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
+            $actDt = _AuditPoller-ParseActTime -ActTime $actTime
+            if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
+            $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt)
+        }
+    }
+
+    $userNumbersToSync = [System.Collections.Generic.HashSet[int]]::new()
+    if ($dbRows.Count -gt 0) {
+        try {
+            $dbRes = Write-QCAuditEventRows -Config $Config -Rows $dbRows
+            if ($dbRes.IsSuccess -and $dbRes.Data) {
+                $stats.dbWrites += [int]$dbRes.Data.written
+                $stats.dbSkipped += [int]$dbRes.Data.skipped
+            } else {
+                $stats.dbSkipped += $dbRows.Count
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_FAILED' -Message "Write-QCAuditEventRows failed: $($dbRes.Message)" -Data @{
+                        code = [string]$dbRes.Code
+                        rowCount = $dbRows.Count
+                    }
+                }
+            }
+        } catch {
+            $stats.dbSkipped += $dbRows.Count
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count }
+            }
+        }
+        foreach ($row in $dbRows) {
+            $u = 0
+            try { $u = [int]$row.userno } catch { $u = 0 }
+            if ($u -gt 0) { [void]$userNumbersToSync.Add($u) }
+        }
+    }
+
+    # 3. QC trigger pipeline — filter applies only to job candidates, not audit_events ingestion.
+    $relevant = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
+    $stats.relevantEvents = $relevant.Count
+
+    if ($relevant.Count -eq 0) {
+        if ($userNumbersToSync.Count -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
+            try { Sync-PWUserDirectory -Config $Config -UserNumbers @($userNumbersToSync) -MaxUsers 25 | Out-Null } catch { }
+        }
+        $sw.Stop()
+        return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit ingest complete: $($stats.totalEvents) fetched, 0 QC-relevant for triggers." -Data @{
+            events = @(); candidates = @(); docToFolder = @{}; stats = $stats
+            watermarkAfter = $watermarkAfter; durationMs = [int]$sw.ElapsedMilliseconds
+            pollWindow = @{ since = $sinceStr; until = $untilStr }
+        }
+    }
+
+    # 4. Resolve folders via document GUIDs (batched) — QC-relevant document events only
+    $docGuids = @($relevant | ForEach-Object { [string](_AuditPoller-GetRowValue -Row $_ -Name 'o_objguid') } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
     $docToFolder = @{}
     $folderMap = @{}
 
@@ -378,17 +507,15 @@ function Invoke-AuditTrailScan {
     }
 
     # Build parent-GUID to folder map from resolved documents
-    $dbRows = @()
-
     foreach ($evt in $relevant) {
-        $og = [string]$evt.o_objguid
-        $pg = [string]$evt.o_parentguid
+        $og = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_objguid')
+        $pg = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_parentguid')
         if ($og -and $docToFolder.ContainsKey($og) -and $pg -and -not $folderMap.ContainsKey($pg)) {
             $folderMap[$pg] = $docToFolder[$og]
         }
     }
 
-    # 4. Match against watch roots
+    # 5. Match against watch roots (job candidates only)
     $watchRoots = @()
     if ($WatchRootConfigs.Count -gt 0) {
         $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
@@ -399,13 +526,12 @@ function Invoke-AuditTrailScan {
     $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
 
     $candidates = @()
-    $watermarkAfter = $untilStr
 
     foreach ($evt in $relevant) {
-        $actionCode = [int]$evt.o_action
+        $actionCode = _AuditPoller-GetActionCode -Row $evt
         $actionName = $script:QCRelevantActions[$actionCode]
-        $objGuid = [string]$evt.o_objguid
-        $parentGuid = [string]$evt.o_parentguid
+        $objGuid = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_objguid')
+        $parentGuid = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_parentguid')
 
         $resolvedFolder = $null
         if ($docToFolder.ContainsKey($objGuid)) { $resolvedFolder = $docToFolder[$objGuid] }
@@ -422,35 +548,8 @@ function Invoke-AuditTrailScan {
             }
         }
 
-        $actTime = [string]$evt.o_acttime
-        $actDt = _AuditPoller-ParseActTime -ActTime $actTime
-        if ($actDt -and ($actTime -gt $watermarkAfter)) { $watermarkAfter = $actTime }
-
+        $actTime = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
         $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
-
-        # Prepare audit_events rows for a set-based insert (fire-and-forget).
-        if (Test-QCDatabaseEnabled -Config $Config) {
-            $objno = 0;  try { $objno = [int]$evt.o_objno } catch { $objno = 0 }
-            $userno = 0; try { $userno = [int]$evt.o_userno } catch { $userno = 0 }
-            $itemdesc = $null; if (-not ($evt.o_itemdesc -is [DBNull])) { $itemdesc = [string]$evt.o_itemdesc }
-            $textparam = $null; if (-not ($evt.o_textparam -is [DBNull])) { $textparam = [string]$evt.o_textparam }
-
-            $dbRows += @{
-                acttime       = $actTime
-                action        = $actionCode
-                actionName    = $actionName
-                objtype       = [int]$evt.o_objtype
-                objno         = $objno
-                objguid       = $objGuid
-                parentguid    = $parentGuid
-                userno        = $userno
-                itemname      = [string]$evt.o_itemname
-                itemdesc      = $itemdesc
-                textparam     = $textparam
-                folder        = $resolvedFolder
-                candidateType = $candidateType
-            }
-        }
 
         $enableQcPrepend = $false
         $enableQcCommentSync = $false
@@ -469,7 +568,7 @@ function Invoke-AuditTrailScan {
                 parentGuid           = $parentGuid
                 actionCode           = $actionCode
                 actionName           = $actionName
-                itemName             = [string]$evt.o_itemname
+                itemName             = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_itemname')
                 actTime              = $actTime
                 resolvedFolder       = $resolvedFolder
                 isSheetsFolder       = $isSheetsFolder
@@ -479,37 +578,6 @@ function Invoke-AuditTrailScan {
                 enableStatusSet      = $enableStatusSet
                 watchRoot            = $watchRootPath
             }
-        }
-    }
-
-    $userNumbersToSync = [System.Collections.Generic.HashSet[int]]::new()
-
-    # Batch insert audit_events for this window (best-effort).
-    if ($dbRows.Count -gt 0) {
-        try {
-            $dbRes = Write-QCAuditEventRows -Config $Config -Rows $dbRows
-            if ($dbRes.IsSuccess -and $dbRes.Data) {
-                $stats.dbWrites += [int]$dbRes.Data.written
-                $stats.dbSkipped += [int]$dbRes.Data.skipped
-            } else {
-                $stats.dbSkipped += $dbRows.Count
-                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_FAILED' -Message "Write-QCAuditEventRows failed: $($dbRes.Message)" -Data @{
-                        code = [string]$dbRes.Code
-                        rowCount = $dbRows.Count
-                    }
-                }
-            }
-        } catch {
-            $stats.dbSkipped += $dbRows.Count
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count }
-            }
-        }
-        foreach ($row in $dbRows) {
-            $u = 0
-            try { $u = [int]$row.userno } catch { $u = 0 }
-            if ($u -gt 0) { [void]$userNumbersToSync.Add($u) }
         }
     }
 

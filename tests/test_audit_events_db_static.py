@@ -11,8 +11,11 @@ def test_write_audit_event_rows_exported() -> None:
 
 
 def test_audit_poller_delegates_to_database_writer() -> None:
-    assert "Write-QCAuditEventRows -Config $Config -Rows $dbRows" in POLLER
-    assert "INSERT INTO audit_events" not in POLLER.split("function Invoke-AuditTrailScan")[1]
+    scan = POLLER.split("function Invoke-AuditTrailScan", 1)[1].split("function Get-AuditPollCycleCounter", 1)[0]
+    assert "Write-QCAuditEventRows -Config $Config -Rows $dbRows" in scan
+    assert "INSERT INTO audit_events" not in scan
+    assert "o_action IN" not in scan
+    assert "Ingest every fetched row into audit_events" in scan
 
 
 def test_audit_events_insert_uses_dedupe_guard() -> None:
