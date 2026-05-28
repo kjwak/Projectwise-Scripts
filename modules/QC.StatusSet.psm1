@@ -559,13 +559,75 @@ function _SSS-PWListDocsInFolder([string]$FolderPath, [string[]]$DateCols) {
     return @()
 }
 
+function _SSS-FilterDocsByExtensions {
+    param(
+        [Parameter(Mandatory)][object[]]$Docs,
+        [Parameter(Mandatory)][string[]]$Extensions
+    )
+    $suffixes = @($Extensions | Where-Object { $_ } | ForEach-Object {
+        $e = [string]$_
+        if (-not $e.StartsWith('.')) { $e = '.' + $e }
+        $e.ToLowerInvariant()
+    } | Select-Object -Unique)
+    if ($suffixes.Count -eq 0) { return @($Docs) }
+
+    $out = @()
+    foreach ($d in @($Docs)) {
+        $name = _SSS-PWGetDocName -Doc $d
+        if (-not $name) { continue }
+        $lower = $name.ToLowerInvariant()
+        foreach ($suf in $suffixes) {
+            if ($lower.EndsWith($suf)) { $out += $d; break }
+        }
+    }
+    return @($out)
+}
+
+function _SSS-DedupePwDocRows {
+    param([Parameter(Mandatory)][object[]]$Docs)
+    $seen = @{}
+    $out = @()
+    foreach ($d in @($Docs)) {
+        if (-not $d) { continue }
+        $key = $null
+        try {
+            $g = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
+            if ($g) { $key = ('guid|' + [string]$g).ToLowerInvariant() }
+        } catch { }
+        if (-not $key) {
+            $n = _SSS-PWGetDocName -Doc $d
+            if ($n) { $key = ('name|' + $n).ToLowerInvariant() }
+        }
+        if (-not $key) { $key = ('obj|' + $d.GetHashCode()) }
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $out += $d
+    }
+    return @($out)
+}
+
+function _SSS-PWListDocsInFolderViaDiscovery {
+    param([Parameter(Mandatory)][string]$FolderPath)
+    try {
+        $discPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
+        if (-not (Get-Module -Name 'PW.Discovery' -ErrorAction SilentlyContinue)) {
+            Import-Module $discPath -Force -ErrorAction Stop
+        }
+        return @(Get-PWDocumentsInFolder -FolderPath $FolderPath)
+    } catch {
+        return @()
+    }
+}
+
 function _SSS-PWListDocsInFolderByExtensions {
     <#
     .SYNOPSIS
     Targeted PW document listing for status-set fingerprinting.
     .DESCRIPTION
-    Attempts to query only a few wildcard patterns (e.g. *.pdf) via search APIs.
-    Falls back to _SSS-PWListDocsInFolder when patterns are not supported.
+    Attempts wildcard search per extension first. Many PW environments return empty for
+    DocumentName=*.pdf even when the folder has documents; we then fall back to full-folder
+    listing (same strategies as QC prepend / Get-PWDocumentsInFolder).
+    Sets $script:_SSS_LastDocListingMethod: wildcard | folder_full | discovery_folder.
     #>
     param(
         [Parameter(Mandatory)][string]$FolderPath,
@@ -576,33 +638,53 @@ function _SSS-PWListDocsInFolderByExtensions {
         $DateCols = @('Name','DocumentID','DocumentGUID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size','StateName')
     }
 
+    $script:_SSS_LastDocListingMethod = 'wildcard'
+
     $cmdCols = Get-Command -Name Get-PWDocumentsBySearchWithReturnColumns -ErrorAction SilentlyContinue
     $cmdPlain = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
     if (-not $cmdCols -and -not $cmdPlain) {
-        return @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols)
+        $script:_SSS_LastDocListingMethod = 'folder_full'
+        return @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols) -Extensions $Extensions)
     }
 
     $all = @()
+    $patternFailed = $false
     foreach ($ext in @($Extensions | Where-Object { $_ })) {
         $pattern = "*$ext"
+        $gotRows = $false
         try {
             if ($cmdCols) {
                 $rows = Get-PWDocumentsBySearchWithReturnColumns -FolderPath $FolderPath -JustThisFolder -DocumentName $pattern -ColumnsToReturn $DateCols -PopulatePath -ErrorAction SilentlyContinue
-                if ($rows) { $all += @($rows) }
-                continue
+                if ($rows -and @($rows).Count -gt 0) { $all += @($rows); $gotRows = $true }
             }
-        } catch { }
-        try {
-            if ($cmdPlain) {
-                $rows2 = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -DocumentName $pattern -PopulatePath -ErrorAction SilentlyContinue)
-                if ($rows2) { $all += @($rows2) }
-                continue
-            }
-        } catch { }
-        # If we failed to use patterns, fall back once for the whole folder.
-        return @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols)
+        } catch { $patternFailed = $true }
+        if (-not $gotRows) {
+            try {
+                if ($cmdPlain) {
+                    $rows2 = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -JustThisFolder -DocumentName $pattern -PopulatePath -ErrorAction SilentlyContinue)
+                    if ($rows2.Count -gt 0) { $all += @($rows2); $gotRows = $true }
+                }
+            } catch { $patternFailed = $true }
+        }
+        if (-not $gotRows -and -not $cmdCols -and -not $cmdPlain) { $patternFailed = $true }
     }
-    return @($all)
+
+    if ($patternFailed -and $all.Count -eq 0) {
+        $script:_SSS_LastDocListingMethod = 'folder_full'
+        return @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols) -Extensions $Extensions)
+    }
+
+    $all = @(_SSS-DedupePwDocRows -Docs $all)
+    if ($all.Count -gt 0) { return $all }
+
+    $script:_SSS_LastDocListingMethod = 'folder_full'
+    $fromFolder = @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolder -FolderPath $FolderPath -DateCols $DateCols) -Extensions $Extensions)
+    $fromFolder = @(_SSS-DedupePwDocRows -Docs $fromFolder)
+    if ($fromFolder.Count -gt 0) { return $fromFolder }
+
+    $script:_SSS_LastDocListingMethod = 'discovery_folder'
+    $fromDisc = @(_SSS-FilterDocsByExtensions -Docs @(_SSS-PWListDocsInFolderViaDiscovery -FolderPath $FolderPath) -Extensions $Extensions)
+    return @(_SSS-DedupePwDocRows -Docs $fromDisc)
 }
 
 function Get-StatusSetManifestPathLegacy([string]$FolderPath, [string]$LocalRoot) {
@@ -1453,6 +1535,9 @@ function _SSS-BuildPWStatusSetState {
         }
     }
 
+    $listingMethod = 'unknown'
+    try { if ($script:_SSS_LastDocListingMethod) { $listingMethod = [string]$script:_SSS_LastDocListingMethod } } catch { }
+
     return @{
         folderStateHash = $hash
         pairedCount = $sortedRows.Count
@@ -1463,6 +1548,7 @@ function _SSS-BuildPWStatusSetState {
         pairedSheets = $pairedSheets
         orderedPdfDocuments = $orderedPdfDocs
         qcPdfDocs = $qcPdfDocs
+        docListingMethod = $listingMethod
     }
 }
 
@@ -1493,7 +1579,15 @@ function Get-StatusSetPWFolderState {
             discoveryError = $discRes
         }
     }
-    return _SSS-BuildPWStatusSetState -FolderPath $FolderPath -OneLevelDeep $OneLevelDeep -IncludeOrderedPdfDocuments:$false
+    $state = _SSS-BuildPWStatusSetState -FolderPath $FolderPath -OneLevelDeep $OneLevelDeep -IncludeOrderedPdfDocuments:$false
+    if ($OneLevelDeep -and [int]$state.pairedCount -le 0 -and [int]$state.pdfCount -le 0 -and [int]$state.dgnCount -le 0) {
+        $flat = _SSS-BuildPWStatusSetState -FolderPath $FolderPath -OneLevelDeep:$false -IncludeOrderedPdfDocuments:$false
+        if ([int]$flat.pairedCount -gt 0 -or [int]$flat.pdfCount -gt 0 -or [int]$flat.dgnCount -gt 0) {
+            $flat['oneLevelDeepRetry'] = $true
+            return $flat
+        }
+    }
+    return $state
 }
 
 function Test-StatusSetSheetPdfTimestampMatch {

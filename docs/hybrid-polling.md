@@ -98,6 +98,8 @@ Any audit event on a PDF file triggers a description check. If the document's de
 
 Check-in, version, and content-change events on documents in watched Sheets folders trigger folder-level STATUS_SET_GEN candidates. The existing manifest comparison (`Test-StatusSetWatcherShouldEnqueue`) still runs as the correctness gate.
 
+**PW document listing resilience (May 2026):** `Get-StatusSetPWFolderState` no longer relies solely on wildcard `DocumentName=*.pdf` search (often empty on TYPSA datasources). It falls back to full-folder listing and `Get-PWDocumentsInFolder` (same as QC doc scan). If `oneLevelDeep` finds nothing, it retries with `oneLevelDeep: false` on the same path. Logs: `docListingMethod` on `WATCH_PW_STATUSSET_SCAN_DONE`; `WATCH_PW_STATUSSET_NO_DOCS` when still empty; `WATCH_PW_STATUSSET_NO_PAIRS` when PDFs exist but no PDF+DGN pairs.
+
 ---
 
 ## Configuration (`appsettings.json`)

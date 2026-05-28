@@ -635,6 +635,33 @@ if ($statusSetRules.Count -ge 0) {
                                         continue
                                     }
 
+                                    $acOneLevelDeep = $true
+                                    try { if ($null -ne $ac.oneLevelDeep) { $acOneLevelDeep = [bool]$ac.oneLevelDeep } } catch { }
+                                    $acState = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$acOneLevelDeep
+                                    $acListingMethod = ''
+                                    try { $acListingMethod = [string]$acState.docListingMethod } catch { }
+                                    if ([int]$acState.pairedCount -le 0) {
+                                        if ([int]$acState.pdfCount -gt 0 -or [int]$acState.dgnCount -gt 0) {
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_PAIRS' -Message 'Audit STATUS_SET_GEN skipped: no PDF/DGN pairs.' -Data @{
+                                                folder = $fp; pdfCount = [int]$acState.pdfCount; dgnCount = [int]$acState.dgnCount; docListingMethod = $acListingMethod
+                                            }
+                                        } else {
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_DOCS' -Message 'Audit STATUS_SET_GEN skipped: no sheet docs listed.' -Data @{
+                                                folder = $fp; docListingMethod = $acListingMethod
+                                            }
+                                        }
+                                        continue
+                                    }
+                                    $acGateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $fp -FolderState $acState
+                                    if ($acGateRes.IsSuccess -and -not [bool]$acGateRes.Data.shouldEnqueue) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_CURRENT' -Message 'Audit STATUS_SET_GEN skipped: manifest current.' -Data @{
+                                            folder = $fp
+                                            gateReason = [string]$acGateRes.Data.gateReason
+                                            docListingMethod = $acListingMethod
+                                        }
+                                        continue
+                                    }
+
                                     $candidate = @{
                                         path = $fp
                                         fileName = '_folder_'
@@ -643,7 +670,13 @@ if ($statusSetRules.Count -ge 0) {
                                         sourceFolder = $fp
                                         datasourceName = $ds
                                         groupKey = ('STATUS_SET_GEN|' + $fp).ToLowerInvariant()
+                                        folderStateHash = [string]$acState.folderStateHash
+                                        oneLevelDeep = $acOneLevelDeep
                                         triggerSource = 'audit_trail'
+                                        statusSet = @{
+                                            pairedCount = [int]$acState.pairedCount
+                                            orderKey = [string]$acState.orderKey
+                                        }
                                         file = @{
                                             fullName = $fp
                                             length = 0
@@ -1025,12 +1058,18 @@ if ($statusSetRules.Count -ge 0) {
                             oneLevelDeep = $oneLevelDeep
                         }
                         $state = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
+                        $listingMethod = ''
+                        $oneLevelRetry = $false
+                        try { $listingMethod = [string]$state.docListingMethod } catch { }
+                        try { $oneLevelRetry = [bool]$state.oneLevelDeepRetry } catch { }
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                             pdfCount = [int]$state.pdfCount
                             dgnCount = [int]$state.dgnCount
                             pairedCount = [int]$state.pairedCount
+                            docListingMethod = $listingMethod
+                            oneLevelDeepRetry = $oneLevelRetry
                         }
                         if ([int]$state.pairedCount -gt 0) {
                             # Index paired sheets during reconciliation scan
@@ -1221,11 +1260,19 @@ if ($statusSetRules.Count -ge 0) {
                                 } elseif ($wouldDedupe) { $duplicates++ }
                             }
                         } elseif ([int]$state.pdfCount -gt 0 -or [int]$state.dgnCount -gt 0) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found.' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found (PDF-only or missing DGN).' -Data @{
                                 folder = $fp
                                 oneLevelDeep = $oneLevelDeep
                                 pdfCount = [int]$state.pdfCount
                                 dgnCount = [int]$state.dgnCount
+                                docListingMethod = $listingMethod
+                            }
+                        } else {
+                            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_STATUSSET_NO_DOCS' -Message 'PW status-set listing found no PDF/DGN in folder; STATUS_SET_GEN not enqueued.' -Data @{
+                                folder = $fp
+                                oneLevelDeep = $oneLevelDeep
+                                docListingMethod = $listingMethod
+                                oneLevelDeepRetry = $oneLevelRetry
                             }
                         }
                     }

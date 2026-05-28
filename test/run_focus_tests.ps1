@@ -12,6 +12,7 @@ $tests = @(
     'test\test_qc_workflow.ps1',
     'test\test_move_qcjob_with_job.ps1',
     'test\test_statusset_reconcile.ps1',
+    'test\test_statusset_doc_filter.ps1',
     'test\test_audit_poll_window.ps1',
     'test\test_audit_events_db.ps1'
 )
