@@ -67,7 +67,11 @@ param(
   [switch] $PromptForCredential,
 
   [Parameter(Mandatory=$false)]
-  [string] $LogDir = ""
+  [string] $LogDir = "",
+
+  # Optional appsettings path (defaults to repo appsettings.json) for review stamp + QC_Review_Type sync.
+  [Parameter(Mandatory=$false)]
+  [string] $AppsettingsPath = ""
 )
 
 if (-not $HistoryDocName) {
@@ -340,27 +344,200 @@ if (Test-Path -LiteralPath $pwDiscoveryMod) {
   Import-Module $pwDiscoveryMod -Force -ErrorAction SilentlyContinue
 }
 
-function Sync-PrependQcPdfEmailAttributes {
+function Get-PrependQcConfig {
+  if ($script:PrependQcConfig) { return $script:PrependQcConfig }
+  $script:PrependQcConfig = @{}
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $cfgPath = if ($AppsettingsPath) { $AppsettingsPath } else { (Join-Path $repoRoot 'appsettings.json') }
+  if (-not (Test-Path -LiteralPath $cfgPath)) { return $script:PrependQcConfig }
+  try {
+    $rtMod = Join-Path $repoRoot 'modules\Core.Runtime.psm1'
+    if (Test-Path -LiteralPath $rtMod) {
+      Import-Module $rtMod -Force -ErrorAction SilentlyContinue | Out-Null
+      if (Get-Command -Name 'Read-QCAppSettings' -ErrorAction SilentlyContinue) {
+        $res = Read-QCAppSettings -Path $cfgPath
+        if ($res.IsSuccess -and $res.Data.config) { $script:PrependQcConfig = $res.Data.config }
+      }
+    }
+  } catch {
+    Write-Log "Appsettings load skipped: $($_.Exception.Message)" -Severity WARNING
+  }
+  return $script:PrependQcConfig
+}
+
+function Invoke-PrependQcPdfAttributeSync {
   param(
     [Parameter(Mandatory)][string]$FolderPath,
     [Parameter(Mandatory)][string]$SourceDocumentName,
     [Parameter(Mandatory)][string]$QcDocumentName
   )
-  if (-not (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue)) {
-    Write-Log 'Email attribute sync skipped: PW.Discovery module not loaded.' -Severity WARNING
+  $cfg = Get-PrependQcConfig
+  if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
+    try {
+      $sync = Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath `
+        -SourceDocumentName $SourceDocumentName -QcDocumentName $QcDocumentName -PassThru
+      if ($sync.updated) {
+        $written = @($sync.attributesWritten) -join ', '
+        Write-Log "Synced QC PDF email attributes from source PDF ($written)."
+      } elseif ($sync.reason) {
+        Write-Log "Email attribute sync: $($sync.reason)"
+      }
+    } catch {
+      Write-Log "Email attribute sync failed: $($_.Exception.Message)" -Severity WARNING
+    }
+  }
+  if (Get-Command -Name 'Sync-PWQcPdfReviewTypeFromSourcePdf' -ErrorAction SilentlyContinue) {
+    try {
+      $rt = Sync-PWQcPdfReviewTypeFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
+        -QcDocumentName $QcDocumentName -Config $cfg -PassThru
+      if ($rt.updated) {
+        Write-Log "Synced QC PDF QC_Review_Type from source PDF."
+      } elseif ($rt.reason) {
+        Write-Log "Review type sync: $($rt.reason)"
+      }
+    } catch {
+      Write-Log "Review type sync failed: $($_.Exception.Message)" -Severity WARNING
+    }
+  }
+}
+
+function Resolve-QcReviewStampTool {
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $cfg = Get-PrependQcConfig
+  $qc = @{}
+  if ($cfg.ContainsKey('qcPrepend') -and $cfg.qcPrepend) { $qc = $cfg.qcPrepend }
+  if ($qc.ContainsKey('reviewStampToolPath') -and $qc.reviewStampToolPath) {
+    $p = [string]$qc.reviewStampToolPath
+    if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $repoRoot $p }
+    if (Test-Path -LiteralPath $p) { return @{ tool = $p; kind = 'exe' } }
+  }
+  $distExe = Join-Path $repoRoot 'dist\qc_review_stamp\qc_review_stamp.exe'
+  if (Test-Path -LiteralPath $distExe) { return @{ tool = $distExe; kind = 'exe' } }
+  $pyScript = Join-Path $repoRoot 'overlay\qc_review_stamp.py'
+  if (Test-Path -LiteralPath $pyScript) {
+    foreach ($py in @('python', 'py')) {
+      if (Get-Command $py -ErrorAction SilentlyContinue) {
+        return @{ tool = $py; kind = 'python'; script = $pyScript }
+      }
+    }
+  }
+  return $null
+}
+
+function Get-PeerReviewStampSettings {
+  $cfg = Get-PrependQcConfig
+  $rs = @{}
+  if ($cfg.ContainsKey('qcPrepend') -and $cfg.qcPrepend -and $cfg.qcPrepend.ContainsKey('reviewStamps')) {
+    $rs = $cfg.qcPrepend.reviewStamps
+  }
+  $enabled = $true
+  if ($null -ne $rs -and $rs.ContainsKey('enabled')) { try { $enabled = [bool]$rs.enabled } catch { } }
+  if (-not $enabled) { return $null }
+
+  $peer = 'Peer Review'
+  try {
+    if ($cfg.qcWorkflow.reviewTypes.peerReview) { $peer = [string]$cfg.qcWorkflow.reviewTypes.peerReview }
+  } catch { }
+
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $stampPath = Join-Path $repoRoot 'stamps\Peer_Review_Stamp.pdf'
+  $stampHeight = 200
+  $marginOutside = 12
+  if ($rs) {
+    if ($rs.ContainsKey('stampHeightPt')) { $stampHeight = [double]$rs.stampHeightPt }
+    if ($rs.ContainsKey('marginOutsidePt')) { $marginOutside = [double]$rs.marginOutsidePt }
+    if ($rs.ContainsKey('peerReview') -and $rs.peerReview) {
+      $pr = $rs.peerReview
+      if ($pr.stampPath) {
+        $sp = [string]$pr.stampPath
+        if (-not [System.IO.Path]::IsPathRooted($sp)) { $sp = Join-Path $repoRoot $sp }
+        $stampPath = $sp
+      }
+      if ($pr.reviewType) { $peer = [string]$pr.reviewType }
+    }
+  }
+  if (-not (Test-Path -LiteralPath $stampPath)) {
+    Write-Log "Peer review stamp template not found: $stampPath" -Severity WARNING
+    return $null
+  }
+  return @{
+    reviewType = $peer
+    stampPath = $stampPath
+    stampHeightPt = $stampHeight
+    marginOutsidePt = $marginOutside
+  }
+}
+
+function Invoke-QcPeerReviewStampIfNeeded {
+  param(
+    [Parameter(Mandatory)][string]$MergedPdfPath,
+    [Parameter(Mandatory)][string]$FolderPath,
+    [Parameter(Mandatory)][string]$SourceDocumentName
+  )
+  $stampCfg = Get-PeerReviewStampSettings
+  if (-not $stampCfg) { return }
+
+  $cfg = Get-PrependQcConfig
+  if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
+    Write-Log 'Review stamp skipped: Get-PWQcPrependRoleFieldsFromSourcePdf not available.' -Severity WARNING
     return
   }
+  $roles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $cfg
+  if (-not $roles.found) {
+    Write-Log "Review stamp skipped: could not read source PDF attributes ($($roles.error))." -Severity WARNING
+    return
+  }
+  $reviewType = [string]$roles.qcReviewType
+  if ([string]::IsNullOrWhiteSpace($reviewType) -or ($reviewType -ne [string]$stampCfg.reviewType)) {
+    Write-Log "Review stamp skipped: QC_Review_Type is '$reviewType' (need '$($stampCfg.reviewType)')."
+    return
+  }
+
+  $tool = Resolve-QcReviewStampTool
+  if (-not $tool) {
+    Write-Log 'Review stamp skipped: no qc_review_stamp tool (python or dist exe).' -Severity WARNING
+    return
+  }
+
+  $originator = [string]$roles.designerEmail
+  $checker = [string]$roles.reviewerEmail
+  $backchecker = [string]$roles.checkerEmail
+  $dateStr = (Get-Date).ToString('MM/dd/yyyy')
+
+  $commonArgs = @(
+    $MergedPdfPath,
+    $stampCfg.stampPath,
+    '--originator', $originator,
+    '--checker', $checker,
+    '--backchecker', $backchecker,
+    '--originator-date', $dateStr,
+    '--stamp-height-pt', [string]$stampCfg.stampHeightPt,
+    '--margin-outside-pt', [string]$stampCfg.marginOutsidePt
+  )
+
+  Write-Log "Applying peer review stamp (outside top-left) to page 1: $MergedPdfPath"
+    $prevEap = $ErrorActionPreference
   try {
-    $sync = Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath `
-      -SourceDocumentName $SourceDocumentName -QcDocumentName $QcDocumentName -PassThru
-    if ($sync.updated) {
-      $written = @($sync.attributesWritten) -join ', '
-      Write-Log "Synced QC PDF email attributes from source PDF ($written)."
-    } elseif ($sync.reason) {
-      Write-Log "Email attribute sync: $($sync.reason)"
+    $ErrorActionPreference = 'Continue'
+    if ($tool.kind -eq 'python') {
+      $out = & $tool.tool $tool.script @commonArgs 2>&1
+    } else {
+      $out = & $tool.tool @commonArgs 2>&1
     }
+    $exit = $LASTEXITCODE
+    foreach ($line in @($out)) {
+      $s = [string]$line
+      if ($s.Trim()) { Write-Log $s }
+    }
+    if ($null -ne $exit -and $exit -ne 0) {
+      throw "qc_review_stamp exited with code $exit"
+    }
+    Write-Log 'Peer review stamp applied (editable fields).'
   } catch {
-    Write-Log "Email attribute sync failed: $($_.Exception.Message)" -Severity WARNING
+    Write-Log "Peer review stamp failed: $($_.Exception.Message)" -Severity ERROR
+    throw
+  } finally {
+    $ErrorActionPreference = $prevEap
   }
 }
 
@@ -442,7 +619,7 @@ if (-not $historyDoc) {
     Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
     New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
     Write-Log "Created history document."
-    Sync-PrependQcPdfEmailAttributes -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
+    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
     if (Test-Path $localIncoming) { Remove-ItemWithRetry $localIncoming }
   } else {
     Write-Log "WhatIf: would create history document."
@@ -565,6 +742,12 @@ if ($haveOverlay) {
 }
 Write-Log "Merged file created: $localMerged"
 
+try {
+  Invoke-QcPeerReviewStampIfNeeded -MergedPdfPath $localMerged -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
+} catch {
+  throw
+}
+
 # Upload / replace history in PW (parameter name varies by pwps_dab version: LocalPath, SourcePath, etc.)
 Write-Log "Updating history document content in PW..."
 if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content from merged PDF")) {
@@ -591,7 +774,7 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
   Update-PWDocumentFile @pwUpdateFileParams | Out-Null
 
   Write-Log "Updated history document."
-  Sync-PrependQcPdfEmailAttributes -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
+  Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
   # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
   @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {

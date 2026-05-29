@@ -72,6 +72,19 @@ Common causes: WinError 10013 = outbound HTTPS to pypi.org blocked (firewall/pro
     } else {
         Write-Error "Build failed - exe not found at $exe"
     }
+
+    $stampSpec = Join-Path $projectRoot "qc_review_stamp.spec"
+    if (Test-Path $stampSpec) {
+        Write-Host "Building qc_review_stamp (onedir)..."
+        & $pythonExe -m PyInstaller --clean --noconfirm $stampSpec
+        if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller build failed for qc_review_stamp (exit code $LASTEXITCODE)."
+        }
+        $stampExe = Join-Path $projectRoot "dist\qc_review_stamp\qc_review_stamp.exe"
+        if (Test-Path $stampExe) {
+            Write-Host "SUCCESS: $stampExe (deploy dist\qc_review_stamp\ folder to automation hosts)"
+        }
+    }
 } finally {
     Pop-Location
 }

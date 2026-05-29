@@ -1489,4 +1489,148 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     if ($PassThru) { return $result }
 }
 
+function Get-PWQcReviewTypeAttributeName {
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    $col = 'QC_Review_Type'
+    try {
+        $am = $Config['qcWorkflow']['attributeMap']
+        if ($am -and $am['reviewType']) { $col = [string]$am['reviewType'] }
+    } catch { }
+    return $col
+}
+
+function Get-PWQcPrependRoleFieldsFromSourcePdf {
+    <#
+    .SYNOPSIS
+    Reads QC role emails and QC_Review_Type from the source sheet PDF in ProjectWise.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+    if (-not $read.found) {
+        return @{ found = $false; error = [string]$read.error; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
+    }
+
+    $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    return @{
+        found          = $true
+        error          = ''
+        designerEmail  = [string]$fields.designerEmail
+        reviewerEmail  = [string]$fields.reviewerEmail
+        checkerEmail   = [string]$fields.checkerEmail
+        qcReviewType   = [string]$fields.qcReviewType
+    }
+}
+
+function Sync-PWQcPdfReviewTypeFromSourcePdf {
+    <#
+    .SYNOPSIS
+    Copies QC_Review_Type from the source sheet PDF to the matching *-qc.pdf document in PW.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][string]$QcDocumentName,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$PassThru
+    )
+
+    $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
+    $result = @{
+        updated = $false
+        skipped = $true
+        reason = ''
+        reviewTypeColumn = $reviewCol
+        sourceReviewType = ''
+        qcReviewTypeBefore = ''
+        attributesWritten = @()
+    }
+
+    $source = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $Config
+    if (-not $source.found) {
+        $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $result.sourceReviewType = [string]$source.qcReviewType
+    if ([string]::IsNullOrWhiteSpace($result.sourceReviewType)) {
+        $result.reason = 'Source PDF has no QC_Review_Type; nothing to sync.'
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $QcDocumentName -ColumnsToReturn @($reviewCol)
+    if (-not $read.found) {
+        $result.reason = if ($read.error) { "QC PDF not found or unreadable: $($read.error)" } else { 'QC PDF not found.' }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $qcDoc = $read.document
+    if (-not $qcDoc) {
+        $result.reason = 'QC PDF row missing from attribute read.'
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $before = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $reviewCol
+    $result.qcReviewTypeBefore = $before
+    if ($before -eq $result.sourceReviewType) {
+        $result.reason = 'QC PDF QC_Review_Type already matches source PDF.'
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $toWrite = @{ $reviewCol = $result.sourceReviewType }
+    $target = "$FolderPath\$QcDocumentName"
+    if ($PSCmdlet.ShouldProcess($target, "Sync $reviewCol from $SourceDocumentName")) {
+        try {
+            [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $qcDoc -Attributes $toWrite)
+            $result.updated = $true
+            $result.skipped = $false
+            $result.reason = "Updated QC PDF $reviewCol from source PDF."
+            $result.attributesWritten = @($reviewCol)
+        } catch {
+            $result.reason = "Failed to update QC PDF attributes: $($_.Exception.Message)"
+        }
+    } else {
+        $result.skipped = $true
+        $result.reason = 'WhatIf: would update QC PDF QC_Review_Type from source PDF.'
+        $result.attributesWritten = @($reviewCol)
+    }
+
+    if ($PassThru) { return $result }
+}
+
+function Sync-PrependQcPdfAttributesFromSource {
+    <#
+    .SYNOPSIS
+    Syncs email and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][string]$QcDocumentName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
+        Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
+            -QcDocumentName $QcDocumentName | Out-Null
+    }
+    Sync-PWQcPdfReviewTypeFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
+        -QcDocumentName $QcDocumentName -Config $Config | Out-Null
+}
+
 Export-ModuleMember -Function *
