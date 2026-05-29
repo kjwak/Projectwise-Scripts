@@ -665,11 +665,13 @@ if ($statusSetRules.Count -ge 0) {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
-                                # sheet_index: DOCUMENT_ATTR re-reads EM_* and QC_* from PW; DOCUMENT_STATE updates workflow state.
+                                # sheet_index: DOCUMENT_ATTR re-reads EM_* and QC_* from PW.
+                                # DOCUMENT_STATE: propagate workflow state to associated DGN / PDF / QC PDF siblings.
                                 if ($ac.objGuid) {
                                     $acAction = [string]$ac.actionName
-                                    $syncOwnership = $acAction -in @('DOCUMENT_ATTR', 'DOCUMENT_STATE')
-                                    if ($syncOwnership) {
+                                    $isDocumentState = $acAction -eq 'DOCUMENT_STATE'
+                                    $syncAttributes = $acAction -eq 'DOCUMENT_ATTR'
+                                    if ($isDocumentState -or $syncAttributes) {
                                         Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
                                             actionName     = $acAction
                                             documentName   = [string]$ac.itemName
@@ -679,9 +681,17 @@ if ($statusSetRules.Count -ge 0) {
                                             triggerSource  = 'audit_trail'
                                         }
                                     }
-                                    if ($syncOwnership -or [bool]$ac.isSheetsFolder) {
-                                        $acWatchRoot = ''
-                                        try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
+                                    $acWatchRoot = ''
+                                    try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
+                                    if ($isDocumentState) {
+                                        Sync-PWAssociatedSheetWorkflowState -Config $config `
+                                            -DocumentGuid ([string]$ac.objGuid) `
+                                            -DocumentName ([string]$ac.itemName) `
+                                            -FolderPath $fp `
+                                            -WatchRoot $acWatchRoot `
+                                            -LastAuditEventAt ([string]$ac.actTime) `
+                                            -DryRun:$isDryRun
+                                    } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName ([string]$ac.itemName) `

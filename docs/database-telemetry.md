@@ -207,7 +207,8 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCPollRunTelemetry` | `Watch-QCTrigger.ps1` | Record poll cycle metrics |
 | `Write-QCNotificationTelemetry` | `QC.Notifications.psm1` | Record sent notifications |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
-| `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values). On `DOCUMENT_STATE`, update `pw_state_name` when it differs |
+| `Sync-PWAssociatedSheetWorkflowState` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_STATE`, set associated DGN, sheet PDF, and `*-qc.pdf` to the same workflow state as the changed document |
+| `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values) |
 | `Update-QCSheetQcPdf` | `Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1` | Link QC PDF to source document |
 
 ---

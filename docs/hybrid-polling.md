@@ -133,7 +133,7 @@ GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to mini
 
 ## Sheet Index Population
 
-During full-folder reconciliation scans (`auditPoller.reconcileEveryNCycles`, e.g. every 100 watcher passes), paired sheets are batch-upserted via `Write-QCSheetIndexBatch` using `Build-PWSheetIndexRowsForPairedSheets`. That re-reads the same EM_* and QC_* columns as audit `DOCUMENT_ATTR` sync. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates `sheet_index` incrementally from audit events.
+During full-folder reconciliation scans (`auditPoller.reconcileEveryNCycles`, e.g. every 100 watcher passes), paired sheets are batch-upserted via `Write-QCSheetIndexBatch` using `Build-PWSheetIndexRowsForPairedSheets`. That re-reads the same EM_* and QC_* columns as audit `DOCUMENT_ATTR` sync. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events and aligns workflow state across the DGN, sheet PDF, and `*-qc.pdf` that share the same sheet stem.
 
 Each row includes:
 

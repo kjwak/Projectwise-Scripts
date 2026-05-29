@@ -853,6 +853,341 @@ function Build-PWSheetIndexRowsForPairedSheets {
     return @($rows)
 }
 
+function Get-PWSheetStemFromDocumentName {
+    <#
+    .SYNOPSIS
+    Normalized sheet stem from a DGN, sheet PDF, or *-qc.pdf filename.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DocumentName
+    )
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    if ([string]::IsNullOrWhiteSpace($stem)) { return '' }
+    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    return $stem
+}
+
+function Get-PWAssociatedSheetDocumentNames {
+    <#
+    .SYNOPSIS
+    Expected sibling filenames (sheet PDF, DGN, QC PDF) for one sheet stem.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SheetStem
+    )
+    if ([string]::IsNullOrWhiteSpace($SheetStem)) { return @() }
+    return @(
+        ($SheetStem + '.pdf')
+        ($SheetStem + '.dgn')
+        ($SheetStem + '-qc.pdf')
+    )
+}
+
+function _PWD-InvokeSetPwDocumentState {
+    param(
+        [Parameter(Mandatory)][object]$Document,
+        [Parameter(Mandatory)][string]$StateName
+    )
+    $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
+    if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
+    $args = @{}
+    $docParam = if ($cmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' }
+        elseif ($cmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' }
+        elseif ($cmd.Parameters.ContainsKey('Document')) { 'Document' }
+        else { $null }
+    $stateParam = if ($cmd.Parameters.ContainsKey('StateName')) { 'StateName' }
+        elseif ($cmd.Parameters.ContainsKey('State')) { 'State' }
+        else { $null }
+    if ($docParam) { $args[$docParam] = @($Document) }
+    if ($stateParam) { $args[$stateParam] = $StateName }
+    if ($cmd.Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
+    if ($docParam -and $stateParam) { & $cmd @args -ErrorAction Stop | Out-Null }
+    elseif ($stateParam) { & $cmd $Document @args -ErrorAction Stop | Out-Null }
+    else { & $cmd $Document $StateName -ErrorAction Stop | Out-Null }
+}
+
+function _PWD-LoadPwDocumentsByGuid {
+    param([Parameter(Mandatory)][string[]]$DocumentGuids)
+    $docByGuid = @{}
+    $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+    if (-not $guidCmd) { return $docByGuid }
+    $valid = @($DocumentGuids | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    if ($valid.Count -eq 0) { return $docByGuid }
+    $chunkSize = 200
+    for ($i = 0; $i -lt $valid.Count; $i += $chunkSize) {
+        $chunk = @($valid[$i..[Math]::Min($i + $chunkSize - 1, $valid.Count - 1)])
+        try {
+            foreach ($doc in @(& $guidCmd -DocumentGUIDs $chunk -ErrorAction Stop)) {
+                $dg = ''
+                try { $dg = [string]$doc.DocumentGUID } catch { }
+                if ($dg) { $docByGuid[$dg.ToLowerInvariant()] = $doc }
+            }
+        } catch {
+            foreach ($oneGuid in $chunk) {
+                try {
+                    $doc = & $guidCmd -DocumentGUIDs @($oneGuid) -ErrorAction Stop | Select-Object -First 1
+                    if (-not $doc) { continue }
+                    $dg = [string]$doc.DocumentGUID
+                    if ($dg) { $docByGuid[$dg.ToLowerInvariant()] = $doc }
+                } catch { }
+            }
+        }
+    }
+    return $docByGuid
+}
+
+function _PWD-ResolvePwDocumentInFolder {
+    param(
+        [hashtable]$DocByGuid,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = ''
+    )
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $gk = $DocumentGuid.ToLowerInvariant()
+        if ($DocByGuid.ContainsKey($gk)) { return $DocByGuid[$gk] }
+    }
+    $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+    if (-not $searchCmd -or [string]::IsNullOrWhiteSpace($DocumentName)) { return $null }
+    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+    try {
+        $params = @{
+            FolderPath     = $apiPath
+            JustThisFolder = $true
+            DocumentName   = $DocumentName
+            ErrorAction    = 'Stop'
+        }
+        if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+        return (& $searchCmd @params | Select-Object -First 1)
+    } catch { return $null }
+}
+
+function Get-PWAssociatedSheetMembers {
+    <#
+    .SYNOPSIS
+    Resolves DGN, sheet PDF, and QC PDF siblings for one sheet stem in a folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = ''
+    )
+
+    $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) { return @() }
+
+    $expectedNames = @(Get-PWAssociatedSheetDocumentNames -SheetStem $sheetStem)
+    $members = @{}
+    $guidsToLoad = [System.Collections.Generic.List[string]]::new()
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $guidsToLoad.Add([string]$DocumentGuid) | Out-Null
+    }
+
+    if (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue) {
+        if (Test-QCDatabaseEnabled -Config $Config) {
+            try {
+                $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT document_guid, document_name, source_type, qc_pdf_guid, qc_pdf_name
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND (
+    LOWER(document_name) = LOWER(@pdfName)
+    OR LOWER(document_name) = LOWER(@dgnName)
+    OR LOWER(document_name) = LOWER(@qcName)
+  )
+"@ -Parameters @{
+                    folderPath = $FolderPath
+                    pdfName    = $expectedNames[0]
+                    dgnName    = $expectedNames[1]
+                    qcName     = $expectedNames[2]
+                }
+                if ($dbRes.IsSuccess -and $dbRes.Data.table) {
+                    foreach ($row in @($dbRes.Data.table.Rows)) {
+                        $dg = if ($row.document_guid -is [DBNull]) { '' } else { [string]$row.document_guid }
+                        $dn = if ($row.document_name -is [DBNull]) { '' } else { [string]$row.document_name }
+                        if (-not $dn) { continue }
+                        $key = $dn.ToLowerInvariant()
+                        if (-not $members.ContainsKey($key)) {
+                            $members[$key] = @{
+                                documentGuid = $dg
+                                documentName = $dn
+                                sourceType   = if ($row.source_type -is [DBNull]) { '' } else { [string]$row.source_type }
+                            }
+                        }
+                        if ($dg) { $guidsToLoad.Add($dg) | Out-Null }
+                        if ($row.Table.Columns.Contains('qc_pdf_guid') -and -not ($row.qc_pdf_guid -is [DBNull])) {
+                            $qcg = [string]$row.qc_pdf_guid
+                            if ($qcg) { $guidsToLoad.Add($qcg) | Out-Null }
+                            $qcn = if ($row.qc_pdf_name -is [DBNull]) { '' } else { [string]$row.qc_pdf_name }
+                            if ($qcn -and -not $members.ContainsKey($qcn.ToLowerInvariant())) {
+                                $members[$qcn.ToLowerInvariant()] = @{
+                                    documentGuid = $qcg
+                                    documentName = $qcn
+                                    sourceType   = 'pdf'
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    foreach ($name in $expectedNames) {
+        $key = $name.ToLowerInvariant()
+        if (-not $members.ContainsKey($key)) {
+            $members[$key] = @{
+                documentGuid = ''
+                documentName = $name
+                sourceType   = if ($name -match '(?i)\.dgn$') { 'dgn' } elseif ($name -match '(?i)-qc\.pdf$') { 'pdf' } else { 'pdf' }
+            }
+        }
+    }
+
+    $docByGuid = _PWD-LoadPwDocumentsByGuid -DocumentGuids @($guidsToLoad)
+    $resolved = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $members.Values) {
+        $dn = [string]$entry.documentName
+        $dg = [string]$entry.documentGuid
+        $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid $docByGuid -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        if (-not $doc) { continue }
+        try {
+            if (-not $dg) { $dg = [string]$doc.DocumentGUID }
+        } catch { }
+        $resolved.Add(@{
+            documentGuid = $dg
+            documentName = $dn
+            document     = $doc
+            sourceType   = [string]$entry.sourceType
+        }) | Out-Null
+    }
+    return @($resolved)
+}
+
+function Sync-PWAssociatedSheetWorkflowState {
+    <#
+    .SYNOPSIS
+    Propagates a manual DOCUMENT_STATE change to associated DGN, sheet PDF, and QC PDF siblings.
+    .DESCRIPTION
+    The audit event document is the source of truth for the new workflow state. Associated files
+    in the same folder (same sheet stem) are updated via Set-PWDocumentState when they differ.
+    sheet_index pw_state_name is updated for every member that was aligned.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false
+    )
+
+    $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+    if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
+
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) { return }
+
+    $guids = @($members | ForEach-Object { [string]$_.documentGuid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ })
+    $stateByGuid = @{}
+    if ($guids.Count -gt 0) {
+        try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
+    }
+
+    $stateUpdates = @()
+    $dbEnabled = $false
+    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+        $dbEnabled = Test-QCDatabaseEnabled -Config $Config
+    }
+
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dg) { continue }
+
+        $currentState = if ($stateByGuid.ContainsKey($dg.ToLowerInvariant())) {
+            [string]$stateByGuid[$dg.ToLowerInvariant()]
+        } else {
+            _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $canonicalState)) {
+            if ($dbEnabled) {
+                try {
+                    [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $canonicalState)
+                    if ($LastAuditEventAt) {
+                        Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $dg; lastAudit = $LastAuditEventAt } | Out-Null
+                    }
+                } catch { }
+            }
+            continue
+        }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromState    = [string]$currentState
+            toState      = [string]$canonicalState
+            applied      = $false
+            planned      = $false
+        }
+
+        if ($DryRun) {
+            $change.planned = $true
+        } else {
+            try {
+                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState
+                $change.applied = $true
+            } catch {
+                $change.error = [string]$_.Exception.Message
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_SYNC_FAILED' -Message 'Failed to align associated sheet workflow state.' -Data @{
+                        documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                        fromState = [string]$currentState; toState = [string]$canonicalState; error = [string]$_.Exception.Message
+                    }
+                }
+                continue
+            }
+        }
+
+        if ($dbEnabled -and (-not $DryRun)) {
+            try {
+                [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $canonicalState)
+                if ($LastAuditEventAt) {
+                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $dg; lastAudit = $LastAuditEventAt } | Out-Null
+                }
+            } catch { }
+        }
+
+        $stateUpdates += $change
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC' -Message 'Associated sheet workflow states aligned from DOCUMENT_STATE audit event.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath          = $FolderPath
+            canonicalState      = $canonicalState
+            memberCount         = $members.Count
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+        }
+    }
+}
+
 function Sync-PWSheetIndexOwnership {
     <#
     .SYNOPSIS
@@ -910,33 +1245,6 @@ WHERE document_guid = @docGuid
     if (-not $rowExists -and -not $IsSheetsFolder -and -not $isDocumentAttr) { return }
 
     if ($isDocumentState -and -not $isDocumentAttr) {
-        $pwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
-        $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
-        if ($rowExists -and -not $stateDiffers) {
-            if ($LastAuditEventAt) {
-                try {
-                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
-UPDATE sheet_index
-SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
-WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
-                } catch { }
-            }
-            return
-        }
-        if (-not $rowExists -and -not $IsSheetsFolder) { return }
-        if ($rowExists) {
-            [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid -PwStateName $pwState)
-            if ($LastAuditEventAt) {
-                try {
-                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
-UPDATE sheet_index
-SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
-WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
-                } catch { }
-            }
-        }
         return
     }
 

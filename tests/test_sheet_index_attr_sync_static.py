@@ -73,3 +73,15 @@ def test_watcher_initializes_database_schema_on_startup():
     text = WATCHER.read_text(encoding="utf-8")
     assert "Initialize-QCDatabaseSchema -Config $config" in text
     assert "WATCH_DB_SCHEMA_READY" in text
+
+
+def test_document_state_propagates_to_associated_sheet_files():
+    discovery = DISCOVERY.read_text(encoding="utf-8")
+    assert "function Sync-PWAssociatedSheetWorkflowState" in discovery
+    assert "function Get-PWAssociatedSheetMembers" in discovery
+    assert "function Get-PWSheetStemFromDocumentName" in discovery
+    assert "_PWD-InvokeSetPwDocumentState" in discovery
+
+    watch = WATCHER.read_text(encoding="utf-8")
+    assert "Sync-PWAssociatedSheetWorkflowState -Config $config" in watch
+    assert "WATCH_SHEET_STATE_SYNC" in discovery
