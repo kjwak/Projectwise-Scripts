@@ -140,18 +140,13 @@ $config = @{
             automationResult = 'QC_Automation_Result'
             automationError = 'QC_Automation_Error'
         }
-        stageMap = @{
-            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = $target }
-            green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = $target }
-            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = $target }
-        }
     }
 }
 $context = @{
     document = $doc
     documentPath = $TestDocumentPath
     folderPath = $located.folder
-    stage = 'red'
+    targetState = $target
     resultStatus = 'Succeeded'
     attributes = $attributes
 }

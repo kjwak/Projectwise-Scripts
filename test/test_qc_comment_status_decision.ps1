@@ -16,9 +16,10 @@ $config = @{
             closed = @('Closed', 'Cancelled')
         }
         targetStates = @{
+            redlinesIssued = 'Redlines Issued'
             correctionsInProgress = 'Corrections In Progress'
-            backcheckInProgress = 'Backcheck In Progress'
-            completed = 'Corrections Complete'
+            verificationInProgress = 'Verification In Progress'
+            completed = 'QC Complete'
             error = 'Error Needs Attention'
         }
     }
@@ -35,15 +36,15 @@ $closedAnnot = @{
 }
 
 $d1 = Resolve-QCCommentWorkflowState -Annotations @($openAnnot) -Config $config -ParserStatus 'ok'
-Assert-Eq $d1.targetState 'Corrections In Progress' 'Open reviewer comment -> corrections'
-Assert-Eq $d1.decisionCode 'CORRECTIONS_REQUIRED' 'Decision code corrections'
+Assert-Eq $d1.targetState 'Redlines Issued' 'Open reviewer comment -> redlines issued'
+Assert-Eq $d1.decisionCode 'REDLINES_ISSUED' 'Decision code redlines issued'
 
 $d2 = Resolve-QCCommentWorkflowState -Annotations @($resolvedAnnot) -Config $config -ParserStatus 'ok'
-Assert-Eq $d2.targetState 'Backcheck In Progress' 'Resolved -> backcheck'
-Assert-Eq $d2.decisionCode 'BACKCHECK_REQUIRED' 'Decision code backcheck'
+Assert-Eq $d2.targetState 'Verification In Progress' 'Resolved -> verification'
+Assert-Eq $d2.decisionCode 'VERIFICATION_REQUIRED' 'Decision code verification'
 
 $d3 = Resolve-QCCommentWorkflowState -Annotations @($closedAnnot) -Config $config -ParserStatus 'ok'
-Assert-Eq $d3.targetState 'Corrections Complete' 'Closed -> completed'
+Assert-Eq $d3.targetState 'QC Complete' 'Closed -> QC complete'
 
 $d4 = Resolve-QCCommentWorkflowState -Annotations @() -Config $config -ParserStatus 'error'
 Assert-Eq $d4.targetState 'Error Needs Attention' 'Parse error -> error state'

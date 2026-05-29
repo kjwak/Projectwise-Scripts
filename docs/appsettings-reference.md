@@ -171,7 +171,7 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 Optional ProjectWise **document attribute** writeback (and optional **workflow state** changes) after a successful `QC_PREPEND`. Implemented in `modules/QC.Workflow.psm1`; invoked from `QC.Processors.psm1` when prepend completes.
 
-**Full guide (states, red/green/blue model, PW admin setup, discovery scripts, rollout):** [`docs/qc-workflow-framework.md`](qc-workflow-framework.md)
+**Full guide (lifecycle states, review types, assignment, PW admin setup, discovery scripts, rollout):** [`docs/qc-workflow-framework.md`](qc-workflow-framework.md)
 
 **Related:** comment-driven state uses the same PW helpers via `qcCommentSync` — see [`docs/qc-comment-status-sync.md`](qc-comment-status-sync.md). SQL audit rows: `qc_workflow_events` in [`docs/database-telemetry.md`](database-telemetry.md).
 
@@ -200,25 +200,49 @@ Global `dryRun: true` does **not** replace `qcWorkflow.dryRunWriteback`; both ar
 | `autoWriteAttributes` | `true` | Call `Update-PWDocumentAttributes` with mapped QC fields after prepend. |
 | `autoSetState` | `false` | When `mode` is `StateAndAttributes`, call `Set-PWDocumentState` if true. |
 | `expectedWorkflowName` | `""` | Workflow name for validation (alias: `workflowName`). |
-| `attributeMap` | see JSON | Logical key → PW environment attribute name. |
-| `stageMap` | `red` / `green` / `blue` | Stage/status values and optional state names for comment sync. |
+| `attributeMap` | see JSON | Logical key → PW environment attribute name (no `QC_Stage`). |
+| `states` | see JSON | ProjectWise lifecycle state names (source of truth). |
+| `reviewTypes` | `Production QC`, `Peer Review`, `Independent Check` | Allowed `QC_Review_Type` values. |
+| `defaultReviewType` | `Production QC` | Used when document/job has no review type. |
 
-### State name keys (optional PW integration)
+### Lifecycle states (`states.*`)
 
-Used when `mode` is `StateAndAttributes` and for validation/logging. Names must match states in your ProjectWise workflow:
+Names must match your ProjectWise workflow:
 
 | Key | Default |
 |-----|---------|
-| `productionStateName` | `In Production` |
-| `receivedStateName` | `QC Received` |
-| `correctionsInProgressStateName` | `Corrections In Progress` |
-| `backcheckInProgressStateName` | `Backcheck In Progress` |
-| `errorStateName` | `Error Needs Attention` |
-| `defaultStateAfterPrepend` | `QC Received` |
-| `stateAfterSuccessfulPrepend` | `Redlines Issued` |
-| `stateAfterFailedPrepend` | `Error Needs Attention` |
+| `production` | `In Production` |
+| `readyForQc` | `Ready for QC` |
+| `reviewInProgress` | `Review In Progress` |
+| `redlinesIssued` | `Redlines Issued` |
+| `correctionsInProgress` | `Corrections In Progress` |
+| `verificationInProgress` | `Verification In Progress` |
+| `complete` | `QC Complete` |
+| `error` | `Error Needs Attention` |
 
-Prepend does **not** auto-move documents from `In Production` to `QC Received` unless you enable state writeback and configure transitions accordingly.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `defaultStateAfterPrepend` | `Ready for QC` | Informational default when state writeback is enabled later. |
+| `stateAfterSuccessfulPrepend` | `Ready for QC` | Fallback when `autoSetState` runs and prepend trigger is unknown. |
+| `stateAfterFailedPrepend` | `Error Needs Attention` | Target state after failed prepend. |
+| `defaultPrependTrigger` | `initialQcPdf` | Documented default; set `metadata.prependTrigger` on jobs. |
+| `stateAfterPrependByTrigger` | see JSON | Per-trigger target states after successful prepend. |
+
+**Prepend trigger keys** (`metadata.prependTrigger` on `QC_PREPEND` jobs):
+
+| Key | Target state (default) |
+|-----|------------------------|
+| `initialQcPdf` | `Ready for QC` |
+| `reviewerRedlineUpdate` | `Redlines Issued` |
+| `designerCorrectionComplete` | `Verification In Progress` (only when explicitly flagged on the job) |
+
+Assignment (`QC_Assigned_To`) is derived from **state + `QC_Review_Type`** via `Resolve-QCWorkflowAssignee` (reviewer vs checker vs designer).
+
+### Deprecated keys (warnings only)
+
+`productionStateName`, `receivedStateName`, `correctionsInProgressStateName`, `backcheckInProgressStateName`, `errorStateName`, and `stageMap` are accepted for backward compatibility but emit deprecation warnings. Prefer `states.*` and `reviewTypes.*`.
+
+Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttributes` and `autoSetState` is `true` (both off by default).
 
 ### Tests
 

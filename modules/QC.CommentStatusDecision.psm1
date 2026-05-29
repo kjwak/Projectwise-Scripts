@@ -13,9 +13,10 @@ function Get-QCCommentDecisionSettings {
             closed = @('Closed', 'Cancelled')
         }
         targetStates = @{
+            redlinesIssued = 'Redlines Issued'
             correctionsInProgress = 'Corrections In Progress'
-            backcheckInProgress = 'Backcheck In Progress'
-            completed = 'Corrections Complete'
+            verificationInProgress = 'Verification In Progress'
+            completed = 'QC Complete'
             error = 'Error Needs Attention'
         }
         strictMode = $false
@@ -31,12 +32,18 @@ function Get-QCCommentDecisionSettings {
     }
     if ($Config -and $Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) {
         $wf = $Config.qcWorkflow
-        if ($wf.correctionsInProgressStateName) { $out.targetStates.correctionsInProgress = [string]$wf.correctionsInProgressStateName }
-        if ($wf.backcheckInProgressStateName) { $out.targetStates.backcheckInProgress = [string]$wf.backcheckInProgressStateName }
-        if ($wf.errorStateName) { $out.targetStates.error = [string]$wf.errorStateName }
-        if ($wf.stageMap -and $wf.stageMap.green -and $wf.stageMap.green.optionalStateName) {
-            $out.targetStates.completed = [string]$wf.stageMap.green.optionalStateName
+        $wfStates = $null
+        if ($wf.states) { $wfStates = $wf.states }
+        if ($wfStates) {
+            if ($wfStates.redlinesIssued) { $out.targetStates.redlinesIssued = [string]$wfStates.redlinesIssued }
+            if ($wfStates.correctionsInProgress) { $out.targetStates.correctionsInProgress = [string]$wfStates.correctionsInProgress }
+            if ($wfStates.verificationInProgress) { $out.targetStates.verificationInProgress = [string]$wfStates.verificationInProgress }
+            if ($wfStates.complete) { $out.targetStates.completed = [string]$wfStates.complete }
+            if ($wfStates.error) { $out.targetStates.error = [string]$wfStates.error }
         }
+        if ($wf.correctionsInProgressStateName) { $out.targetStates.correctionsInProgress = [string]$wf.correctionsInProgressStateName }
+        if ($wf.backcheckInProgressStateName) { $out.targetStates.verificationInProgress = [string]$wf.backcheckInProgressStateName }
+        if ($wf.errorStateName) { $out.targetStates.error = [string]$wf.errorStateName }
         try { if ($null -ne $wf.strictMode) { $out.strictMode = [bool]$wf.strictMode } } catch { }
     }
     return $out
@@ -164,10 +171,11 @@ function Resolve-QCCommentWorkflowState {
     }
 
     if ($open -gt 0) {
+        $redlinesState = if ($targets.redlinesIssued) { [string]$targets.redlinesIssued } else { 'Redlines Issued' }
         return @{
-            targetState = [string]$targets.correctionsInProgress
-            decisionCode = 'CORRECTIONS_REQUIRED'
-            summary = "$open reviewer comment(s) still open."
+            targetState = $redlinesState
+            decisionCode = 'REDLINES_ISSUED'
+            summary = "$open reviewer comment(s) still open; redlines issued to designer."
             reviewerOpenCount = $open
             reviewerResolvedCount = $resolved
             reviewerClosedCount = $closed
@@ -176,10 +184,11 @@ function Resolve-QCCommentWorkflowState {
     }
 
     if ($resolved -gt 0) {
+        $verificationState = if ($targets.verificationInProgress) { [string]$targets.verificationInProgress } elseif ($targets.backcheckInProgress) { [string]$targets.backcheckInProgress } else { 'Verification In Progress' }
         return @{
-            targetState = [string]$targets.backcheckInProgress
-            decisionCode = 'BACKCHECK_REQUIRED'
-            summary = "$resolved reviewer comment(s) resolved; backcheck needed."
+            targetState = $verificationState
+            decisionCode = 'VERIFICATION_REQUIRED'
+            summary = "$resolved reviewer comment(s) resolved; verification needed."
             reviewerOpenCount = $open
             reviewerResolvedCount = $resolved
             reviewerClosedCount = $closed

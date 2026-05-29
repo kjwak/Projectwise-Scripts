@@ -93,37 +93,87 @@ function _QCP-GetJobMetadataValue([hashtable]$Job, [string[]]$Keys) {
     return $null
 }
 
-function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath, [string]$ResultStatus, [string]$ErrorMessage) {
-    $now = Get-QCTimestamp
-    $stage = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcStage','stage','workflowStage')
-    if (_QCP-IsNullOrWhiteSpace $stage) { $stage = 'red' }
-    $reviewer = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewer','qcReviewer')
-    $assignedTo = _QCP-GetJobMetadataValue -Job $Job -Keys @('assignedTo','qcAssignedTo')
-    $lastActionBy = _QCP-GetJobMetadataValue -Job $Job -Keys @('lastActionBy','userName','triggeredBy')
-    $cycleId = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleId','qcCycleId')
-    if (_QCP-IsNullOrWhiteSpace $cycleId -and $Job.ContainsKey('id')) { $cycleId = [string]$Job.id }
+function _QCP-ResolvePrependTrigger([hashtable]$Job) {
+    $t = _QCP-GetJobMetadataValue -Job $Job -Keys @('prependTrigger','qcPrependTrigger','workflowPrependTrigger')
+    if (-not (_QCP-IsNullOrWhiteSpace $t)) { return ([string]$t).Trim() }
 
-    $stageValue = $stage
-    $statusValue = $ResultStatus
+    $corr = _QCP-GetJobMetadataValue -Job $Job -Keys @('correctionComplete','designerCorrectionComplete','qcCorrectionComplete')
+    if (-not (_QCP-IsNullOrWhiteSpace $corr)) {
+        $cv = ([string]$corr).Trim().ToLowerInvariant()
+        if ($cv -in @('true','1','yes','y')) { return 'designerCorrectionComplete' }
+    }
+
+    $redline = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewerRedlineUpdate','redlineUpdate','qcRedlineUpdate')
+    if (-not (_QCP-IsNullOrWhiteSpace $redline)) {
+        $rv = ([string]$redline).Trim().ToLowerInvariant()
+        if ($rv -in @('true','1','yes','y')) { return 'reviewerRedlineUpdate' }
+    }
+
     try {
-        $settings = Get-QCWorkflowSettings -Config $Config
-        $stageMap = _QCP-ToHashtable $settings.stageMap
-        $stageKey = ([string]$stage).Trim().ToLowerInvariant()
-        if ($stageMap -and $stageMap.ContainsKey($stageKey)) {
-            $stageCfg = _QCP-ToHashtable $stageMap[$stageKey]
-            if ($stageCfg) {
-                if ($stageCfg.ContainsKey('stageValue') -and $stageCfg.stageValue) { $stageValue = [string]$stageCfg.stageValue }
-                if ($stageCfg.ContainsKey('statusValue') -and $stageCfg.statusValue) { $statusValue = [string]$stageCfg.statusValue }
+        if ($Job -and $Job.ContainsKey('metadata') -and $Job.metadata) {
+            $md = _QCP-ToHashtable $Job.metadata
+            if ($md -and $md.ContainsKey('candidate') -and $md.candidate) {
+                $cand = _QCP-ToHashtable $md.candidate
+                if ($cand) {
+                    foreach ($dk in @('description','documentDescription','desc')) {
+                        if ($cand.ContainsKey($dk) -and $cand[$dk] -and ([string]$cand[$dk]).IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                            return 'initialQcPdf'
+                        }
+                    }
+                }
             }
         }
     } catch { }
+
+    return $null
+}
+
+function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath, [string]$ResultStatus, [string]$ErrorMessage, [object]$Document) {
+    $now = Get-QCTimestamp
+    $designerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')
+    $reviewerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail','reviewer','qcReviewer')
+    $checkerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')
+    $reviewType = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType','qcReviewType')
+    $lastActionBy = _QCP-GetJobMetadataValue -Job $Job -Keys @('lastActionBy','userName','triggeredBy')
+    $cycleId = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleId','qcCycleId')
+    $cycleNumber = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleNumber','qcCycleNumber')
+    if (_QCP-IsNullOrWhiteSpace $cycleId -and $Job.ContainsKey('id')) { $cycleId = [string]$Job.id }
+
+    $lifecycleState = $null
+    if ($Document) {
+        try {
+            if ($Document.PSObject.Properties['StateName'] -and $Document.StateName) { $lifecycleState = [string]$Document.StateName }
+            elseif ($Document.PSObject.Properties['WorkflowState'] -and $Document.WorkflowState) { $lifecycleState = [string]$Document.WorkflowState }
+        } catch { }
+    }
+    if (_QCP-IsNullOrWhiteSpace $lifecycleState) {
+        $lifecycleState = _QCP-GetJobMetadataValue -Job $Job -Keys @('pwStateName','stateName','workflowState','currentState')
+    }
+
+    $settings = $null
+    $assignedTo = $null
+    $statusValue = $lifecycleState
+    try {
+        $settings = Get-QCWorkflowSettings -Config $Config
+        if (_QCP-IsNullOrWhiteSpace $reviewType) { $reviewType = [string]$settings.defaultReviewType }
+        $assignedTo = Resolve-QCWorkflowAssignee -Settings $settings -StateName $lifecycleState -ReviewType $reviewType `
+            -DesignerEmail $designerEmail -ReviewerEmail $reviewerEmail -CheckerEmail $checkerEmail
+        if (_QCP-IsNullOrWhiteSpace $assignedTo) {
+            $assignedTo = _QCP-GetJobMetadataValue -Job $Job -Keys @('assignedTo','qcAssignedTo')
+        }
+        if (_QCP-IsNullOrWhiteSpace $statusValue -and -not (_QCP-IsNullOrWhiteSpace $lifecycleState)) { $statusValue = $lifecycleState }
+        elseif (_QCP-IsNullOrWhiteSpace $statusValue) { $statusValue = $ResultStatus }
+    } catch {
+        if (_QCP-IsNullOrWhiteSpace $statusValue) { $statusValue = $ResultStatus }
+        $assignedTo = _QCP-GetJobMetadataValue -Job $Job -Keys @('assignedTo','qcAssignedTo')
+    }
 
     $docPath = if (-not (_QCP-IsNullOrWhiteSpace $SourcePath)) { $SourcePath } else { [string](_QCP-GetJobMetadataValue -Job $Job -Keys @('sourceDocumentPath','sourcePath')) }
     return @{
         jobId = [string]$Job.id
         jobType = [string]$Job.type
-        stage = ([string]$stage).Trim().ToLowerInvariant()
         resultStatus = $ResultStatus
+        lifecycleState = $lifecycleState
         documentPath = $docPath
         sourcePath = $SourcePath
         outputPath = $OutputPath
@@ -131,9 +181,12 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
         timestamp = $now
         attributes = @{
             qcActive = $true
+            reviewType = $reviewType
             cycleId = $cycleId
-            stage = $stageValue
-            reviewer = $reviewer
+            cycleNumber = $cycleNumber
+            designerEmail = $designerEmail
+            reviewerEmail = $reviewerEmail
+            checkerEmail = $checkerEmail
             assignedTo = $assignedTo
             lastActionBy = $lastActionBy
             lastActionDate = $now
@@ -150,10 +203,14 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
 
 function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath) {
     if ($null -eq $Result -or -not $Result.IsSuccess) { return $Result }
-    $ctx = _QCP-NewWorkflowContext -Job $Job -Config $Config -SourcePath $SourcePath -OutputPath $OutputPath -HistoryPath $HistoryPath -ResultStatus 'Succeeded' -ErrorMessage $null
+    $document = $null
+    if ($Job -and $Job.ContainsKey('document')) { $document = $Job.document }
+    $ctx = _QCP-NewWorkflowContext -Job $Job -Config $Config -SourcePath $SourcePath -OutputPath $OutputPath -HistoryPath $HistoryPath -ResultStatus 'Succeeded' -ErrorMessage $null -Document $document
     $ctx['config'] = $Config
     $ctx['job'] = $Job
-    if ($Job -and $Job.ContainsKey('document')) { $ctx['document'] = $Job.document }
+    if ($document) { $ctx['document'] = $document }
+    $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
+    if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     $strict = $false
     try {

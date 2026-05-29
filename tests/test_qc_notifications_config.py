@@ -23,12 +23,14 @@ def test_appsettings_notifications_defaults_disabled_mock():
     ]
 
 
-def test_appsettings_notification_events_include_qc_received():
+def test_appsettings_notification_events_include_lifecycle_states():
     events = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["notifications"]["events"]
 
-    assert events["QC Received"]["eventType"] == "QC_RECEIVED"
+    assert events["Ready for QC"]["eventType"] == "READY_FOR_QC"
+    assert events["Review In Progress"]["eventType"] == "REVIEW_IN_PROGRESS"
+    assert events["Redlines Issued"]["eventType"] == "REDLINES_ISSUED"
     assert events["Corrections In Progress"]["eventType"] == "CORRECTIONS_IN_PROGRESS"
-    assert events["Backcheck In Progress"]["eventType"] == "BACKCHECK_IN_PROGRESS"
+    assert events["Verification In Progress"]["eventType"] == "VERIFICATION_IN_PROGRESS"
     assert events["Error Needs Attention"]["eventType"] == "QC_ERROR"
 
 

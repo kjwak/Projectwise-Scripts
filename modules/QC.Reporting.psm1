@@ -84,8 +84,8 @@ function Get-QCReportingSettings {
     if (-not $settings.attributeMap -or $settings.attributeMap.Keys.Count -eq 0) {
         $settings.attributeMap = @{
             qcActive = 'QC_Active'
+            reviewType = 'QC_Review_Type'
             cycleId = 'QC_Cycle_ID'
-            stage = 'QC_Stage'
             status = 'QC_Status'
             lastActionDate = 'QC_Last_Action_Date'
             automationLastRun = 'QC_Automation_Last_Run'
@@ -122,7 +122,7 @@ function ConvertTo-QCReportingDocument {
         stateName = $state
         qcActive = (_QCR-ToBool $attrs.qcActive)
         cycleId = $attrs.cycleId
-        stage = $attrs.stage
+        reviewType = $attrs.reviewType
         status = $attrs.status
         lastActionDate = $lastAction
         cycleStartDate = $cycleStart
@@ -178,23 +178,26 @@ function New-QCReportingSnapshot {
 
     $normalized = @($Documents | ForEach-Object { ConvertTo-QCReportingDocument -Document $_ -AttributeMap $Settings.attributeMap })
     $now = Get-Date
-    $active = @($normalized | Where-Object { $_.qcActive -or -not (_QCR-IsBlank $_.status) -or -not (_QCR-IsBlank $_.stage) })
-    $open = @($active | Where-Object { ([string]$_.status) -ieq 'Open' })
-    $pending = @($active | Where-Object { ([string]$_.status) -ieq 'Pending Backcheck' })
-    $closed = @($active | Where-Object { ([string]$_.status) -ieq 'Closed' })
+    $active = @($normalized | Where-Object { $_.qcActive -or -not (_QCR-IsBlank $_.status) -or -not (_QCR-IsBlank $_.reviewType) })
     $errors = @($active | Where-Object { -not (_QCR-IsBlank $_.automationError) -or ([string]$_.automationResult) -match '(?i)fail|error' })
-    $stale = @($active | Where-Object { $_.lastActionDate -and (($now - $_.lastActionDate).TotalDays -gt [int]$Settings.staleDays) -and ([string]$_.status) -ine 'Closed' })
+    $completeStateNames = @('QC Complete', 'Verified Closed')
+    $stale = @($active | Where-Object {
+        $_.lastActionDate -and (($now - $_.lastActionDate).TotalDays -gt [int]$Settings.staleDays) -and
+        (($completeStateNames | Where-Object { $_ -ieq [string]$_.stateName }).Count -eq 0)
+    })
+    $closed = @($active | Where-Object { ($completeStateNames | Where-Object { $_ -ieq [string]$_.stateName }).Count -gt 0 })
     $cycleDays = @($closed | ForEach-Object { if ($_.cycleStartDate -and $_.lastActionDate) { ($_.lastActionDate - $_.cycleStartDate).TotalDays } } | Where-Object { $null -ne $_ })
     $avg = if ($cycleDays.Count -gt 0) { [math]::Round((($cycleDays | Measure-Object -Average).Average),2) } else { $null }
 
-    $inProduction = @($normalized | Where-Object { (-not $_.qcActive -and (_QCR-IsBlank $_.stage) -and (_QCR-IsBlank $_.status)) -or ([string]$_.stateName) -ieq 'In Production' })
-    $qcReceived = @($active | Where-Object { ([string]$_.status) -match '(?i)^QC Received$|^Received$' -or ([string]$_.stateName) -ieq 'QC Received' })
-    $redlinesIssued = @($active | Where-Object { ([string]$_.stage) -ieq 'Red' -or ([string]$_.status) -ieq 'Open' -or ([string]$_.stateName) -ieq 'Redlines Issued' })
-    $correctionsInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Corrections In Progress' -or ([string]$_.stage) -ieq 'Corrections In Progress' -or ([string]$_.stateName) -ieq 'Corrections In Progress' })
-    $correctionsComplete = @($active | Where-Object { ([string]$_.stage) -ieq 'Green' -or ([string]$_.status) -ieq 'Pending Backcheck' -or ([string]$_.stateName) -ieq 'Corrections Complete' })
-    $backcheckInProgress = @($active | Where-Object { ([string]$_.status) -ieq 'Backcheck In Progress' -or ([string]$_.stage) -ieq 'Backcheck In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
-    $verifiedClosed = @($active | Where-Object { ([string]$_.stage) -ieq 'Blue' -or ([string]$_.status) -ieq 'Closed' -or ([string]$_.stateName) -ieq 'Verified Closed' })
-    $errorNeedsAttention = @($active | Where-Object { -not (_QCR-IsBlank $_.automationError) -or ([string]$_.automationResult) -match '(?i)fail|error' -or ([string]$_.stateName) -ieq 'Error Needs Attention' })
+    $inProduction = @($normalized | Where-Object { ([string]$_.stateName) -ieq 'In Production' })
+    $readyForQc = @($active | Where-Object { ([string]$_.stateName) -ieq 'Ready for QC' -or ([string]$_.stateName) -ieq 'QC Received' })
+    $reviewInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Review In Progress' })
+    $redlinesIssued = @($active | Where-Object { ([string]$_.stateName) -ieq 'Redlines Issued' })
+    $correctionsInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Corrections In Progress' })
+    $verificationInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Verification In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
+    $qcComplete = @($active | Where-Object { ($completeStateNames | Where-Object { $_ -ieq [string]$_.stateName }).Count -gt 0 })
+    $errorNeedsAttention = @($active | Where-Object { ([string]$_.stateName) -ieq 'Error Needs Attention' }) + @($errors)
+    $errorNeedsAttention = @($errorNeedsAttention | Select-Object -Unique)
 
     $stateCounts = @{}
     if ([bool]$Settings.includeWorkflowStateCounts) {
@@ -212,18 +215,16 @@ function New-QCReportingSnapshot {
         metrics = [pscustomobject]@{
             documentCount = @($normalized).Count
             qcActiveCount = @($active).Count
-            qcOpenCount = @($open).Count
-            qcPendingBackcheckCount = @($pending).Count
             qcClosedCount = @($closed).Count
             qcErrorCount = @($errors).Count
             staleQcCount = @($stale).Count
             inProductionCount = @($inProduction).Count
-            qcReceivedCount = @($qcReceived).Count
+            readyForQcCount = @($readyForQc).Count
+            reviewInProgressCount = @($reviewInProgress).Count
             redlinesIssuedCount = @($redlinesIssued).Count
             correctionsInProgressCount = @($correctionsInProgress).Count
-            correctionsCompleteCount = @($correctionsComplete).Count
-            backcheckInProgressCount = @($backcheckInProgress).Count
-            verifiedClosedCount = @($verifiedClosed).Count
+            verificationInProgressCount = @($verificationInProgress).Count
+            qcCompleteCount = @($qcComplete).Count
             errorNeedsAttentionCount = @($errorNeedsAttention).Count
             staleOpenQcCount = @($stale).Count
             avgQcCycleDays = $avg

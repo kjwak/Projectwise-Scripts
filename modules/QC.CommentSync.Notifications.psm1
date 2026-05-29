@@ -22,12 +22,16 @@ function Get-QCCommentSyncNotificationPlan {
     $ccRoles = @('reviewers')
     $explicitTo = @()
 
-    if ($targetState -eq [string]$targets.correctionsInProgress) {
+    if ($targetState -eq [string]$targets.redlinesIssued) {
+        $eventType = 'REDLINES_ISSUED'
+        $toRoles = @('designers')
+        $ccRoles = @('reviewers')
+    } elseif ($targetState -eq [string]$targets.correctionsInProgress) {
         $eventType = 'CORRECTIONS_IN_PROGRESS'
         $toRoles = @('designers')
         $ccRoles = @('reviewers')
-    } elseif ($targetState -eq [string]$targets.backcheckInProgress) {
-        $eventType = 'BACKCHECK_IN_PROGRESS'
+    } elseif ($targetState -eq [string]$targets.verificationInProgress -or $targetState -eq [string]$targets.backcheckInProgress) {
+        $eventType = 'VERIFICATION_IN_PROGRESS'
         $toRoles = @('reviewers')
         $ccRoles = @('designers')
     } elseif ($targetState -eq [string]$targets.error) {

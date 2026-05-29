@@ -95,6 +95,233 @@ function _QCW-ObjectNameMatches([object]$Object, [string]$ExpectedName, [string[
     return $false
 }
 
+function _QCW-DefaultWorkflowStates {
+    return @{
+        production = 'In Production'
+        readyForQc = 'Ready for QC'
+        reviewInProgress = 'Review In Progress'
+        redlinesIssued = 'Redlines Issued'
+        correctionsInProgress = 'Corrections In Progress'
+        verificationInProgress = 'Verification In Progress'
+        complete = 'QC Complete'
+        error = 'Error Needs Attention'
+    }
+}
+
+function _QCW-DefaultReviewTypes {
+    return @{
+        productionQc = 'Production QC'
+        peerReview = 'Peer Review'
+        independentCheck = 'Independent Check'
+    }
+}
+
+function _QCW-DefaultAttributeMap {
+    return @{
+        qcActive = 'QC_Active'
+        reviewType = 'QC_Review_Type'
+        cycleId = 'QC_Cycle_ID'
+        cycleNumber = 'QC_Cycle_Number'
+        designerEmail = 'QC_Designer_Email'
+        reviewerEmail = 'QC_Reviewer_Email'
+        checkerEmail = 'QC_Checker_Email'
+        assignedTo = 'QC_Assigned_To'
+        lastActionBy = 'QC_Last_Action_By'
+        lastActionDate = 'QC_Last_Action_Date'
+        status = 'QC_Status'
+        historyPdfPath = 'QC_History_PDF_Path'
+        latestOverlayPdfPath = 'QC_Latest_Overlay_PDF_Path'
+        sourceDocumentPath = 'QC_Source_Document_Path'
+        automationLastRun = 'QC_Automation_Last_Run'
+        automationResult = 'QC_Automation_Result'
+        automationError = 'QC_Automation_Error'
+    }
+}
+
+function Get-QCWorkflowDeprecationWarnings {
+    [CmdletBinding()]
+    param([hashtable]$RawWorkflowConfig)
+
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    if (-not $RawWorkflowConfig) { return @($warnings) }
+
+    $deprecatedKeys = @(
+        'productionStateName'
+        'receivedStateName'
+        'correctionsInProgressStateName'
+        'backcheckInProgressStateName'
+        'errorStateName'
+        'stageMap'
+    )
+    foreach ($key in $deprecatedKeys) {
+        if ($RawWorkflowConfig.ContainsKey($key)) {
+            $warnings.Add("qcWorkflow.$key is deprecated; use qcWorkflow.states and qcWorkflow.reviewTypes instead.") | Out-Null
+        }
+    }
+
+    $attrMap = _QCW-ToHashtable $RawWorkflowConfig.attributeMap
+    if ($attrMap -and ($attrMap.ContainsKey('stage') -or $attrMap.ContainsKey('reviewer'))) {
+        $warnings.Add('qcWorkflow.attributeMap keys stage/reviewer are deprecated; lifecycle is ProjectWise state and QC_Review_Type role emails.') | Out-Null
+    }
+    if ($RawWorkflowConfig.ContainsKey('stageMap')) {
+        $warnings.Add('qcWorkflow.stageMap (red/green/blue) is deprecated and ignored; ProjectWise document state is the lifecycle source of truth.') | Out-Null
+    }
+
+    return @($warnings)
+}
+
+function _QCW-DefaultPrependStateTriggers {
+    $states = _QCW-DefaultWorkflowStates
+    return @{
+        initialQcPdf = [string]$states.readyForQc
+        reviewerRedlineUpdate = [string]$states.redlinesIssued
+        designerCorrectionComplete = [string]$states.verificationInProgress
+    }
+}
+
+function Normalize-QCPrependTriggerKey {
+    [CmdletBinding()]
+    param([string]$Value)
+
+    if (_QCW-IsNullOrWhiteSpace $Value) { return $null }
+    $v = ([string]$Value).Trim()
+    $compact = ($v.ToLowerInvariant() -replace '[^a-z0-9]', '')
+    switch ($compact) {
+        'initialqcpdf' { return 'initialQcPdf' }
+        'initial' { return 'initialQcPdf' }
+        'qcarchivist' { return 'initialQcPdf' }
+        'readyforqc' { return 'initialQcPdf' }
+        'reviewerredlineupdate' { return 'reviewerRedlineUpdate' }
+        'reviewerredline' { return 'reviewerRedlineUpdate' }
+        'redlineupdate' { return 'reviewerRedlineUpdate' }
+        'redlinesissued' { return 'reviewerRedlineUpdate' }
+        'designercorrectioncomplete' { return 'designerCorrectionComplete' }
+        'correctioncomplete' { return 'designerCorrectionComplete' }
+        'correctionscomplete' { return 'designerCorrectionComplete' }
+        default {
+            if ($v -eq 'initialQcPdf' -or $v -eq 'reviewerRedlineUpdate' -or $v -eq 'designerCorrectionComplete') { return $v }
+            return $v
+        }
+    }
+}
+
+function Resolve-QCWorkflowStateAfterPrepend {
+    <#
+    .SYNOPSIS
+    Resolve target ProjectWise state after successful QC_PREPEND from trigger/context (not a single fixed state).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Settings,
+        [hashtable]$Context
+    )
+
+    if ($Context -and $Context.ContainsKey('targetState') -and -not (_QCW-IsNullOrWhiteSpace $Context.targetState)) {
+        return [string]$Context.targetState
+    }
+
+    $triggerRaw = $null
+    if ($Context) {
+        if ($Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) { $triggerRaw = [string]$Context.prependTrigger }
+        elseif ($Context.ContainsKey('job') -and $Context.job) {
+            $job = _QCW-ToHashtable $Context.job
+            if ($job -and $job.ContainsKey('metadata') -and $job.metadata) {
+                $md = _QCW-ToHashtable $job.metadata
+                if ($md) {
+                    foreach ($k in @('prependTrigger','qcPrependTrigger','workflowPrependTrigger')) {
+                        if ($md.ContainsKey($k) -and $md[$k]) { $triggerRaw = [string]$md[$k]; break }
+                    }
+                }
+            }
+        }
+    }
+
+    $triggerKey = Normalize-QCPrependTriggerKey -Value $triggerRaw
+    $map = _QCW-ToHashtable $Settings.stateAfterPrependByTrigger
+    if (-not $map) { $map = _QCW-DefaultPrependStateTriggers }
+
+    if ($triggerKey -and $map.ContainsKey($triggerKey) -and -not (_QCW-IsNullOrWhiteSpace $map[$triggerKey])) {
+        return [string]$map[$triggerKey]
+    }
+
+    if (-not (_QCW-IsNullOrWhiteSpace $Settings.stateAfterSuccessfulPrepend)) {
+        return [string]$Settings.stateAfterSuccessfulPrepend
+    }
+    return [string](_QCW-DefaultWorkflowStates).readyForQc
+}
+
+function Get-QCWorkflowStateName {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Settings,
+        [Parameter(Mandatory)]
+        [string]$StateKey
+    )
+
+    $states = _QCW-ToHashtable $Settings.states
+    if ($states -and $states.ContainsKey($StateKey) -and -not (_QCW-IsNullOrWhiteSpace $states[$StateKey])) {
+        return [string]$states[$StateKey]
+    }
+    $defaults = _QCW-DefaultWorkflowStates
+    if ($defaults.ContainsKey($StateKey)) { return [string]$defaults[$StateKey] }
+    return $null
+}
+
+function Resolve-QCWorkflowAssignee {
+    <#
+    .SYNOPSIS
+    Resolve QC_Assigned_To from ProjectWise lifecycle state and QC_Review_Type.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Settings,
+        [string]$StateName,
+        [string]$ReviewType,
+        [string]$DesignerEmail,
+        [string]$ReviewerEmail,
+        [string]$CheckerEmail
+    )
+
+    $states = _QCW-ToHashtable $Settings.states
+    if (-not $states) { $states = _QCW-DefaultWorkflowStates }
+    $reviewTypes = _QCW-ToHashtable $Settings.reviewTypes
+    if (-not $reviewTypes) { $reviewTypes = _QCW-DefaultReviewTypes }
+
+    $resolvedReviewType = [string]$Settings.defaultReviewType
+    if (-not (_QCW-IsNullOrWhiteSpace $ReviewType)) { $resolvedReviewType = [string]$ReviewType }
+    if (_QCW-IsNullOrWhiteSpace $resolvedReviewType) { $resolvedReviewType = [string]$reviewTypes.productionQc }
+
+    $independentCheck = [string]$reviewTypes.independentCheck
+    $useChecker = (-not (_QCW-IsNullOrWhiteSpace $independentCheck)) -and ($resolvedReviewType.Trim() -eq $independentCheck.Trim())
+
+    $state = if ($StateName) { [string]$StateName } else { '' }
+    $production = [string]$states.production
+    $ready = [string]$states.readyForQc
+    $review = [string]$states.reviewInProgress
+    $redlinesIssued = [string]$states.redlinesIssued
+    $corrections = [string]$states.correctionsInProgress
+    $verification = [string]$states.verificationInProgress
+    $complete = [string]$states.complete
+
+    if ($state -eq $complete) { return $null }
+
+    if ($state -eq $production -or $state -eq $redlinesIssued -or $state -eq $corrections) {
+        if (-not (_QCW-IsNullOrWhiteSpace $DesignerEmail)) { return [string]$DesignerEmail }
+        return $null
+    }
+    if ($state -in @($ready, $review, $verification)) {
+        if ($useChecker) {
+            if (-not (_QCW-IsNullOrWhiteSpace $CheckerEmail)) { return [string]$CheckerEmail }
+            return $null
+        }
+        if (-not (_QCW-IsNullOrWhiteSpace $ReviewerEmail)) { return [string]$ReviewerEmail }
+        return $null
+    }
+    return $null
+}
+
 function Get-QCWorkflowSettings {
     [CmdletBinding()]
     param([hashtable]$Config)
@@ -105,52 +332,69 @@ function Get-QCWorkflowSettings {
         if ($norm) { $raw = $norm }
     }
 
-    $defaults = @{
+    $defaultStates = _QCW-DefaultWorkflowStates
+    $defaultReviewTypes = _QCW-DefaultReviewTypes
+
+    $settings = @{
         enabled = $false
         strictMode = $false
         dryRunWriteback = $true
         workflowName = ''
         expectedWorkflowName = ''
         mode = 'AttributesOnly'
-        productionStateName = 'In Production'
-        receivedStateName = 'QC Received'
-        correctionsInProgressStateName = 'Corrections In Progress'
-        backcheckInProgressStateName = 'Backcheck In Progress'
-        errorStateName = 'Error Needs Attention'
-        defaultStateAfterPrepend = 'QC Received'
-        stateAfterSuccessfulPrepend = 'Redlines Issued'
+        states = @{}
+        reviewTypes = @{}
+        defaultReviewType = 'Production QC'
+        defaultStateAfterPrepend = 'Ready for QC'
+        stateAfterSuccessfulPrepend = 'Ready for QC'
         stateAfterFailedPrepend = 'Error Needs Attention'
+        defaultPrependTrigger = 'initialQcPdf'
+        stateAfterPrependByTrigger = @{}
         autoSetState = $false
         autoWriteAttributes = $true
-        attributeMap = @{
-            qcActive = 'QC_Active'
-            cycleId = 'QC_Cycle_ID'
-            stage = 'QC_Stage'
-            reviewer = 'QC_Reviewer'
-            assignedTo = 'QC_Assigned_To'
-            lastActionBy = 'QC_Last_Action_By'
-            lastActionDate = 'QC_Last_Action_Date'
-            status = 'QC_Status'
-            historyPdfPath = 'QC_History_PDF_Path'
-            latestOverlayPdfPath = 'QC_Latest_Overlay_PDF_Path'
-            sourceDocumentPath = 'QC_Source_Document_Path'
-            automationLastRun = 'QC_Automation_Last_Run'
-            automationResult = 'QC_Automation_Result'
-            automationError = 'QC_Automation_Error'
+        attributeMap = _QCW-DefaultAttributeMap
+    }
+    foreach ($k in $defaultStates.Keys) { $settings.states[$k] = $defaultStates[$k] }
+    foreach ($k in $defaultReviewTypes.Keys) { $settings.reviewTypes[$k] = $defaultReviewTypes[$k] }
+    foreach ($k in (_QCW-DefaultPrependStateTriggers).Keys) { $settings.stateAfterPrependByTrigger[$k] = (_QCW-DefaultPrependStateTriggers)[$k] }
+
+    foreach ($k in $raw.Keys) {
+        if ($k -eq 'attributeMap') {
+            $merged = @{}
+            foreach ($ak in $settings.attributeMap.Keys) { $merged[$ak] = $settings.attributeMap[$ak] }
+            $incoming = _QCW-ToHashtable $raw.attributeMap
+            if ($incoming) {
+                foreach ($ak in $incoming.Keys) {
+                    if ($ak -eq 'stage') { continue }
+                    if ($ak -eq 'reviewer') {
+                        if (-not $merged.ContainsKey('reviewerEmail')) { $merged['reviewerEmail'] = $incoming[$ak] }
+                        continue
+                    }
+                    $merged[$ak] = $incoming[$ak]
+                }
+            }
+            $settings.attributeMap = $merged
         }
-        stageMap = @{
-            red = @{ stageValue = 'Red'; statusValue = 'Open'; optionalStateName = 'Redlines Issued' }
-            green = @{ stageValue = 'Green'; statusValue = 'Pending Backcheck'; optionalStateName = 'Corrections Complete' }
-            blue = @{ stageValue = 'Blue'; statusValue = 'Closed'; optionalStateName = 'Verified Closed' }
+        elseif ($k -eq 'states' -or $k -eq 'reviewTypes' -or $k -eq 'stateAfterPrependByTrigger') {
+            $incoming = _QCW-ToHashtable $raw[$k]
+            if ($incoming) {
+                foreach ($sk in $incoming.Keys) { $settings[$k][$sk] = $incoming[$sk] }
+            }
+        }
+        elseif ($k -ne 'stageMap') {
+            $settings[$k] = $raw[$k]
         }
     }
 
-    $settings = @{}
-    foreach ($k in $defaults.Keys) { $settings[$k] = $defaults[$k] }
-    foreach ($k in $raw.Keys) {
-        if ($k -eq 'attributeMap' -or $k -eq 'stageMap') { $settings[$k] = (_QCW-ToHashtable $raw[$k]) }
-        else { $settings[$k] = $raw[$k] }
+    # Backward compatibility: legacy flat state name keys override states.* when states.* not in raw config.
+    if (-not $raw.ContainsKey('states')) {
+        if ($raw.ContainsKey('productionStateName') -and $raw.productionStateName) { $settings.states.production = [string]$raw.productionStateName }
+        if ($raw.ContainsKey('receivedStateName') -and $raw.receivedStateName) { $settings.states.readyForQc = [string]$raw.receivedStateName }
+        if ($raw.ContainsKey('correctionsInProgressStateName') -and $raw.correctionsInProgressStateName) { $settings.states.correctionsInProgress = [string]$raw.correctionsInProgressStateName }
+        if ($raw.ContainsKey('backcheckInProgressStateName') -and $raw.backcheckInProgressStateName) { $settings.states.verificationInProgress = [string]$raw.backcheckInProgressStateName }
+        if ($raw.ContainsKey('errorStateName') -and $raw.errorStateName) { $settings.states.error = [string]$raw.errorStateName }
     }
+
     if (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName -and -not (_QCW-IsNullOrWhiteSpace $settings.workflowName)) {
         $settings.expectedWorkflowName = $settings.workflowName
     }
@@ -158,7 +402,7 @@ function Get-QCWorkflowSettings {
         $settings.workflowName = $settings.expectedWorkflowName
     }
     foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoSetState','autoWriteAttributes')) {
-        try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { $settings[$boolKey] = [bool]$defaults[$boolKey] }
+        try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { }
     }
     return $settings
 }
@@ -173,36 +417,30 @@ function Test-QCWorkflowConfig {
         $rawNorm = _QCW-ToHashtable $Config.qcWorkflow
         if ($rawNorm) { $raw = $rawNorm }
     }
-    $warnings = @()
-    $critical = @()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $critical = [System.Collections.Generic.List[string]]::new()
+    foreach ($w in @(Get-QCWorkflowDeprecationWarnings -RawWorkflowConfig $raw)) { $warnings.Add($w) | Out-Null }
 
     if (-not [bool]$settings.enabled) {
-        return New-QCSuccessResult -Code 'QC_WORKFLOW_CONFIG_DISABLED' -Message 'QC workflow writeback is disabled.' -Data @{ settings = $settings; warnings = @(); criticalIssues = @() }
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_CONFIG_DISABLED' -Message 'QC workflow writeback is disabled.' -Data @{ settings = $settings; warnings = @($warnings); criticalIssues = @() }
     }
 
     $mode = ([string]$settings.mode).Trim()
     if (_QCW-IsNullOrWhiteSpace $mode) { $mode = 'AttributesOnly' }
     if ($mode -notin @('AttributesOnly','StateAndAttributes')) {
         $msg = "qcWorkflow.mode '$mode' is not recognized; use AttributesOnly or StateAndAttributes."
-        $warnings += $msg
-        $critical += $msg
+        $warnings.Add($msg) | Out-Null
+        $critical.Add($msg) | Out-Null
     }
     if ([bool]$settings.autoSetState -and (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName)) {
-        $warnings += 'qcWorkflow.autoSetState is true but qcWorkflow.expectedWorkflowName is empty; workflow validation will be partial.'
+        $warnings.Add('qcWorkflow.autoSetState is true but qcWorkflow.expectedWorkflowName is empty; workflow validation will be partial.') | Out-Null
     }
     $rawAttributeMap = $null
     if ($raw.ContainsKey('attributeMap')) { $rawAttributeMap = _QCW-ToHashtable $raw.attributeMap }
     if ([bool]$settings.autoWriteAttributes -and (-not $raw.ContainsKey('attributeMap') -or -not $rawAttributeMap -or $rawAttributeMap.Keys.Count -eq 0)) {
         $msg = 'qcWorkflow.autoWriteAttributes is true but qcWorkflow.attributeMap is missing or empty.'
-        $warnings += $msg
-        $critical += $msg
-    }
-    $stageMap = $null
-    if ($raw.ContainsKey('stageMap')) { $stageMap = _QCW-ToHashtable $raw.stageMap }
-    foreach ($stage in @('red','green','blue')) {
-        if (-not $stageMap -or -not $stageMap.ContainsKey($stage)) {
-            $warnings += "qcWorkflow.stageMap is missing '$stage'."
-        }
+        $warnings.Add($msg) | Out-Null
+        $critical.Add($msg) | Out-Null
     }
 
     $data = @{ settings = $settings; warnings = @($warnings); criticalIssues = @($critical) }
@@ -541,17 +779,16 @@ function Invoke-QCWorkflowWriteback {
     }
 
     if ([bool]$settings.autoSetState -and ([string]$settings.mode) -ieq 'StateAndAttributes') {
-        $stageKey = $null
-        try { if ($Context -and $Context.ContainsKey('stage') -and $Context.stage) { $stageKey = ([string]$Context.stage).Trim().ToLowerInvariant() } } catch { }
         $stateName = $null
-        $stageMap = _QCW-ToHashtable $settings.stageMap
-        if ($stageKey -and $stageMap -and $stageMap.ContainsKey($stageKey)) {
-            $stageCfg = _QCW-ToHashtable $stageMap[$stageKey]
-            if ($stageCfg -and $stageCfg.ContainsKey('optionalStateName')) { $stateName = [string]$stageCfg.optionalStateName } elseif ($stageCfg -and $stageCfg.ContainsKey('stateName')) { $stateName = [string]$stageCfg.stateName }
+        if ($Context -and $Context.ContainsKey('targetState') -and -not (_QCW-IsNullOrWhiteSpace $Context.targetState)) {
+            $stateName = [string]$Context.targetState
         }
         if (_QCW-IsNullOrWhiteSpace $stateName) {
-            if ($Context -and $Context.ContainsKey('resultStatus') -and ([string]$Context.resultStatus).ToLowerInvariant() -eq 'failed') { $stateName = [string]$settings.stateAfterFailedPrepend }
-            else { $stateName = [string]$settings.stateAfterSuccessfulPrepend }
+            if ($Context -and $Context.ContainsKey('resultStatus') -and ([string]$Context.resultStatus).ToLowerInvariant() -eq 'failed') {
+                $stateName = [string]$settings.stateAfterFailedPrepend
+            } else {
+                $stateName = Resolve-QCWorkflowStateAfterPrepend -Settings $settings -Context $Context
+            }
         }
         $state = Set-PWQCWorkflowState -Settings $settings -Context $Context -StateName $stateName -DryRun:$dryRun
         $actions.Add($state) | Out-Null
@@ -569,4 +806,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Invoke-QCWorkflowWriteback
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Invoke-QCWorkflowWriteback
