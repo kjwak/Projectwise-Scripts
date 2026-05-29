@@ -17,13 +17,14 @@ from pdf_utils import make_minimal_pdf  # noqa: E402
 def test_compute_stamp_rect_outside_top_left() -> None:
     fitz = qc_review_stamp._get_fitz()
     page = fitz.Rect(0, 0, 1584, 2448)  # 22x34 in at 72 dpi
-    stamp_rect, expanded = qc_review_stamp.compute_stamp_rect_outside_top_left(
+    stamp_rect, expanded, tx, _ty = qc_review_stamp.compute_stamp_rect_outside_top_left(
         page, stamp_width=120, stamp_height=160, margin_outside=12
     )
-    assert stamp_rect.x1 <= page.x0 - 12
+    assert stamp_rect.x0 >= page.x0
     assert stamp_rect.y0 >= page.y1 + 12
-    assert expanded.x0 <= stamp_rect.x0
+    assert expanded.x0 >= page.x0
     assert expanded.y1 >= stamp_rect.y1
+    assert tx == 12 + 120
 
 
 def test_build_peer_review_field_values_updater_matches_originator() -> None:
@@ -65,7 +66,8 @@ def test_apply_review_stamp_expands_mediabox(tmp_path: Path) -> None:
     after = fitz.open(target)
     page = after[0]
     mb = page.mediabox
-    assert mb.x0 < old_mb.x0
+    assert mb.x0 == 0
+    assert mb.x1 > old_mb.x1
     assert mb.y1 > old_mb.y1
     names = {w.field_name for w in page.widgets() or []}
     assert "qc_originator_name" in names

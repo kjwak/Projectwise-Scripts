@@ -50,28 +50,69 @@ def compute_stamp_rect_outside_top_left(
     stamp_width: float,
     stamp_height: float,
     margin_outside: float,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, float, float]:
     """
-    Return (stamp_rect, expanded_mediabox) in PDF coordinates (y increases upward).
+    Return (stamp_rect, expanded_mediabox, translate_x, translate_y) in PDF coordinates (y up).
 
-    Stamp sits above and to the left of the page's top-left corner (page.x0, page.y1).
+    Keeps expanded mediabox origin at the page's lower-left (no negative x0). Existing page
+    content is shifted right by translate_x so the stamp can sit outside the sheet's top-left
+    corner at positive coordinates (viewers render reliably).
     """
     fitz = _get_fitz()
     px0, py0, px1, py1 = float(page_rect.x0), float(page_rect.y0), float(page_rect.x1), float(page_rect.y1)
 
-    stamp_x0 = px0 - margin_outside - stamp_width
-    stamp_x1 = px0 - margin_outside
-    stamp_y0 = py1 + margin_outside
-    stamp_y1 = py1 + margin_outside + stamp_height
+    left_pad = float(margin_outside) + float(stamp_width)
+    top_pad = float(margin_outside) + float(stamp_height)
+    translate_x = left_pad
+    translate_y = 0.0
 
-    stamp_rect = fitz.Rect(stamp_x0, stamp_y0, stamp_x1, stamp_y1)
-    expanded = fitz.Rect(
-        min(px0, stamp_x0),
-        py0,
-        px1,
-        max(py1, stamp_y1),
+    stamp_rect = fitz.Rect(
+        px0,
+        py1 + float(margin_outside),
+        px0 + float(stamp_width),
+        py1 + float(margin_outside) + float(stamp_height),
     )
-    return stamp_rect, expanded
+    expanded = fitz.Rect(
+        px0,
+        py0,
+        px1 + left_pad,
+        py1 + top_pad,
+    )
+    return stamp_rect, expanded, translate_x, translate_y
+
+
+def _shift_page_content(page: Any, dx: float, dy: float, page_rect: Any) -> None:
+    """Re-draw existing page content shifted by (dx, dy)."""
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return
+    fitz = _get_fitz()
+    doc = page.parent
+    idx = page.number
+    snap = fitz.open()
+    try:
+        snap.insert_pdf(doc, from_page=idx, to_page=idx)
+        page.clean_contents()
+        dest = fitz.Rect(
+            float(page_rect.x0) + dx,
+            float(page_rect.y0) + dy,
+            float(page_rect.x1) + dx,
+            float(page_rect.y1) + dy,
+        )
+        page.show_pdf_page(dest, snap, 0)
+    finally:
+        snap.close()
+
+
+def _normalize_page_rotation(page: Any) -> int:
+    """Bake page rotation into content so rect/mediabox match the viewed sheet."""
+    fitz = _get_fitz()
+    original = int(page.rotation or 0)
+    if original % 360 == 0:
+        return 0
+    page.remove_rotation()
+    if int(page.rotation or 0) % 360 != 0:
+        raise ValueError(f"Could not normalize page rotation (was {original}, now {page.rotation})")
+    return original
 
 
 def _scale_rect_from_stamp_page(src_rect: Any, stamp_page_rect: Any, dest_rect: Any) -> Any:
@@ -101,6 +142,8 @@ def _copy_editable_widgets(
 ) -> int:
     """Copy stamp widgets onto target_page (editable). Returns count added."""
     fitz = _get_fitz()
+    sh = float(stamp_page_rect.height) or 1.0
+    sy = float(dest_rect.height) / sh
     added = 0
     for w in stamp_page.widgets() or []:
         name = (w.field_name or "").strip()
@@ -122,7 +165,7 @@ def _copy_editable_widgets(
         nw.rect = nr
         try:
             if w.text_fontsize:
-                nw.text_fontsize = w.text_fontsize
+                nw.text_fontsize = max(4.0, float(w.text_fontsize) * sy)
         except Exception:
             pass
         try:
@@ -198,10 +241,13 @@ def apply_review_stamp(
                 raise ValueError(f"page_index {page_index} out of range (pages={doc.page_count})")
 
             page = doc[page_index]
+            _normalize_page_rotation(page)
             page_rect = page.rect
-            stamp_rect, expanded = compute_stamp_rect_outside_top_left(
+            stamp_rect, expanded, translate_x, translate_y = compute_stamp_rect_outside_top_left(
                 page_rect, stamp_w, stamp_h, float(margin_outside_pt)
             )
+
+            _shift_page_content(page, translate_x, translate_y, page_rect)
 
             page.set_mediabox(expanded)
             try:
@@ -223,6 +269,7 @@ def apply_review_stamp(
         "pdf": str(out_path if not in_place else pdf_path),
         "stamp_rect": [stamp_rect.x0, stamp_rect.y0, stamp_rect.x1, stamp_rect.y1],
         "expanded_mediabox": [expanded.x0, expanded.y0, expanded.x1, expanded.y1],
+        "content_translate": [translate_x, translate_y],
         "widgets_added": added,
         "stamp_height_pt": stamp_height_pt,
     }
