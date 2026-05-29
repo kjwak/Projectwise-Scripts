@@ -47,6 +47,7 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | 1.2.0 | Comment sync: `qc_comment_runs`, `qc_comments`, `qc_comment_status_history`, `qc_workflow_events` |
 | 1.3.0 | Audit natural-key index (`UX_audit_events_natural_key`) |
 | 1.4.0 | `pw_users` lookup + `v_audit_events_with_user` view |
+| 1.5.0 | `sheet_index` QC attribute columns (`checker_email`, `qc_review_type`, `qc_assigned_to`) |
 
 ### Schema 1.2.0 — comment sync (see `docs/qc-comment-status-sync.md`)
 
@@ -160,10 +161,13 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `extension` | NVARCHAR(20) | File extension (`.pdf`, `.dgn`) |
 | `qc_pdf_guid` / `qc_pdf_name` | NVARCHAR | Linked QC PDF document |
 | `source_type` | NVARCHAR(10) | `pdf` or `dgn` |
-| `designer_email` | NVARCHAR(200) | From `EM_Designer_Email` attribute |
-| `reviewer_email` | NVARCHAR(200) | From `EM_Reviewer_Email` attribute |
+| `designer_email` | NVARCHAR(200) | `EM_Designer_Email`, else `QC_Designer_Email` |
+| `reviewer_email` | NVARCHAR(200) | `EM_Reviewer_Email`, else `QC_Reviewer_Email` |
+| `checker_email` | NVARCHAR(200) | `QC_Checker_Email` |
+| `qc_review_type` | NVARCHAR(100) | `QC_Review_Type` |
+| `qc_assigned_to` | NVARCHAR(200) | `QC_Assigned_To` |
 | `pw_state_name` | NVARCHAR(100) | Current workflow state |
-| `qc_stage` / `qc_status` | NVARCHAR | QC lifecycle values (when populated) |
+| `qc_stage` / `qc_status` | NVARCHAR | Legacy stage column; `qc_status` mirrors `QC_Status` |
 
 ---
 
@@ -201,7 +205,7 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCPollRunTelemetry` | `Watch-QCTrigger.ps1` | Record poll cycle metrics |
 | `Write-QCNotificationTelemetry` | `QC.Notifications.psm1` | Record sent notifications |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
-| `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR` / `DOCUMENT_STATE`, read PW emails and update `sheet_index` when they differ from the database |
+| `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values). On `DOCUMENT_STATE`, update `pw_state_name` when it differs |
 | `Update-QCSheetQcPdf` | `Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1` | Link QC PDF to source document |
 
 ---

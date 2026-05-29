@@ -286,7 +286,7 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `enabled` | true | Query `dms_audt`. |
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
-| `reconcileEveryNCycles` | 20 | Full folder scan every N watcher passes. |
+| `reconcileEveryNCycles` | 20 | Full folder scan every N watcher passes; reconciles `sheet_index` EM/QC attributes for paired sheets. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |
 
 See `docs/hybrid-polling.md`.

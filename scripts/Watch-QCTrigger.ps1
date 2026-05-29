@@ -645,12 +645,12 @@ if ($statusSetRules.Count -ge 0) {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
-                                # sheet_index: sync ownership from PW when emails/state differ (DOCUMENT_ATTR, etc.)
+                                # sheet_index: DOCUMENT_ATTR re-reads EM_* and QC_* from PW; DOCUMENT_STATE updates workflow state.
                                 if ($ac.objGuid) {
                                     $acAction = [string]$ac.actionName
                                     $syncOwnership = $acAction -in @('DOCUMENT_ATTR', 'DOCUMENT_STATE')
                                     if ($syncOwnership) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist folder.' -Data @{
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
                                             actionName     = $acAction
                                             documentName   = [string]$ac.itemName
                                             folderPath     = $fp
@@ -1223,42 +1223,12 @@ if ($statusSetRules.Count -ge 0) {
                             if (-not $skipSheetIndex -and $state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
                                 $folderPhase = 'statusset_sheet_index'
                                 $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_START' -Message 'Indexing paired sheets for sheet_index (after enqueue gate).' -Data @{
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_START' -Message 'Indexing paired sheets for sheet_index with EM/QC attribute reconciliation.' -Data @{
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
+                                    reconciliationCycle = [bool]$isReconciliationCycle
+                                    reconcileEvery = $reconcileEvery
                                 }
-                                $nameToAttrs = @{}
-                                try {
-                                    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp
-                                    $searchRows = @(Get-PWDocumentsBySearchWithReturnColumns `
-                                        -FolderPath $apiPath -JustThisFolder `
-                                        -ColumnsToReturn @('EM_Designer_Email', 'EM_Reviewer_Email') `
-                                        -ErrorAction SilentlyContinue)
-                                    foreach ($sr in $searchRows) {
-                                        $srName = $null
-                                        try { $srName = [string]$sr.Name } catch { }
-                                        if (-not $srName) { try { $srName = [string]$sr.DocumentName } catch { } }
-                                        if (-not $srName) { try { $srName = [string]$sr.FileName } catch { } }
-                                        if (-not $srName) { continue }
-                                        $de = $null; $re = $null
-                                        try {
-                                            if ($sr.Attributes) {
-                                                foreach ($bag in @($sr.Attributes)) {
-                                                    if ($bag -is [System.Collections.IDictionary]) {
-                                                        foreach ($k in $bag.Keys) {
-                                                            if ([string]$k -eq 'EM_Designer_Email') { $de = [string]$bag[$k] }
-                                                            if ([string]$k -eq 'EM_Reviewer_Email') { $re = [string]$bag[$k] }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        } catch { }
-                                        $nameToAttrs[$srName.ToLowerInvariant()] = @{
-                                            designerEmail = $de; reviewerEmail = $re
-                                        }
-                                    }
-                                } catch { }
-
                                 $stateGuids = @()
                                 foreach ($ps in @($state.pairedSheets)) {
                                     if ($ps.pdf -and $ps.pdf.documentGuid) { $stateGuids += [string]$ps.pdf.documentGuid }
@@ -1269,44 +1239,11 @@ if ($statusSetRules.Count -ge 0) {
                                     try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $stateGuids } catch { }
                                 }
 
-                                $sheetIndexRows = [System.Collections.Generic.List[object]]::new()
-                                foreach ($ps in @($state.pairedSheets)) {
-                                    try {
-                                        $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
-                                        $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
-                                        $pdfGuid = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
-                                        $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
-
-                                        if ($pdfName -and $pdfGuid) {
-                                            $a = if ($nameToAttrs.ContainsKey($pdfName.ToLowerInvariant())) { $nameToAttrs[$pdfName.ToLowerInvariant()] } else { @{} }
-                                            $pdfState = if ($stateByGuid.ContainsKey($pdfGuid.ToLowerInvariant())) { [string]$stateByGuid[$pdfGuid.ToLowerInvariant()] } else { '' }
-                                            $sheetIndexRows.Add(@{
-                                                documentGuid = $pdfGuid
-                                                documentName = $pdfName
-                                                folderPath   = $fp
-                                                watchRoot    = [string]$entry.FolderPath
-                                                sourceType   = 'pdf'
-                                                designerEmail = [string]$a.designerEmail
-                                                reviewerEmail = [string]$a.reviewerEmail
-                                                pwStateName   = $pdfState
-                                            }) | Out-Null
-                                        }
-                                        if ($dgnName -and $dgnGuid) {
-                                            $a = if ($nameToAttrs.ContainsKey($dgnName.ToLowerInvariant())) { $nameToAttrs[$dgnName.ToLowerInvariant()] } else { @{} }
-                                            $dgnState = if ($stateByGuid.ContainsKey($dgnGuid.ToLowerInvariant())) { [string]$stateByGuid[$dgnGuid.ToLowerInvariant()] } else { '' }
-                                            $sheetIndexRows.Add(@{
-                                                documentGuid = $dgnGuid
-                                                documentName = $dgnName
-                                                folderPath   = $fp
-                                                watchRoot    = [string]$entry.FolderPath
-                                                sourceType   = 'dgn'
-                                                designerEmail = [string]$a.designerEmail
-                                                reviewerEmail = [string]$a.reviewerEmail
-                                                pwStateName   = $dgnState
-                                            }) | Out-Null
-                                        }
-                                    } catch { }
-                                }
+                                $sheetIndexRows = @(Build-PWSheetIndexRowsForPairedSheets -Config $config `
+                                    -FolderPath $fp `
+                                    -WatchRoot ([string]$entry.FolderPath) `
+                                    -PairedSheets @($state.pairedSheets) `
+                                    -StateByGuid $stateByGuid)
 
                                 $indexRowCount = $sheetIndexRows.Count
                                 if ($indexRowCount -gt 0) {

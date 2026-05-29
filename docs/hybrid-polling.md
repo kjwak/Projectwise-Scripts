@@ -133,10 +133,12 @@ GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to mini
 
 ## Sheet Index Population
 
-During both scan modes, documents in `CADD\Sheets` subfolders are written to the `sheet_index` database table via `Write-QCSheetIndex`. This includes:
+During full-folder reconciliation scans (`auditPoller.reconcileEveryNCycles`, e.g. every 100 watcher passes), paired sheets are batch-upserted via `Write-QCSheetIndexBatch` using `Build-PWSheetIndexRowsForPairedSheets`. That re-reads the same EM_* and QC_* columns as audit `DOCUMENT_ATTR` sync. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates `sheet_index` incrementally from audit events.
+
+Each row includes:
 
 - Document GUID, name, folder path, extension
-- Designer and reviewer email attributes (from `Get-PWDocumentsBySearchWithReturnColumns` `.Attributes` bags)
+- Role emails (`EM_*` preferred over `QC_*`), checker, review type, assigned-to, and `QC_Status`
 - Workflow state (from `WorkflowState` or `StateName` property)
 - QC PDF pairing (linked via `Update-QCSheetQcPdf` to both PDF and DGN entries sharing the same stem)
 

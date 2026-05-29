@@ -326,13 +326,14 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.4.0'
+    $targetVersion = '1.5.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
     $schemaV1_3 = _QDB-GetSchemaV1dot3
     $schemaV1_4 = _QDB-GetSchemaV1dot4
-    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4
+    $schemaV1_5 = _QDB-GetSchemaV1dot5
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -345,7 +346,7 @@ function Initialize-QCDatabaseSchema {
         if ($currentVersion -is [DBNull]) { $currentVersion = $null }
 
         if ($currentVersion -eq $targetVersion) {
-            $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive)
+            $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive)
             $patchBatches = [regex]::Split($patchSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             $patchExecuted = 0
             foreach ($batch in $patchBatches) {
@@ -375,7 +376,7 @@ function Initialize-QCDatabaseSchema {
         $insertCmd = $conn.CreateCommand()
         $insertCmd.CommandText = "INSERT INTO schema_version (version, description) VALUES (@version, @desc)"
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through pw_users lookup + audit batching")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through sheet_index QC attribute columns")
         [void]$insertCmd.ExecuteNonQuery()
 
         return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($executed batches)." -Data @{ version = $targetVersion; batchCount = $executed }
@@ -989,6 +990,88 @@ LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno');
 '@
 }
 
+function _QDB-GetSchemaV1dot5 {
+    return @'
+
+GO
+
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.sheet_index', 'checker_email') IS NULL
+        ALTER TABLE sheet_index ADD checker_email NVARCHAR(200) NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'qc_review_type') IS NULL
+        ALTER TABLE sheet_index ADD qc_review_type NVARCHAR(100) NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'qc_assigned_to') IS NULL
+        ALTER TABLE sheet_index ADD qc_assigned_to NVARCHAR(200) NULL;
+END
+
+GO
+
+IF OBJECT_ID('dbo.v_sheet_status', 'V') IS NOT NULL DROP VIEW v_sheet_status;
+
+GO
+
+CREATE VIEW v_sheet_status AS
+SELECT
+    s.document_name,
+    s.folder_path,
+    s.project_name,
+    s.extension,
+    s.designer_email,
+    s.reviewer_email,
+    s.checker_email,
+    s.qc_review_type,
+    s.qc_assigned_to,
+    s.pw_state_name,
+    s.qc_stage,
+    s.qc_status,
+    s.qc_pdf_name,
+    CASE WHEN s.qc_pdf_guid IS NOT NULL THEN 1 ELSE 0 END AS has_qc_pdf,
+    s.last_updated_at,
+    s.file_modified_at,
+    s.watch_root
+FROM sheet_index s;
+
+'@
+}
+
+function _QDB-GetSchemaV1dot5Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'checker_email') IS NULL
+    ALTER TABLE sheet_index ADD checker_email NVARCHAR(200) NULL;
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'qc_review_type') IS NULL
+    ALTER TABLE sheet_index ADD qc_review_type NVARCHAR(100) NULL;
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'qc_assigned_to') IS NULL
+    ALTER TABLE sheet_index ADD qc_assigned_to NVARCHAR(200) NULL;
+GO
+IF OBJECT_ID('dbo.v_sheet_status', 'V') IS NOT NULL
+    DROP VIEW v_sheet_status;
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+EXEC('CREATE VIEW v_sheet_status AS
+SELECT
+    s.document_name,
+    s.folder_path,
+    s.project_name,
+    s.extension,
+    s.designer_email,
+    s.reviewer_email,
+    s.checker_email,
+    s.qc_review_type,
+    s.qc_assigned_to,
+    s.pw_state_name,
+    s.qc_stage,
+    s.qc_status,
+    s.qc_pdf_name,
+    CASE WHEN s.qc_pdf_guid IS NOT NULL THEN 1 ELSE 0 END AS has_qc_pdf,
+    s.last_updated_at,
+    s.file_modified_at,
+    s.watch_root
+FROM sheet_index s');
+'@
+}
+
 function _QDB-GetSchemaV1dot4Additive {
     return @'
 GO
@@ -1578,6 +1661,9 @@ function Write-QCSheetIndex {
         [string]$SourceType,
         [string]$DesignerEmail,
         [string]$ReviewerEmail,
+        [string]$CheckerEmail,
+        [string]$QcReviewType,
+        [string]$QcAssignedTo,
         [string]$PwStateName,
         [string]$QcStage,
         [string]$QcStatus,
@@ -1605,20 +1691,23 @@ WHEN MATCHED THEN UPDATE SET
     source_type = COALESCE(@sourceType, tgt.source_type),
     designer_email = CASE WHEN @setOwnership = 1 THEN @designerEmail ELSE COALESCE(@designerEmail, tgt.designer_email) END,
     reviewer_email = CASE WHEN @setOwnership = 1 THEN @reviewerEmail ELSE COALESCE(@reviewerEmail, tgt.reviewer_email) END,
+    checker_email = CASE WHEN @setOwnership = 1 THEN @checkerEmail ELSE COALESCE(@checkerEmail, tgt.checker_email) END,
+    qc_review_type = CASE WHEN @setOwnership = 1 THEN @qcReviewType ELSE COALESCE(@qcReviewType, tgt.qc_review_type) END,
+    qc_assigned_to = CASE WHEN @setOwnership = 1 THEN @qcAssignedTo ELSE COALESCE(@qcAssignedTo, tgt.qc_assigned_to) END,
     pw_state_name = CASE WHEN @setOwnership = 1 THEN @pwStateName ELSE COALESCE(@pwStateName, tgt.pw_state_name) END,
     qc_stage = COALESCE(@qcStage, tgt.qc_stage),
-    qc_status = COALESCE(@qcStatus, tgt.qc_status),
+    qc_status = CASE WHEN @setOwnership = 1 THEN @qcStatus ELSE COALESCE(@qcStatus, tgt.qc_status) END,
     last_updated_at = SYSDATETIMEOFFSET(),
     last_audit_event_at = COALESCE(@lastAuditEventAt, tgt.last_audit_event_at),
     file_modified_at = COALESCE(@fileModifiedAt, tgt.file_modified_at)
 WHEN NOT MATCHED THEN INSERT
     (document_guid, document_name, document_number, folder_path, project_name, watch_root,
-     extension, source_type, designer_email, reviewer_email, pw_state_name, qc_stage, qc_status,
-     last_audit_event_at, file_modified_at)
+     extension, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to,
+     pw_state_name, qc_stage, qc_status, last_audit_event_at, file_modified_at)
 VALUES
     (@docGuid, @docName, @docNumber, @folderPath, @projectName, @watchRoot,
-     @extension, @sourceType, @designerEmail, @reviewerEmail, @pwStateName, @qcStage, @qcStatus,
-     @lastAuditEventAt, @fileModifiedAt);
+     @extension, @sourceType, @designerEmail, @reviewerEmail, @checkerEmail, @qcReviewType, @qcAssignedTo,
+     @pwStateName, @qcStage, @qcStatus, @lastAuditEventAt, @fileModifiedAt);
 "@
         $params = @{
             docGuid          = $DocumentGuid
@@ -1631,6 +1720,9 @@ VALUES
             sourceType       = if ($SourceType)        { $SourceType }        else { $null }
             designerEmail    = if ($DesignerEmail)     { $DesignerEmail }     else { $null }
             reviewerEmail    = if ($ReviewerEmail)     { $ReviewerEmail }     else { $null }
+            checkerEmail     = if ($CheckerEmail)      { $CheckerEmail }      else { $null }
+            qcReviewType     = if ($QcReviewType)      { $QcReviewType }      else { $null }
+            qcAssignedTo     = if ($QcAssignedTo)      { $QcAssignedTo }      else { $null }
             pwStateName      = if ($PwStateName)       { $PwStateName }       else { $null }
             qcStage          = if ($QcStage)           { $QcStage }           else { $null }
             qcStatus         = if ($QcStatus)          { $QcStatus }          else { $null }
@@ -1757,12 +1849,16 @@ CREATE TABLE #sheet_index_stage (
     source_type   NVARCHAR(10) NULL,
     designer_email NVARCHAR(200) NULL,
     reviewer_email NVARCHAR(200) NULL,
+    checker_email NVARCHAR(200) NULL,
+    qc_review_type NVARCHAR(100) NULL,
+    qc_assigned_to NVARCHAR(200) NULL,
+    qc_status NVARCHAR(50) NULL,
     pw_state_name  NVARCHAR(100) NULL
 );
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $createSql -Parameters @{} -CommandTimeout 120)
 
-            $sheetParamsPerRow = 8
+            $sheetParamsPerRow = 12
             $chunkSize = _QDB-GetMaxRowsForSqlParameters -ParametersPerRow $sheetParamsPerRow
             if ($chunkSize -gt 200) { $chunkSize = 200 }
             for ($i = 0; $i -lt $Rows.Count; $i += $chunkSize) {
@@ -1772,7 +1868,7 @@ CREATE TABLE #sheet_index_stage (
                 for ($r = 0; $r -lt $chunk.Count; $r++) {
                     $row = $chunk[$r]
                     if ($r -gt 0) { [void]$sb.AppendLine(',') }
-                    [void]$sb.Append(("(@docGuid{0},@docName{0},@folderPath{0},@watchRoot{0},@sourceType{0},@designerEmail{0},@reviewerEmail{0},@pwStateName{0})" -f $r))
+                    [void]$sb.Append(("(@docGuid{0},@docName{0},@folderPath{0},@watchRoot{0},@sourceType{0},@designerEmail{0},@reviewerEmail{0},@checkerEmail{0},@qcReviewType{0},@qcAssignedTo{0},@qcStatus{0},@pwStateName{0})" -f $r))
                     $params["docGuid$r"] = [string]$row.documentGuid
                     $params["docName$r"] = [string]$row.documentName
                     $params["folderPath$r"] = [string]$row.folderPath
@@ -1780,11 +1876,15 @@ CREATE TABLE #sheet_index_stage (
                     $params["sourceType$r"] = if ($row.sourceType) { [string]$row.sourceType } else { $null }
                     $params["designerEmail$r"] = if ($row.designerEmail) { [string]$row.designerEmail } else { $null }
                     $params["reviewerEmail$r"] = if ($row.reviewerEmail) { [string]$row.reviewerEmail } else { $null }
+                    $params["checkerEmail$r"] = if ($row.checkerEmail) { [string]$row.checkerEmail } else { $null }
+                    $params["qcReviewType$r"] = if ($row.qcReviewType) { [string]$row.qcReviewType } else { $null }
+                    $params["qcAssignedTo$r"] = if ($row.qcAssignedTo) { [string]$row.qcAssignedTo } else { $null }
+                    $params["qcStatus$r"] = if ($row.qcStatus) { [string]$row.qcStatus } else { $null }
                     $params["pwStateName$r"] = if ($row.pwStateName) { [string]$row.pwStateName } else { $null }
                 }
                 $insSql = @"
 INSERT INTO #sheet_index_stage
-    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, pw_state_name)
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name)
 VALUES
 $($sb.ToString());
 "@
@@ -1802,12 +1902,16 @@ WHEN MATCHED THEN UPDATE SET
     source_type = COALESCE(src.source_type, tgt.source_type),
     designer_email = COALESCE(src.designer_email, tgt.designer_email),
     reviewer_email = COALESCE(src.reviewer_email, tgt.reviewer_email),
+    checker_email = COALESCE(src.checker_email, tgt.checker_email),
+    qc_review_type = COALESCE(src.qc_review_type, tgt.qc_review_type),
+    qc_assigned_to = COALESCE(src.qc_assigned_to, tgt.qc_assigned_to),
+    qc_status = COALESCE(src.qc_status, tgt.qc_status),
     pw_state_name = COALESCE(src.pw_state_name, tgt.pw_state_name),
     last_updated_at = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT
-    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, pw_state_name)
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name)
 VALUES
-    (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.pw_state_name);
+    (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.checker_email, src.qc_review_type, src.qc_assigned_to, src.qc_status, src.pw_state_name);
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $mergeSql -Parameters @{} -CommandTimeout 120)
         } finally {

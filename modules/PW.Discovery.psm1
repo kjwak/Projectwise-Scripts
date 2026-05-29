@@ -570,6 +570,166 @@ function Get-PWDocumentWorkflowStateMapByGuid {
     return $map
 }
 
+function Get-PWSheetIndexSyncColumnNames {
+    <#
+    .SYNOPSIS
+    PW attribute column names to re-read after DOCUMENT_ATTR audit events (EM_* plus qcWorkflow.attributeMap).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    [void]$set.Add('EM_Designer_Email')
+    [void]$set.Add('EM_Reviewer_Email')
+    try {
+        $na = $Config['notifications']['attributes']
+        if ($na) {
+            if ($na['designerEmailField']) { [void]$set.Add([string]$na['designerEmailField']) }
+            if ($na['reviewerEmailField']) { [void]$set.Add([string]$na['reviewerEmailField']) }
+        }
+    } catch { }
+    try {
+        $am = $Config['qcWorkflow']['attributeMap']
+        if ($am) {
+            foreach ($v in $am.Values) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$v)) { [void]$set.Add([string]$v) }
+            }
+        }
+    } catch { }
+    return @($set)
+}
+
+function _PWD-GetPwAttributeValue {
+    param(
+        [Parameter(Mandatory)][hashtable]$PwAttributes,
+        [AllowNull()][string]$ColumnName
+    )
+    if ([string]::IsNullOrWhiteSpace($ColumnName)) { return '' }
+    if ($PwAttributes.ContainsKey($ColumnName)) { return ([string]$PwAttributes[$ColumnName]).Trim() }
+    return ''
+}
+
+function ConvertTo-SheetIndexFieldValues {
+    <#
+    .SYNOPSIS
+    Maps ProjectWise attribute bags to sheet_index column values (EM_* preferred for role emails).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$PwAttributes,
+        [string]$PwStateName = ''
+    )
+
+    $wfMap = @{}
+    try {
+        $am = $Config['qcWorkflow']['attributeMap']
+        if ($am) {
+            foreach ($k in $am.Keys) { $wfMap[[string]$k] = [string]$am[$k] }
+        }
+    } catch { }
+
+    $emDesignerCol = 'EM_Designer_Email'
+    $emReviewerCol = 'EM_Reviewer_Email'
+    try {
+        $na = $Config['notifications']['attributes']
+        if ($na) {
+            if ($na['designerEmailField']) { $emDesignerCol = [string]$na['designerEmailField'] }
+            if ($na['reviewerEmailField']) { $emReviewerCol = [string]$na['reviewerEmailField'] }
+        }
+    } catch { }
+
+    $qcDesignerCol = if ($wfMap.ContainsKey('designerEmail')) { $wfMap['designerEmail'] } else { 'QC_Designer_Email' }
+    $qcReviewerCol = if ($wfMap.ContainsKey('reviewerEmail')) { $wfMap['reviewerEmail'] } else { 'QC_Reviewer_Email' }
+    $qcCheckerCol = if ($wfMap.ContainsKey('checkerEmail')) { $wfMap['checkerEmail'] } else { 'QC_Checker_Email' }
+    $qcReviewTypeCol = if ($wfMap.ContainsKey('reviewType')) { $wfMap['reviewType'] } else { 'QC_Review_Type' }
+    $qcAssignedCol = if ($wfMap.ContainsKey('assignedTo')) { $wfMap['assignedTo'] } else { 'QC_Assigned_To' }
+    $qcStatusCol = if ($wfMap.ContainsKey('status')) { $wfMap['status'] } else { 'QC_Status' }
+
+    $emDesigner = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $emDesignerCol
+    $emReviewer = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $emReviewerCol
+    $qcDesigner = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcDesignerCol
+    $qcReviewer = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcReviewerCol
+
+    $designer = if ($emDesigner) { $emDesigner } elseif ($qcDesigner) { $qcDesigner } else { '' }
+    $reviewer = if ($emReviewer) { $emReviewer } elseif ($qcReviewer) { $qcReviewer } else { '' }
+
+    return @{
+        designerEmail  = $designer
+        reviewerEmail  = $reviewer
+        checkerEmail   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcCheckerCol
+        qcReviewType   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcReviewTypeCol
+        qcAssignedTo   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcAssignedCol
+        qcStatus       = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcStatusCol
+        pwStateName    = if ($PwStateName) { $PwStateName.Trim() } else { '' }
+    }
+}
+
+function Get-PWDocumentAttributesByColumns {
+    <#
+    .SYNOPSIS
+    Reads configured PW document attributes via search-with-columns API.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string[]]$ColumnsToReturn
+    )
+
+    $cmd = Get-Command -Name 'Get-PWDocumentsBySearchWithReturnColumns' -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        return @{ attributes = @{}; pwStateName = ''; found = $false; error = 'Get-PWDocumentsBySearchWithReturnColumns not available' }
+    }
+
+    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+
+    $cols = @($ColumnsToReturn | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($cols.Count -eq 0) {
+        return @{ attributes = @{}; pwStateName = ''; found = $false; error = 'No columns requested' }
+    }
+
+    $row = $null
+    try {
+        $params = @{
+            FolderPath     = $apiPath
+            JustThisFolder = $true
+            DocumentName   = $DocumentName
+            ErrorAction    = 'Stop'
+        }
+        if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
+            $params['ColumnsToReturn'] = $cols
+        } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
+            $params['ReturnColumns'] = $cols
+        }
+        $row = & $cmd @params | Select-Object -First 1
+    } catch {
+        return @{ attributes = @{}; pwStateName = ''; found = $false; error = $_.Exception.Message }
+    }
+
+    if (-not $row) {
+        return @{ attributes = @{}; pwStateName = ''; found = $false; error = 'Document not found' }
+    }
+
+    $attrs = Get-PWDocumentAttributeMap -DocRow $row
+    $pwState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $row
+    if ([string]::IsNullOrWhiteSpace($pwState)) {
+        $docGuid = ''
+        try { $docGuid = [string]$row.DocumentGUID } catch { }
+        $pwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $docGuid
+    }
+    return @{
+        attributes  = $attrs
+        pwStateName = if ($pwState) { $pwState.Trim() } else { '' }
+        found       = $true
+        document    = $row
+        error       = $null
+    }
+}
+
 function Get-PWDocumentEmailContacts {
     <#
     .SYNOPSIS
@@ -583,53 +743,21 @@ function Get-PWDocumentEmailContacts {
         [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
     )
 
-    $cmd = Get-Command -Name 'Get-PWDocumentsBySearchWithReturnColumns' -ErrorAction SilentlyContinue
-    if (-not $cmd) {
-        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = 'Get-PWDocumentsBySearchWithReturnColumns not available' }
-    }
-
-    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
-    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
-
     $cols = @($DesignerEmailColumn, $ReviewerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-    $row = $null
-    try {
-        $params = @{
-            FolderPath = $apiPath
-            JustThisFolder = $true
-            DocumentName = $DocumentName
-            ErrorAction = 'Stop'
-        }
-        if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
-            $params['ColumnsToReturn'] = $cols
-        } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
-            $params['ReturnColumns'] = $cols
-        }
-        $row = & $cmd @params | Select-Object -First 1
-    } catch {
-        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = $_.Exception.Message }
+    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
+    if (-not $read.found) {
+        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = $read.error }
     }
 
-    if (-not $row) {
-        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = 'Document not found' }
-    }
-
-    $attrs = Get-PWDocumentAttributeMap -DocRow $row
-    $designer = if ($attrs.ContainsKey($DesignerEmailColumn)) { [string]$attrs[$DesignerEmailColumn] } else { '' }
-    $reviewer = if ($attrs.ContainsKey($ReviewerEmailColumn)) { [string]$attrs[$ReviewerEmailColumn] } else { '' }
-    $pwState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $row
-    if ([string]::IsNullOrWhiteSpace($pwState)) {
-        $docGuid = ''
-        try { $docGuid = [string]$row.DocumentGUID } catch { }
-        $pwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $docGuid
-    }
+    $designer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $DesignerEmailColumn
+    $reviewer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $ReviewerEmailColumn
     return @{
-        designerEmail = $designer.Trim()
-        reviewerEmail = $reviewer.Trim()
-        pwStateName   = if ($pwState) { $pwState.Trim() } else { '' }
-        found = $true
-        document = $row
-        error = $null
+        designerEmail = $designer
+        reviewerEmail = $reviewer
+        pwStateName   = [string]$read.pwStateName
+        found         = $true
+        document      = $read.document
+        error         = $null
     }
 }
 
@@ -639,13 +767,100 @@ function _PWD-NormalizeSheetIndexValue {
     return ([string]$Value).Trim().ToLowerInvariant()
 }
 
+function _PWD-GetSheetIndexDocumentNameFromRow {
+    param([Parameter(Mandatory)][object]$DocRow)
+    $name = $null
+    try { $name = [string]$DocRow.Name } catch { }
+    if (-not $name) { try { $name = [string]$DocRow.DocumentName } catch { } }
+    if (-not $name) { try { $name = [string]$DocRow.FileName } catch { } }
+    return $name
+}
+
+function Build-PWSheetIndexRowsForPairedSheets {
+    <#
+    .SYNOPSIS
+    Builds sheet_index row hashtables for paired PDF/DGN sheets using EM_* and QC_* PW attributes.
+    Used during full-folder reconciliation scans (reconcileEveryNCycles).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [Parameter(Mandatory)][object[]]$PairedSheets,
+        [hashtable]$StateByGuid = @{}
+    )
+
+    $nameToFields = @{}
+    try {
+        $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+        $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+        $searchRows = @(Get-PWDocumentsBySearchWithReturnColumns `
+            -FolderPath $apiPath -JustThisFolder `
+            -ColumnsToReturn $cols `
+            -ErrorAction SilentlyContinue)
+        foreach ($sr in $searchRows) {
+            $srName = _PWD-GetSheetIndexDocumentNameFromRow -DocRow $sr
+            if (-not $srName) { continue }
+            $attrs = Get-PWDocumentAttributeMap -DocRow $sr
+            $pwState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $sr
+            $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $attrs -PwStateName $pwState
+            $nameToFields[$srName.ToLowerInvariant()] = $fields
+        }
+    } catch { }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($ps in @($PairedSheets)) {
+        try {
+            $pdfName = if ($ps.pdf -and $ps.pdf.name) { [string]$ps.pdf.name } else { $null }
+            $dgnName = if ($ps.dgn -and $ps.dgn.name) { [string]$ps.dgn.name } else { $null }
+            $pdfGuid = if ($ps.pdf -and $ps.pdf.documentGuid) { [string]$ps.pdf.documentGuid } else { $null }
+            $dgnGuid = if ($ps.dgn -and $ps.dgn.documentGuid) { [string]$ps.dgn.documentGuid } else { $null }
+
+            foreach ($pair in @(
+                @{ name = $pdfName; guid = $pdfGuid; sourceType = 'pdf' }
+                @{ name = $dgnName; guid = $dgnGuid; sourceType = 'dgn' }
+            )) {
+                if (-not $pair.name -or -not $pair.guid) { continue }
+                $f = if ($nameToFields.ContainsKey($pair.name.ToLowerInvariant())) {
+                    $nameToFields[$pair.name.ToLowerInvariant()]
+                } else {
+                    @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = ''; qcAssignedTo = ''; qcStatus = ''; pwStateName = '' }
+                }
+                $state = if ($StateByGuid.ContainsKey($pair.guid.ToLowerInvariant())) {
+                    [string]$StateByGuid[$pair.guid.ToLowerInvariant()]
+                } elseif ($f.pwStateName) {
+                    [string]$f.pwStateName
+                } else { '' }
+                $rows.Add(@{
+                    documentGuid   = $pair.guid
+                    documentName   = $pair.name
+                    folderPath     = $FolderPath
+                    watchRoot      = $WatchRoot
+                    sourceType     = $pair.sourceType
+                    designerEmail  = [string]$f.designerEmail
+                    reviewerEmail  = [string]$f.reviewerEmail
+                    checkerEmail   = [string]$f.checkerEmail
+                    qcReviewType   = [string]$f.qcReviewType
+                    qcAssignedTo   = [string]$f.qcAssignedTo
+                    qcStatus       = [string]$f.qcStatus
+                    pwStateName    = $state
+                }) | Out-Null
+            }
+        } catch { }
+    }
+    return @($rows)
+}
+
 function Sync-PWSheetIndexOwnership {
     <#
     .SYNOPSIS
-    Reads designer/reviewer emails and workflow state from ProjectWise and updates sheet_index when they differ from the database.
+    Re-reads ProjectWise attributes into sheet_index for audit events on watchlist documents.
     .DESCRIPTION
-    Intended for audit-trail DOCUMENT_ATTR (and DOCUMENT_STATE) events on watchlist documents.
-    Inserts new sheet_index rows only for Sheets-folder paths; updates existing rows for any watchlist path.
+    DOCUMENT_ATTR: always refreshes EM_* and QC_* fields from PW (audit does not include old/new values).
+    DOCUMENT_STATE: updates workflow state when it differs.
+    Inserts new rows for Sheets-folder paths, or on DOCUMENT_ATTR when the document is not yet indexed.
     #>
     [CmdletBinding()]
     param(
@@ -656,29 +871,26 @@ function Sync-PWSheetIndexOwnership {
         [bool]$IsSheetsFolder = $false,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
-        [string]$AuditActionName = '',
-        [string]$DesignerEmailColumn = 'EM_Designer_Email',
-        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
+        [string]$AuditActionName = ''
     )
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
 
-    $pw = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $DocumentName `
-        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
-    if (-not $pw.found) { return }
-
-    $pwDesigner = [string]$pw.designerEmail
-    $pwReviewer = [string]$pw.reviewerEmail
-    $pwState    = [string]$pw.pwStateName
+    $isDocumentAttr = ([string]$AuditActionName).Trim() -eq 'DOCUMENT_ATTR'
+    $isDocumentState = ([string]$AuditActionName).Trim() -eq 'DOCUMENT_STATE'
 
     $dbDesigner = ''
     $dbReviewer = ''
-    $dbState    = ''
-    $rowExists  = $false
+    $dbChecker = ''
+    $dbReviewType = ''
+    $dbAssignedTo = ''
+    $dbQcStatus = ''
+    $dbState = ''
+    $rowExists = $false
     try {
         $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT designer_email, reviewer_email, pw_state_name
+SELECT designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name
 FROM sheet_index
 WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $DocumentGuid }
@@ -687,17 +899,69 @@ WHERE document_guid = @docGuid
             $r = $dbRes.Data.table.Rows[0]
             if (-not ($r.designer_email -is [DBNull])) { $dbDesigner = [string]$r.designer_email }
             if (-not ($r.reviewer_email -is [DBNull])) { $dbReviewer = [string]$r.reviewer_email }
+            if ($r.Table.Columns.Contains('checker_email') -and -not ($r.checker_email -is [DBNull])) { $dbChecker = [string]$r.checker_email }
+            if ($r.Table.Columns.Contains('qc_review_type') -and -not ($r.qc_review_type -is [DBNull])) { $dbReviewType = [string]$r.qc_review_type }
+            if ($r.Table.Columns.Contains('qc_assigned_to') -and -not ($r.qc_assigned_to -is [DBNull])) { $dbAssignedTo = [string]$r.qc_assigned_to }
+            if (-not ($r.qc_status -is [DBNull])) { $dbQcStatus = [string]$r.qc_status }
             if (-not ($r.pw_state_name -is [DBNull])) { $dbState = [string]$r.pw_state_name }
         }
     } catch { return }
 
-    if (-not $rowExists -and -not $IsSheetsFolder) { return }
+    if (-not $rowExists -and -not $IsSheetsFolder -and -not $isDocumentAttr) { return }
+
+    if ($isDocumentState -and -not $isDocumentAttr) {
+        $pwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+        $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
+        if ($rowExists -and -not $stateDiffers) {
+            if ($LastAuditEventAt) {
+                try {
+                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
+                } catch { }
+            }
+            return
+        }
+        if (-not $rowExists -and -not $IsSheetsFolder) { return }
+        if ($rowExists) {
+            [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid -PwStateName $pwState)
+            if ($LastAuditEventAt) {
+                try {
+                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
+                } catch { }
+            }
+        }
+        return
+    }
+
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
+    if (-not $read.found) { return }
+
+    $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $pwDesigner = [string]$fields.designerEmail
+    $pwReviewer = [string]$fields.reviewerEmail
+    $pwChecker = [string]$fields.checkerEmail
+    $pwReviewType = [string]$fields.qcReviewType
+    $pwAssignedTo = [string]$fields.qcAssignedTo
+    $pwQcStatus = [string]$fields.qcStatus
+    $pwState = [string]$fields.pwStateName
 
     $emailsDiffer = (_PWD-NormalizeSheetIndexValue $pwDesigner) -ne (_PWD-NormalizeSheetIndexValue $dbDesigner) `
         -or (_PWD-NormalizeSheetIndexValue $pwReviewer) -ne (_PWD-NormalizeSheetIndexValue $dbReviewer)
+    $qcFieldsDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker) `
+        -or (_PWD-NormalizeSheetIndexValue $pwReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType) `
+        -or (_PWD-NormalizeSheetIndexValue $pwAssignedTo) -ne (_PWD-NormalizeSheetIndexValue $dbAssignedTo) `
+        -or (_PWD-NormalizeSheetIndexValue $pwQcStatus) -ne (_PWD-NormalizeSheetIndexValue $dbQcStatus)
     $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
 
-    if ($rowExists -and -not $emailsDiffer -and -not $stateDiffers) {
+    if ($rowExists -and -not $isDocumentAttr -and -not $emailsDiffer -and -not $qcFieldsDiffer -and -not $stateDiffers) {
         if ($LastAuditEventAt) {
             try {
                 Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
@@ -721,20 +985,27 @@ WHERE document_guid = @docGuid
 
     Write-QCSheetIndex -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
         -FolderPath $FolderPath -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType `
-        -DesignerEmail $pwDesigner -ReviewerEmail $pwReviewer -PwStateName $pwState `
-        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise
+        -DesignerEmail $pwDesigner -ReviewerEmail $pwReviewer -CheckerEmail $pwChecker `
+        -QcReviewType $pwReviewType -QcAssignedTo $pwAssignedTo -QcStatus $pwQcStatus `
+        -PwStateName $pwState -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_INDEX_SYNC' -Message 'sheet_index ownership synced from ProjectWise.' -Data @{
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_INDEX_SYNC' -Message 'sheet_index synced from ProjectWise.' -Data @{
             documentGuid    = $DocumentGuid
             documentName    = $DocumentName
             folderPath      = $FolderPath
             auditActionName = $AuditActionName
             designerEmail   = $pwDesigner
             reviewerEmail   = $pwReviewer
+            checkerEmail    = $pwChecker
+            qcReviewType    = $pwReviewType
+            qcAssignedTo    = $pwAssignedTo
+            qcStatus        = $pwQcStatus
             pwStateName     = $pwState
             wasInsert       = (-not $rowExists)
+            forceAttrSync   = $isDocumentAttr
             emailsChanged   = $emailsDiffer
+            qcFieldsChanged = $qcFieldsDiffer
             stateChanged    = $stateDiffers
         }
     }
