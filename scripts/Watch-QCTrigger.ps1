@@ -660,11 +660,15 @@ if ($statusSetRules.Count -ge 0) {
                         # PDF check-ins with QC_Archivist tag get QC_PREPEND (document-level).
                         $auditFoldersSeen = @{}
                         $auditDescCache = @{}
+                        $auditSheetPairCache = @{}
+                        $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
                         foreach ($ac in $auditCandidates) {
                             try {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
+                                $itemName = [string]$ac.itemName
+                                $actionName = [string]$ac.actionName
                                 # sheet_index: DOCUMENT_ATTR re-reads EM_* and QC_* from PW.
                                 # DOCUMENT_STATE: propagate workflow state to associated DGN / PDF / QC PDF siblings.
                                 if ($ac.objGuid) {
@@ -724,8 +728,7 @@ if ($statusSetRules.Count -ge 0) {
                                             jobId = [string]$acInFlightRes.Data.jobId
                                             queueState = [string]$acInFlightRes.Data.queueState
                                         }
-                                        continue
-                                    }
+                                    } else {
                                     $acState = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$acOneLevelDeep
                                     $acListingMethod = ''
                                     try { $acListingMethod = [string]$acState.docListingMethod } catch { }
@@ -739,8 +742,7 @@ if ($statusSetRules.Count -ge 0) {
                                                 folder = $fp; docListingMethod = $acListingMethod
                                             }
                                         }
-                                        continue
-                                    }
+                                    } else {
                                     $acGateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $fp -FolderState $acState
                                     if ($acGateRes.IsSuccess -and -not [bool]$acGateRes.Data.shouldEnqueue) {
                                         Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_CURRENT' -Message 'Audit STATUS_SET_GEN skipped: manifest current.' -Data @{
@@ -748,8 +750,7 @@ if ($statusSetRules.Count -ge 0) {
                                             gateReason = [string]$acGateRes.Data.gateReason
                                             docListingMethod = $acListingMethod
                                         }
-                                        continue
-                                    }
+                                    } else {
 
                                     $candidate = @{
                                         path = $fp
@@ -774,13 +775,13 @@ if ($statusSetRules.Count -ge 0) {
                                     }
 
                                     $jobRes = New-QCJobObject -Candidate $candidate -Rule $statusRuleObj -Config $config
-                                    if (-not $jobRes.IsSuccess) { continue }
+                                    if ($jobRes.IsSuccess) {
                                     $job = [hashtable]$jobRes.Data.job
 
                                     $accepted++
                                     $dedupeChecks++
                                     $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
-                                    if (-not $dupRes.IsSuccess) { continue }
+                                    if ($dupRes.IsSuccess) {
                                     $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
                                     Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
@@ -793,15 +794,32 @@ if ($statusSetRules.Count -ge 0) {
                                         $enqRes = Add-QCQueueJob -Job $job -Config $config
                                         if ($enqRes.IsSuccess) { $enqueued++ }
                                     } elseif ($wouldDedupe) { $duplicates++ }
+                                    }
+                                    }
+                                    }
+                                    }
+                                    }
                                 }
 
-                                # QC_PREPEND: evaluate PDFs via trigger rules (description tag, etc.)
+                                # QC_PREPEND: paired sheet PDFs — re-read description on selected audit actions (e.g. DOCUMENT_MODIFY).
                                 $acEnableQcPrepend = $true
                                 try { if ($null -ne $ac.enableQcPrepend) { $acEnableQcPrepend = [bool]$ac.enableQcPrepend } } catch { }
-                                $itemName = [string]$ac.itemName
-                                $actionName = [string]$ac.actionName
                                 if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
+                                    if ($qcPrependAuditActions -notcontains $actionName) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_Archivist description check).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName; allowedActions = @($qcPrependAuditActions)
+                                        }
+                                        continue
+                                    }
+                                    if ([bool]$ac.isSheetsFolder) {
+                                        if (-not (Test-PWSheetPdfHasMatchingPair -FolderPath $fp -DocumentName $itemName -PairCache $auditSheetPairCache)) {
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
+                                                path = ($fp + '\' + $itemName); actionName = $actionName
+                                            }
+                                            continue
+                                        }
+                                    }
                                     try {
                                         $dd = ''
                                         $descKey = ''

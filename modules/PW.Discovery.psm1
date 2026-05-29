@@ -868,6 +868,50 @@ function Get-PWSheetStemFromDocumentName {
     return $stem
 }
 
+function Test-PWSheetPdfHasMatchingPair {
+    <#
+    .SYNOPSIS
+    True when a sheet PDF filename has a matching DGN in the same PW folder (same stem).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [hashtable]$PairCache = $null
+    )
+
+    if ($DocumentName -notmatch '(?i)\.pdf$' -or $DocumentName -match '(?i)-qc\.pdf$') { return $false }
+    if ($DocumentName -match '(?i)_statusset\.pdf$') { return $false }
+
+    $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    if ([string]::IsNullOrWhiteSpace($stem)) { return $false }
+
+    $cacheKey = ($FolderPath.ToLowerInvariant() + '|' + $stem.ToLowerInvariant())
+    if ($PairCache -and $PairCache.ContainsKey($cacheKey)) { return [bool]$PairCache[$cacheKey] }
+
+    $dgnName = $stem + '.dgn'
+    $found = $false
+    $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+    if ($searchCmd) {
+        $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+        try {
+            $params = @{
+                FolderPath     = $apiPath
+                JustThisFolder = $true
+                DocumentName   = $dgnName
+                ErrorAction    = 'Stop'
+            }
+            if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+            $doc = & $searchCmd @params | Select-Object -First 1
+            $found = ($null -ne $doc)
+        } catch { }
+    }
+
+    if ($PairCache) { $PairCache[$cacheKey] = $found }
+    return $found
+}
+
 function Get-PWAssociatedSheetDocumentNames {
     <#
     .SYNOPSIS

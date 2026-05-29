@@ -106,4 +106,35 @@ function Get-QCReconciliationPlan {
     return @{ shouldRun = $false; reason = 'audit_only'; triggerSource = 'none'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings
+function Get-QCPrependAuditActions {
+    <#
+    .SYNOPSIS
+    Audit action names that should trigger a QC_Archivist description re-read for paired sheet PDFs.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $defaults = @(
+        'DOCUMENT_MODIFY'
+        'DOCUMENT_CIN'
+        'DOCUMENT_FILE_REP'
+        'DOCUMENT_VERSION'
+        'DOCUMENT_CREATE'
+    )
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            if ($ap -is [hashtable] -and $ap.ContainsKey('qcPrependAuditActions') -and $ap.qcPrependAuditActions) {
+                $list = @($ap.qcPrependAuditActions | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($list.Count -gt 0) { return $list }
+            }
+            elseif ($ap.PSObject -and $ap.qcPrependAuditActions) {
+                $list = @($ap.qcPrependAuditActions | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($list.Count -gt 0) { return $list }
+            }
+        }
+    } catch { }
+    return $defaults
+}
+
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions

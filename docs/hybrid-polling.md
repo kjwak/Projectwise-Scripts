@@ -93,7 +93,7 @@ Each tick:
 
 ### QC_PREPEND Trigger
 
-Any audit event on a PDF file triggers a description check. If the document's description contains `QC_Archivist`, a QC_PREPEND job is enqueued. This replaces scanning every document in every folder.
+On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`), paired sheet PDFs in Sheets folders are re-read for `QC_Archivist` in the document description. When the tag is present, a `QC_PREPEND` job is enqueued. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips (manifest current, in-flight, etc.) do not block this check.
 
 ### STATUS_SET_GEN Trigger
 

@@ -85,3 +85,19 @@ def test_document_state_propagates_to_associated_sheet_files():
     watch = WATCHER.read_text(encoding="utf-8")
     assert "Sync-PWAssociatedSheetWorkflowState -Config $config" in watch
     assert "WATCH_SHEET_STATE_SYNC" in discovery
+
+
+def test_qc_prepend_audit_checks_description_on_paired_pdf_actions():
+    discovery = DISCOVERY.read_text(encoding="utf-8")
+    assert "function Test-PWSheetPdfHasMatchingPair" in discovery
+
+    watch = WATCHER.read_text(encoding="utf-8")
+    assert "Get-QCPrependAuditActions -Config $config" in watch
+    assert "Test-PWSheetPdfHasMatchingPair -FolderPath $fp" in watch
+    assert "qcPrependAuditActions -notcontains $actionName" in watch
+    assert "WATCH_AUDIT_STATUSSET_SKIP_CURRENT" in watch
+    assert "Audit PDF skipped (action not configured for QC_Archivist description check)" in watch
+
+    orch = (REPO_ROOT / "modules" / "QC.WatcherOrchestration.psm1").read_text(encoding="utf-8")
+    assert "function Get-QCPrependAuditActions" in orch
+    assert "DOCUMENT_MODIFY" in orch
