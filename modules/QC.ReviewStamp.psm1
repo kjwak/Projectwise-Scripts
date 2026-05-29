@@ -23,6 +23,17 @@ function _QCRS-GetRepoRoot {
     return (Split-Path -Parent $PSScriptRoot)
 }
 
+function _QCRS-AppendOptionalCliFlags {
+    param(
+        [System.Collections.Generic.List[object]]$TokenList,
+        [string]$Flag,
+        [string]$Value
+    )
+    if (_QCRS-IsBlank $Value) { return }
+    [void]$TokenList.Add($Flag)
+    [void]$TokenList.Add([string]$Value)
+}
+
 function _QCRS-BuildProcessArgumentLine {
     param([object[]]$Tokens = @())
     $parts = @()
@@ -168,17 +179,21 @@ function Invoke-QCReviewStamp {
     $stdoutPath = [System.IO.Path]::GetTempFileName()
     $stderrPath = [System.IO.Path]::GetTempFileName()
     try {
-        $argLine = _QCRS-BuildProcessArgumentLine -Tokens @(
-            '--apply-review-stamp',
-            [string]$PdfPath,
-            [string]$StampPath,
-            '--originator', [string]$Originator,
-            '--checker', [string]$Checker,
-            '--backchecker', [string]$Backchecker,
-            '--originator-date', [string]$OriginatorDate,
-            '--stamp-height-pt', ([string]$StampHeightPt),
-            '--margin-outside-pt', ([string]$MarginOutsidePt)
-        )
+        $stampTokens = [System.Collections.Generic.List[object]]::new()
+        [void]$stampTokens.Add('--apply-review-stamp')
+        [void]$stampTokens.Add([string]$PdfPath)
+        [void]$stampTokens.Add([string]$StampPath)
+        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--originator' -Value $Originator
+        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--checker' -Value $Checker
+        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--backchecker' -Value $Backchecker
+        [void]$stampTokens.Add('--originator-date')
+        [void]$stampTokens.Add([string]$OriginatorDate)
+        [void]$stampTokens.Add('--stamp-height-pt')
+        [void]$stampTokens.Add([string]$StampHeightPt)
+        [void]$stampTokens.Add('--margin-outside-pt')
+        [void]$stampTokens.Add([string]$MarginOutsidePt)
+
+        $argLine = _QCRS-BuildProcessArgumentLine -Tokens $stampTokens.ToArray()
         if ([string]::IsNullOrWhiteSpace($argLine)) {
             return @{ applied = $false; reason = 'Review stamp command line is empty (internal argument build failed).' }
         }
