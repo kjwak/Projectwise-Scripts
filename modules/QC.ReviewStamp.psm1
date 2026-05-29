@@ -24,12 +24,19 @@ function _QCRS-GetRepoRoot {
 }
 
 function Join-QCProcessArgumentList {
-    param([string[]]$Args)
-    ($Args | ForEach-Object {
-        $t = [string]$_
-        if ($t -match '[\s"]') { return ('"' + ($t -replace '"', '\"') + '"') }
-        return $t
-    }) -join ' '
+    <#
+    Single command-line string for Start-Process -ArgumentList (one string). Avoid parameter name $Args (conflicts with automatic $args).
+    #>
+    param([Parameter(Mandatory)][string[]]$ArgumentTokens)
+    $parts = @()
+    foreach ($item in @($ArgumentTokens)) {
+        if ($null -eq $item) { continue }
+        $t = [string]$item
+        if ($t.Length -eq 0) { continue }
+        if ($t -match '[\s"]') { $parts += ('"' + ($t -replace '"', '\"') + '"') }
+        else { $parts += $t }
+    }
+    return ($parts -join ' ')
 }
 
 function Resolve-QCReviewStampOverlayExe {
@@ -164,9 +171,19 @@ function Invoke-QCReviewStamp {
     $stdoutPath = [System.IO.Path]::GetTempFileName()
     $stderrPath = [System.IO.Path]::GetTempFileName()
     try {
-        $argLine = Join-QCProcessArgumentList -Args $stampArgs
-        $p = Start-Process -FilePath $OverlayExe -ArgumentList $argLine -Wait -NoNewWindow -PassThru `
-            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        # Prefer string[] ArgumentList (PowerShell quotes each token). Fallback to one quoted line.
+        $p = $null
+        try {
+            $p = Start-Process -FilePath $OverlayExe -ArgumentList @($stampArgs) -Wait -NoNewWindow -PassThru `
+                -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -ErrorAction Stop
+        } catch {
+            $argLine = Join-QCProcessArgumentList -ArgumentTokens $stampArgs
+            if ([string]::IsNullOrWhiteSpace($argLine)) {
+                throw 'Review stamp command line is empty (internal argument build failed).'
+            }
+            $p = Start-Process -FilePath $OverlayExe -ArgumentList $argLine -Wait -NoNewWindow -PassThru `
+                -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        }
         $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
         $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
         $combined = ($stdout + "`n" + $stderr).Trim()

@@ -274,6 +274,51 @@ function _SSS-InstallStatusSetPdf {
     }
 }
 
+function _SSS-NormalizeStatusSetExportLeaf {
+    <#
+    Strip leading NNN_ prefix from export filenames so retries do not build 002_002_name.pdf.
+    #>
+    param([string]$Leaf)
+    if ([string]::IsNullOrWhiteSpace($Leaf)) { return $Leaf }
+    if ($Leaf -match '^\d{3}_(.+)$') { return $Matches[1] }
+    return $Leaf
+}
+
+function _SSS-MoveStatusSetExportToUniqueName {
+    <#
+    Rename exported PDF to NNN_<basename>.pdf inside the job export folder.
+    Removes a stale destination file when the same job is retried (folder is reused per job id).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LocalPath,
+        [Parameter(Mandatory)][string]$ExportWorkDir,
+        [Parameter(Mandatory)][int]$SequenceIndex
+    )
+
+    $leaf = _SSS-NormalizeStatusSetExportLeaf -Leaf ([System.IO.Path]::GetFileName($LocalPath))
+    $uniqueLeaf = ('{0:000}_{1}' -f $SequenceIndex, $leaf)
+    $uniquePath = Join-Path $ExportWorkDir $uniqueLeaf
+
+    try {
+        $resolvedLocal = (Resolve-Path -LiteralPath $LocalPath -ErrorAction Stop).Path
+        $resolvedUnique = (Resolve-Path -LiteralPath $uniquePath -ErrorAction SilentlyContinue).Path
+        if ($resolvedUnique -and ($resolvedLocal -eq $resolvedUnique)) {
+            return $uniquePath
+        }
+    } catch { }
+
+    if ($LocalPath -eq $uniquePath) { return $uniquePath }
+
+    if (Test-Path -LiteralPath $uniquePath) {
+        Remove-Item -LiteralPath $uniquePath -Force -ErrorAction Stop
+        _SSS-FsThrottle
+    }
+
+    Move-Item -LiteralPath $LocalPath -Destination $uniquePath -Force -ErrorAction Stop
+    _SSS-FsThrottle
+    return $uniquePath
+}
+
 function _SSS-RemoveExportDirContentsFileFirst {
     <#
     .SYNOPSIS
@@ -2170,9 +2215,13 @@ function Export-StatusSetPdfToFolder {
                 return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF (CopiedOutLocalFileName).' -Data @{ localPath = $alt }
             }
         }
-        $newest = Get-ChildItem -LiteralPath $TargetFolder -File -Filter '*.pdf' -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        # Ignore numbered scratch files (NNN_name.pdf) from a prior partial run in the same export folder.
+        $newest = Get-ChildItem -LiteralPath $TargetFolder -File -Filter '*.pdf' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '^\d{3}_' } |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
         if ($newest) {
-            return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF (newest pdf in folder).' -Data @{ localPath = [string]$newest.FullName }
+            return New-QCSuccessResult -Code 'STATUS_SET_EXPORT_OK' -Message 'Exported PDF (newest unnumbered pdf in folder).' -Data @{ localPath = [string]$newest.FullName }
         }
         return New-QCFailureResult -Code 'STATUS_SET_EXPORT_RESOLVE_FAILED' -Message 'Export ran but local PDF path could not be resolved.' -Data @{ targetFolder = $TargetFolder; documentName = $name }
     } catch {
@@ -2437,9 +2486,9 @@ function Invoke-StatusSetNativeJob {
             # One scratch folder per job: fewer directory trees for AV to flag than per-sheet folders.
             # Basename collisions (same PDF name from two subfolders) are avoided by renaming after each export.
             $exportWorkDir = Join-Path $stagingBase ('_export_' + $exportJobTag)
-            # Do not aggressively delete/recreate staging at job start. Existing files
-            # are overwritten as needed and expired staging is handled by retention cleanup.
             _SSS-EnsureDir $exportWorkDir
+            # Same job id reuses this folder on retry; clear stale NNN_*.pdf so rename does not fail.
+            try { _SSS-RemoveExportDirContentsFileFirst -DirPath $exportWorkDir -RemoveEmptyDir $false } catch { }
 
             $manByKey = @{}
             if ($pwSheetCacheEnabled -and (-not $forceRebuild) -and $manifest) {
@@ -2505,19 +2554,13 @@ function Invoke-StatusSetNativeJob {
                 $ex = Export-StatusSetPdfToFolder -InputDocument $doc -TargetFolder $exportWorkDir
                 if (-not $ex.IsSuccess) { return $ex }
                 $localPath = [string]$ex.Data.localPath
-                $leaf = [System.IO.Path]::GetFileName($localPath)
-                $uniqueLeaf = ('{0:000}_{1}' -f $idx, $leaf)
-                $uniquePath = Join-Path $exportWorkDir $uniqueLeaf
-                if ($localPath -ne $uniquePath) {
-                    try {
-                        Move-Item -LiteralPath $localPath -Destination $uniquePath -Force -ErrorAction Stop
-                        $localPath = $uniquePath
-                    } catch {
-                        return New-QCFailureResult -Code 'STATUS_SET_EXPORT_RENAME_FAILED' -Message 'Could not move exported PDF to unique name in export folder.' -Data @{
-                            from = $localPath
-                            to = $uniquePath
-                            errorMessage = $_.Exception.Message
-                        }
+                try {
+                    $localPath = _SSS-MoveStatusSetExportToUniqueName -LocalPath $localPath -ExportWorkDir $exportWorkDir -SequenceIndex $idx
+                } catch {
+                    return New-QCFailureResult -Code 'STATUS_SET_EXPORT_RENAME_FAILED' -Message 'Could not move exported PDF to unique name in export folder.' -Data @{
+                        from = [string]$ex.Data.localPath
+                        to = (Join-Path $exportWorkDir (('{0:000}_{1}' -f $idx, (_SSS-NormalizeStatusSetExportLeaf -Leaf ([System.IO.Path]::GetFileName($localPath))))))
+                        errorMessage = $_.Exception.Message
                     }
                 }
                 $orderedPaths += $localPath
