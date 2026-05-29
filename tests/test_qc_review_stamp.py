@@ -40,7 +40,7 @@ def test_build_peer_review_field_values_updater_matches_originator() -> None:
     assert "qc_rechecker_name" not in fields
 
 
-def test_apply_review_stamp_does_not_change_page_geometry(tmp_path: Path) -> None:
+def test_apply_review_stamp_single_annotation_no_page_widgets(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"
     if not stamp_src.is_file():
@@ -67,6 +67,7 @@ def test_apply_review_stamp_does_not_change_page_geometry(tmp_path: Path) -> Non
     )
 
     assert result["stamp_annotation"] is True
+    assert result["field_values"]["qc_originator_name"] == "o@x.com"
 
     after = fitz.open(target)
     page = after[0]
@@ -75,8 +76,9 @@ def test_apply_review_stamp_does_not_change_page_geometry(tmp_path: Path) -> Non
     assert page.rotation == old_rot
 
     stamp_annots = [a for a in page.annots() or [] if a.type[1] == "Stamp"]
-    assert len(stamp_annots) >= 1
+    assert len(stamp_annots) == 1
+    assert "Originator: o@x.com" in (stamp_annots[0].info.get("content") or "")
 
-    names = {w.field_name for w in page.widgets() or []}
-    assert "qc_originator_name" in names
+    # Fields are baked into stamp appearance, not separate page widgets.
+    assert len(list(page.widgets() or [])) == 0
     after.close()

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Apply an editable peer-review stamp as PDF markup (Bluebeam-style).
+Apply a peer-review stamp as a single PDF Stamp annotation (Bluebeam-style).
 
-The sheet page is never modified: MediaBox/CropBox, rotation, and page content streams
-stay unchanged. The stamp is a rubber-stamp annotation plus optional AcroForm widgets
-on the annotation layer.
+The sheet page is never modified (MediaBox, CropBox, rotation, content streams).
+Field values are filled on the stamp template, then rendered into the stamp
+annotation appearance so the whole stamp moves as one object in the viewer.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ LOGGER = logging.getLogger("qc_review_stamp")
 
 DEFAULT_STAMP_HEIGHT_PT = 200.0
 DEFAULT_MARGIN_INSET_PT = 12.0
+# Supersample stamp appearance so text stays sharp when scaled into the annot rect.
+STAMP_APPEARANCE_SUPERSAMPLE = 2.0
 
 
 def _get_fitz():
@@ -71,89 +73,41 @@ def compute_stamp_rect_overlay_top_left(
     )
 
 
-def _scale_rect_from_stamp_page(src_rect: Any, stamp_page_rect: Any, dest_rect: Any) -> Any:
-    fitz = _get_fitz()
-    sw = float(stamp_page_rect.width) or 1.0
-    sh = float(stamp_page_rect.height) or 1.0
-    sx = float(dest_rect.width) / sw
-    sy = float(dest_rect.height) / sh
-    rx0 = float(src_rect.x0) - float(stamp_page_rect.x0)
-    ry0 = float(src_rect.y0) - float(stamp_page_rect.y0)
-    rx1 = float(src_rect.x1) - float(stamp_page_rect.x0)
-    ry1 = float(src_rect.y1) - float(stamp_page_rect.y0)
-    return fitz.Rect(
-        dest_rect.x0 + rx0 * sx,
-        dest_rect.y0 + ry0 * sy,
-        dest_rect.x0 + rx1 * sx,
-        dest_rect.y0 + ry1 * sy,
-    )
-
-
-def _render_stamp_pixmap(stamp_page: Any, stamp_w: float, stamp_h: float) -> Any:
-    sw = float(stamp_page.rect.width) or 1.0
-    sh = float(stamp_page.rect.height) or 1.0
-    fitz = _get_fitz()
-    matrix = fitz.Matrix(stamp_w / sw, stamp_h / sh)
-    return stamp_page.get_pixmap(matrix=matrix, alpha=True)
-
-
-def _copy_editable_widgets(
-    stamp_page: Any,
-    target_page: Any,
-    stamp_page_rect: Any,
-    dest_rect: Any,
-    field_values: dict[str, str],
-) -> int:
-    """Add editable widget annotations (markup layer only)."""
-    fitz = _get_fitz()
-    sh = float(stamp_page_rect.height) or 1.0
-    sy = float(dest_rect.height) / sh
-    added = 0
+def _fill_stamp_template_widgets(stamp_page: Any, values: dict[str, str]) -> None:
+    """Apply role values to the stamp template so they appear in the rendered appearance."""
     for w in stamp_page.widgets() or []:
         name = (w.field_name or "").strip()
         if not name:
             continue
-        value = field_values.get(name)
-        if value is None:
-            value = w.field_value
-        if value is None:
-            value = ""
-        else:
-            value = str(value)
+        if name in values:
+            w.field_value = values[name]
+        try:
+            w.update()
+        except Exception:
+            LOGGER.debug("widget update failed for %s", name, exc_info=True)
 
-        nr = _scale_rect_from_stamp_page(w.rect, stamp_page_rect, dest_rect)
-        nw = fitz.Widget()
-        nw.field_name = name
-        nw.field_type = w.field_type
-        nw.field_value = value
-        nw.rect = nr
-        try:
-            if w.text_fontsize:
-                nw.text_fontsize = max(4.0, float(w.text_fontsize) * sy)
-        except Exception:
-            pass
-        try:
-            if w.text_color:
-                nw.text_color = w.text_color
-        except Exception:
-            pass
-        try:
-            nw.border_width = 0
-        except Exception:
-            pass
-        try:
-            if w.border_color:
-                nw.border_color = w.border_color
-        except Exception:
-            pass
-        try:
-            if w.fill_color:
-                nw.fill_color = w.fill_color
-        except Exception:
-            pass
-        target_page.add_widget(nw)
-        added += 1
-    return added
+
+def _render_stamp_pixmap(stamp_page: Any, stamp_w: float, stamp_h: float) -> Any:
+    """Rasterize filled stamp template for use as stamp annotation appearance."""
+    sw = float(stamp_page.rect.width) or 1.0
+    sh = float(stamp_page.rect.height) or 1.0
+    fitz = _get_fitz()
+    base = float(stamp_w) / sw
+    matrix = fitz.Matrix(base * STAMP_APPEARANCE_SUPERSAMPLE, (stamp_h / sh) * STAMP_APPEARANCE_SUPERSAMPLE)
+    return stamp_page.get_pixmap(matrix=matrix, alpha=True)
+
+
+def _stamp_annot_metadata(values: dict[str, str]) -> tuple[str, str]:
+    """Popup title/subject and a short content line for the stamp annotation."""
+    parts = []
+    if values.get("qc_originator_name"):
+        parts.append(f"Originator: {values['qc_originator_name']}")
+    if values.get("qc_checker_name"):
+        parts.append(f"Checker: {values['qc_checker_name']}")
+    if values.get("qc_originator_date"):
+        parts.append(f"Date: {values['qc_originator_date']}")
+    content = "; ".join(parts) if parts else "Peer Review"
+    return "Peer Review", content
 
 
 def apply_review_stamp(
@@ -168,9 +122,9 @@ def apply_review_stamp(
     output_path: Path | None = None,
 ) -> dict[str, Any]:
     """
-    Add a Bluebeam-style rubber stamp annotation on page_index.
+    Add one rubber-stamp annotation with pre-filled appearance (moves as a unit in viewers).
 
-    Page geometry and content are preserved. Returns metadata about the markup added.
+    Page geometry and content are preserved.
     """
     fitz = _get_fitz()
     pdf_path = Path(pdf_path)
@@ -198,11 +152,7 @@ def apply_review_stamp(
         stamp_w = sw * scale
         stamp_h = sh * scale
 
-        for w in stamp_page.widgets() or []:
-            name = (w.field_name or "").strip()
-            if name in values:
-                w.field_value = values[name]
-                w.update()
+        _fill_stamp_template_widgets(stamp_page, values)
 
         with fitz.open(pdf_path) as doc:
             if page_index < 0 or page_index >= doc.page_count:
@@ -219,13 +169,15 @@ def apply_review_stamp(
 
             pixmap = _render_stamp_pixmap(stamp_page, stamp_w, stamp_h)
             stamp_annot = page.add_stamp_annot(stamp_rect, stamp=pixmap)
-            stamp_annot.set_info(title="Peer Review", subject="QC Review Stamp", content="Peer Review")
+            title, content = _stamp_annot_metadata(values)
+            stamp_annot.set_info(title=title, subject="QC Review Stamp", content=content)
             stamp_annot.set_flags(stamp_annot.flags | fitz.PDF_ANNOT_IS_PRINT)
+            # Store field payload for viewers/tools that read annotation metadata.
+            try:
+                stamp_annot.set_metadata({"qc_review_fields": json.dumps(values, sort_keys=True)})
+            except Exception:
+                LOGGER.debug("set_metadata skipped", exc_info=True)
             stamp_annot.update()
-
-            added = _copy_editable_widgets(
-                stamp_page, page, stamp_page_rect, stamp_rect, values
-            )
 
             if tuple(page.mediabox) != tuple(orig_mediabox):
                 raise RuntimeError("Review stamp modified page MediaBox (not allowed).")
@@ -243,7 +195,7 @@ def apply_review_stamp(
         "pdf": str(out_path if not in_place else pdf_path),
         "stamp_rect": [stamp_rect.x0, stamp_rect.y0, stamp_rect.x1, stamp_rect.y1],
         "stamp_annotation": True,
-        "widgets_added": added,
+        "field_values": values,
         "page_mediabox": [orig_mediabox.x0, orig_mediabox.y0, orig_mediabox.x1, orig_mediabox.y1],
         "stamp_height_pt": stamp_height_pt,
     }
