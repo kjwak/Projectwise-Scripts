@@ -23,18 +23,10 @@ function _QCRS-GetRepoRoot {
     return (Split-Path -Parent $PSScriptRoot)
 }
 
-function Join-QCProcessArgumentList {
-    <#
-    Single command-line string for Start-Process -ArgumentList (one string). Avoid parameter name $Args (conflicts with automatic $args).
-    #>
-    param(
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-        [AllowEmptyCollection()]
-        [string[]]
-        $ArgumentTokens
-    )
+function _QCRS-BuildProcessArgumentLine {
+    param([object[]]$Tokens = @())
     $parts = @()
-    foreach ($item in @($ArgumentTokens)) {
+    foreach ($item in @($Tokens)) {
         if ($null -eq $item) { continue }
         $t = [string]$item
         if ($t.Length -eq 0) { continue }
@@ -42,6 +34,18 @@ function Join-QCProcessArgumentList {
         else { $parts += $t }
     }
     return ($parts -join ' ')
+}
+
+function Join-QCProcessArgumentList {
+    <#
+    Single command-line string for Start-Process -ArgumentList (one string). Avoid parameter name $Args (conflicts with automatic $args).
+    #>
+    param(
+        [AllowEmptyCollection()]
+        [object[]]
+        $ArgumentTokens = @()
+    )
+    return (_QCRS-BuildProcessArgumentLine -Tokens $ArgumentTokens)
 }
 
 function Resolve-QCReviewStampOverlayExe {
@@ -161,26 +165,24 @@ function Invoke-QCReviewStamp {
         $OriginatorDate = (Get-Date).ToString('MM/dd/yyyy')
     }
 
-    # Build as [string[]] explicitly; Start-Process on Windows is most reliable with one quoted command line.
-    $stampTokens = [string[]]@(
-        '--apply-review-stamp',
-        [string]$PdfPath,
-        [string]$StampPath,
-        '--originator', [string]$Originator,
-        '--checker', [string]$Checker,
-        '--backchecker', [string]$Backchecker,
-        '--originator-date', [string]$OriginatorDate,
-        '--stamp-height-pt', ([string]$StampHeightPt),
-        '--margin-outside-pt', ([string]$MarginOutsidePt)
-    )
-    $argLine = Join-QCProcessArgumentList -ArgumentTokens $stampTokens
-    if ([string]::IsNullOrWhiteSpace($argLine)) {
-        return @{ applied = $false; reason = 'Review stamp command line is empty (internal argument build failed).' }
-    }
-
     $stdoutPath = [System.IO.Path]::GetTempFileName()
     $stderrPath = [System.IO.Path]::GetTempFileName()
     try {
+        $argLine = _QCRS-BuildProcessArgumentLine -Tokens @(
+            '--apply-review-stamp',
+            [string]$PdfPath,
+            [string]$StampPath,
+            '--originator', [string]$Originator,
+            '--checker', [string]$Checker,
+            '--backchecker', [string]$Backchecker,
+            '--originator-date', [string]$OriginatorDate,
+            '--stamp-height-pt', ([string]$StampHeightPt),
+            '--margin-outside-pt', ([string]$MarginOutsidePt)
+        )
+        if ([string]::IsNullOrWhiteSpace($argLine)) {
+            return @{ applied = $false; reason = 'Review stamp command line is empty (internal argument build failed).' }
+        }
+
         $p = Start-Process -FilePath $OverlayExe -ArgumentList $argLine -Wait -NoNewWindow -PassThru `
             -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -ErrorAction Stop
         $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
