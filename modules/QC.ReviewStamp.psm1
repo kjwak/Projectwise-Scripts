@@ -27,7 +27,12 @@ function Join-QCProcessArgumentList {
     <#
     Single command-line string for Start-Process -ArgumentList (one string). Avoid parameter name $Args (conflicts with automatic $args).
     #>
-    param([Parameter(Mandatory)][string[]]$ArgumentTokens)
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyCollection()]
+        [string[]]
+        $ArgumentTokens
+    )
     $parts = @()
     foreach ($item in @($ArgumentTokens)) {
         if ($null -eq $item) { continue }
@@ -156,34 +161,28 @@ function Invoke-QCReviewStamp {
         $OriginatorDate = (Get-Date).ToString('MM/dd/yyyy')
     }
 
-    $stampArgs = @(
+    # Build as [string[]] explicitly; Start-Process on Windows is most reliable with one quoted command line.
+    $stampTokens = [string[]]@(
         '--apply-review-stamp',
-        $PdfPath,
-        $StampPath,
+        [string]$PdfPath,
+        [string]$StampPath,
         '--originator', [string]$Originator,
         '--checker', [string]$Checker,
         '--backchecker', [string]$Backchecker,
         '--originator-date', [string]$OriginatorDate,
-        '--stamp-height-pt', [string]$StampHeightPt,
-        '--margin-outside-pt', [string]$MarginOutsidePt
+        '--stamp-height-pt', ([string]$StampHeightPt),
+        '--margin-outside-pt', ([string]$MarginOutsidePt)
     )
+    $argLine = Join-QCProcessArgumentList -ArgumentTokens $stampTokens
+    if ([string]::IsNullOrWhiteSpace($argLine)) {
+        return @{ applied = $false; reason = 'Review stamp command line is empty (internal argument build failed).' }
+    }
 
     $stdoutPath = [System.IO.Path]::GetTempFileName()
     $stderrPath = [System.IO.Path]::GetTempFileName()
     try {
-        # Prefer string[] ArgumentList (PowerShell quotes each token). Fallback to one quoted line.
-        $p = $null
-        try {
-            $p = Start-Process -FilePath $OverlayExe -ArgumentList @($stampArgs) -Wait -NoNewWindow -PassThru `
-                -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -ErrorAction Stop
-        } catch {
-            $argLine = Join-QCProcessArgumentList -ArgumentTokens $stampArgs
-            if ([string]::IsNullOrWhiteSpace($argLine)) {
-                throw 'Review stamp command line is empty (internal argument build failed).'
-            }
-            $p = Start-Process -FilePath $OverlayExe -ArgumentList $argLine -Wait -NoNewWindow -PassThru `
-                -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        }
+        $p = Start-Process -FilePath $OverlayExe -ArgumentList $argLine -Wait -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -ErrorAction Stop
         $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
         $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
         $combined = ($stdout + "`n" + $stderr).Trim()
