@@ -557,7 +557,19 @@ def write_current_master_from_incoming(incoming_path: Path, current_master_path:
         src.close()
 
 
+def _run_review_stamp_mode() -> None:
+    """Delegate to qc_review_stamp (same PyInstaller bundle; no separate Python on PATH)."""
+    from qc_review_stamp import main as stamp_main
+
+    stamp_main()
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--apply-review-stamp":
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        _run_review_stamp_mode()
+        return
+
     parser = argparse.ArgumentParser(
         description="QC overlay prepend: compare incoming vs page 1 of history, create overlay, prepend",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

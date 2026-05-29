@@ -29,6 +29,7 @@ a = Analysis(
         (str(OVERLAY / "overlay_build.py"), "."),
         (str(OVERLAY / "overlay_layerize.py"), "."),
         (str(OVERLAY / "flatten_source_layers.py"), "."),
+        (str(OVERLAY / "qc_review_stamp.py"), "."),
     ]
     + _extra_datas,
     hiddenimports=list(

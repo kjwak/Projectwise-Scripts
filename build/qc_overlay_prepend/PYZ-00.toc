@@ -1122,6 +1122,10 @@
    'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
    'QC\\.venv_overlay_build\\Lib\\site-packages\\pymupdf\\utils.py',
    'PYMODULE'),
+  ('qc_review_stamp',
+   'C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF '
+   'QC\\overlay\\qc_review_stamp.py',
+   'PYMODULE'),
   ('queue',
    'C:\\Users\\jflint\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\queue.py',
    'PYMODULE'),

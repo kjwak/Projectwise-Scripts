@@ -401,81 +401,19 @@ function Invoke-PrependQcPdfAttributeSync {
   }
 }
 
-function Resolve-QcReviewStampTool {
-  $repoRoot = Split-Path -Parent $PSScriptRoot
-  $cfg = Get-PrependQcConfig
-  $qc = @{}
-  if ($cfg.ContainsKey('qcPrepend') -and $cfg.qcPrepend) { $qc = $cfg.qcPrepend }
-  if ($qc.ContainsKey('reviewStampToolPath') -and $qc.reviewStampToolPath) {
-    $p = [string]$qc.reviewStampToolPath
-    if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $repoRoot $p }
-    if (Test-Path -LiteralPath $p) { return @{ tool = $p; kind = 'exe' } }
-  }
-  $distExe = Join-Path $repoRoot 'dist\qc_review_stamp\qc_review_stamp.exe'
-  if (Test-Path -LiteralPath $distExe) { return @{ tool = $distExe; kind = 'exe' } }
-  $pyScript = Join-Path $repoRoot 'overlay\qc_review_stamp.py'
-  if (Test-Path -LiteralPath $pyScript) {
-    foreach ($py in @('python', 'py')) {
-      if (Get-Command $py -ErrorAction SilentlyContinue) {
-        return @{ tool = $py; kind = 'python'; script = $pyScript }
-      }
-    }
-  }
-  return $null
-}
-
-function Get-PeerReviewStampSettings {
-  $cfg = Get-PrependQcConfig
-  $rs = @{}
-  if ($cfg.ContainsKey('qcPrepend') -and $cfg.qcPrepend -and $cfg.qcPrepend.ContainsKey('reviewStamps')) {
-    $rs = $cfg.qcPrepend.reviewStamps
-  }
-  $enabled = $true
-  if ($null -ne $rs -and $rs.ContainsKey('enabled')) { try { $enabled = [bool]$rs.enabled } catch { } }
-  if (-not $enabled) { return $null }
-
-  $peer = 'Peer Review'
-  try {
-    if ($cfg.qcWorkflow.reviewTypes.peerReview) { $peer = [string]$cfg.qcWorkflow.reviewTypes.peerReview }
-  } catch { }
-
-  $repoRoot = Split-Path -Parent $PSScriptRoot
-  $stampPath = Join-Path $repoRoot 'stamps\Peer_Review_Stamp.pdf'
-  $stampHeight = 200
-  $marginOutside = 12
-  if ($rs) {
-    if ($rs.ContainsKey('stampHeightPt')) { $stampHeight = [double]$rs.stampHeightPt }
-    if ($rs.ContainsKey('marginOutsidePt')) { $marginOutside = [double]$rs.marginOutsidePt }
-    if ($rs.ContainsKey('peerReview') -and $rs.peerReview) {
-      $pr = $rs.peerReview
-      if ($pr.stampPath) {
-        $sp = [string]$pr.stampPath
-        if (-not [System.IO.Path]::IsPathRooted($sp)) { $sp = Join-Path $repoRoot $sp }
-        $stampPath = $sp
-      }
-      if ($pr.reviewType) { $peer = [string]$pr.reviewType }
-    }
-  }
-  if (-not (Test-Path -LiteralPath $stampPath)) {
-    Write-Log "Peer review stamp template not found: $stampPath" -Severity WARNING
-    return $null
-  }
-  return @{
-    reviewType = $peer
-    stampPath = $stampPath
-    stampHeightPt = $stampHeight
-    marginOutsidePt = $marginOutside
-  }
-}
-
 function Invoke-QcPeerReviewStampIfNeeded {
   param(
     [Parameter(Mandatory)][string]$MergedPdfPath,
     [Parameter(Mandatory)][string]$FolderPath,
     [Parameter(Mandatory)][string]$SourceDocumentName
   )
-  $stampCfg = Get-PeerReviewStampSettings
-  if (-not $stampCfg) { return }
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $stampMod = Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1'
+  if (-not (Test-Path -LiteralPath $stampMod)) {
+    Write-Log 'Review stamp skipped: QC.ReviewStamp.psm1 not found.' -Severity WARNING
+    return
+  }
+  Import-Module $stampMod -Force -ErrorAction Stop | Out-Null
 
   $cfg = Get-PrependQcConfig
   if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
@@ -487,57 +425,25 @@ function Invoke-QcPeerReviewStampIfNeeded {
     Write-Log "Review stamp skipped: could not read source PDF attributes ($($roles.error))." -Severity WARNING
     return
   }
-  $reviewType = [string]$roles.qcReviewType
-  if ([string]::IsNullOrWhiteSpace($reviewType) -or ($reviewType -ne [string]$stampCfg.reviewType)) {
-    Write-Log "Review stamp skipped: QC_Review_Type is '$reviewType' (need '$($stampCfg.reviewType)')."
+
+  $logBlock = { param($m) Write-Log $m }
+  $result = Invoke-QCReviewStampIfPeerReview -PdfPath $MergedPdfPath -Config $cfg -RoleFields $roles `
+    -OverlayExe $QcOverlayExe -Log $logBlock
+
+  if ($result.skipped) {
+    if ($result.reason) { Write-Log "Review stamp skipped: $($result.reason)" }
     return
   }
-
-  $tool = Resolve-QcReviewStampTool
-  if (-not $tool) {
-    Write-Log 'Review stamp skipped: no qc_review_stamp tool (python or dist exe).' -Severity WARNING
-    return
-  }
-
-  $originator = [string]$roles.designerEmail
-  $checker = [string]$roles.reviewerEmail
-  $backchecker = [string]$roles.checkerEmail
-  $dateStr = (Get-Date).ToString('MM/dd/yyyy')
-
-  $commonArgs = @(
-    $MergedPdfPath,
-    $stampCfg.stampPath,
-    '--originator', $originator,
-    '--checker', $checker,
-    '--backchecker', $backchecker,
-    '--originator-date', $dateStr,
-    '--stamp-height-pt', [string]$stampCfg.stampHeightPt,
-    '--margin-outside-pt', [string]$stampCfg.marginOutsidePt
-  )
-
-  Write-Log "Applying peer review stamp (outside top-left) to page 1: $MergedPdfPath"
-    $prevEap = $ErrorActionPreference
-  try {
-    $ErrorActionPreference = 'Continue'
-    if ($tool.kind -eq 'python') {
-      $out = & $tool.tool $tool.script @commonArgs 2>&1
-    } else {
-      $out = & $tool.tool @commonArgs 2>&1
+  if (-not $result.applied) {
+    $detail = if ($result.stdout) { $result.stdout } else { $result.reason }
+    if ($detail) {
+      foreach ($line in @([string]$detail -split "`n")) {
+        $s = $line.TrimEnd("`r")
+        if ($s.Trim()) { Write-Log $s }
+      }
     }
-    $exit = $LASTEXITCODE
-    foreach ($line in @($out)) {
-      $s = [string]$line
-      if ($s.Trim()) { Write-Log $s }
-    }
-    if ($null -ne $exit -and $exit -ne 0) {
-      throw "qc_review_stamp exited with code $exit"
-    }
-    Write-Log 'Peer review stamp applied (editable fields).'
-  } catch {
-    Write-Log "Peer review stamp failed: $($_.Exception.Message)" -Severity ERROR
-    throw
-  } finally {
-    $ErrorActionPreference = $prevEap
+    Write-Log "Peer review stamp failed: $($result.reason)" -Severity ERROR
+    throw "Peer review stamp failed: $($result.reason)"
   }
 }
 

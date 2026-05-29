@@ -6,6 +6,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -51,129 +52,19 @@ function _QCP-GetRepoRoot() {
     return (Split-Path -Parent $PSScriptRoot)
 }
 
-function _QCP-GetPeerReviewStampSettings([hashtable]$Config) {
-    if (-not $Config) { return $null }
-    $qc = _QCP-ToHashtable $Config.qcPrepend
-    if (-not $qc) { return $null }
-    $rs = _QCP-ToHashtable $qc.reviewStamps
-    if (-not $rs) { return $null }
-    $enabled = $true
-    if ($rs.ContainsKey('enabled')) { try { $enabled = [bool]$rs.enabled } catch { $enabled = $true } }
-    if (-not $enabled) { return $null }
-
-    $peerType = 'Peer Review'
-    $wf = _QCP-ToHashtable $Config.qcWorkflow
-    if ($wf) {
-        $rt = _QCP-ToHashtable $wf.reviewTypes
-        if ($rt -and $rt.peerReview) { $peerType = [string]$rt.peerReview }
-    }
-
-    $repoRoot = _QCP-GetRepoRoot
-    $stampPath = Join-Path $repoRoot 'stamps\Peer_Review_Stamp.pdf'
-    $stampHeight = 200.0
-    $marginOutside = 12.0
-    $pr = _QCP-ToHashtable $rs.peerReview
-    if ($rs.ContainsKey('stampHeightPt')) { try { $stampHeight = [double]$rs.stampHeightPt } catch { } }
-    if ($rs.ContainsKey('marginOutsidePt')) { try { $marginOutside = [double]$rs.marginOutsidePt } catch { } }
-    if ($pr) {
-        if ($pr.stampPath) {
-            $sp = [string]$pr.stampPath
-            if (-not [System.IO.Path]::IsPathRooted($sp)) { $sp = Join-Path $repoRoot $sp }
-            $stampPath = $sp
-        }
-        if ($pr.reviewType) { $peerType = [string]$pr.reviewType }
-    }
-    if (-not (Test-Path -LiteralPath $stampPath)) { return $null }
-    return @{
-        reviewType = $peerType
-        stampPath = $stampPath
-        stampHeightPt = $stampHeight
-        marginOutsidePt = $marginOutside
-    }
-}
-
-function _QCP-ResolveReviewStampTool([hashtable]$Config) {
-    $repoRoot = _QCP-GetRepoRoot
-    $qc = _QCP-ToHashtable $Config.qcPrepend
-    if ($qc -and $qc.reviewStampToolPath) {
-        $p = [string]$qc.reviewStampToolPath
-        if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $repoRoot $p }
-        if (Test-Path -LiteralPath $p) { return @{ tool = $p; kind = 'exe' } }
-    }
-    $distExe = Join-Path $repoRoot 'dist\qc_review_stamp\qc_review_stamp.exe'
-    if (Test-Path -LiteralPath $distExe) { return @{ tool = $distExe; kind = 'exe' } }
-    $pyScript = Join-Path $repoRoot 'overlay\qc_review_stamp.py'
-    if (Test-Path -LiteralPath $pyScript) {
-        foreach ($py in @('python', 'py')) {
-            if (Get-Command $py -ErrorAction SilentlyContinue) {
-                return @{ tool = $py; kind = 'python'; script = $pyScript }
-            }
-        }
-    }
-    return $null
-}
-
-function _QCP-InvokePeerReviewStampOnPdf {
-    param(
-        [Parameter(Mandatory)][string]$PdfPath,
-        [Parameter(Mandatory)][hashtable]$StampSettings,
-        [Parameter(Mandatory)][hashtable]$RoleFields,
-        [Parameter(Mandatory)][hashtable]$Config
-    )
-
-    $reviewType = [string]$RoleFields.qcReviewType
-    if (_QCP-IsNullOrWhiteSpace $reviewType -or ($reviewType -ne [string]$StampSettings.reviewType)) {
-        return @{ applied = $false; reason = "QC_Review_Type '$reviewType' is not '$($StampSettings.reviewType)'" }
-    }
-
-    $tool = _QCP-ResolveReviewStampTool -Config $Config
-    if (-not $tool) {
-        return @{ applied = $false; reason = 'qc_review_stamp tool not found' }
-    }
-
-    $dateStr = (Get-Date).ToString('MM/dd/yyyy')
-    $commonArgs = @(
-        $PdfPath,
-        [string]$StampSettings.stampPath,
-        '--originator', [string]$RoleFields.designerEmail,
-        '--checker', [string]$RoleFields.reviewerEmail,
-        '--backchecker', [string]$RoleFields.checkerEmail,
-        '--originator-date', $dateStr,
-        '--stamp-height-pt', [string]$StampSettings.stampHeightPt,
-        '--margin-outside-pt', [string]$StampSettings.marginOutsidePt
-    )
-
-    $prevEap = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        if ($tool.kind -eq 'python') {
-            $out = & $tool.tool $tool.script @commonArgs 2>&1
-        } else {
-            $out = & $tool.tool @commonArgs 2>&1
-        }
-        $exit = $LASTEXITCODE
-        if ($null -ne $exit -and $exit -ne 0) {
-            return @{ applied = $false; reason = "qc_review_stamp exit $exit"; stdout = [string]$out }
-        }
-        return @{ applied = $true; stdout = [string]$out }
-    } catch {
-        return @{ applied = $false; reason = $_.Exception.Message }
-    } finally {
-        $ErrorActionPreference = $prevEap
-    }
-}
-
 function _QCP-TryApplyPeerReviewStampFromJob {
     param(
         [Parameter(Mandatory)][string]$PdfPath,
         [Parameter(Mandatory)][hashtable]$Job,
         [Parameter(Mandatory)][hashtable]$Config,
         [string]$FolderPath = '',
-        [string]$SourceDocumentName = ''
+        [string]$SourceDocumentName = '',
+        [string]$OverlayExe = ''
     )
 
-    $stampCfg = _QCP-GetPeerReviewStampSettings -Config $Config
-    if (-not $stampCfg) { return @{ applied = $false; reason = 'review stamps disabled or template missing' } }
+    if (-not (Get-Command -Name 'Invoke-QCReviewStampIfPeerReview' -ErrorAction SilentlyContinue)) {
+        return @{ applied = $false; reason = 'QC.ReviewStamp module not loaded' }
+    }
 
     $roles = @{
         designerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('designerEmail', 'qcDesignerEmail')
@@ -194,9 +85,12 @@ function _QCP-TryApplyPeerReviewStampFromJob {
         }
     }
 
-    $result = _QCP-InvokePeerReviewStampOnPdf -PdfPath $PdfPath -StampSettings $stampCfg -RoleFields $roles -Config $Config
-    $result['reviewType'] = [string]$roles.qcReviewType
-    return $result
+    if (_QCP-IsNullOrWhiteSpace $OverlayExe) {
+        $qc = _QCP-ToHashtable $Config.qcPrepend
+        if ($qc -and $qc.overlayExePath) { $OverlayExe = [string]$qc.overlayExePath }
+    }
+
+    return Invoke-QCReviewStampIfPeerReview -PdfPath $PdfPath -Config $Config -RoleFields $roles -OverlayExe $OverlayExe
 }
 
 function _QCP-EnsureDir([string]$Path) {
@@ -955,10 +849,13 @@ function Invoke-QCPrependProcessor {
                 return New-QCFailureResult -Code 'QC_OVERLAY_FAILED' -Message 'Overlay exe failed.' -Data @{ exitCode = $overlayRes.exitCode; stderr = $overlayRes.stderr; stdout = $overlayRes.stdout; args = $overlayRes.args; argLine = $overlayRes.argLine; exe = $overlayExePath }
             }
 
-            $stampCfg = _QCP-GetPeerReviewStampSettings -Config $Config
+            $stampCfg = if (Get-Command -Name 'Get-QCReviewStampSettings' -ErrorAction SilentlyContinue) {
+                Get-QCReviewStampSettings -Config $Config
+            } else { $null }
             if ($stampCfg) {
                 $stampRes = _QCP-TryApplyPeerReviewStampFromJob -PdfPath $tmpQcOut -Job $Job -Config $Config `
-                    -FolderPath ([string]$Job.sourceFolder) -SourceDocumentName ([string]$Job.sourceName)
+                    -FolderPath ([string]$Job.sourceFolder) -SourceDocumentName ([string]$Job.sourceName) `
+                    -OverlayExe $overlayExePath
                 $peerRt = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
                 if (_QCP-IsNullOrWhiteSpace $peerRt) { $peerRt = [string]$stampRes.reviewType }
                 if ($peerRt -eq [string]$stampCfg.reviewType -and -not $stampRes.applied) {
@@ -991,10 +888,13 @@ function Invoke-QCPrependProcessor {
         }
 
         if (-not $enableOverlay) {
-            $stampCfg = _QCP-GetPeerReviewStampSettings -Config $Config
+            $stampCfg = if (Get-Command -Name 'Get-QCReviewStampSettings' -ErrorAction SilentlyContinue) {
+                Get-QCReviewStampSettings -Config $Config
+            } else { $null }
             if ($stampCfg) {
                 $stampRes = _QCP-TryApplyPeerReviewStampFromJob -PdfPath $tmpHistory -Job $Job -Config $Config `
-                    -FolderPath ([string]$Job.sourceFolder) -SourceDocumentName ([string]$Job.sourceName)
+                    -FolderPath ([string]$Job.sourceFolder) -SourceDocumentName ([string]$Job.sourceName) `
+                    -OverlayExe $overlayExePath
                 if (-not $stampRes.applied) {
                     $rt = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
                     if ($rt -eq [string]$stampCfg.reviewType) {
