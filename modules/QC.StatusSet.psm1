@@ -288,6 +288,7 @@ function _SSS-MoveStatusSetExportToUniqueName {
     <#
     Rename exported PDF to NNN_<basename>.pdf inside the job export folder.
     Removes a stale destination file when the same job is retried (folder is reused per job id).
+    Retries Move/Remove when AV briefly locks the freshly exported PDF.
     #>
     param(
         [Parameter(Mandatory)][string]$LocalPath,
@@ -309,14 +310,25 @@ function _SSS-MoveStatusSetExportToUniqueName {
 
     if ($LocalPath -eq $uniquePath) { return $uniquePath }
 
-    if (Test-Path -LiteralPath $uniquePath) {
-        Remove-Item -LiteralPath $uniquePath -Force -ErrorAction Stop
-        _SSS-FsThrottle
-    }
-
-    Move-Item -LiteralPath $LocalPath -Destination $uniquePath -Force -ErrorAction Stop
     _SSS-FsThrottle
-    return $uniquePath
+
+    $lastEx = $null
+    for ($a = 1; $a -le 22; $a++) {
+        try {
+            if (Test-Path -LiteralPath $uniquePath) {
+                Remove-Item -LiteralPath $uniquePath -Force -ErrorAction Stop
+                _SSS-FsThrottle
+            }
+            Move-Item -LiteralPath $LocalPath -Destination $uniquePath -Force -ErrorAction Stop
+            _SSS-FsThrottle
+            return $uniquePath
+        } catch {
+            $lastEx = $_
+        }
+        if ($a -ge 22) { break }
+        Start-Sleep -Milliseconds ([Math]::Min(3000, 200 + ($a * 150)))
+    }
+    throw $lastEx
 }
 
 function _SSS-RemoveExportDirContentsFileFirst {
