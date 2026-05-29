@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Apply an editable AcroForm review stamp outside the top-left of page 1.
+Apply an editable peer-review stamp as PDF markup (Bluebeam-style).
 
-Typical sheet PDFs (e.g. 22x34 in) keep the plot on the mediabox; the stamp is placed
-above and to the left of the page corner, then MediaBox/CropBox are expanded so viewers
-show the stamp in the margin.
+The sheet page is never modified: MediaBox/CropBox, rotation, and page content streams
+stay unchanged. The stamp is a rubber-stamp annotation plus optional AcroForm widgets
+on the annotation layer.
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ from typing import Any
 
 LOGGER = logging.getLogger("qc_review_stamp")
 
-# Letter template default; scaled to stamp_height_pt on apply.
 DEFAULT_STAMP_HEIGHT_PT = 200.0
-DEFAULT_MARGIN_OUTSIDE_PT = 12.0
+DEFAULT_MARGIN_INSET_PT = 12.0
 
 
 def _get_fitz():
@@ -45,74 +44,31 @@ def _parse_field_values(raw: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
-def compute_stamp_rect_outside_top_left(
+def compute_stamp_rect_overlay_top_left(
     page_rect: Any,
     stamp_width: float,
     stamp_height: float,
-    margin_outside: float,
-) -> tuple[Any, Any, float, float]:
+    margin_inset: float,
+) -> Any:
     """
-    Return (stamp_rect, expanded_mediabox, translate_x, translate_y) in PDF coordinates (y up).
+    Stamp rectangle at the visual top-left of the page, inside existing page bounds.
 
-    Keeps expanded mediabox origin at the page's lower-left (no negative x0). Existing page
-    content is shifted right by translate_x so the stamp can sit outside the sheet's top-left
-    corner at positive coordinates (viewers render reliably).
+    Uses PDF coordinates (y increases upward). Does not expand the page.
     """
     fitz = _get_fitz()
-    px0, py0, px1, py1 = float(page_rect.x0), float(page_rect.y0), float(page_rect.x1), float(page_rect.y1)
-
-    left_pad = float(margin_outside) + float(stamp_width)
-    top_pad = float(margin_outside) + float(stamp_height)
-    translate_x = left_pad
-    translate_y = 0.0
-
-    stamp_rect = fitz.Rect(
-        px0,
-        py1 + float(margin_outside),
-        px0 + float(stamp_width),
-        py1 + float(margin_outside) + float(stamp_height),
+    px0, _py0, _px1, py1 = (
+        float(page_rect.x0),
+        float(page_rect.y0),
+        float(page_rect.x1),
+        float(page_rect.y1),
     )
-    expanded = fitz.Rect(
-        px0,
-        py0,
-        px1 + left_pad,
-        py1 + top_pad,
+    inset = float(margin_inset)
+    return fitz.Rect(
+        px0 + inset,
+        py1 - inset - float(stamp_height),
+        px0 + inset + float(stamp_width),
+        py1 - inset,
     )
-    return stamp_rect, expanded, translate_x, translate_y
-
-
-def _shift_page_content(page: Any, dx: float, dy: float, page_rect: Any) -> None:
-    """Re-draw existing page content shifted by (dx, dy)."""
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        return
-    fitz = _get_fitz()
-    doc = page.parent
-    idx = page.number
-    snap = fitz.open()
-    try:
-        snap.insert_pdf(doc, from_page=idx, to_page=idx)
-        page.clean_contents()
-        dest = fitz.Rect(
-            float(page_rect.x0) + dx,
-            float(page_rect.y0) + dy,
-            float(page_rect.x1) + dx,
-            float(page_rect.y1) + dy,
-        )
-        page.show_pdf_page(dest, snap, 0)
-    finally:
-        snap.close()
-
-
-def _normalize_page_rotation(page: Any) -> int:
-    """Bake page rotation into content so rect/mediabox match the viewed sheet."""
-    fitz = _get_fitz()
-    original = int(page.rotation or 0)
-    if original % 360 == 0:
-        return 0
-    page.remove_rotation()
-    if int(page.rotation or 0) % 360 != 0:
-        raise ValueError(f"Could not normalize page rotation (was {original}, now {page.rotation})")
-    return original
 
 
 def _scale_rect_from_stamp_page(src_rect: Any, stamp_page_rect: Any, dest_rect: Any) -> Any:
@@ -133,6 +89,14 @@ def _scale_rect_from_stamp_page(src_rect: Any, stamp_page_rect: Any, dest_rect: 
     )
 
 
+def _render_stamp_pixmap(stamp_page: Any, stamp_w: float, stamp_h: float) -> Any:
+    sw = float(stamp_page.rect.width) or 1.0
+    sh = float(stamp_page.rect.height) or 1.0
+    fitz = _get_fitz()
+    matrix = fitz.Matrix(stamp_w / sw, stamp_h / sh)
+    return stamp_page.get_pixmap(matrix=matrix, alpha=True)
+
+
 def _copy_editable_widgets(
     stamp_page: Any,
     target_page: Any,
@@ -140,7 +104,7 @@ def _copy_editable_widgets(
     dest_rect: Any,
     field_values: dict[str, str],
 ) -> int:
-    """Copy stamp widgets onto target_page (editable). Returns count added."""
+    """Add editable widget annotations (markup layer only)."""
     fitz = _get_fitz()
     sh = float(stamp_page_rect.height) or 1.0
     sy = float(dest_rect.height) / sh
@@ -174,6 +138,10 @@ def _copy_editable_widgets(
         except Exception:
             pass
         try:
+            nw.border_width = 0
+        except Exception:
+            pass
+        try:
             if w.border_color:
                 nw.border_color = w.border_color
         except Exception:
@@ -195,13 +163,14 @@ def apply_review_stamp(
     *,
     page_index: int = 0,
     stamp_height_pt: float = DEFAULT_STAMP_HEIGHT_PT,
-    margin_outside_pt: float = DEFAULT_MARGIN_OUTSIDE_PT,
+    margin_inset_pt: float = DEFAULT_MARGIN_INSET_PT,
     in_place: bool = True,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
     """
-    Apply stamp template to page_index; expand mediabox/cropbox to include margin area.
-    Widgets remain editable on the target page.
+    Add a Bluebeam-style rubber stamp annotation on page_index.
+
+    Page geometry and content are preserved. Returns metadata about the markup added.
     """
     fitz = _get_fitz()
     pdf_path = Path(pdf_path)
@@ -229,7 +198,6 @@ def apply_review_stamp(
         stamp_w = sw * scale
         stamp_h = sh * scale
 
-        # Fill template widgets in-memory (for appearance when copying).
         for w in stamp_page.widgets() or []:
             name = (w.field_name or "").strip()
             if name in values:
@@ -241,24 +209,30 @@ def apply_review_stamp(
                 raise ValueError(f"page_index {page_index} out of range (pages={doc.page_count})")
 
             page = doc[page_index]
-            _normalize_page_rotation(page)
-            page_rect = page.rect
-            stamp_rect, expanded, translate_x, translate_y = compute_stamp_rect_outside_top_left(
-                page_rect, stamp_w, stamp_h, float(margin_outside_pt)
+            orig_mediabox = fitz.Rect(page.mediabox)
+            orig_cropbox = fitz.Rect(page.cropbox)
+            orig_rotation = int(page.rotation or 0)
+
+            stamp_rect = compute_stamp_rect_overlay_top_left(
+                page.rect, stamp_w, stamp_h, float(margin_inset_pt)
             )
 
-            _shift_page_content(page, translate_x, translate_y, page_rect)
+            pixmap = _render_stamp_pixmap(stamp_page, stamp_w, stamp_h)
+            stamp_annot = page.add_stamp_annot(stamp_rect, stamp=pixmap)
+            stamp_annot.set_info(title="Peer Review", subject="QC Review Stamp", content="Peer Review")
+            stamp_annot.set_flags(stamp_annot.flags | fitz.PDF_ANNOT_IS_PRINT)
+            stamp_annot.update()
 
-            page.set_mediabox(expanded)
-            try:
-                page.set_cropbox(expanded)
-            except Exception:
-                LOGGER.debug("set_cropbox skipped", exc_info=True)
-
-            page.show_pdf_page(stamp_rect, stamp_doc, 0)
             added = _copy_editable_widgets(
                 stamp_page, page, stamp_page_rect, stamp_rect, values
             )
+
+            if tuple(page.mediabox) != tuple(orig_mediabox):
+                raise RuntimeError("Review stamp modified page MediaBox (not allowed).")
+            if tuple(page.cropbox) != tuple(orig_cropbox):
+                raise RuntimeError("Review stamp modified page CropBox (not allowed).")
+            if int(page.rotation or 0) != orig_rotation:
+                raise RuntimeError("Review stamp modified page rotation (not allowed).")
 
             if in_place:
                 doc.saveIncr()
@@ -268,9 +242,9 @@ def apply_review_stamp(
     return {
         "pdf": str(out_path if not in_place else pdf_path),
         "stamp_rect": [stamp_rect.x0, stamp_rect.y0, stamp_rect.x1, stamp_rect.y1],
-        "expanded_mediabox": [expanded.x0, expanded.y0, expanded.x1, expanded.y1],
-        "content_translate": [translate_x, translate_y],
+        "stamp_annotation": True,
         "widgets_added": added,
+        "page_mediabox": [orig_mediabox.x0, orig_mediabox.y0, orig_mediabox.x1, orig_mediabox.y1],
         "stamp_height_pt": stamp_height_pt,
     }
 
@@ -299,7 +273,9 @@ def build_peer_review_field_values(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Apply editable QC review stamp outside page 1 top-left.")
+    parser = argparse.ArgumentParser(
+        description="Apply QC review stamp as PDF markup (does not change page size)."
+    )
     parser.add_argument("pdf", type=Path, help="QC/history PDF to stamp (updated in place unless -o)")
     parser.add_argument("stamp", type=Path, help="Stamp template PDF (e.g. Peer_Review_Stamp.pdf)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output PDF (default: update pdf in place)")
@@ -309,7 +285,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backchecker", default="", help="Backchecker display")
     parser.add_argument("--originator-date", default=None, help="Originator date (default: today MM/DD/YYYY)")
     parser.add_argument("--stamp-height-pt", type=float, default=DEFAULT_STAMP_HEIGHT_PT)
-    parser.add_argument("--margin-outside-pt", type=float, default=DEFAULT_MARGIN_OUTSIDE_PT)
+    parser.add_argument(
+        "--margin-inset-pt",
+        "--margin-outside-pt",
+        dest="margin_inset_pt",
+        type=float,
+        default=DEFAULT_MARGIN_INSET_PT,
+        help="Inset from the page top-left corner (inside existing page bounds)",
+    )
     parser.add_argument("--page-index", type=int, default=0)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -334,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         fields,
         page_index=args.page_index,
         stamp_height_pt=args.stamp_height_pt,
-        margin_outside_pt=args.margin_outside_pt,
+        margin_inset_pt=args.margin_inset_pt,
         in_place=in_place,
         output_path=args.output,
     )

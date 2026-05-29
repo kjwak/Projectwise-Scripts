@@ -14,17 +14,18 @@ import qc_review_stamp  # noqa: E402
 from pdf_utils import make_minimal_pdf  # noqa: E402
 
 
-def test_compute_stamp_rect_outside_top_left() -> None:
+def test_compute_stamp_rect_overlay_top_left() -> None:
     fitz = qc_review_stamp._get_fitz()
     page = fitz.Rect(0, 0, 1584, 2448)  # 22x34 in at 72 dpi
-    stamp_rect, expanded, tx, _ty = qc_review_stamp.compute_stamp_rect_outside_top_left(
-        page, stamp_width=120, stamp_height=160, margin_outside=12
+    stamp_rect = qc_review_stamp.compute_stamp_rect_overlay_top_left(
+        page, stamp_width=120, stamp_height=160, margin_inset=12
     )
-    assert stamp_rect.x0 >= page.x0
-    assert stamp_rect.y0 >= page.y1 + 12
-    assert expanded.x0 >= page.x0
-    assert expanded.y1 >= stamp_rect.y1
-    assert tx == 12 + 120
+    assert stamp_rect.x0 == pytest.approx(12)
+    assert stamp_rect.x1 == pytest.approx(132)
+    assert stamp_rect.y1 == pytest.approx(2436)
+    assert stamp_rect.y0 == pytest.approx(2276)
+    assert stamp_rect.x1 <= page.x1
+    assert stamp_rect.y1 <= page.y1
 
 
 def test_build_peer_review_field_values_updater_matches_originator() -> None:
@@ -39,7 +40,7 @@ def test_build_peer_review_field_values_updater_matches_originator() -> None:
     assert "qc_rechecker_name" not in fields
 
 
-def test_apply_review_stamp_expands_mediabox(tmp_path: Path) -> None:
+def test_apply_review_stamp_does_not_change_page_geometry(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"
     if not stamp_src.is_file():
@@ -50,9 +51,11 @@ def test_apply_review_stamp_expands_mediabox(tmp_path: Path) -> None:
 
     before = fitz.open(target)
     old_mb = before[0].mediabox
+    old_cb = before[0].cropbox
+    old_rot = before[0].rotation
     before.close()
 
-    qc_review_stamp.apply_review_stamp(
+    result = qc_review_stamp.apply_review_stamp(
         target,
         stamp_src,
         qc_review_stamp.build_peer_review_field_values(
@@ -63,12 +66,17 @@ def test_apply_review_stamp_expands_mediabox(tmp_path: Path) -> None:
         stamp_height_pt=180,
     )
 
+    assert result["stamp_annotation"] is True
+
     after = fitz.open(target)
     page = after[0]
-    mb = page.mediabox
-    assert mb.x0 == 0
-    assert mb.x1 > old_mb.x1
-    assert mb.y1 > old_mb.y1
+    assert tuple(page.mediabox) == tuple(old_mb)
+    assert tuple(page.cropbox) == tuple(old_cb)
+    assert page.rotation == old_rot
+
+    stamp_annots = [a for a in page.annots() or [] if a.type[1] == "Stamp"]
+    assert len(stamp_annots) >= 1
+
     names = {w.field_name for w in page.widgets() or []}
     assert "qc_originator_name" in names
     after.close()
