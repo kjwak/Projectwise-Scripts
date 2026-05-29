@@ -9,9 +9,10 @@ Native StatusSet implementation that matches legacy/combine_status_set.ps1 metho
   - ordering:               alphabetical by PDF filename (same as legacy)
   - native PW exports:     one `_export_<jobId>\\` folder; each PDF renamed to
                              `NNN_<originalname>.pdf` after export so names stay
-                             unique without one folder per sheet; scratch cleanup
-                             deletes files first then the directory (AV-friendlier
-                             than `Remove-Item -Recurse` on many trees)
+                             unique without one folder per sheet; job start hard-clears
+                             the export folder (retries, fails job if locked); post-job
+                             scratch cleanup deletes files first then the directory
+                             (AV-friendlier than `Remove-Item -Recurse` on many trees)
   - write-back:             optional _SSS-UpdatePWDocumentFileFromDisk (pwps_dab 24+: -InputDocuments/-NewFilePathName) / New-PWDocument
 #>
 
@@ -368,6 +369,53 @@ function _SSS-RemoveExportDirContentsFileFirst {
             }
         }
     } catch { }
+}
+
+function _SSS-ClearExportWorkDirHard {
+    <#
+    .SYNOPSIS
+    Remove every file in a job export scratch folder before PW exports start.
+    Retries deletes when AV briefly locks PDFs from a prior interrupted run.
+    Throws if any file remains after all passes (caller should fail the job).
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$DirPath
+    )
+
+    _SSS-EnsureDir $DirPath
+    _SSS-FsThrottle
+
+    $lastEx = $null
+    for ($pass = 1; $pass -le 22; $pass++) {
+        $files = @(Get-ChildItem -LiteralPath $DirPath -File -Force -ErrorAction SilentlyContinue)
+        if ($files.Count -eq 0) { return }
+
+        foreach ($file in $files) {
+            try {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            } catch {
+                $lastEx = $_
+            }
+            if ($script:_SSS_FsThrottleMs -gt 0) {
+                Start-Sleep -Milliseconds ([Math]::Min(500, $script:_SSS_FsThrottleMs))
+            }
+        }
+
+        $remaining = @(Get-ChildItem -LiteralPath $DirPath -File -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) { return }
+
+        if ($pass -ge 22) { break }
+        Start-Sleep -Milliseconds ([Math]::Min(3000, 200 + ($pass * 150)))
+    }
+
+    $left = @(Get-ChildItem -LiteralPath $DirPath -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    if ($left.Count -eq 0) { return }
+
+    $detail = ($left -join ', ')
+    $msg = "Export scratch folder still contains locked files: $detail"
+    if ($lastEx) { $msg += '; lastError=' + [string]$lastEx.Exception.Message }
+    throw [System.IO.IOException]::new($msg)
 }
 
 function _SSS-CleanAllExportScratchDirsInWorkspace {
@@ -2499,8 +2547,15 @@ function Invoke-StatusSetNativeJob {
             # Basename collisions (same PDF name from two subfolders) are avoided by renaming after each export.
             $exportWorkDir = Join-Path $stagingBase ('_export_' + $exportJobTag)
             _SSS-EnsureDir $exportWorkDir
-            # Same job id reuses this folder on retry; clear stale NNN_*.pdf so rename does not fail.
-            try { _SSS-RemoveExportDirContentsFileFirst -DirPath $exportWorkDir -RemoveEmptyDir $false } catch { }
+            # Same job id reuses this folder on retry; hard-clear so stale exports cannot collide with renames.
+            try {
+                _SSS-ClearExportWorkDirHard -DirPath $exportWorkDir
+            } catch {
+                return New-QCFailureResult -Code 'STATUS_SET_EXPORT_SCRATCH_CLEAR_FAILED' -Message 'Could not clear export scratch folder before PW exports.' -Data @{
+                    exportWorkDir = $exportWorkDir
+                    errorMessage  = $_.Exception.Message
+                }
+            }
 
             $manByKey = @{}
             if ($pwSheetCacheEnabled -and (-not $forceRebuild) -and $manifest) {
