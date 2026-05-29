@@ -167,6 +167,66 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 ---
 
+## qcWorkflow
+
+Optional ProjectWise **document attribute** writeback (and optional **workflow state** changes) after a successful `QC_PREPEND`. Implemented in `modules/QC.Workflow.psm1`; invoked from `QC.Processors.psm1` when prepend completes.
+
+**Full guide (states, red/green/blue model, PW admin setup, discovery scripts, rollout):** [`docs/qc-workflow-framework.md`](qc-workflow-framework.md)
+
+**Related:** comment-driven state uses the same PW helpers via `qcCommentSync` — see [`docs/qc-comment-status-sync.md`](qc-comment-status-sync.md). SQL audit rows: `qc_workflow_events` in [`docs/database-telemetry.md`](database-telemetry.md).
+
+### When `enabled` is false (default)
+
+Your repo ships with `"enabled": false` (see `appsettings.json` around line 160). Prepend/overlay still runs; **no** PW attributes or states are written. `Invoke-QCWorkflowWriteback` returns immediately with a skipped result. This is the recommended setting until PW attributes and (optional) states are created and validated.
+
+### Enablement order
+
+1. `enabled: false` — production-safe default.
+2. `enabled: true`, `dryRunWriteback: true` — log planned writes (`QC_WORKFLOW_*` codes); no PW changes.
+3. Run `tools\discovery\Test-QCWorkflowCapabilities.ps1` (read-only).
+4. Pilot one document with `tools\discovery\Test-QCWorkflowWriteback.ps1 -ConfirmWrites`.
+5. `dryRunWriteback: false` for a pilot project only.
+
+Global `dryRun: true` does **not** replace `qcWorkflow.dryRunWriteback`; both are independent.
+
+### Core keys
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch. When false, workflow writeback is skipped entirely. |
+| `strictMode` | `false` | If true, validation/write failures can fail the `QC_PREPEND` job. |
+| `dryRunWriteback` | `true` | When true, plan and log writes only (`QC_WORKFLOW_DRYRUN`, `*_PLANNED`). |
+| `mode` | `AttributesOnly` | `AttributesOnly` or `StateAndAttributes`. |
+| `autoWriteAttributes` | `true` | Call `Update-PWDocumentAttributes` with mapped QC fields after prepend. |
+| `autoSetState` | `false` | When `mode` is `StateAndAttributes`, call `Set-PWDocumentState` if true. |
+| `expectedWorkflowName` | `""` | Workflow name for validation (alias: `workflowName`). |
+| `attributeMap` | see JSON | Logical key → PW environment attribute name. |
+| `stageMap` | `red` / `green` / `blue` | Stage/status values and optional state names for comment sync. |
+
+### State name keys (optional PW integration)
+
+Used when `mode` is `StateAndAttributes` and for validation/logging. Names must match states in your ProjectWise workflow:
+
+| Key | Default |
+|-----|---------|
+| `productionStateName` | `In Production` |
+| `receivedStateName` | `QC Received` |
+| `correctionsInProgressStateName` | `Corrections In Progress` |
+| `backcheckInProgressStateName` | `Backcheck In Progress` |
+| `errorStateName` | `Error Needs Attention` |
+| `defaultStateAfterPrepend` | `QC Received` |
+| `stateAfterSuccessfulPrepend` | `Redlines Issued` |
+| `stateAfterFailedPrepend` | `Error Needs Attention` |
+
+Prepend does **not** auto-move documents from `In Production` to `QC Received` unless you enable state writeback and configure transitions accordingly.
+
+### Tests
+
+- `test/test_qc_workflow.ps1` — unit tests with stub cmdlets.
+- `tests/test_qc_workflow_config_defaults.py` — asserts repo defaults stay disabled/attribute-first.
+
+---
+
 ## watcher.mode
 
 | Value | Behavior |
@@ -232,6 +292,7 @@ Tables: `poll_runs`, `sheet_index`, `audit_events`, etc. — `docs/database-tele
 
 ## Related docs
 
+- `docs/qc-workflow-framework.md` — QC workflow writeback (companion to **qcWorkflow** above)
 - `docs/hybrid-polling.md` — audit vs n=20 reconcile
 - `docs/watcher-architecture-refactor-summary.md` — watcher modes
 - `docs/pw-environment-email-attributes.md` — EM_Designer_Email columns

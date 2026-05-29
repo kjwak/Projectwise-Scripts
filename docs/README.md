@@ -21,6 +21,7 @@ If you're looking for "how the pipeline works", start at:
 ## QC Workflow & Reporting
 
 - `qc-workflow-framework.md` - configurable ProjectWise QC workflow/state/attribute writeback framework and rollout plan.
+- `appsettings-reference.md` § **qcWorkflow** - `appsettings.json` keys (`enabled`, `dryRunWriteback`, `mode`, `attributeMap`, …).
 - `qc-notifications.md` - QC workflow email notification system (Mock + future Microsoft Graph).
 - `qc-reporting.md` - attribute-first QC reporting snapshots and QC_REPORTING_SCAN architecture.
 

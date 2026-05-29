@@ -1,5 +1,7 @@
 # QC Workflow Framework
 
+**Settings reference:** [`appsettings-reference.md` § qcWorkflow](appsettings-reference.md#qcworkflow) — every `appsettings.json` key, defaults, and enablement order. Repo default: `"qcWorkflow": { "enabled": false, … }`.
+
 ## Purpose
 
 This framework adds an optional ProjectWise document-attribute writeback layer, with optional document-state integration, on top of the existing `QC_PREPEND` PDF processing flow. QC lifecycle values are an attribute-first overlay on the existing project workflow and existing `CADD/Sheets` folder structure.
