@@ -293,6 +293,26 @@ $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
 
+if (Test-QCDatabaseEnabled -Config $config) {
+    try {
+        $schemaRes = Initialize-QCDatabaseSchema -Config $config
+        if (-not $schemaRes.IsSuccess) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message 'Database schema initialization failed; sheet_index writes may fail until schema is upgraded.' -Data @{
+                code = [string]$schemaRes.Code
+                message = [string]$schemaRes.Message
+            }
+        } elseif ($schemaRes.Code -in @('DB_SCHEMA_INITIALIZED', 'DB_SCHEMA_UPGRADED')) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DB_SCHEMA_READY' -Message ([string]$schemaRes.Message) -Data @{
+                code = [string]$schemaRes.Code
+                version = if ($schemaRes.Data.version) { [string]$schemaRes.Data.version } else { $null }
+                previousVersion = if ($schemaRes.Data.previousVersion) { [string]$schemaRes.Data.previousVersion } else { $null }
+            }
+        }
+    } catch {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message ('Database schema initialization threw: ' + $_.Exception.Message) -Data @{}
+    }
+}
+
 if (-not $config.ContainsKey('dryRun')) { $config['dryRun'] = $false }
 if ($DryRun.IsPresent) { $config['dryRun'] = $true }
 $isDryRun = [bool]$config['dryRun']

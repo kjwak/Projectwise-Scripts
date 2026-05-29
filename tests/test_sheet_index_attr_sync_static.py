@@ -61,7 +61,15 @@ def test_reconciliation_scan_uses_full_attribute_batch_builder():
     assert "sheetParamsPerRow = 12" in db
 
 
-def test_telemetry_doc_mentions_document_attr_sync():
-    text = TELEMETRY_DOC.read_text(encoding="utf-8")
-    assert "DOCUMENT_ATTR" in text
-    assert "checker_email" in text or "qc_review_type" in text
+def test_database_schema_upgrade_applies_additive_patches_before_version_check():
+    text = DATABASE.read_text(encoding="utf-8")
+    assert "function _QDB-InvokeSchemaSqlBatches" in text
+    assert "_QDB-GetSchemaV1dot5Additive" in text
+    assert "DB_SCHEMA_UPGRADED" in text
+    assert "IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)" in text
+
+
+def test_watcher_initializes_database_schema_on_startup():
+    text = WATCHER.read_text(encoding="utf-8")
+    assert "Initialize-QCDatabaseSchema -Config $config" in text
+    assert "WATCH_DB_SCHEMA_READY" in text

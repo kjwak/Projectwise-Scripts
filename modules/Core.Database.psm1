@@ -311,11 +311,31 @@ function Invoke-QCDatabaseScalarWithConnection {
 # Schema management
 # ---------------------------------------------------------------------------
 
+function _QDB-InvokeSchemaSqlBatches {
+    param(
+        [Parameter(Mandatory)][System.Data.SqlClient.SqlConnection]$Connection,
+        [Parameter(Mandatory)][string]$Sql
+    )
+    $batches = [regex]::Split($Sql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $executed = 0
+    foreach ($batch in $batches) {
+        $trimmed = $batch.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+        $batchCmd = $Connection.CreateCommand()
+        $batchCmd.CommandText = $trimmed
+        $batchCmd.CommandTimeout = 120
+        [void]$batchCmd.ExecuteNonQuery()
+        $executed++
+    }
+    return $executed
+}
+
 function Initialize-QCDatabaseSchema {
     <#
     .SYNOPSIS
     Creates all QC pipeline telemetry tables, indexes, and views idempotently.
     Tracks applied versions in schema_version table.
+    Always applies additive patches so existing databases pick up new columns without a full rebuild.
     #>
     [CmdletBinding()]
     param(
@@ -334,6 +354,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_4 = _QDB-GetSchemaV1dot4
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -344,42 +365,33 @@ function Initialize-QCDatabaseSchema {
         $cmd.CommandText = "IF OBJECT_ID('dbo.schema_version', 'U') IS NOT NULL SELECT MAX(version) FROM schema_version ELSE SELECT NULL"
         $currentVersion = $cmd.ExecuteScalar()
         if ($currentVersion -is [DBNull]) { $currentVersion = $null }
+        if ($currentVersion) { $currentVersion = [string]$currentVersion }
+
+        $patchCount = _QDB-InvokeSchemaSqlBatches -Connection $conn -Sql $patchSql
 
         if ($currentVersion -eq $targetVersion) {
-            $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive)
-            $patchBatches = [regex]::Split($patchSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            $patchExecuted = 0
-            foreach ($batch in $patchBatches) {
-                $trimmed = $batch.Trim()
-                if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
-                $batchCmd = $conn.CreateCommand()
-                $batchCmd.CommandText = $trimmed
-                $batchCmd.CommandTimeout = 120
-                [void]$batchCmd.ExecuteNonQuery()
-                $patchExecuted++
-            }
-            return New-QCSuccessResult -Code 'DB_SCHEMA_CURRENT' -Message "Schema already at version $targetVersion (additive patches: $patchExecuted)." -Data @{ version = $targetVersion; patchCount = $patchExecuted }
+            return New-QCSuccessResult -Code 'DB_SCHEMA_CURRENT' -Message "Schema already at version $targetVersion (additive patches: $patchCount)." -Data @{ version = $targetVersion; patchCount = $patchCount; previousVersion = $currentVersion }
         }
 
-        $batches = [regex]::Split($schemaSql, '^\s*GO\s*$', [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        $executed = 0
-        foreach ($batch in $batches) {
-            $trimmed = $batch.Trim()
-            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
-            $batchCmd = $conn.CreateCommand()
-            $batchCmd.CommandText = $trimmed
-            $batchCmd.CommandTimeout = 120
-            [void]$batchCmd.ExecuteNonQuery()
-            $executed++
+        $bootstrapCount = 0
+        if ($null -eq $currentVersion) {
+            $bootstrapCount = _QDB-InvokeSchemaSqlBatches -Connection $conn -Sql $schemaSql
         }
 
         $insertCmd = $conn.CreateCommand()
-        $insertCmd.CommandText = "INSERT INTO schema_version (version, description) VALUES (@version, @desc)"
+        $insertCmd.CommandText = @"
+IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
+INSERT INTO schema_version (version, description) VALUES (@version, @desc)
+"@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
         [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through sheet_index QC attribute columns")
         [void]$insertCmd.ExecuteNonQuery()
 
-        return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($executed batches)." -Data @{ version = $targetVersion; batchCount = $executed }
+        if ($null -eq $currentVersion) {
+            return New-QCSuccessResult -Code 'DB_SCHEMA_INITIALIZED' -Message "Schema initialized to version $targetVersion ($bootstrapCount bootstrap batches, $patchCount patches)." -Data @{ version = $targetVersion; batchCount = $bootstrapCount; patchCount = $patchCount; previousVersion = $null }
+        }
+
+        return New-QCSuccessResult -Code 'DB_SCHEMA_UPGRADED' -Message "Schema upgraded from $currentVersion to $targetVersion ($patchCount patches)." -Data @{ version = $targetVersion; patchCount = $patchCount; previousVersion = $currentVersion }
     } catch {
         return New-QCFailureResult -Code 'DB_SCHEMA_FAILED' -Message "Schema initialization failed: $($_.Exception.Message)" -Data @{ error = $_.Exception.Message }
     } finally {

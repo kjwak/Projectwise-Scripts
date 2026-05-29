@@ -38,7 +38,9 @@ All telemetry writes use the `_QDB-SafeWrite` internal helper, which silently no
 
 ## Schema Management
 
-Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It is idempotent — all `CREATE TABLE` statements use `IF OBJECT_ID(...) IS NULL` guards. Schema version is tracked in the `schema_version` table.
+Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It is idempotent — all `CREATE TABLE` statements use `IF OBJECT_ID(...) IS NULL` guards. Schema version is tracked in the `schema_version` table. Additive patches (new columns, indexes) run on every init call, including watcher startup, so existing databases upgrade without manual SQL.
+
+`Watch-QCTrigger.ps1` calls `Initialize-QCDatabaseSchema` when `database.enabled` is true.
 
 | Version | Description |
 |---------|-------------|
