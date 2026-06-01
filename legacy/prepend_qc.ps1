@@ -486,7 +486,7 @@ Write-Log ("Incoming resolved: DocumentID={0}, FullPath={1}" -f $incomingDoc.Doc
 # Export incoming doc to local
 Write-Log "Exporting incoming document to local..."
 Export-PWDocumentsSimple -InputDocuments $incomingDoc -TargetFolder $exportDir | Out-Null
-Start-Sleep -Milliseconds 600   # let PW/antivirus release file handle (Error 100 can leave file locked briefly)
+Start-Sleep -Milliseconds 300   # let PW release file handle (Error 100 can leave file locked briefly)
 
 $localIncoming = Join-Path $exportDir $IncomingDocName
 if (-not (Test-Path $localIncoming)) {
@@ -565,7 +565,7 @@ Write-Log ("History resolved: DocumentID={0}, FullPath={1}" -f $historyDoc.Docum
 # Export history to %TEMP% (avoids AV/lock on LocalRoot)
 Write-Log "Exporting existing history document from PW to local..."
 Export-PWDocumentsSimple -InputDocuments $historyDoc -TargetFolder $tempWorkDir | Out-Null
-Start-Sleep -Milliseconds 600   # let PW/antivirus release file handle (Error 100 can leave file locked briefly)
+Start-Sleep -Milliseconds 300   # let PW release file handle (Error 100 can leave file locked briefly)
 
 # Prefer path reported by export; else expected path; else newest matching name
 if ($historyDoc.CopiedOutLocalFileName -and (Test-Path $historyDoc.CopiedOutLocalFileName)) {
