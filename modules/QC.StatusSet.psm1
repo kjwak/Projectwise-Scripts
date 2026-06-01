@@ -1889,7 +1889,7 @@ function Write-StatusSetManifestFile {
         $lastEx = $null
         for ($a = 1; $a -le 22; $a++) {
             if (Test-Path -LiteralPath $Path) {
-                [void]_SSS-TryRenameAsideExistingManifest -Path $Path
+                $null = _SSS-TryRenameAsideExistingManifest -Path $Path
             }
             try {
                 $moveArgs = @{ LiteralPath = $tmp; Destination = $Path; ErrorAction = 'Stop' }
