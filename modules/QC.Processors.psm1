@@ -88,7 +88,7 @@ function _QCP-ReviewStampRequiredForReviewType {
         [string]$ReviewType
     )
 
-    if (-not $StampSettings -or _QCP-IsNullOrWhiteSpace $ReviewType) { return $false }
+    if (-not $StampSettings -or (_QCP-IsNullOrWhiteSpace $ReviewType)) { return $false }
     foreach ($p in @($StampSettings.profiles)) {
         if ([string]$p.reviewType -eq [string]$ReviewType) { return $true }
     }
@@ -644,7 +644,7 @@ function Invoke-QCPrependProcessor {
             $incomingDocName = [System.IO.Path]::GetFileName([string]$Job.sourcePath)
         }
 
-        if (_QCP-IsNullOrWhiteSpace $incomingFolder -or _QCP-IsNullOrWhiteSpace $incomingDocName) {
+        if ((_QCP-IsNullOrWhiteSpace $incomingFolder) -or (_QCP-IsNullOrWhiteSpace $incomingDocName)) {
             return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_MISSING_INPUTS' -Message 'Legacy PW prepend requires Job.sourceFolder and Job.sourceName.' -Data @{ jobId = [string]$Job.id; sourceFolder = [string]$Job.sourceFolder; sourceName = [string]$Job.sourceName; sourcePath = [string]$Job.sourcePath }
         }
 
