@@ -956,6 +956,9 @@ function Lock-QCJob {
         [hashtable]$Config
     )
 
+    $root = $null
+    $jobLock = $null
+    $jobLockHeld = $false
     try {
         $root = _QCQJ-GetQueueRoot -Config $Config
         _QCQJ-EnsureLayout -Root $root
@@ -971,6 +974,7 @@ function Lock-QCJob {
         if (-not (_QCQJ-AcquireLockFile -LockPath $jobLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
             return New-QCFailureResult -Code 'QUEUE_LOCK_TIMEOUT' -Message 'Timed out acquiring job lock.' -Data @{ jobId = $JobId; lockPath = $jobLock }
         }
+        $jobLockHeld = $true
 
         # Transition pending -> running on lock acquire (prevents repeated selection).
         $lockPath = _QCQJ-QueueWriteLockPath -Root $root
@@ -1008,7 +1012,27 @@ function Lock-QCJob {
 
         return New-QCSuccessResult -Code 'QUEUE_LOCK_ACQUIRED' -Message 'Job lock acquired.' -Data @{ jobId = $JobId; lockPath = $jobLock }
     } catch {
-        return New-QCFailureResult -Code 'QUEUE_LOCK_ERROR' -Message 'Failed to lock job.' -Data @{ jobId = $JobId; error = $_ }
+        if ($jobLockHeld -and $jobLock) {
+            _QCQJ-ReleaseLockFile -LockPath $jobLock
+        }
+        if ($root) {
+            try {
+                $loc = _QCQJ-FindJobFile -Root $root -JobId $JobId
+                if ($loc -and $loc.state -ne 'pending') {
+                    return New-QCFailureResult -Code 'QUEUE_JOB_ALREADY_MOVED' -Message 'Job is no longer pending; skipping lock.' -Data @{
+                        jobId = $JobId
+                        state = $loc.state
+                        path = $loc.path
+                        lockRace = $true
+                        error = $_
+                    }
+                }
+            } catch { }
+        }
+        $inner = $null
+        try { $inner = [string]$_.Exception.Message } catch { }
+        if ([string]::IsNullOrWhiteSpace($inner)) { try { $inner = [string]$_ } catch { $inner = 'unknown error' } }
+        return New-QCFailureResult -Code 'QUEUE_LOCK_ERROR' -Message 'Failed to lock job.' -Data @{ jobId = $JobId; error = $_; innerMessage = $inner }
     }
 }
 

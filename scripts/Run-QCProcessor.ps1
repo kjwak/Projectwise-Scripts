@@ -8,8 +8,8 @@ dispatches by job type using QC.Processors, then transitions queue state.
 
 When -MaxJobs > 1 or -LeaseSeconds > 0 or -IdleSleepMs > 0 the script loops:
   - Picks pending jobs and processes them race-safely against other parallel workers.
-  - On Lock-QCJob race loss (QUEUE_LOCK_EXISTS / QUEUE_LOCK_TIMEOUT) the loser excludes
-    that id from subsequent selections in this process and tries the next pending file.
+  - On Lock-QCJob race loss (QUEUE_LOCK_TIMEOUT, QUEUE_JOB_ALREADY_MOVED, QUEUE_LOCK_ERROR, etc.)
+    the loser excludes that id from subsequent selections in this process and tries the next job.
   - Exits when budget is exhausted (jobs processed >= MaxJobs, or elapsed >= LeaseSeconds).
   - When the queue is empty: exits if -IdleSleepMs <= 0; otherwise sleeps and re-polls.
 #>
@@ -176,15 +176,32 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
-        if ($lock.Code -in @('QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT', 'QUEUE_JOB_ALREADY_MOVED', 'QUEUE_JOB_NOT_FOUND')) {
+        $benignLockCodes = @(
+            'QUEUE_LOCK_EXISTS', 'QUEUE_LOCK_TIMEOUT', 'QUEUE_JOB_ALREADY_MOVED', 'QUEUE_JOB_NOT_FOUND', 'QUEUE_LOCK_ERROR'
+        )
+        if ([string]$lock.Code -in $benignLockCodes) {
+            $lockDetail = $null
+            try {
+                if ($lock.Data) {
+                    if ($lock.Data -is [hashtable] -and $lock.Data.ContainsKey('innerMessage')) { $lockDetail = [string]$lock.Data.innerMessage }
+                    elseif ($lock.Data.PSObject.Properties['innerMessage']) { $lockDetail = [string]$lock.Data.innerMessage }
+                    elseif ($lock.Data -is [hashtable] -and $lock.Data.ContainsKey('error')) { $lockDetail = [string]$lock.Data.error }
+                }
+            } catch { }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_LOCK_RACE' -Message 'Lost race for job lock; skipping.' -Data @{
                 jobId = $jobId
                 lockCode = [string]$lock.Code
                 lockMessage = [string]$lock.Message
+                lockDetail = $lockDetail
             }
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
-        throw $lock.Message
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_LOCK_FATAL' -Message 'Unexpected lock failure; skipping job without crashing worker.' -Data @{
+            jobId = $jobId
+            lockCode = [string]$lock.Code
+            lockMessage = [string]$lock.Message
+        }
+        return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
     }
 
     try {
@@ -412,7 +429,17 @@ while ($true) {
     $jobId = [string]$job['id']
     $handler = _Resolve-Handler -Job $job -Config $config
 
-    $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
+    try {
+        $res = _Process-OneJob -Job $job -Handler $handler -Config $config -IsDryRun:$isDryRun -DryRunAllowStateChange:$dryRunAllowStateChange -DryRunInvokeHandler:$dryRunInvokeHandler -MaxAttempts $maxAttempts
+    } catch {
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Error' -Code 'WORKER_JOB_UNHANDLED' -Message 'Unhandled exception processing job; worker continues.' -Data @{
+            jobId = $jobId
+            jobType = [string]$job['type']
+            handler = $handler
+            errorMessage = [string]$_.Exception.Message
+        }
+        $res = @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
+    }
 
     if ($res.SkipId) { $skip.Add($res.SkipId) | Out-Null }
     if ($res.Outcome -in @('succeeded', 'failed', 'requeued', 'dryrun_noop')) { $processed++ }

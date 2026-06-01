@@ -1837,6 +1837,35 @@ function New-StatusSetManifestObject {
     return $man
 }
 
+function _SSS-TryRenameAsideExistingManifest {
+    <#
+    .SYNOPSIS
+    Renames an existing manifest aside so a new file can be moved into place.
+    Works when delete/overwrite fails because another handle still has the file open (Windows often allows rename).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    $dir = Split-Path -Parent $Path
+    $leaf = Split-Path -Leaf $Path
+    $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+    for ($n = 0; $n -lt 6; $n++) {
+        $archLeaf = if ($n -eq 0) { "${leaf}.bak_${stamp}" } else { "${leaf}.bak_${stamp}_$n" }
+        $archPath = Join-Path $dir $archLeaf
+        if (Test-Path -LiteralPath $archPath) { continue }
+        try {
+            Rename-Item -LiteralPath $Path -NewName $archLeaf -Force -ErrorAction Stop
+            return $true
+        } catch {
+            if ($n -ge 5) { return $false }
+        }
+    }
+    return $false
+}
+
 function Write-StatusSetManifestFile {
     [CmdletBinding()]
     param(
@@ -1859,8 +1888,13 @@ function Write-StatusSetManifestFile {
         Start-Sleep -Milliseconds $pauseMs
         $lastEx = $null
         for ($a = 1; $a -le 22; $a++) {
+            if (Test-Path -LiteralPath $Path) {
+                [void]_SSS-TryRenameAsideExistingManifest -Path $Path
+            }
             try {
-                Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+                $moveArgs = @{ LiteralPath = $tmp; Destination = $Path; ErrorAction = 'Stop' }
+                if (-not (Test-Path -LiteralPath $Path)) { Move-Item @moveArgs }
+                else { Move-Item @moveArgs -Force }
                 $tmp = $null
                 return New-QCSuccessResult -Code 'STATUS_SET_MANIFEST_WRITTEN' -Message 'Manifest written.' -Data @{ path = $Path }
             } catch {

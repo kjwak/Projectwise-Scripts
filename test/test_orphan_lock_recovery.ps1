@@ -133,10 +133,30 @@ try {
 finally { Remove-Item -LiteralPath $qroot -Recurse -Force -ErrorAction SilentlyContinue }
 
 # --------------------------------------------------------------------------- #
-# Test D: Recover-QCStaleJobs janitors orphan locks for jobs in pending\ AND
+# Test D: Late Lock-QCJob after another worker moved pending -> running.
+# --------------------------------------------------------------------------- #
+Write-Host "`nTest D: Lock-QCJob returns QUEUE_JOB_ALREADY_MOVED when job left pending\" -ForegroundColor Cyan
+$qroot = _NewQueueRoot
+try {
+    $cfg = @{ queue = @{ root = $qroot; backend = 'json' } }
+    $jobId = 'qc_d_race'
+    _WriteJob $qroot 'pending' $jobId | Out-Null
+
+    $first = Lock-QCJob -JobId $jobId -Config $cfg
+    _Assert ($first.IsSuccess) 'first Lock-QCJob succeeds'
+    Unlock-QCJob -JobId $jobId -Config $cfg | Out-Null
+
+    $second = Lock-QCJob -JobId $jobId -Config $cfg
+    _Assert (-not $second.IsSuccess) 'second Lock-QCJob fails (job already running)'
+    _Assert ($second.Code -eq 'QUEUE_JOB_ALREADY_MOVED') 'fail code is QUEUE_JOB_ALREADY_MOVED'
+}
+finally { Remove-Item -LiteralPath $qroot -Recurse -Force -ErrorAction SilentlyContinue }
+
+# --------------------------------------------------------------------------- #
+# Test E: Recover-QCStaleJobs janitors orphan locks for jobs in pending\ AND
 # clears a stale _queue_write.lock.
 # --------------------------------------------------------------------------- #
-Write-Host "`nTest D: Recover-QCStaleJobs janitors orphan dead-PID locks (pending\ + global)" -ForegroundColor Cyan
+Write-Host "`nTest E: Recover-QCStaleJobs janitors orphan dead-PID locks (pending\ + global)" -ForegroundColor Cyan
 $qroot = _NewQueueRoot
 try {
     $cfg = @{ queue = @{ root = $qroot; backend = 'json' } }
