@@ -28,6 +28,30 @@ def test_compute_stamp_rect_overlay_top_left() -> None:
     assert stamp_rect.y1 <= page.y1
 
 
+def test_compute_stamp_rect_at_offset_negative_places_outside_top_left() -> None:
+    fitz = qc_review_stamp._get_fitz()
+    page = fitz.Rect(0, 0, 1584, 2448)
+    stamp_rect = qc_review_stamp.compute_stamp_rect_at_offset(
+        page, stamp_width=120, stamp_height=160, x_pt=-400, y_pt=-400
+    )
+    assert stamp_rect.x0 == pytest.approx(-400)
+    assert stamp_rect.x1 == pytest.approx(-280)
+    assert stamp_rect.y1 == pytest.approx(2848)
+    assert stamp_rect.y0 == pytest.approx(2688)
+
+
+def test_compute_stamp_rect_at_offset_matches_uniform_margin() -> None:
+    fitz = qc_review_stamp._get_fitz()
+    page = fitz.Rect(0, 0, 1584, 2448)
+    by_margin = qc_review_stamp.compute_stamp_rect_overlay_top_left(
+        page, stamp_width=120, stamp_height=160, margin_inset=12
+    )
+    by_xy = qc_review_stamp.compute_stamp_rect_at_offset(
+        page, stamp_width=120, stamp_height=160, x_pt=12, y_pt=12
+    )
+    assert by_margin == by_xy
+
+
 def test_build_peer_review_field_values_updater_matches_originator() -> None:
     fields = qc_review_stamp.build_peer_review_field_values(
         originator="designer@x.com",

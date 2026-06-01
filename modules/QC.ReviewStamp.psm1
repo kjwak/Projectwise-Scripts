@@ -119,9 +119,16 @@ function Get-QCReviewStampSettings {
     $stampPath = Join-Path $RepoRoot 'stamps\Peer_Review_Stamp.pdf'
     $stampHeight = 200.0
     $marginOutside = 12.0
+    $stampX = $null
+    $stampY = $null
     $pr = _QCRS-ToHashtable $rs.peerReview
     if ($rs.ContainsKey('stampHeightPt')) { try { $stampHeight = [double]$rs.stampHeightPt } catch { } }
     if ($rs.ContainsKey('marginOutsidePt')) { try { $marginOutside = [double]$rs.marginOutsidePt } catch { } }
+    $pos = _QCRS-ToHashtable $rs.stampPositionPt
+    if ($pos) {
+        if ($pos.ContainsKey('x')) { try { $stampX = [double]$pos.x } catch { } }
+        if ($pos.ContainsKey('y')) { try { $stampY = [double]$pos.y } catch { } }
+    }
     if ($pr) {
         if ($pr.stampPath) {
             $sp = [string]$pr.stampPath
@@ -140,6 +147,8 @@ function Get-QCReviewStampSettings {
         stampPath       = $stampPath
         stampHeightPt   = $stampHeight
         marginOutsidePt = $marginOutside
+        stampXPt        = $stampX
+        stampYPt        = $stampY
         overlayExe      = $overlayExe
     }
 }
@@ -159,7 +168,9 @@ function Invoke-QCReviewStamp {
         [string]$Backchecker = '',
         [string]$OriginatorDate = '',
         [double]$StampHeightPt = 200,
-        [double]$MarginOutsidePt = 12
+        [double]$MarginOutsidePt = 12,
+        [Nullable[double]]$StampXPt = $null,
+        [Nullable[double]]$StampYPt = $null
     )
 
     if (-not (Test-Path -LiteralPath $OverlayExe)) {
@@ -190,8 +201,15 @@ function Invoke-QCReviewStamp {
         [void]$stampTokens.Add([string]$OriginatorDate)
         [void]$stampTokens.Add('--stamp-height-pt')
         [void]$stampTokens.Add([string]$StampHeightPt)
-        [void]$stampTokens.Add('--margin-outside-pt')
-        [void]$stampTokens.Add([string]$MarginOutsidePt)
+        if ($null -ne $StampXPt -and $null -ne $StampYPt) {
+            [void]$stampTokens.Add('--stamp-x-pt')
+            [void]$stampTokens.Add([string]$StampXPt)
+            [void]$stampTokens.Add('--stamp-y-pt')
+            [void]$stampTokens.Add([string]$StampYPt)
+        } else {
+            [void]$stampTokens.Add('--margin-outside-pt')
+            [void]$stampTokens.Add([string]$MarginOutsidePt)
+        }
 
         $argLine = _QCRS-BuildProcessArgumentLine -Tokens $stampTokens.ToArray()
         if ([string]::IsNullOrWhiteSpace($argLine)) {
@@ -236,15 +254,29 @@ function Invoke-QCReviewStampIfPeerReview {
 
     $exe = if (-not (_QCRS-IsBlank $OverlayExe)) { $OverlayExe } else { [string]$stampCfg.overlayExe }
     if ($Log) {
-        & $Log "Applying peer review stamp (outside top-left) to page 1: $PdfPath"
+        $posHint = if ($null -ne $stampCfg.stampXPt -and $null -ne $stampCfg.stampYPt) {
+            "at ($($stampCfg.stampXPt), $($stampCfg.stampYPt)) pt from page top-left"
+        } else {
+            "with margin $($stampCfg.marginOutsidePt) pt from page top-left"
+        }
+        & $Log "Applying peer review stamp ($posHint) on page 1: $PdfPath"
     }
 
-    $result = Invoke-QCReviewStamp -OverlayExe $exe -PdfPath $PdfPath -StampPath ([string]$stampCfg.stampPath) `
-        -Originator ([string]$RoleFields.designerEmail) `
-        -Checker ([string]$RoleFields.reviewerEmail) `
-        -Backchecker ([string]$RoleFields.checkerEmail) `
-        -StampHeightPt ([double]$stampCfg.stampHeightPt) `
-        -MarginOutsidePt ([double]$stampCfg.marginOutsidePt)
+    $stampParams = @{
+        OverlayExe     = $exe
+        PdfPath        = $PdfPath
+        StampPath      = [string]$stampCfg.stampPath
+        Originator     = [string]$RoleFields.designerEmail
+        Checker        = [string]$RoleFields.reviewerEmail
+        Backchecker    = [string]$RoleFields.checkerEmail
+        StampHeightPt  = [double]$stampCfg.stampHeightPt
+        MarginOutsidePt = [double]$stampCfg.marginOutsidePt
+    }
+    if ($null -ne $stampCfg.stampXPt -and $null -ne $stampCfg.stampYPt) {
+        $stampParams['StampXPt'] = [double]$stampCfg.stampXPt
+        $stampParams['StampYPt'] = [double]$stampCfg.stampYPt
+    }
+    $result = Invoke-QCReviewStamp @stampParams
 
     $result['reviewType'] = $reviewType
     if ($result.applied -and $Log) {
