@@ -365,6 +365,27 @@ function Get-PrependQcConfig {
   return $script:PrependQcConfig
 }
 
+function Invoke-PrependQcReviewTypeDefaultIfNeeded {
+  param(
+    [Parameter(Mandatory)][string]$FolderPath,
+    [Parameter(Mandatory)][string]$SourceDocumentName
+  )
+  $cfg = Get-PrependQcConfig
+  if (Get-Command -Name 'Ensure-PWQcReviewTypeOnAssociatedSheet' -ErrorAction SilentlyContinue) {
+    try {
+      $ensure = Ensure-PWQcReviewTypeOnAssociatedSheet -Config $cfg -FolderPath $FolderPath `
+        -SourceDocumentName $SourceDocumentName -PassThru
+      if ($ensure.applied) {
+        Write-Log "Set QC_Review_Type to $($ensure.defaultReviewType) on associated DGN, sheet PDF, and QC PDF."
+      } elseif ($ensure.reason) {
+        Write-Log "QC_Review_Type default: $($ensure.reason)"
+      }
+    } catch {
+      Write-Log "QC_Review_Type default failed: $($_.Exception.Message)" -Severity WARNING
+    }
+  }
+}
+
 function Invoke-PrependQcPdfAttributeSync {
   param(
     [Parameter(Mandatory)][string]$FolderPath,
@@ -372,6 +393,7 @@ function Invoke-PrependQcPdfAttributeSync {
     [Parameter(Mandatory)][string]$QcDocumentName
   )
   $cfg = Get-PrependQcConfig
+  Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName
   if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
     try {
       $sync = Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath `
@@ -649,6 +671,8 @@ if ($haveOverlay) {
   throw "Neither overlay exe nor qpdf found. Run .\overlay\build_overlay_exe.ps1 (dist\qc_overlay_prepend\...) or place dist\qc_overlay_prepend.exe, or install qpdf."
 }
 Write-Log "Merged file created: $localMerged"
+
+Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
 
 try {
   Invoke-QcPeerReviewStampIfNeeded -MergedPdfPath $localMerged -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName

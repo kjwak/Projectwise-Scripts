@@ -176,6 +176,24 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
     $reviewerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail','reviewer','qcReviewer')
     $checkerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')
     $reviewType = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType','qcReviewType')
+    if (_QCP-IsNullOrWhiteSpace $reviewType) {
+        $pwFolder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath','sourceFolder','incomingFolderPath')
+        $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName','incomingDocName','sourceDocumentName')
+        if (_QCP-IsNullOrWhiteSpace $pwDoc) { $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourcePath') }
+        if (-not (_QCP-IsNullOrWhiteSpace $pwDoc) -and $pwDoc -match '\\') { $pwDoc = [System.IO.Path]::GetFileName([string]$pwDoc) }
+        $qcRtEnabled = $true
+        if (-not (_QCP-IsNullOrWhiteSpace $pwFolder) -and (Get-Command -Name 'Test-PWQcReviewTypeAttributesEnabled' -ErrorAction SilentlyContinue)) {
+            $qcRtEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath ([string]$pwFolder)
+        }
+        if ($qcRtEnabled -and -not (_QCP-IsNullOrWhiteSpace $pwFolder) -and -not (_QCP-IsNullOrWhiteSpace $pwDoc)) {
+            if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+                $pwRoles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$pwFolder) -SourceDocumentName ([string]$pwDoc) -Config $Config
+                if ($pwRoles.found -and -not (_QCP-IsNullOrWhiteSpace $pwRoles.qcReviewType)) {
+                    $reviewType = [string]$pwRoles.qcReviewType
+                }
+            }
+        }
+    }
     $lastActionBy = _QCP-GetJobMetadataValue -Job $Job -Keys @('lastActionBy','userName','triggeredBy')
     $cycleId = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleId','qcCycleId')
     $cycleNumber = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleNumber','qcCycleNumber')
@@ -197,7 +215,14 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
     $statusValue = $lifecycleState
     try {
         $settings = Get-QCWorkflowSettings -Config $Config
-        if (_QCP-IsNullOrWhiteSpace $reviewType) { $reviewType = [string]$settings.defaultReviewType }
+        if (_QCP-IsNullOrWhiteSpace $reviewType) {
+            $pwFolderForRt = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath','sourceFolder','incomingFolderPath')
+            $applyDefaultRt = $true
+            if (-not (_QCP-IsNullOrWhiteSpace $pwFolderForRt) -and (Get-Command -Name 'Test-PWQcReviewTypeAttributesEnabled' -ErrorAction SilentlyContinue)) {
+                $applyDefaultRt = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath ([string]$pwFolderForRt)
+            }
+            if ($applyDefaultRt) { $reviewType = [string]$settings.defaultReviewType }
+        }
         $assignedTo = Resolve-QCWorkflowAssignee -Settings $settings -StateName $lifecycleState -ReviewType $reviewType `
             -DesignerEmail $designerEmail -ReviewerEmail $reviewerEmail -CheckerEmail $checkerEmail
         if (_QCP-IsNullOrWhiteSpace $assignedTo) {

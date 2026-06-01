@@ -1,4 +1,5 @@
 """Static checks for DOCUMENT_ATTR sheet_index sync from ProjectWise."""
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +86,25 @@ def test_document_state_propagates_to_associated_sheet_files():
     watch = WATCHER.read_text(encoding="utf-8")
     assert "Sync-PWAssociatedSheetWorkflowState -Config $config" in watch
     assert "WATCH_SHEET_STATE_SYNC" in discovery
+
+
+def test_qc_prepend_defaults_review_type_on_associated_sheet():
+    text = DISCOVERY.read_text(encoding="utf-8")
+    assert "function Get-PWQcDefaultReviewType" in text
+    assert "function Ensure-PWQcReviewTypeOnAssociatedSheet" in text
+    assert "function Test-PWQcReviewTypeAttributesEnabled" in text
+    assert "function Get-PWQcReviewTypeEnabledEnvironments" in text
+    assert "Get-PWAssociatedSheetMembers" in text
+    assert "Get-PWQcDefaultReviewType -Config $Config" in text
+    assert "Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath" in text
+
+    legacy = (REPO_ROOT / "legacy" / "prepend_qc.ps1").read_text(encoding="utf-8")
+    assert "Invoke-PrependQcReviewTypeDefaultIfNeeded" in legacy
+    assert "Ensure-PWQcReviewTypeOnAssociatedSheet" in legacy
+
+    appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
+    enabled = appsettings["projectWise"]["qcReviewTypeAttributes"]["enabledEnvironments"]
+    assert enabled == ["Caltrans"]
 
 
 def test_qc_prepend_audit_checks_description_on_paired_pdf_actions():

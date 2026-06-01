@@ -1489,6 +1489,108 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     if ($PassThru) { return $result }
 }
 
+function Get-PWQcReviewTypeEnabledEnvironments {
+    <#
+    .SYNOPSIS
+    PW environment names where QC_Review_Type (and related QC workflow attributes) are defined.
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    $enabled = @('Caltrans')
+    if (-not $Config) { return @($enabled) }
+    try {
+        $rta = $null
+        if ($Config.ContainsKey('projectWise') -and $Config.projectWise) {
+            $pw = $Config.projectWise
+            if ($pw -is [hashtable] -and $pw.ContainsKey('qcReviewTypeAttributes')) { $rta = $pw['qcReviewTypeAttributes'] }
+            elseif ($pw.qcReviewTypeAttributes) { $rta = $pw.qcReviewTypeAttributes }
+        }
+        if ($rta) {
+            $list = $null
+            if ($rta -is [hashtable] -and $rta.ContainsKey('enabledEnvironments')) { $list = @($rta['enabledEnvironments']) }
+            elseif ($rta.enabledEnvironments) { $list = @($rta.enabledEnvironments) }
+            if ($list -and $list.Count -gt 0) {
+                $enabled = @($list | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            }
+        }
+    } catch { }
+    return @($enabled)
+}
+
+function _PWD-InferPwEnvironmentFromFolderPath {
+    param([AllowNull()][string]$FolderPath)
+
+    $p = ([string]$FolderPath).Trim().Trim('\').Replace('\', '/')
+    if ([string]::IsNullOrWhiteSpace($p)) { return '' }
+    if ($p -match '(?i)(?:^|/)documents/(Caltrans)(?:/|$)') { return 'Caltrans' }
+    if ($p -match '(?i)(?:^|/)Caltrans(?:/|$)') { return 'Caltrans' }
+    if ($p -match '(?i)(?:^|/)documents/AZDOT(?:\s+2024)?(?:/|$)') { return 'ADOT' }
+    if ($p -match '(?i)(?:^|/)AZDOT(?:\s+2024)?(?:/|$)') { return 'ADOT' }
+    return ''
+}
+
+function Get-PWFolderEnvironmentName {
+    <#
+    .SYNOPSIS
+    Resolves the ProjectWise environment name for a folder (Get-PWFolders.Environment), with path fallback.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return '' }
+
+    $apiPath = $FolderPath
+    if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
+        try {
+            $converted = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+            if (-not [string]::IsNullOrWhiteSpace($converted)) { $apiPath = $converted }
+        } catch { }
+    }
+
+    $folderCmd = Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue
+    if ($folderCmd) {
+        foreach ($tryPath in @($apiPath, $FolderPath)) {
+            if ([string]::IsNullOrWhiteSpace($tryPath)) { continue }
+            try {
+                $folder = Get-PWFolders -FolderPath $tryPath -JustOne -ErrorAction Stop
+                if ($folder) {
+                    $envName = ''
+                    try { $envName = [string]$folder.Environment } catch { }
+                    if (-not [string]::IsNullOrWhiteSpace($envName)) { return $envName.Trim() }
+                }
+            } catch { }
+        }
+    }
+
+    return _PWD-InferPwEnvironmentFromFolderPath -FolderPath $FolderPath
+}
+
+function Test-PWQcReviewTypeAttributesEnabled {
+    <#
+    .SYNOPSIS
+    True when QC_Review_Type automation is enabled for the folder's PW environment (e.g. Caltrans only until ADOT is integrated).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath
+    )
+
+    $enabledEnvs = @(Get-PWQcReviewTypeEnabledEnvironments -Config $Config)
+    if ($enabledEnvs.Count -eq 0) { return $false }
+
+    $envName = Get-PWFolderEnvironmentName -FolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($envName)) { return $false }
+
+    foreach ($allowed in $enabledEnvs) {
+        if ([string]$allowed.Trim() -ieq $envName.Trim()) { return $true }
+    }
+    return $false
+}
+
 function Get-PWQcReviewTypeAttributeName {
     [CmdletBinding()]
     param([hashtable]$Config = @{})
@@ -1499,6 +1601,162 @@ function Get-PWQcReviewTypeAttributeName {
         if ($am -and $am['reviewType']) { $col = [string]$am['reviewType'] }
     } catch { }
     return $col
+}
+
+function Get-PWQcDefaultReviewType {
+    <#
+    .SYNOPSIS
+    Configured default QC_Review_Type (qcWorkflow.defaultReviewType), usually Production QC.
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    $default = 'Production QC'
+    if (-not $Config) { return $default }
+    try {
+        $wf = $null
+        if ($Config.ContainsKey('qcWorkflow')) { $wf = $Config.qcWorkflow }
+        if ($wf -is [hashtable] -and $wf.ContainsKey('defaultReviewType') -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultReviewType)) {
+            return [string]$wf.defaultReviewType
+        }
+        if ($wf -and $wf.PSObject.Properties['defaultReviewType'] -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultReviewType)) {
+            return [string]$wf.defaultReviewType
+        }
+    } catch { }
+    return $default
+}
+
+function Ensure-PWQcReviewTypeOnAssociatedSheet {
+    <#
+    .SYNOPSIS
+    Sets QC_Review_Type on associated DGN, sheet PDF, and QC PDF when the source sheet PDF has no review type.
+    .DESCRIPTION
+    Used during QC_Prepend when QC_Review_Type is unset: writes qcWorkflow.defaultReviewType (Production QC)
+    to every associated sibling in the folder that is missing the attribute, then downstream logic treats the sheet as Production QC.
+    Skipped when the folder PW environment is not listed in projectWise.qcReviewTypeAttributes.enabledEnvironments (ADOT until integrated).
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [string]$DocumentGuid = '',
+        [switch]$PassThru
+    )
+
+    $pwEnv = Get-PWFolderEnvironmentName -FolderPath $FolderPath
+    if (-not (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
+        $result = @{
+            applied = $false
+            skipped = $true
+            reason = if ($pwEnv) {
+                "QC_Review_Type is not enabled for PW environment '$pwEnv' (Caltrans only until ADOT integration)."
+            } else {
+                'QC_Review_Type is not enabled for this folder (unknown PW environment).'
+            }
+            defaultReviewType = Get-PWQcDefaultReviewType -Config $Config
+            reviewTypeColumn = Get-PWQcReviewTypeAttributeName -Config $Config
+            pwEnvironment = $pwEnv
+            sourceReviewTypeBefore = ''
+            membersChecked = 0
+            membersUpdated = @()
+            attributesWritten = @()
+        }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
+    $defaultReviewType = Get-PWQcDefaultReviewType -Config $Config
+    $result = @{
+        applied = $false
+        skipped = $true
+        reason = ''
+        defaultReviewType = $defaultReviewType
+        reviewTypeColumn = $reviewCol
+        sourceReviewTypeBefore = ''
+        membersChecked = 0
+        membersUpdated = @()
+        attributesWritten = @()
+    }
+
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+    if (-not $read.found) {
+        $result.reason = if ($read.error) { "Source PDF not found or unreadable: $($read.error)" } else { 'Source PDF not found.' }
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $sourceRt = [string]$fields.qcReviewType
+    $result.sourceReviewTypeBefore = $sourceRt
+    if (-not [string]::IsNullOrWhiteSpace($sourceRt)) {
+        $result.reason = 'Source sheet PDF already has QC_Review_Type; no default applied.'
+        if ($PassThru) { return $result }
+        return
+    }
+
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $SourceDocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) {
+        $members = @(@{
+            documentName = $SourceDocumentName
+            document     = $read.document
+            documentGuid = try { [string]$read.document.DocumentGUID } catch { '' }
+        })
+    }
+
+    $toWrite = @{ $reviewCol = $defaultReviewType }
+    foreach ($member in $members) {
+        $dn = [string]$member.documentName
+        $doc = $member.document
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        $result.membersChecked++
+
+        if (-not $doc) {
+            $dg = [string]$member.documentGuid
+            $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+        if (-not $doc) { continue }
+
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($reviewCol)
+        if (-not $attrRead.found) { continue }
+        $current = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewCol
+        if (-not [string]::IsNullOrWhiteSpace([string]$current)) { continue }
+
+        $target = "$FolderPath\$dn"
+        if ($PSCmdlet.ShouldProcess($target, "Set $reviewCol to $defaultReviewType (QC_Prepend default)")) {
+            try {
+                [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $toWrite)
+                $result.applied = $true
+                $result.skipped = $false
+                $result.membersUpdated += $dn
+                if ($result.attributesWritten -notcontains $reviewCol) {
+                    $result.attributesWritten += $reviewCol
+                }
+            } catch {
+                $result.reason = "Failed to set $reviewCol on ${dn}: $($_.Exception.Message)"
+            }
+        } else {
+            $result.skipped = $true
+            $result.reason = "WhatIf: would set $reviewCol to $defaultReviewType on associated sheet files."
+            $result.membersUpdated += $dn
+        }
+    }
+
+    if ($result.applied) {
+        $result.reason = "Set $reviewCol to $defaultReviewType on $($result.membersUpdated.Count) associated file(s)."
+    } elseif ([string]::IsNullOrWhiteSpace($result.reason)) {
+        if ($result.membersUpdated.Count -gt 0) {
+            $result.reason = "WhatIf: would set $reviewCol to $defaultReviewType on associated sheet files."
+        } else {
+            $result.reason = 'No associated sheet files needed QC_Review_Type default.'
+            $result.skipped = $true
+        }
+    }
+
+    if ($PassThru) { return $result }
 }
 
 function Get-PWQcPrependRoleFieldsFromSourcePdf {
@@ -1520,13 +1778,17 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     }
 
     $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $qcReviewType = [string]$fields.qcReviewType
+    if ([string]::IsNullOrWhiteSpace($qcReviewType) -and (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
+        $qcReviewType = Get-PWQcDefaultReviewType -Config $Config
+    }
     return @{
         found          = $true
         error          = ''
         designerEmail  = [string]$fields.designerEmail
         reviewerEmail  = [string]$fields.reviewerEmail
         checkerEmail   = [string]$fields.checkerEmail
-        qcReviewType   = [string]$fields.qcReviewType
+        qcReviewType   = $qcReviewType
     }
 }
 
@@ -1534,6 +1796,7 @@ function Sync-PWQcPdfReviewTypeFromSourcePdf {
     <#
     .SYNOPSIS
     Copies QC_Review_Type from the source sheet PDF to the matching *-qc.pdf document in PW.
+    When the source has no review type, applies the configured default to DGN, sheet PDF, and QC PDF first.
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -1555,18 +1818,47 @@ function Sync-PWQcPdfReviewTypeFromSourcePdf {
         attributesWritten = @()
     }
 
-    $source = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $Config
-    if (-not $source.found) {
-        $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
+    if (-not (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
+        $pwEnv = Get-PWFolderEnvironmentName -FolderPath $FolderPath
+        $result.reason = if ($pwEnv) {
+            "QC_Review_Type sync skipped for PW environment '$pwEnv' (not integrated)."
+        } else {
+            'QC_Review_Type sync skipped (PW environment unknown or not enabled).'
+        }
         if ($PassThru) { return $result }
         return
     }
 
-    $result.sourceReviewType = [string]$source.qcReviewType
-    if ([string]::IsNullOrWhiteSpace($result.sourceReviewType)) {
-        $result.reason = 'Source PDF has no QC_Review_Type; nothing to sync.'
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $readSource = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+    if (-not $readSource.found) {
+        $result.reason = if ($readSource.error) { "Source PDF not found or unreadable: $($readSource.error)" } else { 'Source PDF not found.' }
         if ($PassThru) { return $result }
         return
+    }
+
+    $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $readSource.attributes -PwStateName ([string]$readSource.pwStateName)
+    $rawSourceRt = [string]$fields.qcReviewType
+    if ([string]::IsNullOrWhiteSpace($rawSourceRt)) {
+        $ensure = Ensure-PWQcReviewTypeOnAssociatedSheet -Config $Config -FolderPath $FolderPath `
+            -SourceDocumentName $SourceDocumentName -PassThru
+        if ($ensure) {
+            $result.sourceReviewType = [string]$ensure.defaultReviewType
+            if ($ensure.applied) {
+                $result.updated = $true
+                $result.skipped = $false
+                $result.reason = [string]$ensure.reason
+                $result.attributesWritten = @($reviewCol)
+                if ($PassThru) { return $result }
+                return
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$ensure.reason)) {
+                $result.reason = [string]$ensure.reason
+            }
+        }
+        $result.sourceReviewType = Get-PWQcDefaultReviewType -Config $Config
+    } else {
+        $result.sourceReviewType = $rawSourceRt
     }
 
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $QcDocumentName -ColumnsToReturn @($reviewCol)
@@ -1616,6 +1908,7 @@ function Sync-PrependQcPdfAttributesFromSource {
     <#
     .SYNOPSIS
     Syncs email and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
+    When QC_Review_Type is unset on the source sheet PDF, sets Production QC on DGN, sheet PDF, and QC PDF.
     #>
     [CmdletBinding()]
     param(
