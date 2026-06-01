@@ -72,6 +72,20 @@ if ($config.ContainsKey('queue') -and $config.queue -and $config.queue.ContainsK
 
 $loopMode = ($MaxJobs -gt 1) -or ($LeaseSeconds -gt 0) -or ($IdleSleepMs -gt 0)
 
+if (Test-QCDatabaseEnabled -Config $config) {
+    try {
+        $schemaRes = Initialize-QCDatabaseSchema -Config $config
+        if (-not $schemaRes.IsSuccess) {
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Flush -Level 'Warning' -Code 'WORKER_DB_SCHEMA_INIT_FAILED' -Message 'Database schema initialization failed; job telemetry may not persist.' -Data @{
+                code = [string]$schemaRes.Code
+                message = [string]$schemaRes.Message
+            }
+        }
+    } catch {
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Flush -Level 'Warning' -Code 'WORKER_DB_SCHEMA_INIT_FAILED' -Message ('Database schema initialization threw: ' + $_.Exception.Message) -Data @{}
+    }
+}
+
 Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_START' -Message 'Worker run started.' -Data @{
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
@@ -105,6 +119,41 @@ function Write-WorkerStage {
         jobId = $JobId
         jobType = $JobType
         handler = $Handler
+    }
+}
+
+function Write-WorkerJobTelemetryLog {
+    param(
+        [string]$JobId,
+        [string]$JobType,
+        [object]$TelemetryResult
+    )
+    if (-not $TelemetryResult) { return }
+    $code = [string]$TelemetryResult.Code
+    $written = $false
+    $rowsAffected = $null
+    try {
+        if ($TelemetryResult.Data) {
+            if ($TelemetryResult.Data -is [hashtable] -and $TelemetryResult.Data.ContainsKey('written')) { $written = [bool]$TelemetryResult.Data.written }
+            if ($TelemetryResult.Data -is [hashtable] -and $TelemetryResult.Data.ContainsKey('rowsAffected')) { $rowsAffected = $TelemetryResult.Data.rowsAffected }
+        }
+    } catch { }
+    if ($code -eq 'JOB_TELEMETRY_WRITTEN') {
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'JOB_TELEMETRY_WRITTEN' -Message 'Job outcome recorded in processing_jobs.' -Data @{
+            jobId = $JobId; jobType = $JobType; written = $written; rowsAffected = $rowsAffected
+        }
+        return
+    }
+    if ($code -eq 'JOB_TELEMETRY_SKIPPED') {
+        $reason = $null
+        try { if ($TelemetryResult.Data.reason) { $reason = [string]$TelemetryResult.Data.reason } } catch { }
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Warning' -Code 'JOB_TELEMETRY_SKIPPED' -Message $TelemetryResult.Message -Data @{
+            jobId = $JobId; jobType = $JobType; reason = $reason
+        }
+        return
+    }
+    Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Flush -Level 'Error' -Code $code -Message $TelemetryResult.Message -Data @{
+        jobId = $JobId; jobType = $JobType; written = $written
     }
 }
 
@@ -308,9 +357,17 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     $triggerSource = [string]$Job.metadata.candidate.triggerSource
                 }
             } catch { }
-            Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
+            $startedAtUtc = $null
+            try {
+                if ($Job.ContainsKey('startedAtUtc') -and $Job['startedAtUtc']) { $startedAtUtc = [string]$Job['startedAtUtc'] }
+            } catch { }
+            $jobAttempts = 0
+            try { if ($Job.ContainsKey('attempts') -and $null -ne $Job['attempts']) { $jobAttempts = [int]$Job['attempts'] } } catch { }
+            $telRes = Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
                 -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-                -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -DurationMs $jobDurationMs -ResultData $rdJson
+                -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
+                -AttemptCount $jobAttempts -DurationMs $jobDurationMs -ResultData $rdJson
+            Write-WorkerJobTelemetryLog -JobId $jobId -JobType $jobType -TelemetryResult $telRes
 
             # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
@@ -377,10 +434,16 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
                 $triggerSourceFail = [string]$Job.metadata.candidate.triggerSource
             }
         } catch { }
-        Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
+        $startedAtUtcFail = $null
+        try {
+            if ($Job.ContainsKey('startedAtUtc') -and $Job['startedAtUtc']) { $startedAtUtcFail = [string]$Job['startedAtUtc'] }
+        } catch { }
+        $telResFail = Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
             -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-            -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSourceFail -DurationMs $jobDurationMs -AttemptCount $attempts `
+            -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSourceFail -StartedAtUtc $startedAtUtcFail `
+            -DurationMs $jobDurationMs -AttemptCount $attempts `
             -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message) -ResultData $details
+        Write-WorkerJobTelemetryLog -JobId $jobId -JobType $jobType -TelemetryResult $telResFail
         if ($target -eq 'failed') {
             return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
         } else {

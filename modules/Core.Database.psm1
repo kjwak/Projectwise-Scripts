@@ -3,6 +3,7 @@
 # The database is the reporting/control layer. The JSON queue remains the execution source.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -354,7 +355,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_4 = _QDB-GetSchemaV1dot4
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1047,6 +1048,56 @@ FROM sheet_index s;
 '@
 }
 
+function _QDB-GetProcessingJobsAdditive {
+    <#
+    Ensures processing_jobs exists on databases that were initialized before this table
+    was part of the bootstrap script (schema_version already set skips full bootstrap).
+    #>
+    return @'
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NULL
+CREATE TABLE processing_jobs (
+    id              INT IDENTITY(1,1) PRIMARY KEY,
+    job_id          NVARCHAR(200) NOT NULL,
+    job_type        NVARCHAR(50) NOT NULL,
+    source_path     NVARCHAR(1000),
+    source_folder   NVARCHAR(1000),
+    created_at      DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    started_at      DATETIMEOFFSET(3),
+    completed_at    DATETIMEOFFSET(3),
+    status          NVARCHAR(20) NOT NULL DEFAULT 'pending',
+    trigger_source  NVARCHAR(50),
+    trigger_audit_id BIGINT,
+    dedupe_key      NVARCHAR(200),
+    attempt_count   INT NOT NULL DEFAULT 0,
+    duration_ms     INT,
+    error_code      NVARCHAR(100),
+    error_message   NVARCHAR(2000),
+    result_data     NVARCHAR(MAX),
+    CONSTRAINT uq_processing_jobs_jobid UNIQUE(job_id)
+);
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_jobs_status')
+    CREATE INDEX idx_jobs_status ON processing_jobs(status);
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_jobs_type')
+    CREATE INDEX idx_jobs_type ON processing_jobs(job_type);
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_jobs_created')
+    CREATE INDEX idx_jobs_created ON processing_jobs(created_at);
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_jobs_folder')
+    CREATE INDEX idx_jobs_folder ON processing_jobs(source_folder);
+GO
+IF OBJECT_ID('dbo.v_job_summary', 'V') IS NULL AND OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL
+EXEC('CREATE VIEW v_job_summary AS
+SELECT
+    job_type,
+    status,
+    COUNT(*) AS job_count,
+    AVG(duration_ms) AS avg_duration_ms,
+    MAX(completed_at) AS last_completed
+FROM processing_jobs
+GROUP BY job_type, status');
+'@
+}
+
 function _QDB-GetSchemaV1dot5Additive {
     return @'
 GO
@@ -1389,6 +1440,16 @@ function Get-QCProcessingJobType {
     return $key
 }
 
+function _QDB-TruncateTelemetryPayload {
+    param(
+        [string]$Text,
+        [int]$MaxLength = 32000
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    if ($Text.Length -le $MaxLength) { return $Text }
+    return $Text.Substring(0, $MaxLength)
+}
+
 function Write-QCJobTelemetry {
     <#
     .SYNOPSIS
@@ -1405,20 +1466,32 @@ function Write-QCJobTelemetry {
         [string]$SourceFolder,
         [string]$DedupeKey,
         [string]$TriggerSource,
+        [string]$StartedAtUtc,
         [int]$AttemptCount = 0,
         [Nullable[int]]$DurationMs,
         [string]$ErrorCode,
         [string]$ErrorMessage,
         [string]$ResultData
     )
-    if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; reason = 'database_disabled' }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database writes blocked (dry-run).' -Data @{ written = $false; reason = 'dry_run' }
+    }
     $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
+    $resultPayload = _QDB-TruncateTelemetryPayload -Text $ResultData
+    $startedAt = $null
+    if (-not [string]::IsNullOrWhiteSpace($StartedAtUtc)) {
+        try { $startedAt = [DateTimeOffset]::Parse($StartedAtUtc) } catch { $startedAt = $null }
+    }
     try {
         $sql = @"
 MERGE processing_jobs AS tgt
 USING (SELECT @jobId AS job_id) AS src ON tgt.job_id = src.job_id
 WHEN MATCHED THEN UPDATE SET
     status = @status,
+    started_at = COALESCE(@startedAt, tgt.started_at),
     completed_at = CASE WHEN @status IN ('succeeded','failed') THEN SYSDATETIMEOFFSET() ELSE tgt.completed_at END,
     attempt_count = @attemptCount,
     duration_ms = @durationMs,
@@ -1426,9 +1499,9 @@ WHEN MATCHED THEN UPDATE SET
     error_message = @errorMessage,
     result_data = @resultData
 WHEN NOT MATCHED THEN INSERT
-    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, attempt_count, duration_ms, error_code, error_message, result_data)
+    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data)
 VALUES
-    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData);
+    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData);
 "@
         $params = @{
             jobId         = $JobId
@@ -1438,18 +1511,19 @@ VALUES
             sourceFolder  = if ($SourceFolder)  { $SourceFolder }  else { $null }
             dedupeKey     = if ($DedupeKey)      { $DedupeKey }      else { $null }
             triggerSource = if ($TriggerSource) { $TriggerSource } else { $null }
+            startedAt     = if ($startedAt) { $startedAt } else { $null }
             attemptCount  = $AttemptCount
             durationMs    = if ($null -ne $DurationMs) { $DurationMs } else { $null }
             errorCode     = if ($ErrorCode)     { $ErrorCode }     else { $null }
             errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
-            resultData    = if ($ResultData)    { $ResultData }    else { $null }
+            resultData    = if ($resultPayload) { $resultPayload } else { $null }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
             Write-QCJsonLog -Flush -Level 'Error' -Code 'JOB_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='merge_processing_jobs'; jobId=$JobId; jobType=$telemetryJobType }
             return New-QCErrorResult -Code 'JOB_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='merge_processing_jobs'; jobId=$JobId; jobType=$telemetryJobType }
         }
-        return New-QCSuccessResult -Code 'JOB_TELEMETRY_WRITTEN' -Message 'Job telemetry upserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+        return New-QCSuccessResult -Code 'JOB_TELEMETRY_WRITTEN' -Message 'Job telemetry upserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected; jobType = $telemetryJobType }
     } catch {
         $msg=[string]$_.Exception.Message
         Write-QCJsonLog -Flush -Level 'Error' -Code 'JOB_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='merge_processing_jobs'; jobId=$JobId; jobType=$telemetryJobType }

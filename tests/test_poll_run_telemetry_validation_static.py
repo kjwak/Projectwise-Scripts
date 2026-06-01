@@ -26,6 +26,13 @@ def test_watcher_uses_counterpath_and_fail_on_write_error() -> None:
     assert '$watcherPassNumber = $cycleNum' in WATCHER
 
 
+def test_processing_jobs_table_in_additive_schema_patches() -> None:
+    assert '_QDB-GetProcessingJobsAdditive' in DB
+    assert 'IF OBJECT_ID(' in DB.split('_QDB-GetProcessingJobsAdditive', 1)[1].split('function _QDB-GetSchemaV1dot5Additive', 1)[0]
+    assert 'processing_jobs' in DB.split('_QDB-GetProcessingJobsAdditive', 1)[1].split('function _QDB-GetSchemaV1dot5Additive', 1)[0]
+    assert '_QDB-GetProcessingJobsAdditive' in DB.split('$patchSql =', 1)[1].split('$connRes = Get-QCDatabaseConnection', 1)[0]
+
+
 def test_poll_run_validation_not_used_for_job_or_sheet_telemetry() -> None:
     job_fn = DB.split('function Write-QCJobTelemetry', 1)[1].split('function Test-QCPollRunTelemetryInsertShape', 1)[0]
     sheet_fn = DB.split('function Write-QCSheetIndex', 1)[1].split('function Update-QCSheetIndexPwStateName', 1)[0]
