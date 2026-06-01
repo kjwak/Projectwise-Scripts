@@ -791,6 +791,8 @@ function Build-PWSheetIndexRowsForPairedSheets {
         [hashtable]$StateByGuid = @{}
     )
 
+    if (-not (Test-QCSheetIndexFolderPath -FolderPath $FolderPath)) { return @() }
+
     $nameToFields = @{}
     try {
         $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
@@ -1256,6 +1258,7 @@ function Sync-PWSheetIndexOwnership {
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    if (-not (Test-QCSheetIndexFolderPath -FolderPath $FolderPath)) { return }
 
     $isDocumentAttr = ([string]$AuditActionName).Trim() -eq 'DOCUMENT_ATTR'
     $isDocumentState = ([string]$AuditActionName).Trim() -eq 'DOCUMENT_STATE'

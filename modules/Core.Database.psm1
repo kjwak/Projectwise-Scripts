@@ -28,6 +28,23 @@ function _QDB-IsEnabled {
     try { return [bool]$Config.database.enabled } catch { return $false }
 }
 
+function Test-QCSheetIndexFolderPath {
+    <#
+    .SYNOPSIS
+    Returns $true when folder_path is under a project CADD\Sheets tree (sheet_index scope).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$FolderPath,
+        [string]$RequiredFragment = 'CADD/Sheets'
+    )
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $false }
+    $normPath = ([string]$FolderPath).Trim() -replace '\\', '/'
+    $normFrag = ([string]$RequiredFragment).Trim() -replace '\\', '/'
+    if ([string]::IsNullOrWhiteSpace($normFrag)) { return $false }
+    return $normPath.IndexOf($normFrag, [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -1761,6 +1778,9 @@ function Write-QCSheetIndex {
     if ([string]::IsNullOrWhiteSpace($DocumentGuid) -or $DocumentGuid.Trim().Length -lt 5) {
         return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'document_guid is missing or too short for a ProjectWise GUID.' -Data @{ written = $false; documentGuid = $DocumentGuid }
     }
+    if (-not (Test-QCSheetIndexFolderPath -FolderPath $FolderPath)) {
+        return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'folder_path is outside CADD/Sheets; sheet_index tracks Sheets folders only.' -Data @{ written = $false; folderPath = $FolderPath }
+    }
     try {
         if (-not $Extension -and $DocumentName) {
             $ext = [System.IO.Path]::GetExtension($DocumentName)
@@ -1924,7 +1944,8 @@ function Write-QCSheetIndexBatch {
     if (-not $Rows -or $Rows.Count -eq 0) { return }
     $Rows = @($Rows | Where-Object {
         $g = if ($_.documentGuid) { [string]$_.documentGuid } else { '' }
-        -not [string]::IsNullOrWhiteSpace($g) -and $g.Trim().Length -ge 5
+        $fp = if ($_.folderPath) { [string]$_.folderPath } else { '' }
+        -not [string]::IsNullOrWhiteSpace($g) -and $g.Trim().Length -ge 5 -and (Test-QCSheetIndexFolderPath -FolderPath $fp)
     })
     if ($Rows.Count -eq 0) { return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'No rows with valid document_guid length.' -Data @{ written = $false } }
     try {
@@ -2014,4 +2035,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
