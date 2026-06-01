@@ -53,7 +53,27 @@ def compute_stamp_rect_overlay_top_left(
     margin_inset: float,
 ) -> Any:
     """
-    Stamp rectangle at the visual top-left of the page, inside existing page bounds.
+    Stamp rectangle at the visual top-left of the page (legacy margin inset).
+
+    Same as compute_stamp_rect_at_offset with x=y=margin_inset.
+    """
+    return compute_stamp_rect_at_offset(
+        page_rect, stamp_width, stamp_height, float(margin_inset), float(margin_inset)
+    )
+
+
+def compute_stamp_rect_at_offset(
+    page_rect: Any,
+    stamp_width: float,
+    stamp_height: float,
+    x_pt: float,
+    y_pt: float,
+) -> Any:
+    """
+    Stamp rectangle from offsets relative to the page's visual top-left.
+
+    x_pt: distance from the page's left edge to the stamp's left edge (negative = outside left).
+    y_pt: distance from the page's top edge to the stamp's top edge (negative = above the page).
 
     Uses PDF coordinates (y increases upward). Does not expand the page.
     """
@@ -64,12 +84,15 @@ def compute_stamp_rect_overlay_top_left(
         float(page_rect.x1),
         float(page_rect.y1),
     )
-    inset = float(margin_inset)
+    x_off = float(x_pt)
+    y_off = float(y_pt)
+    sw = float(stamp_width)
+    sh = float(stamp_height)
     return fitz.Rect(
-        px0 + inset,
-        py1 - inset - float(stamp_height),
-        px0 + inset + float(stamp_width),
-        py1 - inset,
+        px0 + x_off,
+        py1 - y_off - sh,
+        px0 + x_off + sw,
+        py1 - y_off,
     )
 
 
@@ -118,6 +141,8 @@ def apply_review_stamp(
     page_index: int = 0,
     stamp_height_pt: float = DEFAULT_STAMP_HEIGHT_PT,
     margin_inset_pt: float = DEFAULT_MARGIN_INSET_PT,
+    position_x_pt: float | None = None,
+    position_y_pt: float | None = None,
     in_place: bool = True,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -163,9 +188,14 @@ def apply_review_stamp(
             orig_cropbox = fitz.Rect(page.cropbox)
             orig_rotation = int(page.rotation or 0)
 
-            stamp_rect = compute_stamp_rect_overlay_top_left(
-                page.rect, stamp_w, stamp_h, float(margin_inset_pt)
-            )
+            if position_x_pt is not None and position_y_pt is not None:
+                stamp_rect = compute_stamp_rect_at_offset(
+                    page.rect, stamp_w, stamp_h, float(position_x_pt), float(position_y_pt)
+                )
+            else:
+                stamp_rect = compute_stamp_rect_overlay_top_left(
+                    page.rect, stamp_w, stamp_h, float(margin_inset_pt)
+                )
 
             pixmap = _render_stamp_pixmap(stamp_page, stamp_w, stamp_h)
             stamp_annot = page.add_stamp_annot(stamp_rect, stamp=pixmap)
@@ -243,7 +273,19 @@ def main(argv: list[str] | None = None) -> int:
         dest="margin_inset_pt",
         type=float,
         default=DEFAULT_MARGIN_INSET_PT,
-        help="Inset from the page top-left corner (inside existing page bounds)",
+        help="Uniform offset from page top-left (legacy; ignored when --stamp-x-pt and --stamp-y-pt are set)",
+    )
+    parser.add_argument(
+        "--stamp-x-pt",
+        type=float,
+        default=None,
+        help="Horizontal offset from page left to stamp left (PDF pt; negative = outside)",
+    )
+    parser.add_argument(
+        "--stamp-y-pt",
+        type=float,
+        default=None,
+        help="Vertical offset from page top to stamp top (PDF pt; negative = above page)",
     )
     parser.add_argument("--page-index", type=int, default=0)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -263,16 +305,18 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     in_place = args.output is None
-    result = apply_review_stamp(
-        args.pdf,
-        args.stamp,
-        fields,
-        page_index=args.page_index,
-        stamp_height_pt=args.stamp_height_pt,
-        margin_inset_pt=args.margin_inset_pt,
-        in_place=in_place,
-        output_path=args.output,
-    )
+    stamp_kwargs: dict[str, Any] = {
+        "page_index": args.page_index,
+        "stamp_height_pt": args.stamp_height_pt,
+        "in_place": in_place,
+        "output_path": args.output,
+    }
+    if args.stamp_x_pt is not None and args.stamp_y_pt is not None:
+        stamp_kwargs["position_x_pt"] = args.stamp_x_pt
+        stamp_kwargs["position_y_pt"] = args.stamp_y_pt
+    else:
+        stamp_kwargs["margin_inset_pt"] = args.margin_inset_pt
+    result = apply_review_stamp(args.pdf, args.stamp, fields, **stamp_kwargs)
     LOGGER.info("Review stamp applied: %s", result)
     return 0
 

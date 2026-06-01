@@ -17,7 +17,7 @@ $line = Join-QCProcessArgumentList -ArgumentTokens @(
     '--stamp-x-pt', '-400', '--stamp-y-pt', '0', '--stamp-height-pt', '300'
 )
 
-Assert-True ($line -match '--stamp-x-pt\s+"-400"') "Expected quoted -400 after --stamp-x-pt; got: $line"
-Assert-True ($line -match '--stamp-y-pt\s+0\b') "Expected unquoted 0 for --stamp-y-pt; got: $line"
+Assert-True ($line -match '--stamp-x-pt=-400') "Expected --stamp-x-pt=-400; got: $line"
+Assert-True ($line -match '--stamp-y-pt=0\b') "Expected --stamp-y-pt=0; got: $line"
 
 Write-Host 'test_review_stamp_negative_cli: PASS' -ForegroundColor Green

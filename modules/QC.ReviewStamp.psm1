@@ -30,8 +30,30 @@ function _QCRS-AppendOptionalCliFlags {
         [string]$Value
     )
     if (_QCRS-IsBlank $Value) { return }
-    [void]$TokenList.Add($Flag)
-    [void]$TokenList.Add([string]$Value)
+    _QCRS-AppendCliFlagValue -TokenList $TokenList -Flag $Flag -Value $Value
+}
+
+function _QCRS-AppendCliFlagValue {
+    param(
+        [System.Collections.Generic.List[object]]$TokenList,
+        [Parameter(Mandatory)][string]$Flag,
+        [Parameter(Mandatory)][string]$Value
+    )
+    # --flag=value avoids Windows/argparse treating -400 as a switch.
+    [void]$TokenList.Add("${Flag}=$Value")
+}
+
+function _QCRS-TestOverlaySupportsStampPositionPt {
+    param([Parameter(Mandatory)][string]$OverlayExe)
+    $dir = Split-Path -Parent $OverlayExe
+    if (_QCRS-IsBlank $dir) { return $false }
+    foreach ($rel in @('_internal\qc_review_stamp.py', 'qc_review_stamp.py')) {
+        $py = Join-Path $dir $rel
+        if (Test-Path -LiteralPath $py) {
+            return [bool](Select-String -LiteralPath $py -Pattern '--stamp-x-pt' -Quiet)
+        }
+    }
+    return $false
 }
 
 function _QCRS-NeedsShellCliQuoting {
@@ -208,18 +230,17 @@ function Invoke-QCReviewStamp {
         _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--originator' -Value $Originator
         _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--checker' -Value $Checker
         _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--backchecker' -Value $Backchecker
-        [void]$stampTokens.Add('--originator-date')
-        [void]$stampTokens.Add([string]$OriginatorDate)
-        [void]$stampTokens.Add('--stamp-height-pt')
-        [void]$stampTokens.Add([string]$StampHeightPt)
-        if ($null -ne $StampXPt -and $null -ne $StampYPt) {
-            [void]$stampTokens.Add('--stamp-x-pt')
-            [void]$stampTokens.Add([string]$StampXPt)
-            [void]$stampTokens.Add('--stamp-y-pt')
-            [void]$stampTokens.Add([string]$StampYPt)
+        _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--originator-date' -Value ([string]$OriginatorDate)
+        _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--stamp-height-pt' -Value ([string]$StampHeightPt)
+        $supportsXY = _QCRS-TestOverlaySupportsStampPositionPt -OverlayExe $OverlayExe
+        if ($null -ne $StampXPt -and $null -ne $StampYPt -and $supportsXY) {
+            _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--stamp-x-pt' -Value ([string]$StampXPt)
+            _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--stamp-y-pt' -Value ([string]$StampYPt)
         } else {
-            [void]$stampTokens.Add('--margin-outside-pt')
-            [void]$stampTokens.Add([string]$MarginOutsidePt)
+            if ($null -ne $StampXPt -and $null -ne $StampYPt -and -not $supportsXY) {
+                return @{ applied = $false; reason = 'Overlay exe is missing --stamp-x-pt/--stamp-y-pt support; copy overlay\qc_review_stamp.py to dist\qc_overlay_prepend\_internal\ or rebuild dist\qc_overlay_prepend.' }
+            }
+            _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--margin-outside-pt' -Value ([string]$MarginOutsidePt)
         }
 
         $argLine = _QCRS-BuildProcessArgumentLine -Tokens $stampTokens.ToArray()

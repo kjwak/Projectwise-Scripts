@@ -58,6 +58,13 @@ Common causes: WinError 10013 = outbound HTTPS to pypi.org blocked (firewall/pro
       throw "PyInstaller build failed (exit code $LASTEXITCODE)."
     }
 
+    $stampSrc = Join-Path $scriptDir "qc_review_stamp.py"
+    $stampDst = Join-Path $projectRoot "dist\qc_overlay_prepend\_internal\qc_review_stamp.py"
+    if ((Test-Path $stampSrc) -and (Test-Path (Split-Path -Parent $stampDst))) {
+        Copy-Item -LiteralPath $stampSrc -Destination $stampDst -Force
+        Write-Host "Synced overlay\qc_review_stamp.py -> dist\qc_overlay_prepend\_internal\ (onedir loads this at runtime)."
+    }
+
     $exe = Join-Path $projectRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"
     if (Test-Path $exe) {
         $size = (Get-Item $exe).Length / 1MB
