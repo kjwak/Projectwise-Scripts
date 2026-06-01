@@ -1,10 +1,37 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+<#
+.SYNOPSIS
+Probes Write-QCJobTelemetry against processing_jobs (connectivity + MERGE + read-back).
 
-$cfgPath = Join-Path $repoRoot 'appsettings.json'
-$config = [hashtable](Read-QCAppSettings -Path $cfgPath).Data.config
+.PARAMETER AppSettingsPath
+Path to appsettings.json. Defaults to repo root.
+#>
+[CmdletBinding()]
+param(
+    [string]$AppSettingsPath = ''
+)
+
+$ErrorActionPreference = 'Stop'
+
+$scriptDir = $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
+    $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
+}
+
+$modulesDir = Join-Path $repoRoot 'modules'
+foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1')) {
+    $modPath = Join-Path $modulesDir $mod
+    if (-not (Test-Path -LiteralPath $modPath)) {
+        throw "Module not found: $modPath"
+    }
+    Import-Module $modPath -Force -ErrorAction Stop
+}
+
+if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
+    throw "appsettings.json not found: $AppSettingsPath"
+}
+
+$config = Get-QCAppSettingsConfig -Path $AppSettingsPath
 
 Write-Host "DB enabled: $(Test-QCDatabaseEnabled -Config $config)"
 
