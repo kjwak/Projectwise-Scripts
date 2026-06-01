@@ -19,7 +19,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 }
 
 $modulesDir = Join-Path $repoRoot 'modules'
-foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'Core.Database.psm1')) {
+foreach ($mod in @('Core.Results.psm1', 'Core.Database.psm1')) {
     $modPath = Join-Path $modulesDir $mod
     if (-not (Test-Path -LiteralPath $modPath)) {
         throw "Module not found: $modPath"
@@ -31,7 +31,21 @@ if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
     throw "appsettings.json not found: $AppSettingsPath"
 }
 
-$config = Get-QCAppSettingsConfig -Path $AppSettingsPath
+function _DeepHashtable ($obj) {
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{}
+        foreach ($p in $obj.PSObject.Properties) { $h[$p.Name] = _DeepHashtable $p.Value }
+        return $h
+    }
+    if ($obj -is [System.Collections.IEnumerable] -and $obj -isnot [string]) {
+        return @($obj | ForEach-Object { _DeepHashtable $_ })
+    }
+    return $obj
+}
+
+Write-Host "Loading config from: $AppSettingsPath"
+$raw = Get-Content -LiteralPath $AppSettingsPath -Raw -ErrorAction Stop
+$config = _DeepHashtable ($raw | ConvertFrom-Json -ErrorAction Stop)
 
 Write-Host "DB enabled: $(Test-QCDatabaseEnabled -Config $config)"
 
