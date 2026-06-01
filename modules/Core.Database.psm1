@@ -1758,6 +1758,9 @@ function Write-QCSheetIndex {
         [switch]$SetOwnershipFromProjectWise
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid) -or $DocumentGuid.Trim().Length -lt 5) {
+        return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'document_guid is missing or too short for a ProjectWise GUID.' -Data @{ written = $false; documentGuid = $DocumentGuid }
+    }
     try {
         if (-not $Extension -and $DocumentName) {
             $ext = [System.IO.Path]::GetExtension($DocumentName)
@@ -1919,6 +1922,11 @@ function Write-QCSheetIndexBatch {
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     if (-not $Rows -or $Rows.Count -eq 0) { return }
+    $Rows = @($Rows | Where-Object {
+        $g = if ($_.documentGuid) { [string]$_.documentGuid } else { '' }
+        -not [string]::IsNullOrWhiteSpace($g) -and $g.Trim().Length -ge 5
+    })
+    if ($Rows.Count -eq 0) { return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'No rows with valid document_guid length.' -Data @{ written = $false } }
     try {
         $sessRes = New-QCDatabaseSession -Config $Config
         if (-not $sessRes.IsSuccess) { return }

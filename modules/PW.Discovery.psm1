@@ -823,6 +823,7 @@ function Build-PWSheetIndexRowsForPairedSheets {
                 @{ name = $dgnName; guid = $dgnGuid; sourceType = 'dgn' }
             )) {
                 if (-not $pair.name -or -not $pair.guid) { continue }
+                if (-not (Test-PWValidDocumentGuid -DocumentGuid $pair.guid)) { continue }
                 $f = if ($nameToFields.ContainsKey($pair.name.ToLowerInvariant())) {
                     $nameToFields[$pair.name.ToLowerInvariant()]
                 } else {
