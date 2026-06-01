@@ -148,11 +148,11 @@ for ($i = 0; $i -lt $ids.Count; $i += $chunkSize) {
         $inList.Add("@$key") | Out-Null
     }
     $idClause = ($inList -join ', ')
+    # Delete by previewed ids only; folder filter already applied in SELECT.
     $deleteSql = @"
 DELETE FROM sheet_index
 WHERE id IN ($idClause)
   AND LEN(LTRIM(RTRIM(ISNULL(document_guid, '')))) < @minLen
-$folderClause
 "@
     if ($PSCmdlet.ShouldProcess(("{0} sheet_index row(s)" -f $chunk.Count), 'DELETE invalid document_guid rows')) {
         $delRes = Invoke-QCDatabaseNonQuery -Config $config -Sql $deleteSql -Parameters $delParams
