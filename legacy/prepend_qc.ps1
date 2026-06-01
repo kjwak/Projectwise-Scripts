@@ -516,7 +516,9 @@ $historyDoc = Get-PWDocumentsBySearch -FolderPath $IncomingFolderPath -JustThisF
 $localHistory = Join-Path $tempWorkDir $HistoryDocName   # history export will go to TEMP
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $baseName = [System.IO.Path]::GetFileNameWithoutExtension($HistoryDocName)
-$localMerged = Join-Path $tempWorkDir ("${baseName}_MERGED_$stamp.pdf")
+# Match PW document name on disk so Update-PWDocumentFile / open-save use *-qc.pdf (not *_MERGED_*).
+# Safe here: exported history is copied to *_hist_* and the export copy is removed before merge.
+$localMerged = Join-Path $tempWorkDir $HistoryDocName
 
 if (-not $historyDoc) {
   Write-Log "History document does not exist yet."
