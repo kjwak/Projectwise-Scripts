@@ -60,6 +60,44 @@ function _QCQJ-GetLockAcquireSettings {
     return @{ TimeoutMs = $timeoutMs; SleepMs = $sleepMs }
 }
 
+function _QCQJ-GetMoveRetrySettings {
+    <#
+    Retries for queue JSON renames/deletes. AV scanners often hold handles for 5-30s on
+    newly written files under queue\; defaults are higher than a quick 10x200ms burst.
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Config
+    )
+    $attempts = 30
+    $sleepMs = 500
+    if ($Config -and $Config.ContainsKey('queue') -and $Config.queue) {
+        $q = $Config.queue
+        if ($q -is [hashtable]) {
+            if ($q.ContainsKey('moveRetryAttempts') -and $null -ne $q['moveRetryAttempts']) {
+                try { $attempts = [int]$q['moveRetryAttempts'] } catch { }
+            }
+            if ($q.ContainsKey('moveRetrySleepMs') -and $null -ne $q['moveRetrySleepMs']) {
+                try { $sleepMs = [int]$q['moveRetrySleepMs'] } catch { }
+            }
+        } elseif ($q.PSObject -and $q.PSObject.Properties) {
+            try {
+                $p1 = $q.PSObject.Properties['moveRetryAttempts']
+                if ($p1 -and $null -ne $p1.Value) { $attempts = [int]$p1.Value }
+            } catch { }
+            try {
+                $p2 = $q.PSObject.Properties['moveRetrySleepMs']
+                if ($p2 -and $null -ne $p2.Value) { $sleepMs = [int]$p2.Value }
+            } catch { }
+        }
+    }
+    if ($attempts -lt 3) { $attempts = 3 }
+    if ($attempts -gt 120) { $attempts = 120 }
+    if ($sleepMs -lt 50) { $sleepMs = 50 }
+    if ($sleepMs -gt 5000) { $sleepMs = 5000 }
+    return @{ Attempts = $attempts; SleepMs = $sleepMs }
+}
+
 function _QCQJ-NormalizeState([string]$State) {
     $s = ($State -as [string]).Trim().ToLowerInvariant()
     if (-not $s) { return $null }
@@ -261,15 +299,44 @@ function _QCQJ-DeepToJsonSafeObject {
     try { return [string]$Value } catch { return '<qcq_json_unserializable>' }
 }
 
+function _QCQJ-RemoveFileWithRetry {
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [hashtable]$Config = $null,
+        [int]$Attempts = 0,
+        [int]$SleepMs = 0
+    )
+    if (-not (Test-Path -LiteralPath $LiteralPath)) { return $true }
+    $mr = _QCQJ-GetMoveRetrySettings -Config $Config
+    if ($Attempts -le 0) { $Attempts = $mr.Attempts }
+    if ($SleepMs -le 0) { $SleepMs = $mr.SleepMs }
+    $lastEx = $null
+    for ($a = 1; $a -le $Attempts; $a++) {
+        try {
+            Remove-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+            return $true
+        } catch {
+            $lastEx = $_
+            if ($a -ge $Attempts) { return $false }
+            Start-Sleep -Milliseconds $SleepMs
+        }
+    }
+    return $false
+}
+
 function _QCQJ-MoveItemWithRetry {
     param(
         [Parameter(Mandatory)]
         [string]$LiteralPath,
         [Parameter(Mandatory)]
         [string]$Destination,
-        [int]$Attempts = 10,
-        [int]$SleepMs = 200
+        [hashtable]$Config = $null,
+        [int]$Attempts = 0,
+        [int]$SleepMs = 0
     )
+    $mr = _QCQJ-GetMoveRetrySettings -Config $Config
+    if ($Attempts -le 0) { $Attempts = $mr.Attempts }
+    if ($SleepMs -le 0) { $SleepMs = $mr.SleepMs }
     $lastEx = $null
     for ($a = 1; $a -le $Attempts; $a++) {
         try {
@@ -281,6 +348,33 @@ function _QCQJ-MoveItemWithRetry {
             Start-Sleep -Milliseconds $SleepMs
         }
     }
+}
+
+function _QCQJ-RemoveDuplicateJobFiles {
+    <#
+    After a successful transition, delete stray copies in other state folders (AV copy+delete
+  failures can leave the same job id in pending, running, and succeeded).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][string]$KeepState,
+        [hashtable]$Config
+    )
+    $keep = _QCQJ-NormalizeState $KeepState
+    $removed = @()
+    $failed = @()
+    foreach ($s in @('pending', 'running', 'succeeded', 'failed')) {
+        if ($s -eq $keep) { continue }
+        $p = _QCQJ-JobFilePath -Root $Root -State $s -JobId $JobId
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        if (_QCQJ-RemoveFileWithRetry -LiteralPath $p -Config $Config) {
+            $removed += $s
+        } else {
+            $failed += $s
+        }
+    }
+    return @{ removed = $removed; failed = $failed }
 }
 
 function _QCQJ-ReadJobFile([string]$Path) {
@@ -318,7 +412,12 @@ function _QCQJ-ReadJobFile([string]$Path) {
     return (_ToHashtable $obj)
 }
 
-function _QCQJ-WriteJobFileAtomic([string]$Path, [hashtable]$Job) {
+function _QCQJ-WriteJobFileAtomic {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][hashtable]$Job,
+        [hashtable]$Config = $null
+    )
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $tmp = ($Path + '.tmp.' + ([guid]::NewGuid().ToString('N')))
@@ -329,7 +428,7 @@ function _QCQJ-WriteJobFileAtomic([string]$Path, [hashtable]$Job) {
         # Use UTF8Encoding(false) for bytes the dashboard/tools expect.
         $enc = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText($tmp, $json, $enc)
-        _QCQJ-MoveItemWithRetry -LiteralPath $tmp -Destination $Path
+        _QCQJ-MoveItemWithRetry -LiteralPath $tmp -Destination $Path -Config $Config
     } catch {
         try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
         throw
@@ -391,7 +490,7 @@ function Add-QCQueueJob {
             }
             $Job.status = 'pending'
             $Job.enqueuedAtUtc = (Get-QCTimestamp)
-            _QCQJ-WriteJobFileAtomic -Path $dest -Job $Job
+            _QCQJ-WriteJobFileAtomic -Path $dest -Job $Job -Config $Config
             try {
                 _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey ([string]$Job['dedupeKey']) -JobId $jobId -State 'pending'
             } catch { }
@@ -737,7 +836,7 @@ function Set-QCJobStatus {
             $job = _QCQJ-ReadJobFile -Path $loc.path
             $job.status = $Status
             $job.updatedAtUtc = (Get-QCTimestamp)
-            _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $job
+            _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $job -Config $Config
             return New-QCSuccessResult -Code 'QUEUE_STATUS_UPDATED' -Message 'Job status updated.' -Data @{ jobId = $JobId; state = $loc.state; status = $Status }
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
@@ -787,7 +886,7 @@ function Update-QCJob {
                 return New-QCFailureResult -Code 'QUEUE_JOB_NOT_FOUND' -Message 'Job not found for update.' -Data @{ jobId = $jobId }
             }
             $Job.updatedAtUtc = (Get-QCTimestamp)
-            _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job
+            _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job -Config $Config
             return New-QCSuccessResult -Code 'QUEUE_JOB_UPDATED' -Message 'Job updated.' -Data @{ jobId = $jobId; state = $loc.state; path = $loc.path }
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
@@ -875,7 +974,7 @@ function Move-QCJob {
                         $Job.status = $to
                         $Job.updatedAtUtc = (Get-QCTimestamp)
                         if (-not $Job.ContainsKey('id') -or [string]::IsNullOrWhiteSpace([string]$Job.id)) { $Job.id = $JobId }
-                        _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job
+                        _QCQJ-WriteJobFileAtomic -Path $loc.path -Job $Job -Config $Config
                         try {
                             $dedupeKey = [string]$Job['dedupeKey']
                             if ($dedupeKey) {
@@ -883,8 +982,10 @@ function Move-QCJob {
                             }
                         } catch { }
                     }
+                    $dup = _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $JobId -KeepState $to -Config $Config
                     return New-QCSuccessResult -Code 'QUEUE_JOB_ALREADY_MOVED' -Message 'Job already in target state.' -Data @{
                         jobId = $JobId; fromState = $from; toState = $to; path = $loc.path; idempotent = $true
+                        duplicatesRemoved = @($dup.removed); duplicatesRemoveFailed = @($dup.failed)
                     }
                 }
                 if ($loc) {
@@ -902,14 +1003,15 @@ function Move-QCJob {
                 $Job.status = $to
                 $Job.updatedAtUtc = (Get-QCTimestamp)
                 if (-not $Job.ContainsKey('id') -or [string]::IsNullOrWhiteSpace([string]$Job.id)) { $Job.id = $JobId }
-                _QCQJ-WriteJobFileAtomic -Path $src -Job $Job
+                _QCQJ-WriteJobFileAtomic -Path $src -Job $Job -Config $Config
             } else {
                 $existing = _QCQJ-ReadJobFile -Path $src
                 $existing.status = $to
                 $existing.updatedAtUtc = (Get-QCTimestamp)
-                _QCQJ-WriteJobFileAtomic -Path $src -Job $existing
+                _QCQJ-WriteJobFileAtomic -Path $src -Job $existing -Config $Config
             }
-            _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst
+            _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst -Config $Config
+            $dup = _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $JobId -KeepState $to -Config $Config
             try {
                 $dedupeKey = $null
                 if ($PSBoundParameters.ContainsKey('Job') -and $Job) { $dedupeKey = [string]$Job['dedupeKey'] }
@@ -921,7 +1023,10 @@ function Move-QCJob {
                 }
                 _QCQJ-UpdateDedupeIndexForJob -Config $Config -Root $root -DedupeKey $dedupeKey -JobId $JobId -State $to
             } catch { }
-            return New-QCSuccessResult -Code 'QUEUE_JOB_MOVED' -Message 'Job moved between states.' -Data @{ jobId = $JobId; fromState = $from; toState = $to }
+            return New-QCSuccessResult -Code 'QUEUE_JOB_MOVED' -Message 'Job moved between states.' -Data @{
+                jobId = $JobId; fromState = $from; toState = $to
+                duplicatesRemoved = @($dup.removed); duplicatesRemoveFailed = @($dup.failed)
+            }
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
         }
@@ -1000,17 +1105,22 @@ function Lock-QCJob {
 
             $pending = _QCQJ-JobFilePath -Root $root -State 'pending' -JobId $JobId
             $running = _QCQJ-JobFilePath -Root $root -State 'running' -JobId $JobId
+            $dupLock = @{ removed = @(); failed = @() }
 
             $job = _QCQJ-ReadJobFile -Path $pending
             $job.status = 'running'
             $job.startedAtUtc = (Get-QCTimestamp)
-            _QCQJ-WriteJobFileAtomic -Path $pending -Job $job
-            Move-Item -LiteralPath $pending -Destination $running -Force -ErrorAction Stop
+            _QCQJ-WriteJobFileAtomic -Path $pending -Job $job -Config $Config
+            _QCQJ-MoveItemWithRetry -LiteralPath $pending -Destination $running -Config $Config
+            $dupLock = _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $JobId -KeepState 'running' -Config $Config
         } finally {
             _QCQJ-ReleaseLockFile -LockPath $lockPath
         }
 
-        return New-QCSuccessResult -Code 'QUEUE_LOCK_ACQUIRED' -Message 'Job lock acquired.' -Data @{ jobId = $JobId; lockPath = $jobLock }
+        return New-QCSuccessResult -Code 'QUEUE_LOCK_ACQUIRED' -Message 'Job lock acquired.' -Data @{
+            jobId = $JobId; lockPath = $jobLock
+            duplicatesRemoved = @($dupLock.removed); duplicatesRemoveFailed = @($dupLock.failed)
+        }
     } catch {
         if ($jobLockHeld -and $jobLock) {
             _QCQJ-ReleaseLockFile -LockPath $jobLock
@@ -1218,9 +1328,10 @@ function Recover-QCStaleJobs {
 
                 if ($attempts -ge $maxAttempts) {
                     $job.status = 'failed'
-                    _QCQJ-WriteJobFileAtomic -Path $src -Job $job
+                    _QCQJ-WriteJobFileAtomic -Path $src -Job $job -Config $Config
                     $dst = _QCQJ-JobFilePath -Root $root -State 'failed' -JobId $jobId
-                    Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                    _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst -Config $Config
+                    _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $jobId -KeepState 'failed' -Config $Config | Out-Null
                     $result.recoveredToFailed++
                     $entry = @{ jobId = $jobId; action = 'failed'; attempts = $attempts; ageSeconds = [int]$age2 }
                     if ($isOrphan2) { $entry.orphan = $true; $entry.orphanReason = $orphanReason2; $result.recoveredOrphan++ }
@@ -1228,9 +1339,10 @@ function Recover-QCStaleJobs {
                 } else {
                     $job.status = 'pending'
                     $job.startedAtUtc = $null
-                    _QCQJ-WriteJobFileAtomic -Path $src -Job $job
+                    _QCQJ-WriteJobFileAtomic -Path $src -Job $job -Config $Config
                     $dst = _QCQJ-JobFilePath -Root $root -State 'pending' -JobId $jobId
-                    Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                    _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst -Config $Config
+                    _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $jobId -KeepState 'pending' -Config $Config | Out-Null
                     $result.recoveredToPending++
                     $entry = @{ jobId = $jobId; action = 'requeued'; attempts = $attempts; ageSeconds = [int]$age2 }
                     if ($isOrphan2) { $entry.orphan = $true; $entry.orphanReason = $orphanReason2; $result.recoveredOrphan++ }
@@ -1287,6 +1399,63 @@ function Recover-QCStaleJobs {
     }
 }
 
+function Repair-QCQueueDuplicateJobs {
+    <#
+    .SYNOPSIS
+    Remove duplicate queue JSON files when the same job id exists in multiple state folders.
+    .DESCRIPTION
+    Keeps the canonical copy in the most advanced state (succeeded > running > pending > failed).
+    Use after AV blocked deletes during moves, or enable repairDuplicateJobsOnStartup in appsettings.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $root = _QCQJ-GetQueueRoot -Config $Config
+    _QCQJ-EnsureLayout -Root $root
+    $priority = @{ succeeded = 4; running = 3; pending = 2; failed = 1 }
+    $byJob = @{}
+
+    foreach ($s in @('pending', 'running', 'succeeded', 'failed')) {
+        $dir = Join-Path $root $s
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            $jid = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+            if ([string]::IsNullOrWhiteSpace($jid)) { continue }
+            if (-not $byJob.ContainsKey($jid)) { $byJob[$jid] = @() }
+            $byJob[$jid] += @{ state = $s; path = $f.FullName }
+        }
+    }
+
+    $repaired = @()
+    $removeFailed = @()
+    foreach ($jid in @($byJob.Keys)) {
+        $locs = @($byJob[$jid])
+        if ($locs.Count -le 1) { continue }
+        $canonical = ($locs | Sort-Object { $priority[[string]$_.state] } -Descending | Select-Object -First 1)
+        $keepState = [string]$canonical.state
+        foreach ($loc in $locs) {
+            if ([string]$loc.state -eq $keepState) { continue }
+            if ($PSCmdlet.ShouldProcess($loc.path, "Remove duplicate $($loc.state) copy (keep $keepState)")) {
+                if (_QCQJ-RemoveFileWithRetry -LiteralPath $loc.path -Config $Config) {
+                    $repaired += @{ jobId = $jid; removed = [string]$loc.state; kept = $keepState }
+                } else {
+                    $removeFailed += @{ jobId = $jid; path = $loc.path; state = [string]$loc.state; kept = $keepState }
+                }
+            }
+        }
+    }
+
+    return New-QCSuccessResult -Code 'QUEUE_DUPLICATES_REPAIRED' -Message 'Duplicate queue job file sweep completed.' -Data @{
+        root = $root
+        repaired = $repaired
+        removeFailed = $removeFailed
+        duplicateJobCount = $repaired.Count
+    }
+}
+
 function Invoke-QCQueueStartupCheck {
     <#
     .SYNOPSIS
@@ -1320,6 +1489,24 @@ function Invoke-QCQueueStartupCheck {
         if ($rec.IsSuccess) { $out.recovery = $rec.Data } else { [void]$out.errors.Add([string]$rec.Message) }
     } catch {
         [void]$out.errors.Add([string]$_.Exception.Message)
+    }
+
+    $repairDup = $true
+    if ($Config.ContainsKey('queue') -and $Config.queue) {
+        $q = $Config.queue
+        if ($q -is [hashtable] -and $q.ContainsKey('repairDuplicateJobsOnStartup')) {
+            try { $repairDup = [bool]$q['repairDuplicateJobsOnStartup'] } catch { $repairDup = $true }
+        } elseif ($q.PSObject -and $q.PSObject.Properties['repairDuplicateJobsOnStartup']) {
+            try { $repairDup = [bool]$q.PSObject.Properties['repairDuplicateJobsOnStartup'].Value } catch { $repairDup = $true }
+        }
+    }
+    if ($repairDup) {
+        try {
+            $dupRes = Repair-QCQueueDuplicateJobs -Config $Config
+            if ($dupRes.IsSuccess) { $out.duplicateRepair = $dupRes.Data } else { [void]$out.errors.Add([string]$dupRes.Message) }
+        } catch {
+            [void]$out.errors.Add([string]$_.Exception.Message)
+        }
     }
 
     if ($ClearWatcherActive) {

@@ -335,6 +335,11 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                 # emit a fake WORKER_SUCCEEDED.
                 return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
             }
+            if ($mv.Data -and @($mv.Data.duplicatesRemoveFailed).Count -gt 0) {
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Warning' -Code 'WORKER_QUEUE_DUPLICATE_CLEANUP' -Message 'Job succeeded but stale queue JSON copies could not be deleted (AV lock?).' -Data @{
+                    jobId = $jobId; duplicatesRemoved = @($mv.Data.duplicatesRemoved); duplicatesRemoveFailed = @($mv.Data.duplicatesRemoveFailed)
+                }
+            }
 
             # Surface the most useful processor data fields directly in the
             # success log so the dashboard's recent-events panel shows e.g.
