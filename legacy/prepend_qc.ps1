@@ -423,7 +423,7 @@ function Invoke-PrependQcPdfAttributeSync {
   }
 }
 
-function Invoke-QcPeerReviewStampIfNeeded {
+function Invoke-QcReviewStampIfNeeded {
   param(
     [Parameter(Mandatory)][string]$MergedPdfPath,
     [Parameter(Mandatory)][string]$FolderPath,
@@ -442,14 +442,20 @@ function Invoke-QcPeerReviewStampIfNeeded {
     Write-Log 'Review stamp skipped: Get-PWQcPrependRoleFieldsFromSourcePdf not available.' -Severity WARNING
     return
   }
-  $roles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $cfg
-  if (-not $roles.found) {
-    Write-Log "Review stamp skipped: could not read source PDF attributes ($($roles.error))." -Severity WARNING
+  $pwRoles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $cfg
+  if (-not $pwRoles.found) {
+    Write-Log "Review stamp skipped: could not read source PDF attributes ($($pwRoles.error))." -Severity WARNING
     return
+  }
+  $roles = @{
+    designerEmail = [string]$pwRoles.designerEmail
+    reviewerEmail = [string]$pwRoles.reviewerEmail
+    checkerEmail  = [string]$pwRoles.checkerEmail
+    qcReviewType  = [string]$pwRoles.qcReviewType
   }
 
   $logBlock = { param($m) Write-Log $m }
-  $result = Invoke-QCReviewStampIfPeerReview -PdfPath $MergedPdfPath -Config $cfg -RoleFields $roles `
+  $result = Invoke-QCReviewStampForReviewType -PdfPath $MergedPdfPath -Config $cfg -RoleFields $roles `
     -OverlayExe $QcOverlayExe -Log $logBlock
 
   if ($result.skipped) {
@@ -464,8 +470,8 @@ function Invoke-QcPeerReviewStampIfNeeded {
         if ($s.Trim()) { Write-Log $s }
       }
     }
-    Write-Log "Peer review stamp failed: $($result.reason)" -Severity ERROR
-    throw "Peer review stamp failed: $($result.reason)"
+    Write-Log "Review stamp failed: $($result.reason)" -Severity ERROR
+    throw "Review stamp failed: $($result.reason)"
   }
 }
 
@@ -675,7 +681,7 @@ Write-Log "Merged file created: $localMerged"
 Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
 
 try {
-  Invoke-QcPeerReviewStampIfNeeded -MergedPdfPath $localMerged -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
+  Invoke-QcReviewStampIfNeeded -MergedPdfPath $localMerged -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
 } catch {
   throw
 }

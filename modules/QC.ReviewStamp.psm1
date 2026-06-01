@@ -1,5 +1,5 @@
 # QC.ReviewStamp.psm1
-# Applies editable peer-review stamps via qc_overlay_prepend.exe (--apply-review-stamp).
+# Applies editable QC review stamps via qc_overlay_prepend.exe (--apply-review-stamp).
 # No Python install required on the host; deploy dist\qc_overlay_prepend\ like the overlay step.
 
 function _QCRS-IsBlank([object]$Value) {
@@ -60,8 +60,6 @@ function _QCRS-NeedsShellCliQuoting {
     param([string]$Token)
     if ([string]::IsNullOrEmpty($Token)) { return $false }
     if ($Token -match '[\s"]') { return $true }
-    # Values such as -400 must be quoted on the Windows command line; otherwise
-    # CreateProcess/argparse treat them as switches (peer review stamp failure).
     if ($Token -match '^--') { return $false }
     if ($Token -match '^-') { return $true }
     return $false
@@ -126,7 +124,37 @@ function Resolve-QCReviewStampOverlayExe {
     return $null
 }
 
+function _QCRS-ResolveStampPath {
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$ConfiguredPath,
+        [Parameter(Mandatory)][string]$DefaultRelativePath
+    )
+    $sp = if ($ConfiguredPath) { [string]$ConfiguredPath } else { $DefaultRelativePath }
+    if (-not [System.IO.Path]::IsPathRooted($sp)) { $sp = Join-Path $RepoRoot $sp }
+    return $sp
+}
+
+function _QCRS-NewReviewStampProfile {
+    param(
+        [Parameter(Mandatory)][string]$ProfileKey,
+        [Parameter(Mandatory)][string]$ReviewTypeLabel,
+        [Parameter(Mandatory)][string]$StampPath,
+        [Parameter(Mandatory)][string]$LogLabel
+    )
+    return @{
+        profileKey = $ProfileKey
+        reviewType = $ReviewTypeLabel
+        stampPath  = $StampPath
+        logLabel   = $LogLabel
+    }
+}
+
 function Get-QCReviewStampSettings {
+    <#
+    .SYNOPSIS
+    Shared review-stamp settings plus one profile per configured stamp template (peer review, independent check).
+    #>
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [string]$RepoRoot = ''
@@ -143,18 +171,22 @@ function Get-QCReviewStampSettings {
     if (-not $enabled) { return $null }
 
     $peerType = 'Peer Review'
+    $icType = 'Independent Check'
+    $productionType = 'Production QC'
     $wf = _QCRS-ToHashtable $Config.qcWorkflow
     if ($wf) {
         $rt = _QCRS-ToHashtable $wf.reviewTypes
-        if ($rt -and $rt.peerReview) { $peerType = [string]$rt.peerReview }
+        if ($rt) {
+            if ($rt.peerReview) { $peerType = [string]$rt.peerReview }
+            if ($rt.independentCheck) { $icType = [string]$rt.independentCheck }
+            if ($rt.productionQc) { $productionType = [string]$rt.productionQc }
+        }
     }
 
-    $stampPath = Join-Path $RepoRoot 'stamps\Peer_Review_Stamp.pdf'
     $stampHeight = 200.0
     $marginOutside = 12.0
     $stampX = $null
     $stampY = $null
-    $pr = _QCRS-ToHashtable $rs.peerReview
     if ($rs.ContainsKey('stampHeightPt')) { try { $stampHeight = [double]$rs.stampHeightPt } catch { } }
     if ($rs.ContainsKey('marginOutsidePt')) { try { $marginOutside = [double]$rs.marginOutsidePt } catch { } }
     $pos = _QCRS-ToHashtable $rs.stampPositionPt
@@ -162,27 +194,78 @@ function Get-QCReviewStampSettings {
         if ($pos.ContainsKey('x')) { try { $stampX = [double]$pos.x } catch { } }
         if ($pos.ContainsKey('y')) { try { $stampY = [double]$pos.y } catch { } }
     }
-    if ($pr) {
-        if ($pr.stampPath) {
-            $sp = [string]$pr.stampPath
-            if (-not [System.IO.Path]::IsPathRooted($sp)) { $sp = Join-Path $RepoRoot $sp }
-            $stampPath = $sp
-        }
-        if ($pr.reviewType) { $peerType = [string]$pr.reviewType }
+
+    $profiles = [System.Collections.Generic.List[object]]::new()
+
+    $pr = _QCRS-ToHashtable $rs.peerReview
+    $peerPath = _QCRS-ResolveStampPath -RepoRoot $RepoRoot -ConfiguredPath $(if ($pr -and $pr.stampPath) { [string]$pr.stampPath } else { '' }) `
+        -DefaultRelativePath 'stamps\Peer_Review_Stamp.pdf'
+    if ($pr -and $pr.reviewType) { $peerType = [string]$pr.reviewType }
+    if (Test-Path -LiteralPath $peerPath) {
+        $profiles.Add((_QCRS-NewReviewStampProfile -ProfileKey 'peerReview' -ReviewTypeLabel $peerType -StampPath $peerPath -LogLabel 'peer review')) | Out-Null
     }
-    if (-not (Test-Path -LiteralPath $stampPath)) { return $null }
+
+    $ic = _QCRS-ToHashtable $rs.independentCheck
+    $icPath = _QCRS-ResolveStampPath -RepoRoot $RepoRoot -ConfiguredPath $(if ($ic -and $ic.stampPath) { [string]$ic.stampPath } else { '' }) `
+        -DefaultRelativePath 'stamps\IC_Stamp.pdf'
+    if ($ic -and $ic.reviewType) { $icType = [string]$ic.reviewType }
+    if (Test-Path -LiteralPath $icPath) {
+        $profiles.Add((_QCRS-NewReviewStampProfile -ProfileKey 'independentCheck' -ReviewTypeLabel $icType -StampPath $icPath -LogLabel 'independent check')) | Out-Null
+    }
+
+    if ($profiles.Count -eq 0) { return $null }
 
     $overlayExe = Resolve-QCReviewStampOverlayExe -PreferredPath ([string]$qc.overlayExePath) -RepoRoot $RepoRoot
     if (-not $overlayExe) { return $null }
 
+    $peerProfile = @($profiles | Where-Object { $_.profileKey -eq 'peerReview' } | Select-Object -First 1)
+
     return @{
-        reviewType      = $peerType
-        stampPath       = $stampPath
-        stampHeightPt   = $stampHeight
-        marginOutsidePt = $marginOutside
-        stampXPt        = $stampX
-        stampYPt        = $stampY
-        overlayExe      = $overlayExe
+        profiles             = @($profiles)
+        productionReviewType = $productionType
+        stampHeightPt        = $stampHeight
+        marginOutsidePt      = $marginOutside
+        stampXPt             = $stampX
+        stampYPt             = $stampY
+        overlayExe           = $overlayExe
+        # Backward compatibility for callers that only checked peer review.
+        reviewType           = if ($peerProfile) { [string]$peerProfile.reviewType } else { [string]$profiles[0].reviewType }
+        stampPath            = if ($peerProfile) { [string]$peerProfile.stampPath } else { [string]$profiles[0].stampPath }
+    }
+}
+
+function _QCRS-FindReviewStampProfile {
+    param(
+        [Parameter(Mandatory)][hashtable]$StampSettings,
+        [string]$ReviewType
+    )
+    if (_QCRS-IsBlank $ReviewType) { return $null }
+    $rt = $ReviewType.Trim()
+    foreach ($p in @($StampSettings.profiles)) {
+        if ($p.reviewType -eq $rt) { return $p }
+    }
+    return $null
+}
+
+function _QCRS-ResolveStampRoleValues {
+    param(
+        [Parameter(Mandatory)][hashtable]$RoleFields,
+        [Parameter(Mandatory)][string]$ProfileKey
+    )
+    $designer = [string]$RoleFields.designerEmail
+    $reviewer = [string]$RoleFields.reviewerEmail
+    $checker = [string]$RoleFields.checkerEmail
+    if ($ProfileKey -eq 'independentCheck') {
+        return @{
+            Originator  = $designer
+            Checker     = $checker
+            Backchecker = $reviewer
+        }
+    }
+    return @{
+        Originator  = $designer
+        Checker     = $reviewer
+        Backchecker = $checker
     }
 }
 
@@ -265,7 +348,11 @@ function Invoke-QCReviewStamp {
     }
 }
 
-function Invoke-QCReviewStampIfPeerReview {
+function Invoke-QCReviewStampForReviewType {
+    <#
+    .SYNOPSIS
+    Applies the configured review stamp when QC_Review_Type matches a stamp profile (Peer Review or Independent Check).
+    #>
     param(
         [Parameter(Mandatory)][string]$PdfPath,
         [Parameter(Mandatory)][hashtable]$Config,
@@ -280,8 +367,19 @@ function Invoke-QCReviewStampIfPeerReview {
     }
 
     $reviewType = [string]$RoleFields.qcReviewType
-    if (_QCRS-IsBlank $reviewType -or ($reviewType -ne [string]$stampCfg.reviewType)) {
-        return @{ applied = $false; skipped = $true; reason = "QC_Review_Type is '$reviewType' (need '$($stampCfg.reviewType)')" }
+    $productionType = ''
+    if ($stampCfg.ContainsKey('productionReviewType') -and $stampCfg.productionReviewType) {
+        $productionType = [string]$stampCfg.productionReviewType
+    }
+
+    if (-not (_QCRS-IsBlank $productionType) -and -not (_QCRS-IsBlank $reviewType) -and $reviewType.Trim() -eq $productionType.Trim()) {
+        return @{ applied = $false; skipped = $true; reason = "QC_Review_Type is '$reviewType' (Production QC); review stamp not applicable." }
+    }
+
+    $profile = _QCRS-FindReviewStampProfile -StampSettings $stampCfg -ReviewType $reviewType
+    if (-not $profile) {
+        $expected = (@($stampCfg.profiles | ForEach-Object { [string]$_.reviewType }) -join "', '")
+        return @{ applied = $false; skipped = $true; reason = "QC_Review_Type is '$reviewType' (need one of: '$expected')" }
     }
 
     $exe = if (-not (_QCRS-IsBlank $OverlayExe)) { $OverlayExe } else { [string]$stampCfg.overlayExe }
@@ -291,17 +389,18 @@ function Invoke-QCReviewStampIfPeerReview {
         } else {
             "with margin $($stampCfg.marginOutsidePt) pt from page top-left"
         }
-        & $Log "Applying peer review stamp ($posHint) on page 1: $PdfPath"
+        & $Log "Applying $($profile.logLabel) stamp ($posHint) on page 1: $PdfPath"
     }
 
+    $roleValues = _QCRS-ResolveStampRoleValues -RoleFields $RoleFields -ProfileKey ([string]$profile.profileKey)
     $stampParams = @{
-        OverlayExe     = $exe
-        PdfPath        = $PdfPath
-        StampPath      = [string]$stampCfg.stampPath
-        Originator     = [string]$RoleFields.designerEmail
-        Checker        = [string]$RoleFields.reviewerEmail
-        Backchecker    = [string]$RoleFields.checkerEmail
-        StampHeightPt  = [double]$stampCfg.stampHeightPt
+        OverlayExe      = $exe
+        PdfPath         = $PdfPath
+        StampPath       = [string]$profile.stampPath
+        Originator      = [string]$roleValues.Originator
+        Checker         = [string]$roleValues.Checker
+        Backchecker     = [string]$roleValues.Backchecker
+        StampHeightPt   = [double]$stampCfg.stampHeightPt
         MarginOutsidePt = [double]$stampCfg.marginOutsidePt
     }
     if ($null -ne $stampCfg.stampXPt -and $null -ne $stampCfg.stampYPt) {
@@ -311,10 +410,23 @@ function Invoke-QCReviewStampIfPeerReview {
     $result = Invoke-QCReviewStamp @stampParams
 
     $result['reviewType'] = $reviewType
+    $result['profileKey'] = [string]$profile.profileKey
     if ($result.applied -and $Log) {
-        & $Log 'Peer review stamp applied (editable fields).'
+        & $Log "$($profile.logLabel) stamp applied (editable fields)."
     }
     return $result
+}
+
+function Invoke-QCReviewStampIfPeerReview {
+    param(
+        [Parameter(Mandatory)][string]$PdfPath,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$RoleFields,
+        [string]$OverlayExe = '',
+        [scriptblock]$Log = $null
+    )
+
+    return Invoke-QCReviewStampForReviewType -PdfPath $PdfPath -Config $Config -RoleFields $RoleFields -OverlayExe $OverlayExe -Log $Log
 }
 
 Export-ModuleMember -Function @(
@@ -322,5 +434,6 @@ Export-ModuleMember -Function @(
     'Resolve-QCReviewStampOverlayExe',
     'Get-QCReviewStampSettings',
     'Invoke-QCReviewStamp',
+    'Invoke-QCReviewStampForReviewType',
     'Invoke-QCReviewStampIfPeerReview'
 )
