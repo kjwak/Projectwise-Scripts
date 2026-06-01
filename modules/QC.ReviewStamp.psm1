@@ -34,6 +34,17 @@ function _QCRS-AppendOptionalCliFlags {
     [void]$TokenList.Add([string]$Value)
 }
 
+function _QCRS-NeedsShellCliQuoting {
+    param([string]$Token)
+    if ([string]::IsNullOrEmpty($Token)) { return $false }
+    if ($Token -match '[\s"]') { return $true }
+    # Values such as -400 must be quoted on the Windows command line; otherwise
+    # CreateProcess/argparse treat them as switches (peer review stamp failure).
+    if ($Token -match '^--') { return $false }
+    if ($Token -match '^-') { return $true }
+    return $false
+}
+
 function _QCRS-BuildProcessArgumentLine {
     param([object[]]$Tokens = @())
     $parts = @()
@@ -41,7 +52,7 @@ function _QCRS-BuildProcessArgumentLine {
         if ($null -eq $item) { continue }
         $t = [string]$item
         if ($t.Length -eq 0) { continue }
-        if ($t -match '[\s"]') { $parts += ('"' + ($t -replace '"', '\"') + '"') }
+        if (_QCRS-NeedsShellCliQuoting $t) { $parts += ('"' + ($t -replace '"', '\"') + '"') }
         else { $parts += $t }
     }
     return ($parts -join ' ')
