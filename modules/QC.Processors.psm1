@@ -460,17 +460,6 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
         return New-QCFailureResult -Code 'QC_PREPEND_WORKFLOW_WRITEBACK_FAILED' -Message 'QC_PREPEND succeeded but strict QC workflow writeback failed.' -Data $data
     }
 
-    if (Get-Command -Name 'Add-QCRenditionJobAfterPrepend' -ErrorAction SilentlyContinue) {
-        try {
-            $renditionEnqueue = Add-QCRenditionJobAfterPrepend -Config $Config -Job $Job -Writeback $writeback -Document $document
-            if ($renditionEnqueue) { $data['renditionEnqueue'] = $renditionEnqueue }
-        } catch {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Warning' -Code 'QC_RENDITION_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{ jobId = [string]$Job.id } | Out-Null
-            }
-        }
-    }
-
     return New-QCSuccessResult -Code $Result.Code -Message $Result.Message -Data $data
 }
 

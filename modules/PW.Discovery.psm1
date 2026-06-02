@@ -1156,6 +1156,27 @@ function Sync-PWAssociatedSheetWorkflowState {
     $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
     if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
 
+    if (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue) {
+        try {
+            Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
+                -TriggerDocumentGuid $DocumentGuid `
+                -TriggerDocumentName $DocumentName `
+                -FolderPath $FolderPath `
+                -CurrentStateName $canonicalState `
+                -DryRun:$DryRun `
+                -ChangedByUser $ChangedByUser `
+                -ChangedByUsername $ChangedByUsername | Out-Null
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_RENDITION_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
+                    documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+                    changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
+                    currentState = $canonicalState
+                } | Out-Null
+            }
+        }
+    }
+
     $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
     if ($members.Count -eq 0) { return }

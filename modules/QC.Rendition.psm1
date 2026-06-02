@@ -592,6 +592,130 @@ function Add-QCRenditionJobAfterPrepend {
     return $enq
 }
 
+function _QCR-DeriveSourceFromStateChange([string]$TriggerDocumentName) {
+    $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
+    if (_QCR-IsNullOrWhiteSpace $name) { return $null }
+    if ($name -match '(?i)\.dgn$') { return $name }
+    if ($name -match '(?i)^(.+)-qc\.pdf$') { return ($Matches[1] + '.dgn') }
+    if ($name -match '(?i)^(.+)\.pdf$') { return ($Matches[1] + '.dgn') }
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
+    if (_QCR-IsNullOrWhiteSpace $stem) { return $null }
+    return ($stem + '.dgn')
+}
+
+function Add-QCRenditionJobForReadyForQcStateChange {
+    <#
+    .SYNOPSIS
+    Enqueues QC_RENDITION when a non-automation actor sets state to Ready for QC.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TriggerDocumentGuid,
+        [Parameter(Mandatory)][string]$TriggerDocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CurrentStateName,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    $rendition = Get-QCRenditionSettings -Config $Config
+    if (-not [bool]$rendition.enabled) { return $null }
+
+    $readyName = _QCR-GetReadyForQcStateName -Config $Config
+    $curr = ([string]$CurrentStateName).Trim()
+    if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $readyName.ToLowerInvariant()) { return $null }
+
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
+            return $null
+        }
+    }
+
+    if (-not (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
+        return New-QCFailureResult -Code 'QC_RENDITION_QUEUE_UNAVAILABLE' -Message 'QC.Queue.Json not loaded.' -Data @{}
+    }
+
+    $sourceDoc = _QCR-DeriveSourceFromStateChange -TriggerDocumentName $TriggerDocumentName
+    if (_QCR-IsNullOrWhiteSpace $sourceDoc) {
+        return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NAME_MISSING' -Message 'Could not derive source DGN name from state-change document.' -Data @{
+            triggerDocumentName = $TriggerDocumentName
+        }
+    }
+
+    $readinessKey = Get-QCReadinessKey -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath -QcPdfName $TriggerDocumentName
+    Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -PrependComplete `
+        -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath -QcPdfName $TriggerDocumentName | Out-Null
+
+    $profileRes = Resolve-QCRenditionProfile -Config $Config -FolderPath $FolderPath
+    if (-not $profileRes.IsSuccess) {
+        if ([bool]$rendition.deferReadyForQcNotification) {
+            Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -RenditionComplete | Out-Null
+            Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $readinessKey `
+                -DocumentName $TriggerDocumentName -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath | Out-Null
+        }
+        return $profileRes
+    }
+    $profile = $profileRes.Data.profile
+
+    $stable = ('dedupeV2_rendition|folder={0}|source={1}|triggerGuid={2}' -f $FolderPath, $sourceDoc, $TriggerDocumentGuid)
+    $dedupeKey = 'dq_qcrendition_' + (_QCR-Sha256Hex -Text $stable).Substring(0, 24)
+    $jobId = 'rendition-' + (_QCR-Sha256Hex -Text ('state|' + $readinessKey)).Substring(0, 16)
+
+    $job = @{
+        id         = $jobId
+        type       = 'QC_RENDITION'
+        sourcePath = (Join-Path $FolderPath $sourceDoc)
+        sourceName = $sourceDoc
+        sourceFolder = $FolderPath
+        dedupeKey  = $dedupeKey
+        status     = 'queued'
+        createdAt  = Get-QCTimestamp
+        attempts   = 0
+        triggerRule = @{
+            id          = 'qc-rendition-readyforqc'
+            jobType     = 'QC_RENDITION'
+            triggerType = 'audit_state_change'
+        }
+        metadata = @{
+            rendition = @{
+                readinessKey         = $readinessKey
+                documentGuid         = $TriggerDocumentGuid
+                triggerDocumentName  = $TriggerDocumentName
+                triggerCurrentState  = $curr
+                changedByUser        = $ChangedByUser
+                changedByUsername    = $ChangedByUsername
+                profileName          = $profile.profileName
+                sourceDocumentPattern = $profile.sourceDocumentPattern
+            }
+        }
+    }
+
+    if ($DryRun) {
+        return New-QCSuccessResult -Code 'QC_RENDITION_PLANNED' -Message 'Dry-run: QC_RENDITION job planned from Ready for QC state change.' -Data @{
+            job = $job
+            readinessKey = $readinessKey
+            profile = $profile
+        }
+    }
+
+    $enq = Add-QCQueueJob -Job $job -Config $Config
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level $(if ($enq.IsSuccess) { 'Information' } else { 'Warning' }) `
+            -Code $(if ($enq.IsSuccess) { 'QC_RENDITION_ENQUEUED' } else { 'QC_RENDITION_ENQUEUE_FAILED' }) `
+            -Message $(if ($enq.IsSuccess) { 'QC_RENDITION job enqueued from Ready for QC state change.' } else { $enq.Message }) -Data @{
+            renditionJobId = [string]$job.id
+            readinessKey   = $readinessKey
+            folderPath     = $FolderPath
+            sourceDocument = $sourceDoc
+            triggerDocumentGuid = $TriggerDocumentGuid
+            changedByUser  = $ChangedByUser
+        } | Out-Null
+    }
+    return $enq
+}
+
 function _QCR-GetFolderRenditionProfileName([string]$ApiFolderPath) {
     $cmd = Get-Command -Name 'Get-PWFolderRenditionProfile' -ErrorAction SilentlyContinue
     if ((-not $cmd) -or (_QCR-IsNullOrWhiteSpace $ApiFolderPath)) { return $null }
