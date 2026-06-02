@@ -143,6 +143,19 @@ $deprecatedCfg = @{
 $depWarnings = @(Get-QCWorkflowDeprecationWarnings -RawWorkflowConfig $deprecatedCfg.qcWorkflow)
 Assert-True ($depWarnings.Count -ge 2) 'Deprecated keys should produce warnings'
 
+# Get-PWWorkflowStateLinks must receive WorkflowName (no unfiltered call — avoids interactive prompt)
+function Get-PWWorkflowStateLinks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$WorkflowName)
+    if ([string]::IsNullOrWhiteSpace($WorkflowName)) { throw 'WorkflowName required' }
+    return [pscustomobject]@{ FromStateName = 'In Production'; ToStateName = 'Ready for QC' }
+}
+$mandatorySettings = Get-QCWorkflowSettings -Config (New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true)
+$mandatorySettings.expectedWorkflowName = 'TYPSA QC'
+$tr = Test-QCWorkflowStateTransition -Settings $mandatorySettings -CurrentStateName 'In Production' -TargetStateName 'Ready for QC' -WorkflowName 'TYPSA QC'
+Assert-True $tr.IsSuccess 'Transition test should succeed with mandatory WorkflowName stub'
+Remove-Item function:\Get-PWWorkflowStateLinks -ErrorAction SilentlyContinue
+
 # workflow config disabled means no writeback occurs
 $disabled = Invoke-QCWorkflowWriteback -Config (New-WorkflowConfig -Enabled:$false -Strict:$false -DryRunWriteback:$true) -Context (New-WorkflowContext)
 Assert-True $disabled.IsSuccess 'Disabled workflow should return success'

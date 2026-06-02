@@ -138,6 +138,45 @@ function _QCW-GetCommandParameterName([string]$CommandName, [string[]]$Candidate
     return $null
 }
 
+function _QCW-InvokeGetPWWorkflowStateLinks([string]$WorkflowName) {
+    <#
+    Calls Get-PWWorkflowStateLinks with an explicit workflow name only.
+    Never invokes the cmdlet without WorkflowName (avoids interactive prompts on pwps_dab).
+    #>
+    if (_QCW-IsNullOrWhiteSpace $WorkflowName) { return @() }
+
+    $cmd = Get-Command -Name 'Get-PWWorkflowStateLinks' -ErrorAction SilentlyContinue
+    if (-not $cmd) { return @() }
+
+    $name = $WorkflowName.Trim()
+    $attempts = [System.Collections.Generic.List[hashtable]]::new()
+    $wfParam = _QCW-GetCommandParameterName -CommandName 'Get-PWWorkflowStateLinks' -CandidateNames @('WorkflowName', 'Workflow')
+    if ($wfParam) {
+        $attempts.Add(@{ $wfParam = $name }) | Out-Null
+    } else {
+        # pwps_dab often omits parameter metadata; still bind by common names (never call with zero args).
+        $attempts.Add(@{ WorkflowName = $name }) | Out-Null
+        $attempts.Add(@{ Workflow = $name }) | Out-Null
+    }
+
+    $lastError = $null
+    foreach ($args in $attempts) {
+        try {
+            $links = @(& $cmd @args -ErrorAction Stop)
+            if ($links.Count -gt 0) { return $links }
+        } catch {
+            $lastError = $_
+        }
+    }
+
+    try {
+        return @(& $cmd $name -ErrorAction Stop)
+    } catch {
+        if ($lastError) { throw $lastError }
+        throw
+    }
+}
+
 function _QCW-ObjectNameMatches([object]$Object, [string]$ExpectedName, [string[]]$PropertyNames) {
     if (_QCW-IsNullOrWhiteSpace $ExpectedName) { return $false }
     foreach ($p in @($PropertyNames)) {
@@ -635,34 +674,24 @@ function Test-QCWorkflowStateTransition {
     }
 
     $workflowCandidates = [System.Collections.Generic.List[string]]::new()
-    $workflowCandidates.Add('') | Out-Null
     foreach ($wn in @($WorkflowName, $(if ($Settings) { [string]$Settings.workflowName }), $(if ($Settings) { [string]$Settings.expectedWorkflowName }))) {
         if (-not (_QCW-IsNullOrWhiteSpace $wn) -and -not $workflowCandidates.Contains($wn.Trim())) { $workflowCandidates.Add($wn.Trim()) | Out-Null }
     }
 
+    if ($workflowCandidates.Count -eq 0) {
+        $warnings += 'No workflow name configured for Get-PWWorkflowStateLinks; using qcWorkflow.states fallback when strictMode is false.'
+    }
+
     foreach ($wfTry in $workflowCandidates) {
         try {
-            $tryLinks = @()
-            if ([string]::IsNullOrWhiteSpace($wfTry)) {
-                $tryLinks = @(& $cmd -ErrorAction Stop)
-                if ($tryLinks.Count -gt 0) { $workflowNameUsed = $WorkflowName }
-            } else {
-                $args = @{}
-                $wfParam = _QCW-GetCommandParameterName -CommandName 'Get-PWWorkflowStateLinks' -CandidateNames @('WorkflowName','Workflow')
-                if ($wfParam) { $args[$wfParam] = $wfTry }
-                $tryLinks = @(& $cmd @args -ErrorAction Stop)
-                if ($tryLinks.Count -gt 0) { $workflowNameUsed = $wfTry }
-            }
+            $tryLinks = @(_QCW-InvokeGetPWWorkflowStateLinks -WorkflowName $wfTry)
             if ($tryLinks.Count -gt 0) {
                 $links = $tryLinks
+                $workflowNameUsed = $wfTry
                 break
             }
         } catch {
-            if ([string]::IsNullOrWhiteSpace($wfTry)) {
-                $warnings += ('Get-PWWorkflowStateLinks failed: ' + $_.Exception.Message)
-            } else {
-                $warnings += ('Get-PWWorkflowStateLinks failed for workflow ''' + $wfTry + ''': ' + $_.Exception.Message)
-            }
+            $warnings += ('Get-PWWorkflowStateLinks failed for workflow ''' + $wfTry + ''': ' + $_.Exception.Message)
         }
     }
 
