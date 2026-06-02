@@ -17,7 +17,8 @@ $tests = @(
     'test\test_paired_sheets_array.ps1',
     'test\test_audit_poll_window.ps1',
     'test\test_audit_events_db.ps1',
-    'test\test_audit_workflow_triggers.ps1'
+    'test\test_audit_workflow_triggers.ps1',
+    'test\test_watcher_module_bootstrap.ps1'
 )
 $fail = 0
 foreach ($t in $tests) {

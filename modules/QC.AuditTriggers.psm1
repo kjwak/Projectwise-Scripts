@@ -2,8 +2,12 @@
 # Responsibility: Audit-driven QC workflow state/attribute triggers (telemetry + notifications).
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+if (-not (Get-Command -Name 'Write-QCDocumentStateHistoryRow' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
+}
+if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+}
 
 function _QCAT-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
