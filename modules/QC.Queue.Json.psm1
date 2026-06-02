@@ -283,11 +283,14 @@ function _QCQJ-DeepToJsonSafeObject {
         return $h
     }
     if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $out = @()
+        # Avoid PowerShell array += here. Queue jobs can contain large paired-sheet
+        # or processor result arrays; += reallocates/copies the array on every item
+        # and turns serialization into an O(n^2) hotspot during enqueue/move.
+        $out = [System.Collections.Generic.List[object]]::new()
         foreach ($i in $Value) {
-            $out += _QCQJ-DeepToJsonSafeObject -Value $i -CurrentDepth ($CurrentDepth + 1)
+            [void]$out.Add((_QCQJ-DeepToJsonSafeObject -Value $i -CurrentDepth ($CurrentDepth + 1)))
         }
-        return $out
+        return $out.ToArray()
     }
     if ($Value.PSObject -and $Value.PSObject.Properties) {
         $h = @{}
@@ -395,9 +398,12 @@ function _QCQJ-ReadJobFile([string]$Path) {
             return $h
         }
         if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-            $out = @()
-            foreach ($i in $Value) { $out += (_ToHashtable $i) }
-            return $out
+            # Avoid += for large arrays when reading jobs back from JSON. This
+            # keeps queue polling and duplicate/in-flight scans linear in the
+            # number of values rather than repeatedly copying intermediate arrays.
+            $out = [System.Collections.Generic.List[object]]::new()
+            foreach ($i in $Value) { [void]$out.Add((_ToHashtable $i)) }
+            return $out.ToArray()
         }
         if ($Value.PSObject -and $Value.PSObject.Properties) {
             $h = @{}
@@ -579,24 +585,23 @@ function Get-NextQCJob {
             return $true
         }
 
-        if ($preferTypes.Count -gt 0) {
-            foreach ($pt in $preferTypes) {
-                if ($excludeTypeSet.ContainsKey($pt)) { continue }
-                foreach ($f in $files) {
-                    $jobId = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
-                    if ($excludeSet.ContainsKey($jobId)) { continue }
-                    if (& $isJobLockedAlive $jobId) { continue }
-
-                    $job = _QCQJ-ReadJobFile -Path $f.FullName
-                    $jt = ''
-                    try { $jt = [string]$job.type } catch { $jt = '' }
-                    if ($excludeTypeSet.ContainsKey($jt)) { continue }
-                    if ($jt -eq $pt) {
-                        return New-QCSuccessResult -Code 'QUEUE_NEXT_JOB' -Message 'Next pending job selected (preferred type).' -Data @{ job = $job; jobId = $jobId; state = 'pending'; preferredType = $pt }
-                    }
-                }
+        # Read each eligible job at most once. The previous preferred-type scheduler
+        # scanned and parsed the full pending folder once per preferred type, then
+        # parsed it again for the fallback path. Under large backlogs that made each
+        # worker poll repeatedly deserialize the same JSON files and increased lock
+        # race windows. This single pass preserves the old priority semantics:
+        # preferJobTypes order wins first, and LastWriteTimeUtc/Name order wins within
+        # each priority tier; if no preferred job exists, the oldest eligible job wins.
+        $preferRank = @{}
+        for ($i = 0; $i -lt $preferTypes.Count; $i++) {
+            $pt = [string]$preferTypes[$i]
+            if (-not [string]::IsNullOrWhiteSpace($pt) -and -not $excludeTypeSet.ContainsKey($pt) -and -not $preferRank.ContainsKey($pt)) {
+                $preferRank[$pt] = $i
             }
         }
+        $firstEligible = $null
+        $bestPreferred = $null
+        $bestPreferredRank = [int]::MaxValue
 
         foreach ($f in $files) {
             $jobId = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
@@ -607,7 +612,28 @@ function Get-NextQCJob {
             $jt = ''
             try { $jt = [string]$job.type } catch { $jt = '' }
             if ($excludeTypeSet.ContainsKey($jt)) { continue }
-            return New-QCSuccessResult -Code 'QUEUE_NEXT_JOB' -Message 'Next pending job selected.' -Data @{ job = $job; jobId = $jobId; state = 'pending' }
+
+            if (-not $firstEligible) {
+                $firstEligible = @{ job = $job; jobId = $jobId; state = 'pending' }
+            }
+
+            if ($preferRank.ContainsKey($jt)) {
+                $rank = [int]$preferRank[$jt]
+                if ($rank -lt $bestPreferredRank) {
+                    $bestPreferredRank = $rank
+                    $bestPreferred = @{ job = $job; jobId = $jobId; state = 'pending'; preferredType = $jt }
+                    if ($rank -eq 0) {
+                        return New-QCSuccessResult -Code 'QUEUE_NEXT_JOB' -Message 'Next pending job selected (preferred type).' -Data $bestPreferred
+                    }
+                }
+            }
+        }
+
+        if ($bestPreferred) {
+            return New-QCSuccessResult -Code 'QUEUE_NEXT_JOB' -Message 'Next pending job selected (preferred type).' -Data $bestPreferred
+        }
+        if ($firstEligible) {
+            return New-QCSuccessResult -Code 'QUEUE_NEXT_JOB' -Message 'Next pending job selected.' -Data $firstEligible
         }
 
         return New-QCSuccessResult -Code 'QUEUE_EMPTY' -Message 'No eligible pending jobs.' -Data @{ job = $null }
@@ -643,7 +669,26 @@ function Test-QCWatcherActive {
     )
     try {
         $flag = Get-QCWatcherActiveFlagPath -Config $Config
-        return (Test-Path -LiteralPath $flag)
+        if (-not (Test-Path -LiteralPath $flag)) { return $false }
+
+        # Self-heal stale watcher-active flags left by a killed watcher. A bare
+        # Test-Path keeps downstream gating stuck until a manual startup cleanup;
+        # using the PID written by Set-QCWatcherActive lets callers recover on the
+        # next status check while still treating unreadable/ambiguous flags as active.
+        $payload = $null
+        try { $payload = Get-Content -LiteralPath $flag -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return $true }
+        $ownerPid = 0
+        try {
+            if ($payload.PSObject -and $payload.PSObject.Properties['pid']) { $ownerPid = [int]$payload.pid }
+        } catch { $ownerPid = 0 }
+        if ($ownerPid -gt 0 -and $ownerPid -ne $PID) {
+            $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                try { Remove-Item -LiteralPath $flag -Force -ErrorAction Stop } catch { }
+                return $false
+            }
+        }
+        return $true
     } catch {
         return $false
     }
