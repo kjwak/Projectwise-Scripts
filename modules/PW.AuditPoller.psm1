@@ -269,7 +269,13 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
 function _AuditPoller-NormalizeFolderPath {
     param([AllowNull()][string]$FolderPath)
     $t = ($FolderPath -as [string]).Trim().TrimEnd('\').Replace('/', '\')
+    $t = $t -replace '\\{2,}', '\'
     if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+    # Align with Core.Paths: strip pw:\datasource\ prefix so watch roots can match.
+    if ($t -match '^(?i)pw:\\') {
+        $idx = $t.IndexOf('\Documents\', [System.StringComparison]::OrdinalIgnoreCase)
+        if ($idx -ge 0) { $t = $t.Substring($idx + 1) }
+    }
     if ($t -match '^(?i)documents\\') { return $t }
     return ('Documents\' + $t)
 }
@@ -993,6 +999,34 @@ function Invoke-AuditTrailScan {
     $candidates = @($built.candidates)
     $stats.watchMatches = @($candidates).Count
     $stats.sheetsMatches = @($candidates | Where-Object { [bool]$_.isSheetsFolder }).Count
+
+    if ($stats.relevantEvents -gt 0 -and $stats.watchMatches -eq 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        $watchRootPaths = @()
+        if ($WatchRootConfigs.Count -gt 0) {
+            $watchRootPaths = @($WatchRootConfigs | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } elseif ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
+            $watchRootPaths = @($Config.projectWise.watchList.roots | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+        $resolvedSamples = [System.Collections.Generic.List[string]]::new()
+        foreach ($row in $triggerRows) {
+            if ($resolvedSamples.Count -ge 5) { break }
+            $og = [string]$row.pw_objguid
+            if ([string]::IsNullOrWhiteSpace($og)) { $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid') }
+            $fp = $null
+            if ($og -and $docToFolder.ContainsKey($og)) { $fp = [string]$docToFolder[$og] }
+            elseif (-not [string]::IsNullOrWhiteSpace([string]$row.resolved_folder)) { $fp = [string]$row.resolved_folder }
+            if ($fp) { [void]$resolvedSamples.Add($fp) }
+        }
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_NO_WATCH_MATCH' -Message 'QC-relevant audit events did not match any projectWise.watchList.roots path.' -Data @{
+            relevantEvents = $stats.relevantEvents
+            watchRootCount = $watchRootPaths.Count
+            watchRoots = @($watchRootPaths | Select-Object -First 5)
+            resolvedFolderSamples = @($resolvedSamples)
+            foldersResolved = [int]$stats.foldersResolved
+            guidCacheMisses = [int]$stats.guidCacheMisses
+            guidResolveSkipped = [int]$stats.guidResolveSkipped
+        }
+    }
 
     if ($built.folderUpdates.Count -gt 0 -and (Get-Command -Name 'Update-QCAuditEventsResolvedFolders' -ErrorAction SilentlyContinue)) {
         try { Update-QCAuditEventsResolvedFolders -Config $Config -Updates $built.folderUpdates | Out-Null } catch { }

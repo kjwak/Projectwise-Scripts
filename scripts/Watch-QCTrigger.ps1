@@ -713,6 +713,7 @@ if ($statusSetRules.Count -ge 0) {
                             guidCacheMisses = [int]$auditData.stats.guidCacheMisses
                             guidResolveSkipped = [int]$auditData.stats.guidResolveSkipped
                             failedGuidCacheHits = [int]$auditData.stats.failedGuidCacheHits
+                            foldersResolved = [int]$auditData.stats.foldersResolved
                             pagesFetched   = [int]$auditData.stats.pagesFetched
                             eventsTruncated = [bool]$auditData.stats.eventsTruncated
                             durationMs     = [int]$auditData.durationMs
