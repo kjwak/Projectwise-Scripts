@@ -69,9 +69,9 @@ function Get-QCRenditionSettings {
         deriveSourceFromQcPdf = $true
         makeSinglePlotRequest = $false
         completion = @{
-            mode = 'outputFolder'
-            pollAttempts = 40
-            pollIntervalSeconds = 30
+            mode = 'submitOnly'
+            pollAttempts = 1
+            pollIntervalSeconds = 0
             fileNamePattern = '{stem}*.pdf'
         }
         datasources = @{}
@@ -479,6 +479,9 @@ function New-QCRenditionQueueJob {
     $sourceDoc = _QCR-DeriveSourceDocumentName -QcPdfName $qcName -DeriveFromQcPdf ([bool]$profile.deriveSourceFromQcPdf) -ExplicitName ''
     if (_QCR-IsNullOrWhiteSpace $sourceDoc) {
         return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NAME_MISSING' -Message 'Could not derive source document name from QC PDF.' -Data @{ qcPdfName = $qcName }
+    }
+    if ($sourceDoc -notmatch '(?i)\.dgn$') {
+        return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NOT_DGN' -Message 'Derived rendition source must be a DGN file name.' -Data @{ qcPdfName = $qcName; sourceDocument = $sourceDoc }
     }
 
     $readinessKey = Get-QCRenditionSheetReadinessKey -FolderPath $folder -SourceDgnFileName $sourceDoc
@@ -979,6 +982,13 @@ function Invoke-QCRenditionProcessor {
     }
 
     $sourceDoc = if ($Job.sourceName) { [string]$Job.sourceName } else { [System.IO.Path]::GetFileName([string]$Job.sourcePath) }
+    if ($sourceDoc -notmatch '(?i)\.dgn$') {
+        return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NOT_DGN' -Message 'QC_RENDITION only submits ProjectWise rendition for DGN source documents, not PDFs.' -Data @{
+            sourceDocument = $sourceDoc
+            folderPath = $folder
+            jobId = if ($Job.id) { [string]$Job.id } else { $null }
+        }
+    }
     $pattern = if ($profile.sourceDocumentPattern) { [string]$profile.sourceDocumentPattern } else { '%.dgn' }
 
     $processors = _QCR-ToHashtable $Config.processors
@@ -1091,9 +1101,18 @@ function Invoke-QCRenditionProcessor {
     $notif = Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $readinessKey -Job $Job `
         -DocumentName ([string]$renditionMeta.qcPdfName) -DocumentGuid ([string]$renditionMeta.documentGuid) -FolderPath $folder
 
-    return New-QCSuccessResult -Code 'QC_RENDITION_SUCCEEDED' -Message 'Rendition submitted and output verified.' -Data @{
+    $submitOnly = ($mode -eq 'immediate' -or $mode -eq 'submitOnly')
+    $resultCode = if ($submitOnly) { 'QC_RENDITION_SUBMITTED' } else { 'QC_RENDITION_SUCCEEDED' }
+    $resultMsg = if ($submitOnly) {
+        'Rendition request submitted to ProjectWise; job complete (no output polling).'
+    } else {
+        'Rendition submitted and output verified.'
+    }
+
+    return New-QCSuccessResult -Code $resultCode -Message $resultMsg -Data @{
         readinessKey = $readinessKey
         profileName = $profileName
+        completionMode = $mode
         output = $foundData
         notification = $notif
     }
