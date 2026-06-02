@@ -20,6 +20,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Find-PWSheetsFoldersUnderRoot',
         'Get-PWDocumentDescriptionForFolder',
         'Sync-PWAssociatedSheetWorkflowState',
+        'Sync-PWAssociatedSheetMembersToWorkflowState',
         'Get-PWDocumentsInFolder',
         'ConvertTo-PWCmdletFolderPath'
     )
@@ -985,9 +986,19 @@ function _PWD-InvokeSetPwDocumentState {
     if ($docParam) { $args[$docParam] = @($Document) }
     if ($stateParam) { $args[$stateParam] = $StateName }
     if ($cmd.Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
-    if ($docParam -and $stateParam) { & $cmd @args -ErrorAction Stop | Out-Null }
-    elseif ($stateParam) { & $cmd $Document @args -ErrorAction Stop | Out-Null }
-    else { & $cmd $Document $StateName -ErrorAction Stop | Out-Null }
+    $result = $null
+    if ($docParam -and $stateParam) { $result = & $cmd @args -ErrorAction Stop }
+    elseif ($stateParam) { $result = & $cmd $Document @args -ErrorAction Stop }
+    else { $result = & $cmd $Document $StateName -ErrorAction Stop }
+    if ($cmd.Parameters.ContainsKey('ReturnBoolean')) {
+        try {
+            if ($result -eq $false) {
+                throw "Set-PWDocumentState returned false for state '$StateName'."
+            }
+        } catch {
+            if ($_.Exception.Message -match 'returned false') { throw }
+        }
+    }
 }
 
 function _PWD-LoadPwDocumentsByGuid {
@@ -1149,6 +1160,134 @@ WHERE folder_path = @folderPath
         }) | Out-Null
     }
     return @($resolved)
+}
+
+function Sync-PWAssociatedSheetMembersToWorkflowState {
+    <#
+    .SYNOPSIS
+    Sets the same workflow state on all associated DGN, sheet PDF, and QC PDF siblings in a folder.
+  .DESCRIPTION
+    Used after QC_PREPEND writeback so every sheet member reaches the configured post-prepend state
+    (e.g. QC Received). Does not enqueue jobs or fire audit notifications on siblings.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [bool]$DryRun = $false,
+        [string]$TriggerSource = 'prepend_writeback'
+    )
+
+    $target = ([string]$TargetStateName).Trim()
+    if ([string]::IsNullOrWhiteSpace($target)) { return @{ updates = @(); memberCount = 0 } }
+
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) { return @{ updates = @(); memberCount = 0 } }
+
+    $guids = @($members | ForEach-Object { [string]$_.documentGuid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ })
+    $stateByGuid = @{}
+    if ($guids.Count -gt 0) {
+        try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
+    }
+
+    $stateUpdates = [System.Collections.Generic.List[object]]::new()
+    $dbEnabled = $false
+    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+        $dbEnabled = Test-QCDatabaseEnabled -Config $Config
+    }
+
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dg -and -not $member.document) { continue }
+
+        $currentState = if ($dg -and $stateByGuid.ContainsKey($dg.ToLowerInvariant())) {
+            [string]$stateByGuid[$dg.ToLowerInvariant()]
+        } else {
+            _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+        }
+        if ([string]::IsNullOrWhiteSpace($currentState) -and $dg) {
+            $currentState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromState    = [string]$currentState
+            toState      = $target
+            applied      = $false
+            planned      = $false
+            verified     = $false
+        }
+
+        if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $target)) {
+            $change.skipped = 'already_at_target'
+            if ($dbEnabled -and $dg) {
+                try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $target) } catch { }
+            }
+            $stateUpdates.Add($change) | Out-Null
+            continue
+        }
+
+        if ($DryRun) {
+            $change.planned = $true
+            $stateUpdates.Add($change) | Out-Null
+            continue
+        }
+
+        try {
+            _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $target
+            $change.applied = $true
+            $verifiedState = if ($dg) {
+                Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+            } else {
+                Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid ''
+            }
+            if (-not [string]::IsNullOrWhiteSpace($verifiedState)) {
+                $change.verified = (_PWD-NormalizeSheetIndexValue $verifiedState) -eq (_PWD-NormalizeSheetIndexValue $target)
+                $change.stateAfter = [string]$verifiedState
+            }
+            if ($change.applied -and $change.verified -eq $false -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_SHEET_STATE_VERIFY_MISMATCH' `
+                    -Message 'Set-PWDocumentState completed but PW state does not match target after read-back.' -Data @{
+                    documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                    targetState = $target; stateAfter = [string]$change.stateAfter; triggerSource = $TriggerSource
+                } | Out-Null
+            }
+            if ($dbEnabled -and $dg) {
+                try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $target) } catch { }
+            }
+        } catch {
+            $change.error = [string]$_.Exception.Message
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_SHEET_STATE_SYNC_FAILED' -Message 'Failed to set associated sheet workflow state.' -Data @{
+                    documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                    fromState = [string]$currentState; toState = $target; error = [string]$_.Exception.Message
+                    triggerSource = $TriggerSource
+                } | Out-Null
+            }
+        }
+        $stateUpdates.Add($change) | Out-Null
+    }
+
+    $result = @{ updates = @($stateUpdates); memberCount = $members.Count; targetState = $target; triggerSource = $TriggerSource }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_SHEET_STATE_SYNC' -Message 'Associated sheet workflow states aligned to target.' -Data @{
+            folderPath          = $FolderPath
+            triggerDocumentName = $DocumentName
+            triggerDocumentGuid = $DocumentGuid
+            targetState         = $target
+            memberCount         = $members.Count
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+            triggerSource       = $TriggerSource
+        } | Out-Null
+    }
+    return $result
 }
 
 function Sync-PWAssociatedSheetWorkflowState {

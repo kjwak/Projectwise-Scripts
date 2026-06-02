@@ -57,15 +57,15 @@ When `notifications.dedupe.enabled` is true, the same notification is not sent t
 ## Integration points
 
 1. **`Invoke-QCNotificationForStateChange`** — Call when a QC PDF transition is detected (previous state ≠ current state).
-2. **`QC.Workflow.psm1`** — After a successful `Set-PWDocumentState` write (`changed = true`), invokes notifications when `Context.config` is present.
+2. **`QC.Workflow.psm1`** — After a successful primary `Set-PWDocumentState`, syncs **DGN / sheet PDF / `*-qc.pdf`** via `Sync-PWAssociatedSheetMembersToWorkflowState`, then invokes **QC Received** notification when `Context.config` is present.
 3. **`QC.Processors.psm1`** — Passes `config`, `job`, and optional `document` into workflow context after successful prepend writeback.
-4. **`QC.AuditTriggers.psm1`** — When `audit.workflowTriggers.notifyOnStateChange` is true, sends on **manual** QC PDF state changes in ProjectWise (`ignoreStateChangeFromAutomation` skips the service account).
+4. **`QC.AuditTriggers.psm1`** — When `audit.workflowTriggers.notifyOnStateChange` is true, sends on QC PDF state changes in ProjectWise. Default `ignoreStateChangeFromAutomation: false` includes automation account transitions (dedupe avoids double-send with prepend).
 
 ### When emails fire (production)
 
 | Phase | Trigger |
 | --- | --- |
-| After prepend | `stateAfterSuccessfulPrepend` → **QC Received**; `QC.Workflow` calls `Invoke-QCNotificationForStateChange` immediately when `qcRendition.deferReadyForQcNotification` is **false** (current default). |
+| After prepend | All sheet members → **QC Received**; `QC.Workflow` calls `Invoke-QCNotificationForStateChange` for **QC Received** when `qcRendition.deferReadyForQcNotification` is **false** (current default). |
 | After rendition (optional defer) | Set `deferReadyForQcNotification: true` to hold **QC Received** email until prepend **and** rendition complete (`Invoke-QCReadyForQcNotificationIfReady`). |
 | Rest of review cycle | Each configured state (Review In Progress, Redlines Issued, Corrections In Progress, Verification In Progress, Error Needs Attention) via audit on user-driven transitions, or workflow writeback when automation changes state. |
 

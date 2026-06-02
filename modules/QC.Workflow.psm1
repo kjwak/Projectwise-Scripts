@@ -847,6 +847,47 @@ function Set-PWQCWorkflowState {
         $data.changed = $true
         _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
         $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
+
+        $folderPath = ''
+        $docName = ''
+        $docGuid = ''
+        if ($Context) {
+            if ($Context.ContainsKey('documentPath') -and $Context.documentPath) {
+                $dp = [string]$Context.documentPath
+                if ($dp -match '\\') {
+                    $folderPath = [System.IO.Path]::GetDirectoryName($dp)
+                    if (-not $docName) { $docName = [System.IO.Path]::GetFileName($dp) }
+                }
+            }
+            if ($Context.ContainsKey('job') -and $Context.job) {
+                $job = $Context.job
+                if (-not $folderPath -and $job.ContainsKey('sourceFolder')) { $folderPath = [string]$job.sourceFolder }
+                if (-not $docName -and $job.ContainsKey('sourceName')) { $docName = [string]$job.sourceName }
+            }
+        }
+        if ($document) {
+            try {
+                if (-not $docGuid -and $document.PSObject.Properties['DocumentGUID']) { $docGuid = [string]$document.DocumentGUID }
+                if (-not $docName -and $document.PSObject.Properties['Name']) { $docName = [string]$document.Name }
+                if (-not $folderPath -and $document.PSObject.Properties['FolderPath']) { $folderPath = [string]$document.FolderPath }
+            } catch { }
+        }
+
+        if ($cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
+            -and (Get-Command -Name 'Sync-PWAssociatedSheetMembersToWorkflowState' -ErrorAction SilentlyContinue)) {
+            try {
+                $sheetSync = Sync-PWAssociatedSheetMembersToWorkflowState -Config $cfg -FolderPath $folderPath `
+                    -DocumentName $docName -DocumentGuid $docGuid -TargetStateName $StateName -DryRun:$DryRun `
+                    -TriggerSource 'prepend_writeback'
+                $data.sheetStateSync = $sheetSync
+            } catch {
+                $data.sheetStateSyncError = $_.Exception.Message
+                _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message 'Associated sheet state sync failed after primary state write.' -Data @{
+                    error = [string]$_.Exception.Message; folderPath = $folderPath; documentName = $docName; targetState = $StateName
+                }
+            }
+        }
+
         if ($cfg -and (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue)) {
             Invoke-QCProcessorWorkflowStateTelemetry -Config $cfg -Context $Context `
                 -PreviousState ([string]$info.Data.stateName) -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null

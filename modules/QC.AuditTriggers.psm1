@@ -49,7 +49,7 @@ function Get-QCAuditWorkflowTriggerSettings {
         recordProcessingJobs            = $true
         notifyOnStateChange             = $true
         qcPdfNotificationsOnly          = $true
-        ignoreStateChangeFromAutomation = $true
+        ignoreStateChangeFromAutomation = $false
         automationPwUsernames           = @('srv_typsa_archivist')
         automationPwUserNumbers         = @()
     }
