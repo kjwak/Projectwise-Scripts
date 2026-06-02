@@ -8,6 +8,8 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 - **Purpose**: unified pipeline runner + live terminal dashboard.
 - **Runs**: `Watch-QCTrigger.ps1` (enqueue) + `Run-QCProcessor.ps1` (dequeue/process) concurrently.
 - **Key behaviors**:
+  - Production dashboard view by default (`-DashboardView Production`) that shows only critical health, queue, watcher, worker, and warning/error information.
+  - Detailed operations view remains available with `-DashboardView Detailed` for recent job tables, scan paths, and processor activity.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
   - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.

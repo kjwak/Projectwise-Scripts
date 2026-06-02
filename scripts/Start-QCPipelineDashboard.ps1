@@ -44,6 +44,10 @@ param(
     [string]$RenderMode = 'DiffAnsi',
 
     [Parameter(Mandatory = $false)]
+    [ValidateSet('Production', 'Detailed')]
+    [string]$DashboardView = 'Production',
+
+    [Parameter(Mandatory = $false)]
     [ValidateRange(1, 60)]
     [int]$MaxFps = 8,
 
@@ -587,10 +591,13 @@ function _MaybeRefreshQueue([hashtable]$Cfg, [int]$MinIntervalMs = 1500) {
         }
         $stats = Get-QCQueueStats -Config $Cfg
         if ($stats.IsSuccess) { $state.queueStats = $stats.Data }
-        # Fetch a larger window so each column can show the last N jobs of that type (queue API returns a single mixed list).
-        $recentLimit = [Math]::Max(80, [int]$RecentJobs * 20)
-        $recent = Get-QCRecentJobs -Config $Cfg -Limit $recentLimit
-        if ($recent.IsSuccess) { $state.recentJobs = @($recent.Data.jobs) }
+        if ($DashboardView -eq 'Detailed') {
+            # Fetch a larger window so each column can show the last N jobs of that type (queue API returns a single mixed list).
+            # Production mode intentionally skips this heavier filesystem read; it displays only critical queue counts.
+            $recentLimit = [Math]::Max(80, [int]$RecentJobs * 20)
+            $recent = Get-QCRecentJobs -Config $Cfg -Limit $recentLimit
+            if ($recent.IsSuccess) { $state.recentJobs = @($recent.Data.jobs) }
+        }
         $state.lastQueueRefreshUtc = Get-QCTimestamp
     } catch { }
 }
@@ -659,7 +666,123 @@ function _Get-RecentJobsTwoColLines([object[]]$Jobs, [int]$Limit) {
     return @($lines)
 }
 
+function _Get-CriticalWorkerLines([int]$MaxLines = 6) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (-not $state.workers -or $state.workers.Count -eq 0) {
+        $lines.Add('Workers: none spawned') | Out-Null
+        return @($lines)
+    }
+
+    $active = @($state.workers.Values | Where-Object {
+        $_ -and (
+            ([string]$_.state -in @('running', 'claiming', 'processing')) -or
+            ([string]$_.lastCode -in @('WORKER_SELECTED', 'WORKER_STAGE', 'WORKER_CLAIMING', 'WORKER_MOVE_FAILED', 'WORKER_FAILED'))
+        )
+    } | Sort-Object -Property label)
+
+    if ($active.Count -eq 0) {
+        $lines.Add('Workers: idle') | Out-Null
+        return @($lines)
+    }
+
+    $lines.Add(('Workers: {0} active' -f $active.Count)) | Out-Null
+    foreach ($w in @($active | Select-Object -First $MaxLines)) {
+        $elapsed = '-'
+        if ($w.startedAtUtc) {
+            try {
+                $s = _Parse-UtcIso -Value ([string]$w.startedAtUtc)
+                if ($s) { $elapsed = ('{0}s' -f [int]((Get-Date).ToUniversalTime() - $s).TotalSeconds) }
+            } catch { }
+        }
+        $stage = _Get-WorkerStageText -Worker $w
+        $jobType = if ($w.jobType) { [string]$w.jobType } else { '-' }
+        $jobId = if ($w.jobId) { [string]$w.jobId } else { '-' }
+        $lines.Add(('  {0,-4} pid={1,-6} {2,-15} {3,-24} {4,-6} {5}' -f [string]$w.label, [int]$w.pid, $jobType, (_Trunc -Text $jobId -Max 24), $elapsed, (_Trunc -Text $stage -Max 56))) | Out-Null
+    }
+    if ($active.Count -gt $MaxLines) { $lines.Add(('  ... {0} more active workers' -f ($active.Count - $MaxLines))) | Out-Null }
+    return @($lines)
+}
+
+function _Get-CriticalErrorLines([int]$Limit) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $tail = @($state.errors | Select-Object -Last $Limit)
+    if ($tail.Count -eq 0) {
+        $lines.Add('Warnings/errors: none') | Out-Null
+        return @($lines)
+    }
+
+    $lines.Add(('Warnings/errors: last {0}' -f $tail.Count)) | Out-Null
+    foreach ($e in $tail) {
+        $folder = ''
+        $errMsg = ''
+        try { if ($e.data -and $e.data.folder) { $folder = [string]$e.data.folder } } catch { }
+        try { if ($e.data -and $e.data.errorMessage) { $errMsg = [string]$e.data.errorMessage } } catch { }
+        $suffix = ''
+        if (-not [string]::IsNullOrWhiteSpace($folder)) { $suffix += (' [' + (_Trunc -Text $folder -Max 48) + ']') }
+        if (-not [string]::IsNullOrWhiteSpace($errMsg)) { $suffix += (' ' + (_Trunc -Text $errMsg -Max 70)) }
+        $lines.Add(('  {0} {1,-7} {2} {3}{4}' -f (_Format-UiTs -IsoOrNull ([string]$e.ts)), [string]$e.level, [string]$e.code, (_Trunc -Text ([string]$e.message) -Max 76), $suffix)) | Out-Null
+    }
+    return @($lines)
+}
+
+function _Get-ProductionFrameLines([hashtable]$Cfg) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $width = _Get-TerminalWidth
+    $wideMax = [Math]::Max(48, $width - 2)
+    $now = Get-QCWallClockNow
+    $tzLabel = (Get-QCDisplayTimeZone).Id
+    $dry = $false
+    try { $dry = [bool]$Cfg.dryRun } catch { $dry = $false }
+
+    $lines.Add(('QC Production Dashboard   {0} {1}   DryRun={2}' -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $tzLabel, $dry)) | Out-Null
+    $lines.Add(('Status: {0}' -f (_Compute-PhaseText -Cfg $Cfg))) | Out-Null
+
+    if ($state.queueStats) {
+        $st = $state.queueStats.states
+        $p = [int]$st.pending; $ru = [int]$st.running; $fa = [int]$st.failed
+        $lk = [int]$state.queueStats.locks.count
+        $slots = 0; $max = 0
+        try { $slots = [int]$state.activeWorkerSlots } catch { }
+        try { $max = [int]$state.workerSlotMax } catch { }
+        $lines.Add(('Queue: pending={0} running={1} failed={2} locks={3} workers={4}/{5}' -f $p, $ru, $fa, $lk, $slots, $max)) | Out-Null
+    } else {
+        $lines.Add('Queue: waiting for first refresh') | Out-Null
+    }
+
+    $pwInd = _Get-PwSessionIndicator -Cfg $Cfg
+    if ($pwInd) { $lines.Add(('ProjectWise: ' + [string]$pwInd.text)) | Out-Null }
+
+    $passText = ('Pass: #{0}' -f [int]$state.passCount)
+    if ($state.passStartedAtUtc) {
+        try {
+            $start = _Parse-UtcIso -Value ([string]$state.passStartedAtUtc)
+            if ($start) { $passText += (' elapsed={0}s' -f [int]((Get-Date).ToUniversalTime() - $start).TotalSeconds) }
+        } catch { }
+    }
+    if ($state.lastPassDurationMs) { $passText += (' last={0:0.0}s' -f ([double]$state.lastPassDurationMs / 1000.0)) }
+    if ([int]$state.pwFolderTotal -gt 0) { $passText += (' folders={0}/{1}' -f [int]$state.pwFolderIndex, [int]$state.pwFolderTotal) }
+    $lines.Add($passText) | Out-Null
+
+    if ($state.currentScanStage) {
+        $lines.Add(('Stage: {0}' -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
+    }
+
+    foreach ($line in @(_Get-CriticalWorkerLines -MaxLines 6)) { $lines.Add($line) | Out-Null }
+    foreach ($line in @(_Get-CriticalErrorLines -Limit ([Math]::Min([Math]::Max(1, [int]$RecentErrors), 5)))) { $lines.Add($line) | Out-Null }
+
+    if ($state.lastError) {
+        $lines.Add(('Fatal: {0}' -f (_Trunc -Text ([string]$state.lastError) -Max ($wideMax - 7)))) | Out-Null
+    }
+
+    return @($lines | ForEach-Object { _Trunc -Text ([string]$_) -Max $wideMax })
+}
+
 function _Get-FrameLines([hashtable]$Cfg) {
+    if ($DashboardView -eq 'Detailed') { return _Get-DetailedFrameLines -Cfg $Cfg }
+    return _Get-ProductionFrameLines -Cfg $Cfg
+}
+
+function _Get-DetailedFrameLines([hashtable]$Cfg) {
     $lines = New-Object System.Collections.Generic.List[string]
     $width = _Get-TerminalWidth
     $wideMax = [Math]::Max(48, $width - 2)
