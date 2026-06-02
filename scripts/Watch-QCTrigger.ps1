@@ -843,6 +843,14 @@ if ($statusSetRules.Count -ge 0) {
                                             $dd = [string]$auditDescCache[$descKey]
                                         } else {
                                             $pwDescriptionLookups++
+                                            if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
+                                                try {
+                                                    Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+                                                } catch { }
+                                            }
+                                            if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
+                                                throw "Get-PWDocumentDescriptionForFolder is unavailable (PW.Discovery failed to load). Repo: $repoRoot"
+                                            }
                                             $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
                                             if ($descKey) { $auditDescCache[$descKey] = [string]$dd }
                                         }
