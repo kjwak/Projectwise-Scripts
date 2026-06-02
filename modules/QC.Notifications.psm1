@@ -591,6 +591,20 @@ function Invoke-QCNotificationForStateChange {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_EVENT' -Message $skipped.message -Data $skipped
     }
 
+    if (-not $Force -and (Get-Command -Name 'Test-QCShouldDeferReadyForQcNotification' -ErrorAction SilentlyContinue)) {
+        if (Test-QCShouldDeferReadyForQcNotification -Config $Config -CurrentState $curr) {
+            $skipped = @{
+                success = $false
+                skipped = $true
+                message = 'Ready for QC notification deferred until prepend and rendition complete.'
+                currentState = $curr
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_DEFERRED_READY_FOR_QC' -Level 'Information' -Message $skipped.message -Result $skipped
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_DEFERRED_READY_FOR_QC' -Message $skipped.message -Data $skipped
+        }
+    }
+
     $eventCfg = _QCN-ToHashtable $events[$curr]
     if (-not $eventCfg -or ($eventCfg.ContainsKey('enabled') -and -not [bool]$eventCfg.enabled)) {
         $skipped = @{

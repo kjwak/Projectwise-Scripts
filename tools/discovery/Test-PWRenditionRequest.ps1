@@ -74,7 +74,20 @@ param(
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 50)]
-    [int]$MaxDocuments = 1
+    [int]$MaxDocuments = 1,
+
+    # Get-PWRenditionJobsStatus queries the PW SQL Server directly (not via Connect-PW).
+    [Parameter(Mandatory = $false)]
+    [string]$RenditionDatabaseServer = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$RenditionDatabaseName = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$RenditionDatabaseUser = '',
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RenditionUseWindowsAuth
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,6 +220,7 @@ $pw = @{}
 if ($config.ContainsKey('projectWise') -and $config.projectWise) {
     $pw = ConvertTo-HashtableDeep -Value $config.projectWise
 }
+$script:renditionProbeProjectWise = $pw
 
 $ds = if ($pw.datasourceName) { [string]$pw.datasourceName } else { 'typsa-us-pw.bentley.com:typsa-us-pw-03' }
 $credPath = if ($pw.credentialPath) { [string]$pw.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
@@ -332,15 +346,40 @@ try {
         $statusCmd = Get-Command -Name 'Get-PWRenditionJobsStatus' -ErrorAction SilentlyContinue
         if ($statusCmd) {
             Write-Step 'Recent rendition jobs (Get-PWRenditionJobsStatus)'
-            try {
-                $jobs = @(Get-PWRenditionJobsStatus -ErrorAction Stop)
-                $jobs | Select-Object -First 10 | ForEach-Object {
-                    if ($_ -is [string]) { Write-Info "  $_"; return }
-                    $line = ($_.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
-                    Write-Info "  $line"
+            $sqlServer = $RenditionDatabaseServer
+            $sqlDb = $RenditionDatabaseName
+            if ([string]::IsNullOrWhiteSpace($sqlServer) -or [string]::IsNullOrWhiteSpace($sqlDb)) {
+                $pwCfg = $script:renditionProbeProjectWise
+                if ($pwCfg -and $pwCfg.renditionJobsSql) {
+                    $rj = ConvertTo-HashtableDeep -Value $pwCfg.renditionJobsSql
+                    if ($rj) {
+                        if ([string]::IsNullOrWhiteSpace($sqlServer) -and $rj.databaseServer) { $sqlServer = [string]$rj.databaseServer }
+                        if ([string]::IsNullOrWhiteSpace($sqlDb) -and $rj.databaseName) { $sqlDb = [string]$rj.databaseName }
+                    }
                 }
-            } catch {
-                Write-Warn "Get-PWRenditionJobsStatus failed: $($_.Exception.Message)"
+            }
+            if ([string]::IsNullOrWhiteSpace($sqlServer) -or [string]::IsNullOrWhiteSpace($sqlDb)) {
+                Write-Warn 'Skipped: Get-PWRenditionJobsStatus requires -RenditionDatabaseServer and -RenditionDatabaseName (PW SQL backend, not the Connect-PW datasource).'
+                Write-Info '  Example: -RenditionDatabaseServer "sqlhost" -RenditionDatabaseName "pwmdb" -RenditionUseWindowsAuth'
+            } else {
+                try {
+                    $statusArgs = @{
+                        DatabaseServer = $sqlServer
+                        DatabaseName   = $sqlDb
+                    }
+                    if ($RenditionUseWindowsAuth.IsPresent) { $statusArgs['UseWindowsAuth'] = $true }
+                    elseif (-not [string]::IsNullOrWhiteSpace($RenditionDatabaseUser)) {
+                        $statusArgs['DatabaseUser'] = $RenditionDatabaseUser
+                    }
+                    $jobs = @(Get-PWRenditionJobsStatus @statusArgs -ErrorAction Stop)
+                    $jobs | Select-Object -First 10 | ForEach-Object {
+                        if ($_ -is [string]) { Write-Info "  $_"; return }
+                        $line = ($_.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
+                        Write-Info "  $line"
+                    }
+                } catch {
+                    Write-Warn "Get-PWRenditionJobsStatus failed: $($_.Exception.Message)"
+                }
             }
         }
     }

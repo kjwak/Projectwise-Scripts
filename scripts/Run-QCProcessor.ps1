@@ -43,6 +43,7 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 
@@ -103,6 +104,7 @@ function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     elseif ($Config.ContainsKey('processorMap')) { $map = $Config.processorMap }
     if ($map -is [hashtable] -and $map.ContainsKey($jobType)) { return [string]$map[$jobType] }
     if ($jobType -eq 'QC_PREPEND') { return 'Invoke-QCPrependProcessor' }
+    if ($jobType -eq 'QC_RENDITION') { return 'Invoke-QCRenditionProcessor' }
     if ($jobType -eq 'STATUS_SET_GEN') { return 'Invoke-StatusSetProcessor' }
     return ''
 }

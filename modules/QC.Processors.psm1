@@ -8,6 +8,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction 
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -458,6 +459,18 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if (-not $writeback.IsSuccess -and $strict) {
         return New-QCFailureResult -Code 'QC_PREPEND_WORKFLOW_WRITEBACK_FAILED' -Message 'QC_PREPEND succeeded but strict QC workflow writeback failed.' -Data $data
     }
+
+    if (Get-Command -Name 'Add-QCRenditionJobAfterPrepend' -ErrorAction SilentlyContinue) {
+        try {
+            $renditionEnqueue = Add-QCRenditionJobAfterPrepend -Config $Config -Job $Job -Writeback $writeback -Document $document
+            if ($renditionEnqueue) { $data['renditionEnqueue'] = $renditionEnqueue }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_RENDITION_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{ jobId = [string]$Job.id } | Out-Null
+            }
+        }
+    }
+
     return New-QCSuccessResult -Code $Result.Code -Message $Result.Message -Data $data
 }
 
@@ -659,6 +672,7 @@ function Invoke-QCProcessorByType {
         elseif ($jobType -eq 'STATUS_SET_GEN') { $handlerName = 'Invoke-StatusSetProcessor' }
         elseif ($jobType -eq 'QC_REPORTING_SCAN') { $handlerName = 'Invoke-QCReportingScanProcessor' }
         elseif ($jobType -eq 'QC_COMMENT_STATUS_SYNC') { $handlerName = 'Invoke-QCCommentStatusSyncProcessor' }
+        elseif ($jobType -eq 'QC_RENDITION') { $handlerName = 'Invoke-QCRenditionProcessor' }
     }
 
     if (_QCP-IsNullOrWhiteSpace $handlerName) {

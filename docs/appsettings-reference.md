@@ -28,6 +28,7 @@ Optional: keep **machine-only** secrets in `appsettings.local.json` or `appsetti
 | `processors` | Job handler map |
 | `workers` | Parallel worker pool |
 | `qcPrepend` | QC_PREPEND overlay paths |
+| `qcRendition` | QC_RENDITION profiles + Ready for QC notification gate |
 | `statusSet` | STATUS_SET_GEN merge + manifest + PW upload |
 | `qcWorkflow` | Optional PW workflow/attributes after QC |
 | `qcReporting` | QC_REPORTING_SCAN metrics |
@@ -69,8 +70,20 @@ Each entry discovers every `…/{sheetsPathFromProject}` folder under `path`:
 | `enableQcPrepend` | PDFs with `QC_Archivist` in description → `QC_PREPEND`. |
 | `enableQcCommentSync` | Audit path may enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf`. |
 | `enableStatusSet` | Folder-level `STATUS_SET_GEN` (paired PDF + DGN). |
+| `qcRendition` | Per-root rendition profile for `QC_RENDITION` (see below). |
 
 Optional: `environmentEmailAttributes` — see `docs/pw-environment-email-attributes.md`.
+
+### watchList.roots[].qcRendition
+
+Define the ProjectWise rendition profile for every Sheets folder discovered under that root. Resolution matches the job’s `sourceFolder` to the longest `path` prefix, then applies `qcRendition.folderOverrides` if any.
+
+| Key | Description |
+|-----|-------------|
+| `profileName` | `New-PWRenditionRequest -ProfileName` value. |
+| `sourceDocumentPattern` | `Get-PWDocumentsBySearch` pattern (default `%.dgn`). |
+| `useFolderProfileWhenUnspecified` | Fallback to `Get-PWFolderRenditionProfile` when `profileName` is omitted. |
+| `outputFolderRelative` / `outputFolderPath` | Where to poll for rendition PDFs after submit. Use `"."` or `""` for the **same folder** as the sheet (not a `Renditions` subfolder). Omit only if you set `outputFolderPath`. |
 
 ---
 
@@ -140,6 +153,25 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 | `maxJobsPerWorker` | Jobs per process before exit. |
 | `leaseSeconds` | Stale `running` job recovery threshold. |
 | `idleSleepMs` | Sleep when queue empty (also watcher default if `watcher.idleSleepMs` unset). |
+
+---
+
+## qcRendition
+
+After a successful `QC_PREPEND` that sets workflow state to **Ready for QC**, the pipeline can enqueue **`QC_RENDITION`** (`modules/QC.Rendition.psm1`). Profile resolution order: longest matching `folderOverrides[].folderPathPrefix`, then longest matching `projectWise.watchList.roots[].qcRendition`, then legacy `qcRendition.datasources[datasourceName]`, then optional `Get-PWFolderRenditionProfile` when `useFolderProfileWhenUnspecified` is true.
+
+| Key | Description |
+|-----|-------------|
+| `enabled` | Master switch (default `false` in repo `appsettings.json`). |
+| `deferReadyForQcNotification` | When true, `READY_FOR_QC` email waits until prepend **and** rendition complete. |
+| `readinessStorePath` | JSON files tracking `prependComplete` / `renditionComplete` per document. |
+| `deriveSourceFromQcPdf` | `sheet001-qc.pdf` → source `sheet001.dgn`. |
+| `completion.mode` | `outputFolder` polls `outputFolderPath` or `outputFolderRelative`; `immediate` / `submitOnly` mark complete after `New-PWRenditionRequest`. |
+| `completion.fileNamePattern` | Glob with `{stem}` from DGN base name (e.g. `{stem}*.pdf`). |
+| `folderOverrides` | Per-folder `folderPathPrefix` + profile/output overrides (longest prefix wins; rare). |
+| `datasources` | Deprecated; use `watchList.roots[].qcRendition` instead. |
+
+Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.preferJobTypes` (see `appsettings.json`).
 
 ---
 
