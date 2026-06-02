@@ -1195,9 +1195,9 @@ BEGIN
     IF COL_LENGTH('dbo.processing_jobs', 'recovery_reason') IS NULL
         ALTER TABLE processing_jobs ADD recovery_reason NVARCHAR(200) NULL;
     IF COL_LENGTH('dbo.processing_jobs', 'checkpoint') IS NULL
-        ALTER TABLE processing_jobs ADD checkpoint NVARCHAR(100) NULL;
+        ALTER TABLE processing_jobs ADD [checkpoint] NVARCHAR(100) NULL;
     IF COL_LENGTH('dbo.processing_jobs', 'checkpoint_data') IS NULL
-        ALTER TABLE processing_jobs ADD checkpoint_data NVARCHAR(MAX) NULL;
+        ALTER TABLE processing_jobs ADD [checkpoint_data] NVARCHAR(MAX) NULL;
 END
 
 '@
@@ -1232,9 +1232,9 @@ IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.process
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'recovery_reason') IS NULL
     ALTER TABLE processing_jobs ADD recovery_reason NVARCHAR(200) NULL;
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'checkpoint') IS NULL
-    ALTER TABLE processing_jobs ADD checkpoint NVARCHAR(100) NULL;
+    ALTER TABLE processing_jobs ADD [checkpoint] NVARCHAR(100) NULL;
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'checkpoint_data') IS NULL
-    ALTER TABLE processing_jobs ADD checkpoint_data NVARCHAR(MAX) NULL;
+    ALTER TABLE processing_jobs ADD [checkpoint_data] NVARCHAR(MAX) NULL;
 '@
 }
 
@@ -2677,7 +2677,7 @@ function Update-QCProcessingJobCheckpoint {
     try {
         [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE processing_jobs
-SET checkpoint = @cp, checkpoint_data = @data, last_heartbeat_at = SYSDATETIMEOFFSET()
+SET [checkpoint] = @cp, [checkpoint_data] = @data, last_heartbeat_at = SYSDATETIMEOFFSET()
 WHERE job_id = @jobId
 "@ -Parameters @{ jobId = $JobId; cp = $Checkpoint; data = $CheckpointData })
     } catch { }
