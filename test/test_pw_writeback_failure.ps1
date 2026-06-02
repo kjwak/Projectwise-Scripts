@@ -72,6 +72,7 @@ Write-Host ""
 Write-Host "Test: WORKER_SUCCEEDED log includes pwUpload diagnostics" -ForegroundColor Cyan
 _Assert ($wsrc -match [regex]::Escape("foreach (`$k in 'pwUpload','writeBackToPW','needsFullRebuild','changedCount'")) "WORKER_SUCCEEDED log forwards the key processor fields"
 _Assert ($wsrc -match 'WORKER_MOVE_FAILED') "error is logged when the move to succeeded fails"
+_Assert ($wsrc -match '_Write-WorkerJobOutcomeTelemetry') "success path writes processing_jobs before queue move"
 
 if ($failures -gt 0) { Write-Host "`nFAILED ($failures)" -ForegroundColor Red; exit 1 }
 Write-Host "`nPASSED" -ForegroundColor Green

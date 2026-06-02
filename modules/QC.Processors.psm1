@@ -50,6 +50,36 @@ function _QCP-ToHashtable([object]$Value) {
     return $null
 }
 
+function _QCP-TruncateTextForStorage {
+    param(
+        [string]$Text,
+        [int]$MaxLen = 8192
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    if ($Text.Length -le $MaxLen) { return $Text }
+    $omitted = $Text.Length - $MaxLen
+    return ('...(truncated ' + $omitted + ' chars)...' + $Text.Substring($Text.Length - $MaxLen))
+}
+
+function _QCP-SanitizeProcessorDataForStorage([object]$Data) {
+    $h = _QCP-ToHashtable $Data
+    if (-not $h) { return $null }
+    $out = @{}
+    foreach ($k in $h.Keys) {
+        $v = $h[$k]
+        if ($k -in @('stdout', 'stderr', 'argLine')) {
+            if ($null -ne $v) { $out[$k] = _QCP-TruncateTextForStorage -Text ([string]$v) }
+            continue
+        }
+        if ($k -eq 'args' -and $v -is [array]) {
+            $out[$k] = @($v | ForEach-Object { [string]$_ })
+            continue
+        }
+        $out[$k] = $v
+    }
+    return $out
+}
+
 function _QCP-GetRepoRoot() {
     return (Split-Path -Parent $PSScriptRoot)
 }
@@ -848,7 +878,15 @@ function Invoke-QCPrependProcessor {
             $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
             $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
             if ($p.ExitCode -ne 0) {
-                return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_FAILED' -Message 'Legacy prepend_qc.ps1 failed.' -Data @{ exitCode = [int]$p.ExitCode; stdout = $stdout; stderr = $stderr; args = $args; argLine = $argLine; legacyScript = $legacyPrepend }
+                $failData = _QCP-SanitizeProcessorDataForStorage @{
+                    exitCode = [int]$p.ExitCode
+                    stdout = $stdout
+                    stderr = $stderr
+                    args = $args
+                    argLine = $argLine
+                    legacyScript = $legacyPrepend
+                }
+                return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_FAILED' -Message 'Legacy prepend_qc.ps1 failed.' -Data $failData
             }
 
             $tagCleared = $null
@@ -856,7 +894,7 @@ function Invoke-QCPrependProcessor {
             $writebackWhileConnected = $null
             $clearTag = $true
             if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
-            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
+            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data (_QCP-SanitizeProcessorDataForStorage @{
                 exitCode = [int]$p.ExitCode
                 stdout = $stdout
                 stderr = $stderr
@@ -865,7 +903,7 @@ function Invoke-QCPrependProcessor {
                 incomingDocName = $incomingDocName
                 triggerTagCleared = $tagCleared
                 triggerTagClearError = $tagClearError
-            }
+            })
             if ($clearTag) {
                 try {
                     $repoRoot = _QCP-GetRepoRoot

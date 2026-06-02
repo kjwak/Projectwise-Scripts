@@ -159,6 +159,85 @@ function Write-WorkerJobTelemetryLog {
     }
 }
 
+function _Convert-ProcessorResultToHashtable([object]$Data) {
+    if (-not $Data) { return $null }
+    try {
+        if ($Data -is [hashtable]) { return $Data }
+        if ($Data.PSObject) {
+            $tmp = @{}
+            foreach ($p in $Data.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+            return $tmp
+        }
+    } catch { }
+    return $null
+}
+
+function _Sanitize-ResultDataForPersistence([hashtable]$ResultData) {
+    if (-not $ResultData) { return $null }
+    $out = @{}
+    foreach ($k in $ResultData.Keys) {
+        $v = $ResultData[$k]
+        if ($k -in @('stdout', 'stderr', 'argLine')) {
+            if ($null -ne $v) {
+                $t = [string]$v
+                if ($t.Length -gt 8192) {
+                    $out[$k] = ('...(truncated ' + ($t.Length - 8192) + ' chars)...' + $t.Substring($t.Length - 8192))
+                } else {
+                    $out[$k] = $t
+                }
+            }
+            continue
+        }
+        $out[$k] = $v
+    }
+    return $out
+}
+
+function _Build-TelemetryResultJson([hashtable]$ResultData) {
+    if (-not $ResultData) { return $null }
+    $tel = @{}
+    foreach ($k in $ResultData.Keys) {
+        if ($k -in @('stdout', 'stderr', 'argLine', 'args')) { continue }
+        $tel[$k] = $ResultData[$k]
+    }
+    try { return ($tel | ConvertTo-Json -Depth 4 -Compress) } catch { return $null }
+}
+
+function _Write-WorkerJobOutcomeTelemetry {
+    param(
+        [hashtable]$Config,
+        [hashtable]$Job,
+        [string]$JobId,
+        [string]$JobType,
+        [string]$Status,
+        [int]$DurationMs,
+        [hashtable]$ResultData,
+        [string]$ErrorCode = '',
+        [string]$ErrorMessage = ''
+    )
+    $triggerSource = $null
+    try {
+        if ($Job.metadata -and $Job.metadata.candidate -and $Job.metadata.candidate.triggerSource) {
+            $triggerSource = [string]$Job.metadata.candidate.triggerSource
+        }
+    } catch { }
+    $startedAtUtc = $null
+    try {
+        if ($Job.ContainsKey('startedAtUtc') -and $Job['startedAtUtc']) { $startedAtUtc = [string]$Job['startedAtUtc'] }
+    } catch { }
+    $jobAttempts = 0
+    try { if ($Job.ContainsKey('attempts') -and $null -ne $Job['attempts']) { $jobAttempts = [int]$Job['attempts'] } } catch { }
+    $rdJson = _Build-TelemetryResultJson -ResultData $ResultData
+    $telRes = Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType $JobType -Status $Status `
+        -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
+        -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
+        -AttemptCount $jobAttempts -DurationMs $DurationMs -ResultData $rdJson `
+        -ErrorCode $(if ($ErrorCode) { $ErrorCode } else { $null }) `
+        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null })
+    Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -TelemetryResult $telRes
+    return $telRes
+}
+
 function Move-QCJobWithLockRetries {
     param(
         [string]$JobId,
@@ -298,23 +377,18 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         if ($proc.IsSuccess) {
             # Capture rich result data so the per-job JSON keeps everything the
             # processor reported (pwUpload, needsFullRebuild, changedCount, etc).
-            $resultData = $null
-            try {
-                if ($proc.Data) {
-                    if ($proc.Data -is [hashtable]) { $resultData = $proc.Data }
-                    elseif ($proc.Data.PSObject) {
-                        $tmp = @{}
-                        foreach ($p in $proc.Data.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-                        $resultData = $tmp
-                    }
-                }
-            } catch { $resultData = $null }
+            $resultData = _Convert-ProcessorResultToHashtable $proc.Data
+            $resultData = _Sanitize-ResultDataForPersistence -ResultData $resultData
             $Job['result'] = @{
                 code           = [string]$proc.Code
                 message        = [string]$proc.Message
                 completedAtUtc = Get-QCTimestamp
                 data           = $resultData
             }
+            # Record processing_jobs before queue move so a successful prepend/rendition
+            # is not lost when Move-QCJob fails (e.g. oversized job JSON from legacy stdout).
+            _Write-WorkerJobOutcomeTelemetry -Config $Config -Job $Job -JobId $jobId -JobType $jobType `
+                -Status 'succeeded' -DurationMs $jobDurationMs -ResultData $resultData | Out-Null
             # Single Move-QCJob call writes the in-memory $Job (with result/data)
             # to disk and renames to succeeded\ under one queue-write-lock cycle.
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
@@ -327,10 +401,11 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                 try { if ($mv.Data -and $mv.Data.error) { $innerErr = [string]$mv.Data.error } } catch { }
                 $logLevel = 'Error'
                 if ([string]$mv.Code -eq 'QUEUE_JOB_WRONG_STATE') { $logLevel = 'Warning' }
-                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level $logLevel -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\.' -Data @{
+                Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level $logLevel -Code 'WORKER_MOVE_FAILED' -Message 'Failed to move succeeded job to succeeded\ (processor outcome already in processing_jobs).' -Data @{
                     jobId = $jobId; fromState = 'running'; toState = 'succeeded'
                     errorCode = [string]$mv.Code; errorMessage = [string]$mv.Message; errorData = $innerErr
                     actualState = if ($mv.Data -and $mv.Data.actualState) { [string]$mv.Data.actualState } else { $null }
+                    resultCode = [string]$proc.Code
                 }
                 # The job is still in running\. Treat as a transient failure so the
                 # recovery sweep (or next worker tick) can retry the move; do NOT
@@ -357,24 +432,6 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                 }
             }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
-            $rdJson = $null; try { if ($resultData) { $rdJson = ($resultData | ConvertTo-Json -Depth 4 -Compress) } } catch {}
-            $triggerSource = $null
-            try {
-                if ($Job.metadata -and $Job.metadata.candidate -and $Job.metadata.candidate.triggerSource) {
-                    $triggerSource = [string]$Job.metadata.candidate.triggerSource
-                }
-            } catch { }
-            $startedAtUtc = $null
-            try {
-                if ($Job.ContainsKey('startedAtUtc') -and $Job['startedAtUtc']) { $startedAtUtc = [string]$Job['startedAtUtc'] }
-            } catch { }
-            $jobAttempts = 0
-            try { if ($Job.ContainsKey('attempts') -and $null -ne $Job['attempts']) { $jobAttempts = [int]$Job['attempts'] } } catch { }
-            $telRes = Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status 'succeeded' `
-                -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-                -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
-                -AttemptCount $jobAttempts -DurationMs $jobDurationMs -ResultData $rdJson
-            Write-WorkerJobTelemetryLog -JobId $jobId -JobType $jobType -TelemetryResult $telRes
 
             # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
@@ -435,22 +492,11 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
             errorCode = [string]$proc.Code; errorMessage = [string]$proc.Message
             processorData = $details; processorStdout = $stdoutPreview; processorStderr = $stderrPreview
         }
-        $triggerSourceFail = $null
-        try {
-            if ($Job.metadata -and $Job.metadata.candidate -and $Job.metadata.candidate.triggerSource) {
-                $triggerSourceFail = [string]$Job.metadata.candidate.triggerSource
-            }
-        } catch { }
-        $startedAtUtcFail = $null
-        try {
-            if ($Job.ContainsKey('startedAtUtc') -and $Job['startedAtUtc']) { $startedAtUtcFail = [string]$Job['startedAtUtc'] }
-        } catch { }
-        $telResFail = Write-QCJobTelemetry -Config $Config -JobId $jobId -JobType $jobType -Status $target `
-            -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
-            -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSourceFail -StartedAtUtc $startedAtUtcFail `
-            -DurationMs $jobDurationMs -AttemptCount $attempts `
-            -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message) -ResultData $details
-        Write-WorkerJobTelemetryLog -JobId $jobId -JobType $jobType -TelemetryResult $telResFail
+        $failResultData = _Convert-ProcessorResultToHashtable $proc.Data
+        $failResultData = _Sanitize-ResultDataForPersistence -ResultData $failResultData
+        _Write-WorkerJobOutcomeTelemetry -Config $Config -Job $Job -JobId $jobId -JobType $jobType `
+            -Status $target -DurationMs $jobDurationMs -ResultData $failResultData `
+            -ErrorCode ([string]$proc.Code) -ErrorMessage ([string]$proc.Message) | Out-Null
         if ($target -eq 'failed') {
             return @{ Outcome = 'failed'; ExitOk = $false; SkipId = $jobId }
         } else {
