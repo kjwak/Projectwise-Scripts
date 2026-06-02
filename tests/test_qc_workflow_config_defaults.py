@@ -13,10 +13,10 @@ def test_appsettings_qc_workflow_defaults_remain_disabled_and_attribute_first():
     config = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))
     workflow = config["qcWorkflow"]
 
-    assert workflow["enabled"] is False
-    assert workflow["mode"] == "AttributesOnly"
-    assert workflow["autoSetState"] is False
-    assert workflow["dryRunWriteback"] is True
+    assert workflow["enabled"] is True
+    assert workflow["mode"] == "StateAndAttributes"
+    assert workflow["autoSetState"] is True
+    assert workflow["dryRunWriteback"] is False
     assert workflow["strictMode"] is False
 
 
@@ -24,11 +24,14 @@ def test_appsettings_uses_states_and_review_types_not_stage_map():
     workflow = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["qcWorkflow"]
 
     assert "stageMap" not in workflow
+    assert workflow["states"]["qcInitiated"] == "QC Initiated"
+    assert workflow["states"]["qcReceived"] == "QC Received"
     assert workflow["states"]["readyForQc"] == "Ready for QC"
     assert workflow["states"]["reviewInProgress"] == "Review In Progress"
     assert workflow["states"]["redlinesIssued"] == "Redlines Issued"
     assert workflow["states"]["verificationInProgress"] == "Verification In Progress"
-    assert workflow["stateAfterSuccessfulPrepend"] == "Ready for QC"
+    assert workflow["stateAfterSuccessfulPrepend"] == "QC Received"
+    assert workflow["stateAfterPrependByTrigger"]["initialQcPdf"] == "QC Received"
     assert workflow["stateAfterPrependByTrigger"]["reviewerRedlineUpdate"] == "Redlines Issued"
     assert workflow["states"]["complete"] == "QC Complete"
     assert workflow["reviewTypes"]["independentCheck"] == "Independent Check"
@@ -150,7 +153,7 @@ def test_resolve_state_after_prepend_by_trigger():
     ) -join '|'
     """
     out = _pwsh_eval(script)
-    assert out == "Redlines Issued|Verification In Progress|Ready for QC|Review In Progress"
+    assert out == "Redlines Issued|Verification In Progress|QC Received|Review In Progress"
 
 
 def test_dry_run_attributes_do_not_include_qc_stage():

@@ -65,8 +65,8 @@ When `notifications.dedupe.enabled` is true, the same notification is not sent t
 
 | Phase | Trigger |
 | --- | --- |
-| After prepend | `stateAfterSuccessfulPrepend` → **Ready for QC**; `QC.Workflow` calls `Invoke-QCNotificationForStateChange` immediately when `qcRendition.deferReadyForQcNotification` is **false** (current default). |
-| After rendition (optional defer) | Set `deferReadyForQcNotification: true` to hold **Ready for QC** until prepend **and** rendition complete (`Invoke-QCReadyForQcNotificationIfReady`). |
+| After prepend | `stateAfterSuccessfulPrepend` → **QC Received**; `QC.Workflow` calls `Invoke-QCNotificationForStateChange` immediately when `qcRendition.deferReadyForQcNotification` is **false** (current default). |
+| After rendition (optional defer) | Set `deferReadyForQcNotification: true` to hold **QC Received** email until prepend **and** rendition complete (`Invoke-QCReadyForQcNotificationIfReady`). |
 | Rest of review cycle | Each configured state (Review In Progress, Redlines Issued, Corrections In Progress, Verification In Progress, Error Needs Attention) via audit on user-driven transitions, or workflow writeback when automation changes state. |
 
 Future watchers can call `Invoke-QCNotificationForStateChange` directly when polling QC PDF workflow state.

@@ -190,6 +190,8 @@ function _QCW-ObjectNameMatches([object]$Object, [string]$ExpectedName, [string[
 function _QCW-DefaultWorkflowStates {
     return @{
         production = 'In Production'
+        qcInitiated = 'QC Initiated'
+        qcReceived = 'QC Received'
         readyForQc = 'Ready for QC'
         reviewInProgress = 'Review In Progress'
         redlinesIssued = 'Redlines Issued'
@@ -265,7 +267,7 @@ function Get-QCWorkflowDeprecationWarnings {
 function _QCW-DefaultPrependStateTriggers {
     $states = _QCW-DefaultWorkflowStates
     return @{
-        initialQcPdf = [string]$states.readyForQc
+        initialQcPdf = [string]$states.qcReceived
         reviewerRedlineUpdate = [string]$states.redlinesIssued
         designerCorrectionComplete = [string]$states.verificationInProgress
     }
@@ -283,6 +285,8 @@ function Normalize-QCPrependTriggerKey {
         'initial' { return 'initialQcPdf' }
         'qcarchivist' { return 'initialQcPdf' }
         'readyforqc' { return 'initialQcPdf' }
+        'qcinitiated' { return 'initialQcPdf' }
+        'qcreceived' { return 'initialQcPdf' }
         'reviewerredlineupdate' { return 'reviewerRedlineUpdate' }
         'reviewerredline' { return 'reviewerRedlineUpdate' }
         'redlineupdate' { return 'reviewerRedlineUpdate' }
@@ -390,6 +394,8 @@ function Resolve-QCWorkflowAssignee {
 
     $state = if ($StateName) { [string]$StateName } else { '' }
     $production = [string]$states.production
+    $qcInitiated = if ($states.qcInitiated) { [string]$states.qcInitiated } else { 'QC Initiated' }
+    $qcReceived = if ($states.qcReceived) { [string]$states.qcReceived } else { 'QC Received' }
     $ready = [string]$states.readyForQc
     $review = [string]$states.reviewInProgress
     $redlinesIssued = [string]$states.redlinesIssued
@@ -399,11 +405,11 @@ function Resolve-QCWorkflowAssignee {
 
     if ($state -eq $complete) { return $null }
 
-    if ($state -eq $production -or $state -eq $redlinesIssued -or $state -eq $corrections) {
+    if ($state -eq $production -or $state -eq $qcInitiated -or $state -eq $redlinesIssued -or $state -eq $corrections) {
         if (-not (_QCW-IsNullOrWhiteSpace $DesignerEmail)) { return [string]$DesignerEmail }
         return $null
     }
-    if ($state -in @($ready, $review, $verification)) {
+    if ($state -in @($qcReceived, $ready, $review, $verification)) {
         if ($useChecker) {
             if (-not (_QCW-IsNullOrWhiteSpace $CheckerEmail)) { return [string]$CheckerEmail }
             return $null
@@ -437,8 +443,8 @@ function Get-QCWorkflowSettings {
         states = @{}
         reviewTypes = @{}
         defaultReviewType = 'Production QC'
-        defaultStateAfterPrepend = 'Ready for QC'
-        stateAfterSuccessfulPrepend = 'Ready for QC'
+        defaultStateAfterPrepend = 'QC Received'
+        stateAfterSuccessfulPrepend = 'QC Received'
         stateAfterFailedPrepend = 'Error Needs Attention'
         defaultPrependTrigger = 'initialQcPdf'
         stateAfterPrependByTrigger = @{}
@@ -481,7 +487,7 @@ function Get-QCWorkflowSettings {
     # Backward compatibility: legacy flat state name keys override states.* when states.* not in raw config.
     if (-not $raw.ContainsKey('states')) {
         if ($raw.ContainsKey('productionStateName') -and $raw.productionStateName) { $settings.states.production = [string]$raw.productionStateName }
-        if ($raw.ContainsKey('receivedStateName') -and $raw.receivedStateName) { $settings.states.readyForQc = [string]$raw.receivedStateName }
+        if ($raw.ContainsKey('receivedStateName') -and $raw.receivedStateName) { $settings.states.qcReceived = [string]$raw.receivedStateName }
         if ($raw.ContainsKey('correctionsInProgressStateName') -and $raw.correctionsInProgressStateName) { $settings.states.correctionsInProgress = [string]$raw.correctionsInProgressStateName }
         if ($raw.ContainsKey('backcheckInProgressStateName') -and $raw.backcheckInProgressStateName) { $settings.states.verificationInProgress = [string]$raw.backcheckInProgressStateName }
         if ($raw.ContainsKey('errorStateName') -and $raw.errorStateName) { $settings.states.error = [string]$raw.errorStateName }

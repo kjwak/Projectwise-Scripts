@@ -319,9 +319,40 @@ function _QCR-GetReadyForQcStateName([hashtable]$Config) {
             $st = _QCR-ToHashtable $wf.states
             if ($st -and $st.readyForQc) { $readyName = [string]$st.readyForQc }
         }
-        if ($wf -and $wf.receivedStateName) { $readyName = [string]$wf.receivedStateName }
     }
     return $readyName
+}
+
+function _QCR-GetQcInitiatedStateName([hashtable]$Config) {
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        $settings = $null
+        if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+            $settings = Get-QCWorkflowSettings -Config $Config
+        }
+        if ($settings) {
+            $name = Get-QCWorkflowStateName -Settings $settings -StateKey 'qcInitiated'
+            if (-not (_QCR-IsNullOrWhiteSpace $name)) { return [string]$name }
+        }
+    }
+    return 'QC Initiated'
+}
+
+function _QCR-GetQcReceivedStateName([hashtable]$Config) {
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        $settings = $null
+        if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+            $settings = Get-QCWorkflowSettings -Config $Config
+        }
+        if ($settings) {
+            $name = Get-QCWorkflowStateName -Settings $settings -StateKey 'qcReceived'
+            if (-not (_QCR-IsNullOrWhiteSpace $name)) { return [string]$name }
+        }
+    }
+    if ($Config -and $Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) {
+        $wf = _QCR-ToHashtable $Config.qcWorkflow
+        if ($wf -and $wf.receivedStateName) { return [string]$wf.receivedStateName }
+    }
+    return 'QC Received'
 }
 
 function Test-QCShouldDeferReadyForQcNotification {
@@ -335,8 +366,8 @@ function Test-QCShouldDeferReadyForQcNotification {
     if (-not [bool]$rendition.enabled) { return $false }
     if (-not [bool]$rendition.deferReadyForQcNotification) { return $false }
 
-    $readyName = _QCR-GetReadyForQcStateName -Config $Config
-    return (([string]$CurrentState).Trim().ToLowerInvariant() -eq $readyName.ToLowerInvariant())
+    $receivedName = _QCR-GetQcReceivedStateName -Config $Config
+    return (([string]$CurrentState).Trim().ToLowerInvariant() -eq $receivedName.ToLowerInvariant())
 }
 
 function _QCR-GetDocumentGuidFromObject([object]$Document) {
@@ -436,9 +467,9 @@ function Invoke-QCReadyForQcNotificationIfReady {
         }
     }
 
-    $curr = _QCR-GetReadyForQcStateName -Config $Config
+    $curr = _QCR-GetQcReceivedStateName -Config $Config
     if (-not (_QCR-IsNullOrWhiteSpace $CurrentState)) { $curr = ([string]$CurrentState).Trim() }
-    if (_QCR-IsNullOrWhiteSpace $curr) { $curr = 'Ready for QC' }
+    if (_QCR-IsNullOrWhiteSpace $curr) { $curr = 'QC Received' }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }
@@ -746,7 +777,7 @@ function _QCR-WriteRenditionStateEnqueueLog {
 function Add-QCRenditionJobForReadyForQcStateChange {
     <#
     .SYNOPSIS
-    Enqueues QC_RENDITION when a non-automation actor sets state to Ready for QC.
+    Enqueues QC_RENDITION when a non-automation actor sets state to QC Initiated (DGN).
     #>
     [CmdletBinding()]
     param(
@@ -763,9 +794,9 @@ function Add-QCRenditionJobForReadyForQcStateChange {
     $rendition = Get-QCRenditionSettings -Config $Config
     if (-not [bool]$rendition.enabled) { return $null }
 
-    $readyName = _QCR-GetReadyForQcStateName -Config $Config
+    $initiatedName = _QCR-GetQcInitiatedStateName -Config $Config
     $curr = ([string]$CurrentStateName).Trim()
-    if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $readyName.ToLowerInvariant()) { return $null }
+    if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $initiatedName.ToLowerInvariant()) { return $null }
 
     if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
         if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
@@ -839,7 +870,7 @@ function Add-QCRenditionJobForReadyForQcStateChange {
         createdAt  = Get-QCTimestamp
         attempts   = 0
         triggerRule = @{
-            id          = 'qc-rendition-readyforqc'
+            id          = 'qc-rendition-qc-initiated'
             jobType     = 'QC_RENDITION'
             triggerType = 'audit_state_change'
         }
@@ -859,7 +890,7 @@ function Add-QCRenditionJobForReadyForQcStateChange {
     }
 
     if ($DryRun) {
-        return New-QCSuccessResult -Code 'QC_RENDITION_PLANNED' -Message 'Dry-run: QC_RENDITION job planned from Ready for QC state change.' -Data @{
+        return New-QCSuccessResult -Code 'QC_RENDITION_PLANNED' -Message 'Dry-run: QC_RENDITION job planned from QC Initiated state change.' -Data @{
             job = $job
             readinessKey = $sheetReadinessKey
             profile = $profile
@@ -869,7 +900,7 @@ function Add-QCRenditionJobForReadyForQcStateChange {
     $enq = Add-QCQueueJob -Job $job -Config $Config
     if ($enq.IsSuccess) {
         _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_ENQUEUED' `
-            -Message 'QC_RENDITION job enqueued from Ready for QC state change (DGN trigger).' -Data @{
+            -Message 'QC_RENDITION job enqueued from QC Initiated state change (DGN trigger).' -Data @{
             renditionJobId = [string]$job.id
             dedupeKey = $dedupeKey
             sheetReadinessKey = $sheetReadinessKey

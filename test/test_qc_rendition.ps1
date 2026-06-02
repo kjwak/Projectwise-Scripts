@@ -39,7 +39,7 @@ try {
         }
         qcWorkflow = @{
             enabled = $true
-            states = @{ readyForQc = 'Ready for QC' }
+            states = @{ qcReceived = 'QC Received'; readyForQc = 'Ready for QC' }
         }
         qcRendition = @{
             enabled = $true
@@ -58,11 +58,11 @@ try {
             provider = 'Mock'
             dryRun = $true
             events = @{
-                'Ready for QC' = @{
+                'QC Received' = @{
                     enabled = $true
-                    eventType = 'READY_FOR_QC'
+                    eventType = 'QC_RECEIVED'
                     to = @('reviewers')
-                    subjectTemplate = 'Ready for QC - {documentName}'
+                    subjectTemplate = 'QC Received - {documentName}'
                 }
             }
         }
@@ -88,10 +88,10 @@ try {
     Assert-True $state.prependComplete 'Prepend flagged'
     Assert-True (-not $state.renditionComplete) 'Rendition not yet'
 
-    Assert-True (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Ready for QC') 'Defer ready notification'
+    Assert-True (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'QC Received') 'Defer QC Received notification'
     Assert-True (-not (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Review In Progress')) 'No defer other states'
 
-    $defer = Invoke-QCNotificationForStateChange -Config $config -PreviousState 'In Production' -CurrentState 'Ready for QC' `
+    $defer = Invoke-QCNotificationForStateChange -Config $config -PreviousState 'In Production' -CurrentState 'QC Received' `
         -DocumentName 'sheet-qc.pdf' -DocumentGuid 'abc-123'
     Assert-Eq $defer.Code 'QC_NOTIFICATION_DEFERRED_READY_FOR_QC' 'Notification deferred'
 

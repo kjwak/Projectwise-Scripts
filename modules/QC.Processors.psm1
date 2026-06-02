@@ -1324,6 +1324,133 @@ function Invoke-StatusSetProcessor {
     }
 }
 
+function _QCP-EnsureQueueModulesLoaded {
+    if (-not (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'QC.Queue.Json.psm1') -Force -ErrorAction Stop
+    }
+    if (-not (Get-Command -Name 'New-QCJobObject' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'QC.JobFactory.psm1') -Force -ErrorAction Stop
+    }
+}
+
+function _QCP-ResolveSheetPdfForPrependTrigger {
+    param([string]$TriggerDocumentName)
+    $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+    if ($name -match '(?i)-qc\.pdf$') { return $null }
+    if ($name -match '(?i)\.dgn$') {
+        return ([System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf')
+    }
+    if ($name -match '(?i)\.pdf$') { return $name }
+    return $null
+}
+
+function Add-QCPrependJobForQcInitiatedStateChange {
+    <#
+    .SYNOPSIS
+    Enqueues QC_PREPEND when a non-automation actor sets workflow state to QC Initiated.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TriggerDocumentGuid,
+        [Parameter(Mandatory)][string]$TriggerDocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CurrentStateName,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    $initiatedName = 'QC Initiated'
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        $wf = Get-QCWorkflowSettings -Config $Config
+        $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
+        if (-not (_QCP-IsNullOrWhiteSpace $resolved)) { $initiatedName = [string]$resolved }
+    }
+
+    $curr = ([string]$CurrentStateName).Trim()
+    if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $initiatedName.ToLowerInvariant()) { return $null }
+
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
+            return $null
+        }
+    }
+
+    $sheetPdf = _QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName $TriggerDocumentName
+    if (_QCP-IsNullOrWhiteSpace $sheetPdf) { return $null }
+
+    try { _QCP-EnsureQueueModulesLoaded } catch {
+        return New-QCFailureResult -Code 'QC_PREPEND_QUEUE_UNAVAILABLE' -Message $_.Exception.Message -Data @{}
+    }
+
+    $sourcePath = Join-Path $FolderPath $sheetPdf
+    $candidate = @{
+        path = $sourcePath
+        fileName = $sheetPdf
+        description = 'QC_Archivist'
+        detectedAtUtc = (Get-QCTimestamp)
+        sourceFolder = $FolderPath
+        triggerSource = 'audit_state_change'
+        auditActionName = 'DOCUMENT_STATE'
+        file = @{
+            fullName = $sourcePath
+            length = 0
+            lastWriteTimeUtc = (Get-QCTimestamp)
+        }
+    }
+
+    $rule = @{
+        id = 'qc-prepend-qc-initiated'
+        jobType = 'QC_PREPEND'
+        triggerType = 'audit_state_change'
+        grouping = @{ enabled = $false; groupBy = 'file' }
+    }
+
+    $jobRes = New-QCJobObject -Candidate $candidate -Rule $rule -Config $Config
+    if (-not $jobRes.IsSuccess) { return $jobRes }
+    $job = [hashtable]$jobRes.Data.job
+    if (-not $job.ContainsKey('metadata') -or -not $job.metadata) { $job['metadata'] = @{} }
+    $md = _QCP-ToHashtable $job.metadata
+    if (-not $md) { $md = @{} }
+    $md['prependTrigger'] = 'initialQcPdf'
+    $md['pwStateName'] = $curr
+    $md['triggerDocumentGuid'] = $TriggerDocumentGuid
+    $md['triggerDocumentName'] = $TriggerDocumentName
+    $job['metadata'] = $md
+
+    if ($DryRun) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned from QC Initiated state change.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned.' -Data @{ job = $job }
+    }
+
+    if (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue) {
+        $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $Config
+        if ($dupRes.IsSuccess -and [bool]$dupRes.Data.isDuplicate) {
+            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_DUPLICATE' -Message 'QC_PREPEND already queued for this sheet.' -Data @{
+                dedupeKey = [string]$job['dedupeKey']; sourcePath = $sourcePath
+            }
+        }
+    }
+
+    $enq = Add-QCQueueJob -Job $job -Config $Config
+    if ($enq.IsSuccess) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_ENQUEUED' -Message 'QC_PREPEND job enqueued from QC Initiated state change.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr
+            } | Out-Null
+        }
+    }
+    return $enq
+}
+
 function Invoke-QCReportingScanProcessor {
     [CmdletBinding()]
     param(

@@ -507,6 +507,22 @@ function Register-QCNotificationDedupe {
     Add-Content -LiteralPath $storePath -Value $entry -Encoding UTF8
 }
 
+function _QCN-EnsureSingleResult {
+    param([object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [System.Array]) {
+        foreach ($item in @($Value)) {
+            if ($null -eq $item) { continue }
+            try {
+                $c = [string]$item.Code
+                if ($c -match '^QC_NOTIFICATION') { return $item }
+            } catch { }
+        }
+        return $Value[-1]
+    }
+    return $Value
+}
+
 function Write-QCNotificationResult {
     <#
     .SYNOPSIS
@@ -719,12 +735,12 @@ function Send-QCNotification {
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
 
     if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
-        Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
+        [void](Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
             -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
             -FolderPath ([string]$Event.documentPath) `
             -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
             -Provider ([string]$provider) -Success $sendResult.IsSuccess `
-            -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null })
+            -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null }))
     }
 
     if ($sendResult.IsSuccess) { return New-QCSuccessResult -Code $code -Message $sendResult.Message -Data $result }
@@ -803,7 +819,7 @@ function Invoke-QCNotificationForStateChange {
             $skipped = @{
                 success = $false
                 skipped = $true
-                message = 'Ready for QC notification deferred until prepend and rendition complete.'
+                message = 'QC Received notification deferred until prepend and rendition complete.'
                 currentState = $curr
                 timestampUtc = Get-QCTimestamp
             }
@@ -883,7 +899,7 @@ function Invoke-QCNotificationForStateChange {
     $event['_eventCfg'] = $eventCfg
     $event['_document'] = $Document
 
-    $send = Send-QCNotification -Event $event -Config $Config -Subject $subject -To $resolved.to -Cc $resolved.cc
+    $send = _QCN-EnsureSingleResult (Send-QCNotification -Event $event -Config $Config -Subject $subject -To $resolved.to -Cc $resolved.cc)
 
     $resultData = _QCN-ToHashtable $send.Data
     if ($send.IsSuccess -and $resultData -and $resultData.success -eq $true) {
@@ -892,10 +908,12 @@ function Invoke-QCNotificationForStateChange {
     if ($resultData) {
         $resultData['dedupeKey'] = $dedupeKey
     }
+    $notifyCode = if ($send.IsSuccess) { 'QC_NOTIFICATION_SENT' } else { 'QC_NOTIFICATION_FAILED' }
+    $notifyMessage = [string]$send.Message
     if ($send.IsSuccess) {
-        return New-QCSuccessResult -Code $send.Code -Message $send.Message -Data $resultData
+        return New-QCSuccessResult -Code $notifyCode -Message $notifyMessage -Data $resultData
     }
-    return New-QCFailureResult -Code $send.Code -Message $send.Message -Data $resultData
+    return New-QCFailureResult -Code $notifyCode -Message $notifyMessage -Data $resultData
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `

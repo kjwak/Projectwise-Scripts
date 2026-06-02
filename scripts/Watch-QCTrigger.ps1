@@ -866,6 +866,33 @@ if ($statusSetRules.Count -ge 0) {
                                             }
                                             continue
                                         }
+                                        $initiatedStateName = $null
+                                        try {
+                                            if ($config.ContainsKey('qcWorkflow') -and $config.qcWorkflow) {
+                                                $wf = $config.qcWorkflow
+                                                if ($wf -is [hashtable] -and $wf.ContainsKey('states') -and $wf.states) {
+                                                    $st = $wf.states
+                                                    if ($st -is [hashtable] -and $st.ContainsKey('qcInitiated') -and $st.qcInitiated) {
+                                                        $initiatedStateName = [string]$st.qcInitiated
+                                                    } elseif ($st.qcInitiated) {
+                                                        $initiatedStateName = [string]$st.qcInitiated
+                                                    }
+                                                }
+                                            }
+                                        } catch { }
+                                        if (-not [string]::IsNullOrWhiteSpace($initiatedStateName) -and (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                                            $pwState = ''
+                                            try {
+                                                $pwState = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
+                                            } catch { }
+                                            if ([string]::IsNullOrWhiteSpace($pwState) -or ($pwState.Trim().ToLowerInvariant() -ne $initiatedStateName.Trim().ToLowerInvariant())) {
+                                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (workflow state is not QC Initiated).' -Data @{
+                                                    path = ($fp + '\' + $itemName); actionName = $actionName
+                                                    pwStateName = $pwState; requiredState = $initiatedStateName
+                                                }
+                                                continue
+                                            }
+                                        }
                                         $candidate = @{
                                             path            = ($fp + '\' + $itemName)
                                             fileName        = $itemName

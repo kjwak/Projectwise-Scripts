@@ -18,7 +18,9 @@ The framework runs after successful prepend processing and returns structured wa
 | State | Meaning | Typical assignee (see review type) |
 | --- | --- | --- |
 | `In Production` | Normal sheet production before QC. | Designer |
-| `Ready for QC` | Document is ready for QC intake. | Reviewer or checker |
+| `QC Initiated` | Designer requested QC intake; triggers `QC_PREPEND` / `QC_RENDITION`. | Designer |
+| `QC Received` | Automation completed intake (overlay/history); triggers reviewer email. | Reviewer or checker |
+| `Ready for QC` | Optional: reviewer may start review (if used in PW). | Reviewer or checker |
 | `Review In Progress` | Active QC review. | Reviewer or checker |
 | `Redlines Issued` | Review complete; comments/redlines delivered; designer owns response before corrections start. | Designer |
 | `Corrections In Progress` | Designer/producer actively addressing comments. | Designer |
@@ -30,7 +32,9 @@ Recommended transition path:
 
 ```text
 In Production
--> Ready for QC
+-> QC Initiated
+-> QC Received
+-> Ready for QC (optional)
 -> Review In Progress
 -> Redlines Issued
 -> Corrections In Progress
@@ -161,11 +165,11 @@ Successful `QC_PREPEND` does **not** always move documents to `Redlines Issued`.
 
 | Trigger key | Typical use | Default target state |
 | --- | --- | --- |
-| `initialQcPdf` | Initial QC PDF creation / rendition (e.g. `QC_Archivist` intake) | `Ready for QC` |
+| `initialQcPdf` | Initial QC PDF creation / rendition (e.g. `QC_Initiated` intake) | `QC Received` |
 | `reviewerRedlineUpdate` | Reviewer issued redlines / comment overlay update | `Redlines Issued` |
 | `designerCorrectionComplete` | Designer explicitly marked corrections complete | `Verification In Progress` |
 
-Configure targets in `qcWorkflow.stateAfterPrependByTrigger`. Unknown triggers fall back to `stateAfterSuccessfulPrepend` (`Ready for QC` by default).
+Configure targets in `qcWorkflow.stateAfterPrependByTrigger`. Unknown triggers fall back to `stateAfterSuccessfulPrepend` (`QC Received` by default).
 
 Explicit flags on job metadata (alternative to `prependTrigger` string): `reviewerRedlineUpdate=true`, `correctionComplete=true` / `designerCorrectionComplete=true`.
 

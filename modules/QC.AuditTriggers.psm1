@@ -127,7 +127,7 @@ function Test-QCShouldSuppressAuditSheetStateSync {
     <#
     .SYNOPSIS
     Skips sibling sheet sync for automation-originated DOCUMENT_STATE echoes (e.g. DGN after QC PDF was already aligned).
-    Allows sync when automation changed a *-qc.pdf (prepend set Ready for QC → propagate to siblings once).
+    Allows sync when automation changed a *-qc.pdf (prepend set QC Received → propagate to siblings once).
     #>
     [CmdletBinding()]
     param(
@@ -261,12 +261,14 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         $notif = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr `
             -Document $Document -DocumentName $DocumentName -DocumentGuid $DocumentGuid `
             -DocumentPath ($FolderPath + '\' + $DocumentName)
-        if ($transitionId -and $notif -and $notif.IsSuccess -and $notif.Data) {
+        if ($notif -is [System.Array]) { $notif = $notif[-1] }
+        $notifData = if ($notif -and $notif.Data -is [hashtable]) { $notif.Data } elseif ($notif -and $notif.Data) { _QCAT-ToHashtable $notif.Data } else { $null }
+        if ($transitionId -and $notif -and $notif.IsSuccess -and $notifData) {
             $nid = $null
-            if ($notif.Data.ContainsKey('dedupeKey')) { $nid = [string]$notif.Data.dedupeKey }
-            elseif ($notif.Data.dedupeKey) { $nid = [string]$notif.Data.dedupeKey }
+            if ($notifData.ContainsKey('dedupeKey')) { $nid = [string]$notifData['dedupeKey'] }
+            elseif ($notifData['dedupeKey']) { $nid = [string]$notifData['dedupeKey'] }
             $sent = $false
-            try { if ($notif.Data.success -eq $true) { $sent = $true } } catch { }
+            try { if ($notifData.success -eq $true) { $sent = $true } } catch { }
             if ($sent) {
                 Update-QCTransitionEventNotification -Config $Config -TransitionId $transitionId -NotificationSent $true -NotificationId $nid
             }

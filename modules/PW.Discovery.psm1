@@ -1201,6 +1201,35 @@ function Sync-PWAssociatedSheetWorkflowState {
         [void](Ensure-PWDiscoveryModuleLoaded)
     }
 
+    if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
+        try {
+            $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
+            Import-Module $procPath -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
+    $isPrependSource = ([string]$DocumentName -match '(?i)\.(dgn|pdf)$') -and ([string]$DocumentName -notmatch '(?i)-qc\.pdf$')
+    if ($isPrependSource -and (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
+        try {
+            Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
+                -TriggerDocumentGuid $DocumentGuid `
+                -TriggerDocumentName $DocumentName `
+                -FolderPath $FolderPath `
+                -CurrentStateName $canonicalState `
+                -DryRun:$DryRun `
+                -ChangedByUser $ChangedByUser `
+                -ChangedByUsername $ChangedByUsername | Out-Null
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
+                    documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+                    changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
+                    currentState = $canonicalState
+                } | Out-Null
+            }
+        }
+    }
+
     if (([string]$DocumentName -match '(?i)\.dgn$') -and (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
             Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
