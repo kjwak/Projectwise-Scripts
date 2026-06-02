@@ -1156,6 +1156,12 @@ function Sync-PWAssociatedSheetWorkflowState {
     $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
     if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
 
+    if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
     if (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue) {
         try {
             Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
