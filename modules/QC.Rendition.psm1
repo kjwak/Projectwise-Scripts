@@ -419,6 +419,11 @@ function Invoke-QCReadyForQcNotificationIfReady {
         [string]$FolderPath = ''
     )
 
+    $rendition = Get-QCRenditionSettings -Config $Config
+    if (-not [bool]$rendition.deferReadyForQcNotification) {
+        return New-QCSuccessResult -Code 'QC_READY_NOTIFICATION_NOT_DEFERRED' -Message 'Ready for QC notification is sent at prepend workflow state change; deferred rendition send skipped.' -Data @{ readinessKey = $ReadinessKey }
+    }
+
     $state = Get-QCReadinessState -Config $Config -ReadinessKey $ReadinessKey
     if ($state.readyNotificationSent) {
         return New-QCSuccessResult -Code 'QC_READY_NOTIFICATION_ALREADY_SENT' -Message 'Ready for QC notification already sent for this key.' -Data @{ readinessKey = $ReadinessKey }

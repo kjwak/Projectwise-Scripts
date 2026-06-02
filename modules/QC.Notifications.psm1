@@ -114,10 +114,22 @@ function Get-QCNotificationSettings {
             certificateThumbprint = ''
             certificatePath = ''
         }
+        email = @{
+            bodyFormat = 'Text'
+            templatePath = 'email/templates/qc_notification.html'
+            logoPath = 'email/typsalogo.png.webp'
+            environment = 'Production'
+            qcPdfUrlTemplate = ''
+            pwLinkBaseUrl = 'https://connect-projectwisewac.bentley.com/pwlink/'
+            pwLinkApp = 'pwe'
+        }
         attributes = @{
             reviewerEmailField = 'EM_Reviewer_Email'
             designerEmailField = 'EM_Designer_Email'
             ccEmailField = 'CcEmails'
+            qcPdfUrlField = ''
+            projectNumberField = ''
+            reviewTypeField = ''
         }
         events = @{
             'QC Received' = @{
@@ -158,7 +170,7 @@ function Get-QCNotificationSettings {
     $settings = @{}
     foreach ($k in $defaults.Keys) { $settings[$k] = $defaults[$k] }
     foreach ($k in $raw.Keys) {
-        if ($k -in @('dedupe','graph','attributes','events')) {
+        if ($k -in @('dedupe','graph','attributes','events','email')) {
             $merged = _QCN-ToHashtable $defaults[$k]
             $incoming = _QCN-ToHashtable $raw[$k]
             if ($incoming) {
@@ -199,7 +211,8 @@ function New-QCNotificationEvent {
         [string[]]$Designers = @(),
         [string[]]$Cc = @(),
         [string]$ActionRequired = '',
-        [string]$SourceJobId = ''
+        [string]$SourceJobId = '',
+        [string]$QcPdfUrl = ''
     )
 
     return @{
@@ -215,7 +228,127 @@ function New-QCNotificationEvent {
         cc = @($Cc)
         actionRequired = $ActionRequired
         sourceJobId = $SourceJobId
+        qcPdfUrl = $QcPdfUrl
     }
+}
+
+function _QCN-ResolveRepoPath([string]$Path) {
+    if (_QCN-IsBlank $Path) { return '' }
+    $p = [string]$Path
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
+    return (Join-Path (_QCN-GetRepoRoot) $p)
+}
+
+function _QCN-GetEncodedPwDatasource([string]$DatasourceName) {
+    if (_QCN-IsBlank $DatasourceName) { return '' }
+    $ds = [string]$DatasourceName.Trim()
+    $encoded = $ds.Replace(':', '~3A')
+    return 'Bentley.PW--' + $encoded
+}
+
+function Resolve-QCNotificationQcPdfUrl {
+    <#
+    .SYNOPSIS
+    Resolves an HTTPS URL to open the QC PDF in ProjectWise (web or Explorer link).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Event,
+        [hashtable]$Settings,
+        [object]$Document = $null,
+        [hashtable]$Config = $null
+    )
+
+    if ($Event.qcPdfUrl -and -not (_QCN-IsBlank $Event.qcPdfUrl)) {
+        return [string]$Event.qcPdfUrl.Trim()
+    }
+
+    $attrs = @{}
+    if ($Settings -and $Settings.attributes) {
+        $a = _QCN-ToHashtable $Settings.attributes
+        if ($a) { $attrs = $a }
+    }
+
+    if ($attrs.ContainsKey('qcPdfUrlField') -and -not (_QCN-IsBlank $attrs['qcPdfUrlField']) -and $Document) {
+        $fromAttr = _QCN-GetAttributeValue -Document $Document -AttributeName ([string]$attrs['qcPdfUrlField'])
+        if ($fromAttr -and -not (_QCN-IsBlank $fromAttr)) {
+            return [string]$fromAttr.Trim()
+        }
+    }
+
+    $docGuid = if ($Event.documentGuid) { [string]$Event.documentGuid.Trim() } else { '' }
+    if ($docGuid -and (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) {
+        try {
+            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($docGuid) -ErrorAction SilentlyContinue)
+            if ($docs.Count -gt 0) {
+                $doc = $docs[0]
+                foreach ($prop in @('ProjectWiseWebLink', 'projectWiseWebLink')) {
+                    try {
+                        if ($doc.PSObject.Properties[$prop] -and -not (_QCN-IsBlank $doc.$prop)) {
+                            return [string]$doc.$prop.Trim()
+                        }
+                    } catch { }
+                }
+            }
+        } catch { }
+    }
+
+    $emailCfg = @{}
+    if ($Settings -and $Settings.email) {
+        $e = _QCN-ToHashtable $Settings.email
+        if ($e) { $emailCfg = $e }
+    }
+
+    $template = if ($emailCfg.qcPdfUrlTemplate) { [string]$emailCfg.qcPdfUrlTemplate } else { '' }
+    if (-not (_QCN-IsBlank $template)) {
+        $tokens = @{
+            documentGuid = $docGuid
+            documentName = if ($Event.documentName) { [string]$Event.documentName } else { '' }
+            documentPath = if ($Event.documentPath) { [string]$Event.documentPath } else { '' }
+            project = if ($Event.project) { [string]$Event.project } else { '' }
+            currentState = if ($Event.currentState) { [string]$Event.currentState } else { '' }
+            eventType = if ($Event.eventType) { [string]$Event.eventType } else { '' }
+        }
+        $expanded = Expand-QCNotificationTemplate -Template $template -Tokens $tokens
+        if (-not (_QCN-IsBlank $expanded)) { return $expanded.Trim() }
+    }
+
+    $baseUrl = if ($emailCfg.pwLinkBaseUrl) { [string]$emailCfg.pwLinkBaseUrl } else { '' }
+    if (-not (_QCN-IsBlank $baseUrl) -and -not (_QCN-IsBlank $docGuid)) {
+        $datasourceName = ''
+        if ($Config -and $Config.projectWise) {
+            $pw = _QCN-ToHashtable $Config.projectWise
+            if ($pw) {
+                if ($pw.datasourceName) { $datasourceName = [string]$pw.datasourceName }
+                elseif ($pw.datasource) { $datasourceName = [string]$pw.datasource }
+            }
+        }
+        if (_QCN-IsBlank $datasourceName -and (Get-Command -Name 'Get-PWCurrentDatasource' -ErrorAction SilentlyContinue)) {
+            try { $datasourceName = [string](Get-PWCurrentDatasource) } catch { }
+        }
+        if (-not (_QCN-IsBlank $datasourceName)) {
+            $dsParam = _QCN-GetEncodedPwDatasource -DatasourceName $datasourceName
+            $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
+            $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
+            return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
+        }
+    }
+
+    return ''
+}
+
+function _QCN-UsesHtmlEmailBody([hashtable]$Settings, [hashtable]$EventCfg) {
+    $emailCfg = @{}
+    if ($Settings -and $Settings.email) {
+        $e = _QCN-ToHashtable $Settings.email
+        if ($e) { $emailCfg = $e }
+    }
+    $format = if ($emailCfg.bodyFormat) { ([string]$emailCfg.bodyFormat).Trim() } else { 'Text' }
+    if ($EventCfg -and $EventCfg.ContainsKey('emailTemplate') -and -not (_QCN-IsBlank $EventCfg.emailTemplate)) {
+        return $true
+    }
+    return ($format.Equals('Html', [StringComparison]::OrdinalIgnoreCase))
 }
 
 function Resolve-QCNotificationRecipients {
@@ -467,6 +600,73 @@ function Send-QCNotification {
         $Body = New-QCNotificationEmailBody -Event $Event
     }
 
+    $eventCfg = @{}
+    if ($Event._eventCfg) {
+        $ec = _QCN-ToHashtable $Event._eventCfg
+        if ($ec) { $eventCfg = $ec }
+    }
+
+    $htmlBody = ''
+    $bodyContentType = 'Text'
+    $logoPath = 'email/typsalogo.png.webp'
+    if (_QCN-UsesHtmlEmailBody -Settings $settings -EventCfg $eventCfg) {
+        $emailCfg = _QCN-ToHashtable $settings.email
+        if ($emailCfg) {
+            if ($emailCfg.logoPath) { $logoPath = [string]$emailCfg.logoPath }
+        }
+        if (-not (_QCN-IsBlank $Event.qcPdfUrl)) {
+            $qcUrl = [string]$Event.qcPdfUrl
+        }
+        else {
+            $qcUrl = Resolve-QCNotificationQcPdfUrl -Event $Event -Settings $settings -Document $Event._document -Config $Config
+            if (-not (_QCN-IsBlank $qcUrl)) { $Event['qcPdfUrl'] = $qcUrl }
+        }
+        if (_QCN-IsBlank $qcUrl) {
+            $result = @{
+                success = $false
+                skipped = $false
+                provider = [string]$settings.provider
+                dryRun = [bool]$settings.dryRun
+                eventType = $Event.eventType
+                documentName = $Event.documentName
+                to = @($To)
+                cc = @($Cc)
+                message = 'HTML notification requires QCPdfUrl; none could be resolved.'
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_MISSING_QC_PDF_URL' -Level 'Warning' -Message $result.message -Result $result -Event $Event
+            return New-QCFailureResult -Code 'QC_NOTIFICATION_MISSING_QC_PDF_URL' -Message $result.message -Data $result
+        }
+
+        $templatePath = 'email/templates/qc_notification.html'
+        if ($eventCfg -and $eventCfg.emailTemplate) { $templatePath = [string]$eventCfg.emailTemplate }
+        elseif ($emailCfg -and $emailCfg.templatePath) { $templatePath = [string]$emailCfg.templatePath }
+
+        $templateData = New-QCNotificationEmailTemplateData -Event $Event -EventCfg $eventCfg -Settings $settings `
+            -Document $Event._document -Subject $Subject
+        try {
+            $htmlBody = ConvertTo-QCEmailHtml -TemplatePath $templatePath -Data $templateData
+            $bodyContentType = 'HTML'
+            if (_QCN-IsBlank $Body) {
+                $Body = New-QCNotificationEmailBody -Event $Event
+            }
+        } catch {
+            $result = @{
+                success = $false
+                provider = [string]$settings.provider
+                dryRun = [bool]$settings.dryRun
+                eventType = $Event.eventType
+                documentName = $Event.documentName
+                to = @($To)
+                cc = @($Cc)
+                message = $_.Exception.Message
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_HTML_RENDER_FAILED' -Level 'Warning' -Message $result.message -Result $result -Event $Event
+            return New-QCFailureResult -Code 'QC_NOTIFICATION_HTML_RENDER_FAILED' -Message $result.message -Data $result
+        }
+    }
+
     $payload = @{
         eventType = $Event.eventType
         project = $Event.project
@@ -477,8 +677,12 @@ function Send-QCNotification {
         currentState = $Event.currentState
         actionRequired = $Event.actionRequired
         sourceJobId = $Event.sourceJobId
+        qcPdfUrl = $Event.qcPdfUrl
         subject = $Subject
         body = $Body
+        bodyContentType = $bodyContentType
+        htmlBody = $htmlBody
+        logoPath = $logoPath
         to = @($To)
         cc = @($Cc)
         reviewers = @($Event.reviewers)
@@ -514,12 +718,14 @@ function Send-QCNotification {
     $level = if ($sendResult.IsSuccess) { 'Information' } else { 'Warning' }
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
 
-    Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
-        -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
-        -FolderPath ([string]$Event.documentPath) `
-        -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
-        -Provider ([string]$provider) -Success $sendResult.IsSuccess `
-        -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null })
+    if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
+        Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
+            -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
+            -FolderPath ([string]$Event.documentPath) `
+            -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
+            -Provider ([string]$provider) -Success $sendResult.IsSuccess `
+            -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null })
+    }
 
     if ($sendResult.IsSuccess) { return New-QCSuccessResult -Code $code -Message $sendResult.Message -Data $result }
     return New-QCFailureResult -Code $code -Message $sendResult.Message -Data $result
@@ -669,6 +875,14 @@ function Invoke-QCNotificationForStateChange {
         eventType = $eventType
     }
     $subject = Expand-QCNotificationTemplate -Template ([string]$eventCfg.subjectTemplate) -Tokens $tokens
+
+    $qcUrl = Resolve-QCNotificationQcPdfUrl -Event $event -Settings $settings -Document $Document -Config $Config
+    if (-not (_QCN-IsBlank $qcUrl)) {
+        $event['qcPdfUrl'] = $qcUrl
+    }
+    $event['_eventCfg'] = $eventCfg
+    $event['_document'] = $Document
+
     $send = Send-QCNotification -Event $event -Config $Config -Subject $subject -To $resolved.to -Cc $resolved.cc
 
     $resultData = _QCN-ToHashtable $send.Data
@@ -685,5 +899,5 @@ function Invoke-QCNotificationForStateChange {
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+    Resolve-QCNotificationQcPdfUrl, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

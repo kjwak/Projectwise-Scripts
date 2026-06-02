@@ -71,9 +71,99 @@ function _QCNG-GraphRecipientList([string[]]$Addresses) {
     $list = @()
     foreach ($addr in @($Addresses)) {
         if (_QCNG-IsBlank $addr) { continue }
-        $list += @{ emailAddress = @{ address = [string]$addr.Trim() } }
+        $trimmed = [string]$addr.Trim()
+        if ($trimmed -notmatch '@') {
+            throw "Invalid email recipient (missing @): $trimmed"
+        }
+        $list += @{ emailAddress = @{ address = $trimmed } }
     }
     return @($list)
+}
+
+function _QCNG-ResolveRepoPath([string]$Path) {
+    if (_QCNG-IsBlank $Path) { return '' }
+    $p = [string]$Path
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
+    $root = $PSScriptRoot
+    if ($root -match '[\\/]modules$') { $root = Split-Path -Parent $root }
+    return (Join-Path $root $p)
+}
+
+function New-QCGraphEmailMessage {
+    <#
+    .SYNOPSIS
+    Builds a Microsoft Graph sendMail payload with HTML body and inline TYPSA logo attachment.
+    Returns the payload object without sending.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$ToRecipients,
+        [Parameter(Mandatory)]
+        [string]$Subject,
+        [Parameter(Mandatory)]
+        [string]$HtmlBody,
+        [Parameter(Mandatory)]
+        [string]$LogoPath,
+        [string[]]$CcRecipients = @(),
+        [string[]]$BccRecipients = @(),
+        [string]$ContentId = 'typsa-logo'
+    )
+
+    if (_QCNG-IsBlank $Subject) {
+        throw 'New-QCGraphEmailMessage: Subject is required.'
+    }
+    if (_QCNG-IsBlank $HtmlBody) {
+        throw 'New-QCGraphEmailMessage: HtmlBody is required.'
+    }
+
+    $to = @(_QCNG-GraphRecipientList -Addresses $ToRecipients)
+    if ($to.Count -eq 0) {
+        throw 'New-QCGraphEmailMessage: At least one To recipient is required.'
+    }
+
+    $resolvedLogo = _QCNG-ResolveRepoPath -Path $LogoPath
+    if (-not $resolvedLogo) { $resolvedLogo = $LogoPath }
+    if (-not (Test-Path -LiteralPath $resolvedLogo)) {
+        throw "New-QCGraphEmailMessage: Logo file not found: $resolvedLogo"
+    }
+
+    $logoBytes = [System.IO.File]::ReadAllBytes($resolvedLogo)
+    $logoBase64 = [Convert]::ToBase64String($logoBytes)
+    $logoFileName = [System.IO.Path]::GetFileName($resolvedLogo)
+    $logoContentType = 'image/webp'
+    if ($logoFileName -match '\.png$') { $logoContentType = 'image/png' }
+    elseif ($logoFileName -match '\.(jpe?g)$') { $logoContentType = 'image/jpeg' }
+    elseif ($logoFileName -match '\.gif$') { $logoContentType = 'image/gif' }
+
+    $message = @{
+        subject = [string]$Subject
+        body = @{
+            contentType = 'HTML'
+            content = [string]$HtmlBody
+        }
+        toRecipients = $to
+        attachments = @(
+            @{
+                '@odata.type' = '#microsoft.graph.fileAttachment'
+                name = $logoFileName
+                contentType = $logoContentType
+                contentId = [string]$ContentId
+                isInline = $true
+                contentBytes = $logoBase64
+            }
+        )
+    }
+
+    $cc = @(_QCNG-GraphRecipientList -Addresses $CcRecipients)
+    if ($cc.Count -gt 0) { $message['ccRecipients'] = $cc }
+    $bcc = @(_QCNG-GraphRecipientList -Addresses $BccRecipients)
+    if ($bcc.Count -gt 0) { $message['bccRecipients'] = $bcc }
+
+    return @{
+        message = $message
+        saveToSentItems = $true
+    }
 }
 
 function New-QCNotificationGraphSendMailBody {
@@ -196,7 +286,19 @@ function Send-QCNotificationGraph {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_GRAPH_NOT_CONFIGURED' -Message 'Microsoft Graph provider is not configured.' -Data $data
     }
 
-    $sendMailBody = New-QCNotificationGraphSendMailBody -Payload $Payload
+    $logoPath = ''
+    if ($Payload.logoPath) { $logoPath = [string]$Payload.logoPath }
+    if (_QCNG-IsBlank $logoPath) {
+        $logoPath = 'email/typsalogo.png.webp'
+    }
+
+    if ($Payload.htmlBody) {
+        $sendMailBody = New-QCGraphEmailMessage -ToRecipients @($Payload.to) -Subject ([string]$Payload.subject) `
+            -HtmlBody ([string]$Payload.htmlBody) -LogoPath $logoPath -CcRecipients @($Payload.cc)
+    }
+    else {
+        $sendMailBody = New-QCNotificationGraphSendMailBody -Payload $Payload
+    }
 
     if ($DryRun) {
         $data = $baseData.Clone()
@@ -230,4 +332,4 @@ function Send-QCNotificationGraph {
 }
 
 Export-ModuleMember -Function Test-QCNotificationGraphConfigured, New-QCNotificationGraphSendMailBody, `
-    Get-QCNotificationGraphAccessToken, Invoke-QCNotificationGraphSendMail, Send-QCNotificationGraph
+    New-QCGraphEmailMessage, Get-QCNotificationGraphAccessToken, Invoke-QCNotificationGraphSendMail, Send-QCNotificationGraph

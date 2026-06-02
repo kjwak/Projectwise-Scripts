@@ -1,0 +1,22 @@
+{
+  "NotificationTitle": "QC Received - D-101-qc.pdf",
+  "NotificationMessage": "Reviewer to begin QC review.",
+  "NotificationCategory": "QC Received",
+  "ProjectName": "CAFWY2200 - Example Highway Project",
+  "ProjectNumber": "CAFWY2200",
+  "DocumentName": "D-101-qc.pdf",
+  "ReviewType": "Peer Review",
+  "WorkflowState": "QC Received",
+  "AssignedTo": "reviewer@typsa.com",
+  "SubmittedBy": "designer@typsa.com",
+  "SubmittedDate": "2026-06-02T12:00:00.0000000Z",
+  "QCPdfUrl": "https://connect-projectwisewac.bentley.com/pwlink/?objectId=00000000-0000-0000-0000-000000000101&objectType=doc&datasource=Bentley.PW--Example~3ADatasource&app=pwe",
+  "Environment": "Test",
+  "GeneratedTimestamp": "2026-06-02T12:00:00.0000000Z",
+  "DatasourceName": "Example:pw",
+  "ProjectWiseProject": "CAFWY2200",
+  "DocumentGuid": "00000000-0000-0000-0000-000000000101",
+  "DocumentState": "QC Received",
+  "ReviewDueDate": "",
+  "ReviewerComments": ""
+}

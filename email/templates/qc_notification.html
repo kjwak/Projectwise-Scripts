@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{NotificationTitle}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Segoe UI,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f4f4f4;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;background-color:#ffffff;border:1px solid #e0e0e0;">
+          <!-- Header / logo -->
+          <tr>
+            <td style="padding:24px 28px 16px 28px;border-bottom:3px solid #bf1425;">
+              <img src="cid:typsa-logo" alt="TYPSA" width="160" style="display:block;border:0;outline:none;text-decoration:none;max-width:160px;height:auto;" />
+            </td>
+          </tr>
+          <!-- Category banner -->
+          <tr id="qc-banner-row" style="{NotificationCategoryBannerStyle}">
+            <td style="background-color:#bf1425;color:#ffffff;font-size:13px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;padding:10px 28px;">
+              {NotificationCategory}
+            </td>
+          </tr>
+          <!-- Title & message -->
+          <tr>
+            <td style="padding:28px 28px 8px 28px;">
+              <h1 style="margin:0 0 12px 0;font-size:22px;line-height:1.3;color:#222222;font-weight:600;">{NotificationTitle}</h1>
+              <p style="margin:0;font-size:15px;line-height:1.55;color:#222222;">{NotificationMessage}</p>
+            </td>
+          </tr>
+          <!-- Metadata -->
+          <tr>
+            <td style="padding:16px 28px 8px 28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:14px;line-height:1.5;color:#222222;">
+                <tr>
+                  <td width="38%" style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Project Name</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ProjectName}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Project Number</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ProjectNumber}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Document Name</td>
+                  <td style="padding:8px 0;vertical-align:top;">{DocumentName}</td>
+                </tr>
+                <tr style="{ReviewTypeRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Review Type</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ReviewType}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Workflow State</td>
+                  <td style="padding:8px 0;vertical-align:top;"><span style="display:inline-block;background-color:#f8e8ea;color:#bf1425;font-weight:600;padding:4px 10px;border-radius:3px;">{WorkflowState}</span></td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Assigned To</td>
+                  <td style="padding:8px 0;vertical-align:top;">{AssignedTo}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Submitted By</td>
+                  <td style="padding:8px 0;vertical-align:top;">{SubmittedBy}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Submitted Date</td>
+                  <td style="padding:8px 0;vertical-align:top;">{SubmittedDate}</td>
+                </tr>
+                <tr style="{DatasourceNameRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Datasource</td>
+                  <td style="padding:8px 0;vertical-align:top;">{DatasourceName}</td>
+                </tr>
+                <tr style="{ProjectWiseProjectRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">ProjectWise Project</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ProjectWiseProject}</td>
+                </tr>
+                <tr style="{DocumentGuidRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Document GUID</td>
+                  <td style="padding:8px 0;vertical-align:top;font-family:Consolas,monospace;font-size:12px;">{DocumentGuid}</td>
+                </tr>
+                <tr style="{DocumentStateRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Document State</td>
+                  <td style="padding:8px 0;vertical-align:top;">{DocumentState}</td>
+                </tr>
+                <tr style="{ReviewDueDateRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Review Due Date</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ReviewDueDate}</td>
+                </tr>
+                <tr style="{ReviewerCommentsRowStyle}">
+                  <td style="padding:8px 12px 8px 0;font-weight:600;color:#666666;vertical-align:top;">Reviewer Comments</td>
+                  <td style="padding:8px 0;vertical-align:top;">{ReviewerComments}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Primary CTA -->
+          <tr>
+            <td align="center" style="padding:24px 28px 8px 28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" bgcolor="#bf1425" style="border-radius:4px;background-color:#bf1425;">
+                    <a href="{QCPdfUrl}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:4px;">Open QC PDF</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Fallback link -->
+          <tr>
+            <td align="center" style="padding:8px 28px 28px 28px;">
+              <p style="margin:0 0 6px 0;font-size:12px;color:#666666;">If the button does not work, copy this link:</p>
+              <p style="margin:0;font-size:12px;line-height:1.4;word-break:break-all;">
+                <a href="{QCPdfUrl}" style="color:#bf1425;text-decoration:underline;">{QCPdfUrl}</a>
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding:20px 28px;background-color:#fafafa;border-top:1px solid #eeeeee;">
+              <p style="margin:0 0 8px 0;font-size:12px;line-height:1.5;color:#666666;">
+                This email was generated automatically by the TYPSA ProjectWise QC Workflow system.
+              </p>
+              <p style="margin:0;font-size:11px;color:#666666;">
+                Generated: {GeneratedTimestamp}
+                <span style="{EnvironmentBadgeStyle}"> &nbsp;|&nbsp; {Environment}</span>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

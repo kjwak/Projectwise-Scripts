@@ -165,7 +165,7 @@ After a successful `QC_PREPEND` that sets workflow state to **Ready for QC**, th
 | Key | Description |
 |-----|-------------|
 | `enabled` | Master switch (default `false` in repo `appsettings.json`). |
-| `deferReadyForQcNotification` | When true, `READY_FOR_QC` email waits until prepend **and** rendition complete. |
+| `deferReadyForQcNotification` | `false` (default): **Ready for QC** email when prepend sets workflow state. `true`: wait until prepend **and** rendition complete. |
 | `readinessStorePath` | JSON files tracking `prependComplete` / `renditionComplete` per document. |
 | `deriveSourceFromQcPdf` | `sheet001-qc.pdf` → source `sheet001.dgn`. |
 | `completion.mode` | `outputFolder` polls `outputFolderPath` or `outputFolderRelative`; `immediate` / `submitOnly` mark complete after `New-PWRenditionRequest`. |
@@ -356,8 +356,29 @@ Tables: `poll_runs`, `sheet_index`, `audit_events`, etc. — `docs/database-tele
 
 | Key | Description |
 |-----|-------------|
-| `provider` | `Mock` (log only) or `Graph` (Microsoft 365). |
-| `events` | Keyed by PW workflow state name; templates and recipients. |
+| `enabled` | Master switch for workflow emails. |
+| `provider` | `Mock` (log only) or `MicrosoftGraph`. |
+| `dryRun` | When true, Graph builds payload but does not call `sendMail`. |
+| `events` | Keyed by PW workflow state name; subject templates and recipients. |
+| `attributes` | PW column names for reviewer/designer/cc emails; optional `qcPdfUrlField`, `projectNumberField`, `reviewTypeField`. |
+
+### notifications.email
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `bodyFormat` | `Html` | `Text` = plain body only; `Html` uses `email/templates/qc_notification.html`. |
+| `templatePath` | `email/templates/qc_notification.html` | Repo-relative HTML template. |
+| `logoPath` | `email/typsalogo.png.webp` | Inline attachment for Graph HTML sends. |
+| `environment` | `Production` | Shown in email footer when set. |
+| `qcPdfUrlTemplate` | `""` | Optional URL pattern with `{documentGuid}`, etc. |
+| `pwLinkBaseUrl` | Bentley CONNECT pwlink base | Used to build link when GUID known. |
+| `pwLinkApp` | `pwe` | `pwe`, `web`, or `webview` query parameter. |
+
+Per-event override: `notifications.events.<State>.emailTemplate` (alternate HTML file).
+
+### notifications.graph (secrets)
+
+Store in `appsettings.secrets.json`: `tenantId`, `clientId`, `clientSecret`, `senderMailbox`.
 
 ---
 

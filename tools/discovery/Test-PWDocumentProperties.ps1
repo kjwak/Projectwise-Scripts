@@ -48,8 +48,18 @@ foreach ($p in $props) {
     }
 }
 
-# 2. Check specific state-related properties
-Write-Host "`n[2] State-related properties:" -ForegroundColor Yellow
+# 2. Link-related properties (for QC email QCPdfUrl resolution)
+Write-Host "`n[2] Link-related properties:" -ForegroundColor Yellow
+foreach ($name in @('DocumentGUID', 'DocumentGuid', 'DocumentURN', 'ProjectURN', 'ProjectWiseWebLink', 'projectWiseWebLink')) {
+    $v = $null
+    try { if ($doc.PSObject.Properties[$name]) { $v = $doc.$name } } catch { }
+    $display = if ($v) { [string]$v } else { '(null)' }
+    $color = if ($v) { 'Green' } else { 'DarkGray' }
+    Write-Host "    $name = $display" -ForegroundColor $color
+}
+
+# 3. Check specific state-related properties
+Write-Host "`n[3] State-related properties:" -ForegroundColor Yellow
 foreach ($name in @('StateName','State','StateId','WorkflowName','Workflow','o_stateno','StatusName','DocumentState')) {
     $v = $null
     try { if ($doc.PSObject.Properties[$name]) { $v = $doc.$name } } catch { }
@@ -58,8 +68,8 @@ foreach ($name in @('StateName','State','StateId','WorkflowName','Workflow','o_s
     Write-Host "    $name = $display" -ForegroundColor $color
 }
 
-# 3. Check if Get-PWRichProperties exists
-Write-Host "`n[3] Get-PWRichProperties:" -ForegroundColor Yellow
+# 4. Check if Get-PWRichProperties exists
+Write-Host "`n[4] Get-PWRichProperties:" -ForegroundColor Yellow
 $richCmd = Get-Command -Name 'Get-PWRichProperties' -ErrorAction SilentlyContinue
 if ($richCmd) {
     Write-Host "  Cmdlet EXISTS" -ForegroundColor Green
@@ -80,15 +90,15 @@ if ($richCmd) {
     Write-Host "  Cmdlet NOT FOUND" -ForegroundColor Red
 }
 
-# 4. Check other attribute-related cmdlets
-Write-Host "`n[4] Available PW attribute cmdlets:" -ForegroundColor Yellow
+# 5. Check other attribute-related cmdlets
+Write-Host "`n[5] Available PW attribute cmdlets:" -ForegroundColor Yellow
 $attrCmds = @(Get-Command -Name '*PW*Attribute*','*PW*Rich*','*PW*Env*','*PW*Property*' -ErrorAction SilentlyContinue | Sort-Object Name)
 foreach ($c in $attrCmds) {
     Write-Host "    $($c.Name) ($($c.CommandType))" -ForegroundColor Cyan
 }
 
-# 5. Try to find email attributes via SQL (environment tables)
-Write-Host "`n[5] Searching for EM_Designer_Email via PW SQL:" -ForegroundColor Yellow
+# 6. Try to find email attributes via SQL (environment tables)
+Write-Host "`n[6] Searching for EM_Designer_Email via PW SQL:" -ForegroundColor Yellow
 $docNo = $null
 try { $docNo = $doc.DocumentID } catch { }
 if (-not $docNo) { try { $docNo = $doc.o_docno } catch { } }
@@ -143,8 +153,8 @@ if ($docNo) {
     Write-Host "  Could not determine DocumentID" -ForegroundColor Red
 }
 
-# 6. Check document state via SQL
-Write-Host "`n[6] Document state via SQL:" -ForegroundColor Yellow
+# 7. Check document state via SQL
+Write-Host "`n[7] Document state via SQL:" -ForegroundColor Yellow
 if ($docNo) {
     try {
         $stateSql = "SELECT d.o_stateno, s.o_statename FROM dms_doc d LEFT JOIN dms_stat s ON d.o_stateno = s.o_stateno WHERE d.o_docno = $docNo"

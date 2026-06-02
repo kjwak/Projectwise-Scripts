@@ -103,9 +103,9 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - See `docs/qc-comment-status-sync.md`.
 
 ### `QC.Notifications.psm1`
-- **Purpose**: configurable QC workflow email notifications (Mock provider + Microsoft Graph stub).
-- **Exports**: `Invoke-QCNotificationForStateChange`, `Send-QCNotification`, `Resolve-QCNotificationRecipients`, and related helpers.
-- **Related**: `QC.NotificationTemplates.psm1`, `QC.NotificationMock.psm1`, `QC.NotificationGraph.psm1`. See `docs/qc-notifications.md`.
+- **Purpose**: configurable QC workflow email notifications (Mock + Microsoft Graph).
+- **Exports**: `Invoke-QCNotificationForStateChange`, `Send-QCNotification`, `Resolve-QCNotificationRecipients`, `Resolve-QCNotificationQcPdfUrl`, and related helpers.
+- **Related**: `QC.NotificationTemplates.psm1` (`ConvertTo-QCEmailHtml`), `QC.NotificationMock.psm1`, `QC.NotificationGraph.psm1` (`New-QCGraphEmailMessage`). See `docs/qc-notifications.md`.
 
 ### `QC.Worker.psm1`
 - **Purpose**: reusable worker retry/transition policy.
