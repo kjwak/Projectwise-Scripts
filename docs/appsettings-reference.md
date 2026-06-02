@@ -10,8 +10,11 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 | `-AppSettingsPath` | Override path on `Watch-QCTrigger.ps1`, `Start-QCPipelineDashboard.ps1`, etc. |
 | `-DryRun` (CLI) | Forces `dryRun: true` even when JSON says false. |
 | `$schema` in JSON | IDE only; ignored at runtime. |
+| Profile merge | `appsettings.test.json` loads `appsettings.json` then the profile then `appsettings.test.local.json`. `appsettings.json` also merges `appsettings.local.json`. |
 
-Optional: keep a **local override** copy (e.g. `appsettings.local.json`) and pass `-AppSettingsPath` — do not commit secrets.
+**Testing / local overlays:** see [`docs/testing-config.md`](testing-config.md). Copy `appsettings.test.json.example` → `appsettings.test.json` (gitignored).
+
+Optional: keep **machine-only** secrets in `appsettings.local.json` or `appsettings.test.local.json` — do not commit them.
 
 ## Section map
 
@@ -287,8 +290,12 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
 | `reconcileEveryNCycles` | 100 | Full folder scan every N watcher passes; reconciles `sheet_index` EM/QC attributes for paired sheets. |
-| `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events (e.g. `DOCUMENT_MODIFY`), re-read description for `QC_Archivist` and enqueue `QC_PREPEND` when matched. |
+| `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events (includes `DOCUMENT_ATTR`), re-read description for `QC_Archivist` and enqueue `QC_PREPEND` when matched. |
+| `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on `*-qc.pdf`. |
+| `workflowTriggers.recordFromProcessor` | true | Also record state/attribute changes from `QC_PREPEND` and `QC_COMMENT_STATUS_SYNC` processors. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |
+
+Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf` for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`).
 
 See `docs/hybrid-polling.md`.
 

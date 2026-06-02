@@ -1690,6 +1690,140 @@ VALUES
     }
 }
 
+function Write-QCDocumentStateHistoryRow {
+    <#
+    .SYNOPSIS
+    Inserts one row into document_state_history (fire-and-forget).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$EventType,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$OldValue = '',
+        [string]$NewValue = '',
+        [string]$FieldName = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [Nullable[long]]$SourceAuditId = $null
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'STATE_HISTORY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'STATE_HISTORY_PLANNED' -Message 'Dry-run: state history not written.' -Data @{ written = $false; planned = $true }
+    }
+    try {
+        $sql = @"
+INSERT INTO document_state_history
+    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user)
+VALUES
+    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser)
+"@
+        $params = @{
+            documentGuid  = $DocumentGuid
+            documentName  = if ($DocumentName) { $DocumentName } else { $null }
+            folderPath    = if ($FolderPath) { $FolderPath } else { $null }
+            eventType     = $EventType
+            sourceAuditId = if ($null -ne $SourceAuditId) { $SourceAuditId } else { $null }
+            oldValue      = if ($OldValue) { $OldValue } else { $null }
+            newValue      = if ($NewValue) { $NewValue } else { $null }
+            fieldName     = if ($FieldName) { $FieldName } else { $null }
+            changedByUser = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'STATE_HISTORY_WRITE_FAILED' -Message $dbRes.Message -Data @{ written = $false }
+        }
+        return New-QCSuccessResult -Code 'STATE_HISTORY_WRITTEN' -Message 'document_state_history row inserted.' -Data @{ written = $true }
+    } catch {
+        return New-QCErrorResult -Code 'STATE_HISTORY_EXCEPTION' -Message $_.Exception.Message -Data @{ written = $false }
+    }
+}
+
+function Write-QCTransitionEvent {
+    <#
+    .SYNOPSIS
+    Inserts a business-level transition_events row and returns the new id when possible.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$TransitionType,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$FromValue = '',
+        [string]$ToValue = '',
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [Nullable[long]]$TriggerAuditId = $null
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'TRANSITION_EVENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; transitionId = $null }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'TRANSITION_EVENT_PLANNED' -Message 'Dry-run: transition event not written.' -Data @{ written = $false; planned = $true; transitionId = $null }
+    }
+    try {
+        $sql = @"
+INSERT INTO transition_events
+    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type)
+OUTPUT INSERTED.id
+VALUES
+    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType)
+"@
+        $params = @{
+            documentGuid   = $DocumentGuid
+            documentName   = if ($DocumentName) { $DocumentName } else { $null }
+            folderPath     = if ($FolderPath) { $FolderPath } else { $null }
+            transitionType = $TransitionType
+            fromValue      = if ($FromValue) { $FromValue } else { $null }
+            toValue        = if ($ToValue) { $ToValue } else { $null }
+            triggerAuditId = if ($null -ne $TriggerAuditId) { $TriggerAuditId } else { $null }
+            jobId          = if ($JobId) { $JobId } else { $null }
+            jobType        = if ($JobType) { $JobType } else { $null }
+        }
+        $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
+        $transitionId = $null
+        if ($dbRes.IsSuccess -and $null -ne $dbRes.Data.value) {
+            try { $transitionId = [int]$dbRes.Data.value } catch { $transitionId = $null }
+        }
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'TRANSITION_EVENT_WRITE_FAILED' -Message $dbRes.Message -Data @{ written = $false; transitionId = $null }
+        }
+        return New-QCSuccessResult -Code 'TRANSITION_EVENT_WRITTEN' -Message 'transition_events row inserted.' -Data @{ written = $true; transitionId = $transitionId }
+    } catch {
+        return New-QCErrorResult -Code 'TRANSITION_EVENT_EXCEPTION' -Message $_.Exception.Message -Data @{ written = $false; transitionId = $null }
+    }
+}
+
+function Update-QCTransitionEventNotification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][int]$TransitionId,
+        [bool]$NotificationSent = $true,
+        [string]$NotificationId = ''
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) { return }
+    try {
+        $sql = @"
+UPDATE transition_events
+SET notification_sent = @sent, notification_id = @notificationId
+WHERE id = @id
+"@
+        $params = @{
+            id = $TransitionId
+            sent = if ($NotificationSent) { 1 } else { 0 }
+            notificationId = if ($NotificationId) { $NotificationId } else { $null }
+        }
+        Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params | Out-Null
+    } catch { }
+}
+
 function Write-QCNotificationTelemetry {
     <#
     .SYNOPSIS
@@ -2035,4 +2169,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory

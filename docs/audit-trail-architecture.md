@@ -1,24 +1,33 @@
 # ProjectWise Audit Trail Architecture — From Directory Polling to Event-Driven Processing
 
-## Implementation Status (May 2026)
+## Implementation Status (June 2026)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 1: Instrument and Observe | **Complete** | `Test-AuditEventIngestion.ps1` validated audit coverage |
 | Phase 2: Audit-Primary with Directory Fallback | **Operational** | `PW.AuditPoller.psm1` + hybrid mode in `Watch-QCTrigger.ps1` |
-| Phase 3: Database-Backed Dashboard | **In Progress** | SQL Server (not SQLite) telemetry layer operational; Power BI connected |
-| Phase 4: Optimize and Scale | Not started | — |
+| Phase 3: Database-Backed Dashboard | **Operational** | SQL Server telemetry, `audit_events`, `sheet_index`, `poll_runs`; Power BI connected |
+| Phase 3b: Workflow / attribute audit triggers | **Operational** | `QC.AuditTriggers.psm1` + `Sync-PW*` in `PW.Discovery.psm1` |
+| Phase 4: Optimize and Scale | Ongoing | Tune reconciliation interval, audit retention monitoring |
 
-Key implementation differences from the original proposal below:
+**Read this document as design history and rationale.** For day-to-day operation, prefer:
 
-- **SQL Server 2025 Express** is used instead of SQLite (on `localhost\SQLEXPRESS`, database `QC_Pipeline`).
-- **`PW.AuditPoller.psm1`** is a single module (not `PW.AuditPoller.psm1` + `PW.AuditPoller.Schema.psm1`).
-- **Schema management** lives in `Core.Database.psm1`, not a separate schema module.
-- **Watermark** is stored in the `poll_runs` database table, not a JSON file.
-- **Reconciliation** runs every 20 watcher ticks (configurable), not on a fixed hour interval.
-- **`sheet_index`** table was added (schema v1.1.0) for project status tracking.
+- `docs/hybrid-polling.md` — watcher modes, audit actions, job triggers
+- `docs/database-telemetry.md` — SQL schema and write APIs
+- `docs/qc-notifications.md` — email notifications (Mock / future Graph)
 
-For the current operational architecture, see `docs/hybrid-polling.md` and `docs/database-telemetry.md`.
+Key differences from the original proposal below:
+
+| Topic | Original doc | As built |
+|-------|--------------|----------|
+| Database | SQLite | **SQL Server 2025 Express** (`QC_Pipeline` on `localhost\SQLEXPRESS`) |
+| Poller modules | `PW.AuditPoller` + `PW.AuditPoller.Schema` | Single **`PW.AuditPoller.psm1`**; schema in **`Core.Database.psm1`** |
+| Watermark | `poll_state.json` only | **`queue/_watcher/audit-capture-watermark.txt`** + optional `poll_runs.watermark_after` when file exists |
+| Reconciliation | Fixed 6–24 h interval | Every **`auditPoller.reconcileEveryNCycles`** ticks (default 100 in prod `appsettings.json`) |
+| QC workflow state (`1012`) | “Not yet implemented” | **`Sync-PWAssociatedSheetWorkflowState`** + history / notifications via **`QC.AuditTriggers`** |
+| QC attribute change (`1003`) | “Not yet implemented” | **`Sync-PWSheetIndexOwnership`** + **`Invoke-QCAuditWorkflowAttributeChangeTriggers`** |
+| `document_state_history` / `transition_events` | Proposed only | Written on **audit** triggers and **`recordFromProcessor`** (QC_PREPEND / comment sync) |
+| Notifications from audit | Future | **`Invoke-QCNotificationForStateChange`** on `*-qc.pdf` when `notifications.enabled` + `workflowTriggers.notifyOnStateChange` |
 
 ---
 
@@ -166,8 +175,9 @@ The `dms_audt` table can be queried directly using `Select-PWSQL`. This is the m
 |---|---|---|
 | QC_PREPEND (description tag) | Scan all docs → find `QC_Archivist` in description | `DOCUMENT_MODIFY (1002)` or `DOCUMENT_ATTR (1003)` on the doc |
 | STATUS_SET_GEN (folder change) | Scan all docs → hash folder state → compare manifest | `DOCUMENT_CIN (1007)`, `DOCUMENT_CREATE (1001)`, `DOCUMENT_DELETE (1020)`, `DOCUMENT_VERSION (1015)`, `DOCUMENT_FILE_REP (1006)` on any doc in the folder |
-| QC workflow state change | Not yet implemented (future) | `DOCUMENT_STATE (1012)` |
-| QC attribute change | Not yet implemented (future) | `DOCUMENT_ATTR (1003)` |
+| QC workflow state change | `Sync-PWAssociatedSheetWorkflowState`; `document_state_history`; optional email on `*-qc.pdf` | `DOCUMENT_STATE (1012)` |
+| QC attribute / ownership change | `Sync-PWSheetIndexOwnership`; per-field `ATTR_CHANGE` history | `DOCUMENT_ATTR (1003)` |
+| QC email notification | `Invoke-QCNotificationForStateChange` (requires `notifications.enabled`) | `DOCUMENT_STATE` on `*-qc.pdf` |
 
 ### 3.5 Key Capabilities and Limitations
 
@@ -198,7 +208,7 @@ The `dms_audt` table can be queried directly using `Select-PWSQL`. This is the m
 │                  PW.AuditPoller (new module)                           │
 │                                                                        │
 │  Every N seconds (configurable, default 60s):                          │
-│    1. Read watermark from poll_state.json                              │
+│    1. Read watermark from audit-capture-watermark.txt (+ poll_runs)     │
 │    2. SELECT from dms_audt WHERE o_acttime > @watermark                │
 │       AND o_action IN (1001,1002,1003,1006,1007,1012,1015,1020)       │
 │       AND o_objtype = 2                                                │
@@ -226,7 +236,7 @@ The `dms_audt` table can be queried directly using `Select-PWSQL`. This is the m
           │
           ▼ (future addition)
 ┌────────────────────────────────────────────────────────────────────────┐
-│              Event Log Database (SQLite or future RDBMS)              │
+│              Event Log Database (SQL Server QC_Pipeline)                │
 │                                                                        │
 │  audit_events          — raw audit trail records                      │
 │  document_activity     — enriched per-document activity               │
@@ -391,21 +401,24 @@ This replaces scanning all documents in a folder (potentially hundreds) with a t
 
 ## 5. Proposed Module Structure
 
-### 5.1 New Module: `PW.AuditPoller.psm1`
+### 5.1 Modules (as built)
 
 ```
 modules/
-├── PW.AuditPoller.psm1          # New: audit trail polling and event classification
-├── PW.AuditPoller.Schema.psm1   # New: database schema management (SQLite)
-├── PW.Connection.psm1           # Existing: add Select-PWSQL wrapper
-├── PW.Discovery.psm1            # Existing: unchanged (used by reconciliation)
-├── QC.Filters.psm1              # Existing: unchanged
-├── QC.Triggers.psm1             # Existing: unchanged
-├── QC.JobFactory.psm1           # Existing: unchanged
-├── QC.Queue.Json.psm1           # Existing: unchanged
-├── QC.Processors.psm1           # Existing: unchanged
-└── Orchestrator.Pipeline.psm1   # Existing: add Invoke-QCAuditPollTick
+├── PW.AuditPoller.psm1          # dms_audt query, GUID resolution, watch-root matching
+├── Core.Database.psm1         # SQL Server schema + telemetry writes
+├── PW.Discovery.psm1            # Sync-PWSheetIndexOwnership, Sync-PWAssociatedSheetWorkflowState
+├── QC.AuditTriggers.psm1        # document_state_history, transition_events, audit notifications
+├── QC.WatcherOrchestration.psm1 # Get-QCPrependAuditActions, reconciliation plan
+├── QC.Filters.psm1              # Unchanged — trigger-source-agnostic
+├── QC.Triggers.psm1             # Unchanged
+├── QC.JobFactory.psm1           # Unchanged
+├── QC.Queue.Json.psm1           # Unchanged
+├── QC.Processors.psm1           # Unchanged
+└── QC.Notifications.psm1        # Invoke-QCNotificationForStateChange
 ```
+
+Integration lives in **`Watch-QCTrigger.ps1`** (not a separate `Orchestrator.Pipeline` poll tick).
 
 ### 5.2 Exports from `PW.AuditPoller.psm1`
 
@@ -433,40 +446,47 @@ Compare-QCAuditVsDirectoryScan  # Diff detected events vs full scan results
 
 ```jsonc
 {
+  "watcher": { "mode": "audit_only" },
   "auditPoller": {
     "enabled": true,
-    "pollIntervalSeconds": 60,
-    "maxEventsPerPoll": 500,
-    "lookbackOnStartupHours": 2,
-    "relevantDocumentActions": [1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020],
-    "relevantFolderActions": [1, 3, 4, 5],
-    "coalesceWindowSeconds": 30,
-    "stateFilePath": "C:\\QC_E2E_RealRun\\audit_poller\\poll_state.json",
-    "eventLogPath": "C:\\QC_E2E_RealRun\\audit_poller\\events",
-    "reconciliation": {
+    "lookbackSeconds": 120,
+    "initialLookbackSeconds": 14400,
+    "pageSize": 500,
+    "maxPagesPerPoll": 100,
+    "reconcileEveryNCycles": 100,
+    "fallbackToFullScan": false,
+    "qcPrependAuditActions": ["DOCUMENT_MODIFY", "DOCUMENT_ATTR", "DOCUMENT_CIN", "DOCUMENT_FILE_REP", "DOCUMENT_VERSION", "DOCUMENT_CREATE"],
+    "workflowTriggers": {
       "enabled": true,
-      "intervalHours": 12,
-      "fullScanOnStartup": true
-    },
-    "database": {
-      "enabled": false,
-      "provider": "SQLite",
-      "connectionString": "Data Source=C:\\QC_E2E_RealRun\\audit_poller\\qc_events.sqlite"
-    },
-    "performance": {
-      "folderGuidCacheMaxEntries": 1000,
-      "folderGuidCacheTtlMinutes": 60,
-      "skipSecondaryAuditTrail": true
+      "recordStateHistory": true,
+      "recordAttributeHistory": true,
+      "recordTransitions": true,
+      "recordFromProcessor": true,
+      "notifyOnStateChange": true,
+      "qcPdfNotificationsOnly": true
     }
+  },
+  "database": {
+    "enabled": true,
+    "provider": "SqlServer",
+    "connectionString": "Server=localhost\\SQLEXPRESS;Database=QC_Pipeline;..."
+  },
+  "notifications": {
+    "enabled": false,
+    "provider": "Mock"
   }
 }
 ```
+
+See `docs/appsettings-reference.md` and production `appsettings.json` for full keys.
 
 ---
 
 ## 6. Proposed Database Schema
 
-### 6.1 SQLite Schema (Phase 1)
+### 6.1 Original SQLite Schema (Phase 1 proposal)
+
+**Implemented in SQL Server** — same logical tables with SQL Server types. See `Core.Database.psm1` and `docs/database-telemetry.md`.
 
 ```sql
 -- Raw audit events captured from dms_audt
@@ -922,7 +942,7 @@ $attrs | Format-Table -AutoSize
 
 4. **Start with Phase 1 (observe-only)**: Run audit poller alongside existing watcher for 1-2 weeks to build confidence in audit coverage and latency.
 
-5. **Introduce SQLite event database**: Low-friction, embedded, no additional infrastructure. Sufficient for Phase 1-3; migrate to SQL Server/PostgreSQL only if needed.
+5. **SQL Server telemetry** (adopted): `audit_events`, `document_state_history`, `transition_events`, and `poll_runs` are populated during audit polling and workflow triggers. The JSON queue remains the execution source of truth.
 
 6. **Don't eliminate directory scanning entirely**: Keep as reconciliation at reduced frequency (every 6-24 hours vs. every tick).
 

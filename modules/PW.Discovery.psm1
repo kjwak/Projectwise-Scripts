@@ -2,6 +2,7 @@
 # Responsibility: Read-only ProjectWise watch-path resolution and candidate discovery.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 function Resolve-WatchPaths {
     <#
@@ -1180,6 +1181,12 @@ WHERE document_guid = @docGuid
             continue
         }
 
+        if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
+            Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
+                -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
+                -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' | Out-Null
+        }
+
         $change = @{
             documentGuid = $dg
             documentName = $dn
@@ -1344,6 +1351,31 @@ WHERE document_guid = @docGuid
         -DesignerEmail $pwDesigner -ReviewerEmail $pwReviewer -CheckerEmail $pwChecker `
         -QcReviewType $pwReviewType -QcAssignedTo $pwAssignedTo -QcStatus $pwQcStatus `
         -PwStateName $pwState -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise
+
+    if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
+        if ($stateDiffers) {
+            Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
+                -DocumentName $DocumentName -FolderPath $FolderPath -PreviousState $dbState -CurrentState $pwState `
+                -PwAttributes $read.attributes -AuditActionName $AuditActionName | Out-Null
+        }
+    }
+    if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {
+        $fieldChanges = @{}
+        if ($emailsDiffer) {
+            $fieldChanges['designer_email'] = @{ oldValue = $dbDesigner; newValue = $pwDesigner }
+            $fieldChanges['reviewer_email'] = @{ oldValue = $dbReviewer; newValue = $pwReviewer }
+        }
+        if ($qcFieldsDiffer) {
+            $fieldChanges['checker_email'] = @{ oldValue = $dbChecker; newValue = $pwChecker }
+            $fieldChanges['qc_review_type'] = @{ oldValue = $dbReviewType; newValue = $pwReviewType }
+            $fieldChanges['qc_assigned_to'] = @{ oldValue = $dbAssignedTo; newValue = $pwAssignedTo }
+            $fieldChanges['qc_status'] = @{ oldValue = $dbQcStatus; newValue = $pwQcStatus }
+        }
+        if ($fieldChanges.Count -gt 0) {
+            Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
+                -DocumentName $DocumentName -FolderPath $FolderPath -FieldChanges $fieldChanges | Out-Null
+        }
+    }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_INDEX_SYNC' -Message 'sheet_index synced from ProjectWise.' -Data @{

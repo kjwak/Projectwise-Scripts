@@ -117,8 +117,12 @@ Enriched per-document summary, upserted on each event. Keyed by `document_guid` 
 ### `document_state_history`
 Time-series of state and attribute changes per document. Used by `v_qc_cycle_aging` for QC duration tracking.
 
+**Population:** `Write-QCDocumentStateHistoryRow` from `QC.AuditTriggers.psm1` when audit `DOCUMENT_STATE` or `DOCUMENT_ATTR` events produce real diffs (see `auditPoller.workflowTriggers`).
+
 ### `transition_events`
-Business-level events (QC stage changes, check-ins). Links to `audit_events` and `processing_jobs`.
+Business-level events (QC stage changes, attribute changes). Links to notifications via `notification_log.transition_id`.
+
+**Population:** `Write-QCTransitionEvent` from audit workflow triggers; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on `*-qc.pdf`.
 
 ### `poll_runs`
 Operational health of the audit poller. One row per watcher tick.
@@ -206,6 +210,11 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCJobTelemetry` | `Run-QCProcessor.ps1` | Record job outcome with duration |
 | `Write-QCPollRunTelemetry` | `Watch-QCTrigger.ps1` | Record poll cycle metrics |
 | `Write-QCNotificationTelemetry` | `QC.Notifications.psm1` | Record sent notifications |
+| `Write-QCDocumentStateHistoryRow` | `QC.AuditTriggers.psm1` | State/attribute change time-series |
+| `Write-QCTransitionEvent` | `QC.AuditTriggers.psm1` | Business-level transition row |
+| `Update-QCTransitionEventNotification` | `QC.AuditTriggers.psm1` | Mark transition after email sent |
+| `Invoke-QCProcessorWorkflowStateTelemetry` | `QC.Workflow.psm1`, `QC.CommentStatusProcessor.psm1` | Processor state writes (no duplicate email) |
+| `Invoke-QCProcessorWorkflowAttributeTelemetry` | `QC.Workflow.psm1` | Processor attribute writeback rows |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
 | `Sync-PWAssociatedSheetWorkflowState` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_STATE`, set associated DGN, sheet PDF, and `*-qc.pdf` to the same workflow state as the changed document |
 | `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values) |

@@ -116,6 +116,7 @@ function Get-QCPrependAuditActions {
 
     $defaults = @(
         'DOCUMENT_MODIFY'
+        'DOCUMENT_ATTR'
         'DOCUMENT_CIN'
         'DOCUMENT_FILE_REP'
         'DOCUMENT_VERSION'

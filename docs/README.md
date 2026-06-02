@@ -27,6 +27,7 @@ If you're looking for "how the pipeline works", start at:
 
 ## Engineering
 
+- `testing-config.md` - test profile (`appsettings.test.json`), SQL test DB, and config merge order.
 - `module-contracts.md` - module conventions, result object schema, error codes, export policy.
 - `scripts-organization-review.md` - script refactoring plan and progress.
 - `dashboard-upgrade-options.md` - terminal dashboard rendering improvements (Phase 1 complete).

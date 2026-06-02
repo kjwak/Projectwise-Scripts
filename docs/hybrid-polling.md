@@ -26,10 +26,10 @@ Relevant audit actions monitored:
 |------|------|---------|
 | 1001 | `DOCUMENT_CREATE` | New document — STATUS_SET_GEN rebuild |
 | 1002 | `DOCUMENT_MODIFY` | Property change — QC_PREPEND via trigger rules |
-| 1003 | `DOCUMENT_ATTR` | Environment attribute change — QC_PREPEND via trigger rules |
+| 1003 | `DOCUMENT_ATTR` | Environment attribute change — `sheet_index` refresh + attribute history rows |
 | 1006 | `DOCUMENT_FILE_REP` | File replaced (common after rendition) — STATUS_SET_GEN + QC_PREPEND |
 | 1007 | `DOCUMENT_CIN` | Check-in — STATUS_SET_GEN rebuild |
-| 1012 | `DOCUMENT_STATE` | Workflow state change |
+| 1012 | `DOCUMENT_STATE` | Workflow state change — sibling sync + `document_state_history` / notifications on `*-qc.pdf` |
 | 1015 | `DOCUMENT_VERSION` | New version — STATUS_SET_GEN rebuild |
 | 1020 | `DOCUMENT_DELETE` | Document deleted — STATUS_SET_GEN rebuild |
 
@@ -93,7 +93,7 @@ Each tick:
 
 ### QC_PREPEND Trigger
 
-On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`), paired sheet PDFs in Sheets folders are re-read for `QC_Archivist` in the document description. When the tag is present, a `QC_PREPEND` job is enqueued. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips (manifest current, in-flight, etc.) do not block this check.
+On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`), paired sheet PDFs in Sheets folders are re-read for `QC_Archivist` in the document description. When the tag is present, a `QC_PREPEND` job is enqueued. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips (manifest current, in-flight, etc.) do not block this check.
 
 ### STATUS_SET_GEN Trigger
 
@@ -134,6 +134,17 @@ GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to mini
 ## Sheet Index Population
 
 During full-folder reconciliation scans (`auditPoller.reconcileEveryNCycles`, e.g. every 100 watcher passes), paired sheets are batch-upserted via `Write-QCSheetIndexBatch` using `Build-PWSheetIndexRowsForPairedSheets`. That re-reads the same EM_* and QC_* columns as audit `DOCUMENT_ATTR` sync. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events and aligns workflow state across the DGN, sheet PDF, and `*-qc.pdf` that share the same sheet stem.
+
+### Workflow and attribute triggers (`QC.AuditTriggers.psm1`)
+
+When `auditPoller.workflowTriggers.enabled` is true (default):
+
+| Audit action | Runtime behavior |
+|--------------|------------------|
+| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings; each real state change writes `document_state_history` / `transition_events`; `Invoke-QCNotificationForStateChange` runs for `*-qc.pdf` when `notifications.enabled` and `notifyOnStateChange` are true |
+| `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; per-field diffs write `ATTR_CHANGE` rows to `document_state_history` and `transition_events` |
+
+Configure under `auditPoller.workflowTriggers` in `appsettings.json`. Notifications still require `notifications.enabled` (separate master switch).
 
 Each row includes:
 

@@ -17,6 +17,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusDecision.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force
 
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.State.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Database.psm1') -Force
 
@@ -322,6 +323,19 @@ function Invoke-QCCommentStatusSyncProcessor {
     }
 
     $stateApplyOk = Test-QCCommentSyncStateApplySucceeded -StateRes $stateRes -Settings $settings
+
+    if ($stateApplyOk -and -not $dryRun -and (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue)) {
+        $telemetryCtx = @{
+            config       = $Config
+            job          = $Job
+            document     = $document
+            documentGuid = [string]$meta.documentId
+            folderPath   = if ($meta.folderPath) { [string]$meta.folderPath } else { '' }
+        }
+        Invoke-QCProcessorWorkflowStateTelemetry -Config $Config -Context $telemetryCtx `
+            -PreviousState $previousState -CurrentState ([string]$decision.targetState) `
+            -JobType 'QC_COMMENT_STATUS_SYNC' | Out-Null
+    }
 
     if ($persist.runId -gt 0) {
 

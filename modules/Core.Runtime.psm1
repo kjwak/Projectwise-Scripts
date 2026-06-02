@@ -211,10 +211,104 @@ function Remove-QCJsonComments {
     return $sb.ToString()
 }
 
+function Merge-QCHashtableDeep {
+    <#
+    .SYNOPSIS
+    Deep-merges overlay into base. Nested hashtables merge; scalars and arrays are replaced by overlay values.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Base,
+        [AllowNull()][object]$Overlay
+    )
+
+    if ($null -eq $Overlay) { return $Base }
+    if ($null -eq $Base) { return $Overlay }
+    if ($Base -isnot [hashtable] -or $Overlay -isnot [hashtable]) { return $Overlay }
+
+    $merged = @{}
+    foreach ($key in $Base.Keys) { $merged[$key] = $Base[$key] }
+    foreach ($key in $Overlay.Keys) {
+        if ($merged.ContainsKey($key) -and $merged[$key] -is [hashtable] -and $Overlay[$key] -is [hashtable]) {
+            $merged[$key] = Merge-QCHashtableDeep -Base $merged[$key] -Overlay $Overlay[$key]
+        } else {
+            $merged[$key] = $Overlay[$key]
+        }
+    }
+    return $merged
+}
+
+function Resolve-QCAppSettingsMergeChain {
+    <#
+    .SYNOPSIS
+    Returns ordered config file paths to load for a given appsettings path.
+  .DESCRIPTION
+    appsettings.json + optional appsettings.local.json;
+    appsettings.{profile}.json merges appsettings.json then profile then appsettings.{profile}.local.json.
+    Other filenames load only that file (no automatic merge).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $fullPath = $Path
+    if (Test-Path -LiteralPath $Path) {
+        $fullPath = (Resolve-Path -LiteralPath $Path).Path
+    } else {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+    }
+
+    $dir = [System.IO.Path]::GetDirectoryName($fullPath)
+    $name = [System.IO.Path]::GetFileName($fullPath)
+    $chain = [System.Collections.Generic.List[string]]::new()
+
+    if ($name -eq 'appsettings.json') {
+        $chain.Add($fullPath)
+        $local = Join-Path $dir 'appsettings.local.json'
+        if (Test-Path -LiteralPath $local) { $chain.Add((Resolve-Path -LiteralPath $local).Path) }
+        return [string[]]$chain
+    }
+
+    if ($name -match '^appsettings\.([^.]+)\.json$') {
+        $profile = $Matches[1]
+        if ($profile -eq 'local') {
+            $chain.Add($fullPath)
+            return [string[]]$chain
+        }
+        $base = Join-Path $dir 'appsettings.json'
+        if (-not (Test-Path -LiteralPath $base)) {
+            throw "Profile config '$name' requires appsettings.json in the same directory: $dir"
+        }
+        $chain.Add((Resolve-Path -LiteralPath $base).Path)
+        $chain.Add($fullPath)
+        $profileLocal = Join-Path $dir ("appsettings.{0}.local.json" -f $profile)
+        if (Test-Path -LiteralPath $profileLocal) { $chain.Add((Resolve-Path -LiteralPath $profileLocal).Path) }
+        return [string[]]$chain
+    }
+
+    $chain.Add($fullPath)
+    return [string[]]$chain
+}
+
+function Read-QCAppSettingsFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    $json = Remove-QCJsonComments -Text $raw
+    $obj = $json | ConvertFrom-Json -ErrorAction Stop
+    return ConvertTo-HashtableDeep -Value $obj
+}
+
 function Read-QCAppSettings {
     <#
     .SYNOPSIS
-    Reads appsettings.json and returns a QC result with a hashtable config.
+    Reads appsettings.json (and profile/local overlays) and returns a QC result with a hashtable config.
     #>
     [CmdletBinding()]
     param(
@@ -225,15 +319,39 @@ function Read-QCAppSettings {
     if (-not (Test-Path -LiteralPath $Path)) {
         return New-QCFailureResult -Code 'CONFIG_MISSING_FILE' -Message "appsettings.json not found: $Path" -Data @{ path = $Path }
     }
+
     try {
-        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        $json = Remove-QCJsonComments -Text $raw
-        $obj = $json | ConvertFrom-Json -ErrorAction Stop
-        $cfg = ConvertTo-HashtableDeep -Value $obj
-        Set-QCDisplayTimeZoneFromConfig -Config $cfg
-        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ config = $cfg; path = $Path }
+        $mergeChain = @(Resolve-QCAppSettingsMergeChain -Path $Path)
     } catch {
-        return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{ path = $Path; errorMessage = $_.Exception.Message; error = $_ }
+        return New-QCFailureResult -Code 'CONFIG_MERGE_ERROR' -Message $_.Exception.Message -Data @{ path = $Path }
+    }
+
+    $cfg = $null
+    $loadedPaths = [System.Collections.Generic.List[string]]::new()
+    foreach ($filePath in $mergeChain) {
+        if (-not (Test-Path -LiteralPath $filePath)) {
+            return New-QCFailureResult -Code 'CONFIG_MISSING_FILE' -Message "Config file not found: $filePath" -Data @{ path = $filePath; mergeChain = @($mergeChain) }
+        }
+        try {
+            $layer = Read-QCAppSettingsFile -Path $filePath
+            $cfg = if ($null -eq $cfg) { $layer } else { Merge-QCHashtableDeep -Base $cfg -Overlay $layer }
+            $loadedPaths.Add($filePath) | Out-Null
+        } catch {
+            return New-QCFailureResult -Code 'CONFIG_PARSE_ERROR' -Message 'Failed to read/parse appsettings.json.' -Data @{
+                path = $filePath
+                mergeChain = @($mergeChain)
+                errorMessage = $_.Exception.Message
+                error = $_
+            }
+        }
+    }
+
+    if ($null -eq $cfg) { $cfg = @{} }
+    Set-QCDisplayTimeZoneFromConfig -Config $cfg
+    return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{
+        config = $cfg
+        path = $Path
+        mergeChain = @($loadedPaths)
     }
 }
 

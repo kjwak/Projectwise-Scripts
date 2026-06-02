@@ -4,6 +4,7 @@
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCW-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -667,6 +668,10 @@ function Set-PWQCWorkflowState {
         $data.changed = $true
         _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
         $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
+        if ($cfg -and (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue)) {
+            Invoke-QCProcessorWorkflowStateTelemetry -Config $cfg -Context $Context `
+                -PreviousState ([string]$info.Data.stateName) -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
+        }
         $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $info.Data.stateName -CurrentState $StateName -Document $document
         if ($notify) { $data.notification = $notify }
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Message 'QC workflow state write succeeded.' -Data $data
@@ -731,6 +736,10 @@ function Set-PWQCAttributes {
         else { & $cmd $document $mapped -ErrorAction Stop | Out-Null }
         $data.changed = $true
         _QCW-Log -Event 'QC_WORKFLOW_ATTRIBUTE_WRITE_SUCCESS' -Level 'Information' -Message 'QC attribute writeback succeeded.' -Data $data
+        $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
+        if ($cfg -and $mapped -and (Get-Command -Name 'Invoke-QCProcessorWorkflowAttributeTelemetry' -ErrorAction SilentlyContinue)) {
+            Invoke-QCProcessorWorkflowAttributeTelemetry -Config $cfg -Context $Context -MappedAttributes $mapped | Out-Null
+        }
         return New-QCSuccessResult -Code 'QC_WORKFLOW_ATTRIBUTE_WRITE_SUCCESS' -Message 'QC attribute writeback succeeded.' -Data $data
     } catch {
         $data.warnings = @($_.Exception.Message)
