@@ -27,6 +27,52 @@ function _QCW-IsNullOrWhiteSpace([object]$Value) {
     return $false
 }
 
+function _QCW-StateNameEquals([string]$Left, [string]$Right) {
+    if (_QCW-IsNullOrWhiteSpace $Left) { return _QCW-IsNullOrWhiteSpace $Right }
+    if (_QCW-IsNullOrWhiteSpace $Right) { return $false }
+    return ([string]$Left).Trim().Equals(([string]$Right).Trim(), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function _QCW-GetConfiguredWorkflowStateLabels([hashtable]$Settings) {
+    $labels = [System.Collections.Generic.List[string]]::new()
+    if (-not $Settings) { return @() }
+    $states = _QCW-ToHashtable $Settings.states
+    if ($states) {
+        foreach ($k in $states.Keys) {
+            $v = [string]$states[$k]
+            if (-not (_QCW-IsNullOrWhiteSpace $v)) {
+                $t = $v.Trim()
+                if (-not $labels.Contains($t)) { $labels.Add($t) | Out-Null }
+            }
+        }
+    }
+    foreach ($k in @('stateAfterSuccessfulPrepend', 'stateAfterFailedPrepend', 'defaultStateAfterPrepend')) {
+        if ($Settings.ContainsKey($k) -and -not (_QCW-IsNullOrWhiteSpace $Settings[$k])) {
+            $t = ([string]$Settings[$k]).Trim()
+            if (-not $labels.Contains($t)) { $labels.Add($t) | Out-Null }
+        }
+    }
+    $byTrigger = _QCW-ToHashtable $Settings.stateAfterPrependByTrigger
+    if ($byTrigger) {
+        foreach ($k in $byTrigger.Keys) {
+            $v = [string]$byTrigger[$k]
+            if (-not (_QCW-IsNullOrWhiteSpace $v)) {
+                $t = $v.Trim()
+                if (-not $labels.Contains($t)) { $labels.Add($t) | Out-Null }
+            }
+        }
+    }
+    return @($labels)
+}
+
+function _QCW-TestTargetInConfiguredStates([hashtable]$Settings, [string]$TargetStateName) {
+    if (_QCW-IsNullOrWhiteSpace $TargetStateName) { return $false }
+    foreach ($label in @(_QCW-GetConfiguredWorkflowStateLabels -Settings $Settings)) {
+        if (_QCW-StateNameEquals $label $TargetStateName) { return $true }
+    }
+    return $false
+}
+
 function _QCW-GetPropertyValue([object]$Object, [string[]]$Names) {
     foreach ($name in @($Names)) {
         try {
@@ -589,52 +635,95 @@ function Test-QCWorkflowStateTransition {
     }
 
     $workflowCandidates = [System.Collections.Generic.List[string]]::new()
+    $workflowCandidates.Add('') | Out-Null
     foreach ($wn in @($WorkflowName, $(if ($Settings) { [string]$Settings.workflowName }), $(if ($Settings) { [string]$Settings.expectedWorkflowName }))) {
         if (-not (_QCW-IsNullOrWhiteSpace $wn) -and -not $workflowCandidates.Contains($wn.Trim())) { $workflowCandidates.Add($wn.Trim()) | Out-Null }
     }
 
     foreach ($wfTry in $workflowCandidates) {
         try {
-            $args = @{}
-            $wfParam = _QCW-GetCommandParameterName -CommandName 'Get-PWWorkflowStateLinks' -CandidateNames @('WorkflowName','Workflow')
-            if ($wfParam) { $args[$wfParam] = $wfTry }
-            $tryLinks = @(& $cmd @args -ErrorAction Stop)
+            $tryLinks = @()
+            if ([string]::IsNullOrWhiteSpace($wfTry)) {
+                $tryLinks = @(& $cmd -ErrorAction Stop)
+                if ($tryLinks.Count -gt 0) { $workflowNameUsed = $WorkflowName }
+            } else {
+                $args = @{}
+                $wfParam = _QCW-GetCommandParameterName -CommandName 'Get-PWWorkflowStateLinks' -CandidateNames @('WorkflowName','Workflow')
+                if ($wfParam) { $args[$wfParam] = $wfTry }
+                $tryLinks = @(& $cmd @args -ErrorAction Stop)
+                if ($tryLinks.Count -gt 0) { $workflowNameUsed = $wfTry }
+            }
             if ($tryLinks.Count -gt 0) {
                 $links = $tryLinks
-                $workflowNameUsed = $wfTry
                 break
             }
         } catch {
-            $warnings += ('Get-PWWorkflowStateLinks failed for workflow ''' + $wfTry + ''': ' + $_.Exception.Message)
+            if ([string]::IsNullOrWhiteSpace($wfTry)) {
+                $warnings += ('Get-PWWorkflowStateLinks failed: ' + $_.Exception.Message)
+            } else {
+                $warnings += ('Get-PWWorkflowStateLinks failed for workflow ''' + $wfTry + ''': ' + $_.Exception.Message)
+            }
         }
     }
 
+    $linkFormat = 'none'
     foreach ($link in @($links)) {
-        foreach ($name in @('StateName','State','FromStateName','FromState','SourceStateName','SourceState','ToStateName','ToState','TargetStateName','TargetState')) {
+        foreach ($name in @('StateName','State','FromStateName','FromState','SourceStateName','SourceState','ToStateName','ToState','TargetStateName','TargetState','BeginState','EndState','BeginStateName','EndStateName')) {
             $v = _QCW-GetPropertyValue -Object $link -Names @($name)
-            if (-not (_QCW-IsNullOrWhiteSpace $v) -and -not $states.Contains([string]$v)) { $states.Add([string]$v) | Out-Null }
+            if (-not (_QCW-IsNullOrWhiteSpace $v)) {
+                $sv = ([string]$v).Trim()
+                $known = $false
+                foreach ($existing in $states) { if (_QCW-StateNameEquals $existing $sv) { $known = $true; break } }
+                if (-not $known) { $states.Add($sv) | Out-Null }
+            }
         }
     }
-    $targetExists = [bool](@($states | Where-Object { $_ -eq $TargetStateName }).Count -gt 0)
+    if (@($links).Count -gt 0 -and $states.Count -eq 0) {
+        $first = $links[0]
+        if ($null -ne (_QCW-GetPropertyValue -Object $first -Names @('Id')) -and
+            ($null -ne (_QCW-GetPropertyValue -Object $first -Names @('iNext','iPrevious')))) {
+            $linkFormat = 'id_chain'
+            $warnings += 'Get-PWWorkflowStateLinks returned numeric state IDs (Id/iPrevious/iNext) without state names; use qcWorkflow.states or Set-PWDocumentState directly.'
+        }
+    } elseif ($states.Count -gt 0) {
+        $linkFormat = 'named'
+    }
 
-    if ($targetExists -and (-not $ValidatePath -or (_QCW-IsNullOrWhiteSpace $CurrentStateName) -or $CurrentStateName -eq $TargetStateName)) {
+    $targetExists = $false
+    foreach ($s in $states) { if (_QCW-StateNameEquals $s $TargetStateName) { $targetExists = $true; break } }
+
+    if ($targetExists -and (-not $ValidatePath -or (_QCW-IsNullOrWhiteSpace $CurrentStateName) -or (_QCW-StateNameEquals $CurrentStateName $TargetStateName))) {
         $transitionValid = $true
     } elseif ($targetExists -and $ValidatePath) {
         $transitionValid = $false
         foreach ($link in @($links)) {
-            $from = _QCW-GetPropertyValue -Object $link -Names @('FromStateName','FromState','SourceStateName','SourceState','StateName','State')
-            $to = _QCW-GetPropertyValue -Object $link -Names @('ToStateName','ToState','TargetStateName','TargetState')
-            if (-not (_QCW-IsNullOrWhiteSpace $from) -and -not (_QCW-IsNullOrWhiteSpace $to) -and ([string]$from -eq $CurrentStateName) -and ([string]$to -eq $TargetStateName)) {
+            $from = _QCW-GetPropertyValue -Object $link -Names @('FromStateName','FromState','SourceStateName','SourceState','BeginState','BeginStateName','StateName','State')
+            $to = _QCW-GetPropertyValue -Object $link -Names @('ToStateName','ToState','TargetStateName','TargetState','EndState','EndStateName')
+            if (-not (_QCW-IsNullOrWhiteSpace $from) -and -not (_QCW-IsNullOrWhiteSpace $to) -and (_QCW-StateNameEquals $from $CurrentStateName) -and (_QCW-StateNameEquals $to $TargetStateName)) {
                 $transitionValid = $true
                 break
             }
         }
     }
 
-    if (-not $targetExists) { $warnings += "Target workflow state '$TargetStateName' was not found in workflow state links." }
-    elseif ($ValidatePath -and $transitionValid -eq $false) { $warnings += "No workflow state link from '$CurrentStateName' to '$TargetStateName' was found." }
+    if ((-not $targetExists) -or ($linkFormat -eq 'id_chain')) {
+        if (_QCW-TestTargetInConfiguredStates -Settings $Settings -TargetStateName $TargetStateName) {
+            $targetExists = $true
+            if ($ValidatePath -and -not (_QCW-StateNameEquals $CurrentStateName $TargetStateName)) {
+                $transitionValid = $true
+            }
+            if ($linkFormat -eq 'id_chain') {
+                $warnings += "Target state '$TargetStateName' validated against qcWorkflow.states (PW link rows use Id/iPrevious/iNext only)."
+            } else {
+                $warnings += "Target state '$TargetStateName' validated against qcWorkflow.states (workflow state links were empty or did not list this state)."
+            }
+        }
+    }
 
-    $data = @{ workflowName = $workflowNameUsed; currentStateName = $CurrentStateName; targetStateName = $TargetStateName; targetStateExists = $targetExists; transitionValid = $transitionValid; validatePath = [bool]$ValidatePath; states = @($states); linkCount = @($links).Count; warnings = @($warnings) }
+    if (-not $targetExists) { $warnings += "Target workflow state '$TargetStateName' was not found in workflow state links." }
+    elseif ($ValidatePath -and $transitionValid -eq $false) { $warnings += "No workflow state link from '$CurrentStateName' to '$TargetStateName' was found (Set-PWDocumentState may still succeed in ProjectWise)." }
+
+    $data = @{ workflowName = $workflowNameUsed; currentStateName = $CurrentStateName; targetStateName = $TargetStateName; targetStateExists = $targetExists; transitionValid = $transitionValid; validatePath = [bool]$ValidatePath; linkFormat = $linkFormat; states = @($states); linkCount = @($links).Count; warnings = @($warnings) }
     if ($targetExists -and ($transitionValid -ne $false)) {
         _QCW-Log -Event 'QC_WORKFLOW_STATE_TRANSITION_VALID' -Level 'Information' -Message 'QC workflow target state/transition validated.' -Data $data
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_TRANSITION_VALID' -Message 'QC workflow target state/transition validated.' -Data $data
@@ -673,10 +762,16 @@ function Set-PWQCWorkflowState {
         _QCW-Log -Event 'QC_WORKFLOW_STATE_PLANNED' -Level 'Information' -Message 'Dry-run: QC workflow state change planned.' -Data $data
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_PLANNED' -Message 'Dry-run: would set document workflow state.' -Data $data
     }
+    $configuredTargetOk = _QCW-TestTargetInConfiguredStates -Settings $Settings -TargetStateName $StateName
     if (-not ($transition.Data -and $transition.Data.targetStateExists -eq $true)) {
-        $data.warnings = @('State change was not executed because the target state could not be validated before a real write.')
-        _QCW-Log -Event 'QC_WORKFLOW_STATE_TRANSITION_INVALID' -Level 'Warning' -Message $data.warnings[0] -Data $data
-        return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_STATE_TRANSITION_INVALID' -Message $data.warnings[0] -Data $data
+        if ($configuredTargetOk -and $document -and -not [bool]$Settings.strictMode) {
+            $data.warnings = @("Proceeding with Set-PWDocumentState because target '$StateName' is listed in qcWorkflow.states (workflow link validation was inconclusive).")
+            _QCW-Log -Event 'QC_WORKFLOW_STATE_CONFIGURED_FALLBACK' -Level 'Information' -Message $data.warnings[0] -Data $data
+        } else {
+            $data.warnings = @('State change was not executed because the target state could not be validated before a real write.')
+            _QCW-Log -Event 'QC_WORKFLOW_STATE_TRANSITION_INVALID' -Level 'Warning' -Message $data.warnings[0] -Data $data
+            return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_STATE_TRANSITION_INVALID' -Message $data.warnings[0] -Data $data
+        }
     }
 
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
