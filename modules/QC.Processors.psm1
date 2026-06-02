@@ -257,7 +257,7 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
         if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.designerEmail)) { $designerEmail = [string]$pwRoles.designerEmail }
         if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.reviewerEmail)) { $reviewerEmail = [string]$pwRoles.reviewerEmail }
         if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.checkerEmail)) { $checkerEmail = [string]$pwRoles.checkerEmail }
-        if (_QCP-IsNullOrWhiteSpace $reviewType) -and -not (_QCP-IsNullOrWhiteSpace $pwRoles.qcReviewType)) {
+        if ((_QCP-IsNullOrWhiteSpace $reviewType) -and -not (_QCP-IsNullOrWhiteSpace $pwRoles.qcReviewType)) {
             $reviewType = [string]$pwRoles.qcReviewType
         }
     }
