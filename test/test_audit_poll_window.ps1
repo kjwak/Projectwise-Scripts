@@ -36,10 +36,18 @@ try {
     $wmRaw = (Get-Content -LiteralPath $wmPath -Raw).Trim()
     _Assert ($wmRaw.EndsWith('Z')) 'watermark file should store UTC with Z suffix'
 
-    $w2 = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 60
+    $configOverlap = @{
+        database = @{ enabled = $false }
+        auditPoller = @{ overlapSeconds = 5 }
+    }
+    $w2 = Get-AuditTrailPollWindow -Config $configOverlap -WatermarkPath $wmPath -LookbackSeconds 60
     _Assert (-not $w2.isFirstCapture) 'second run should see prior capture'
-    _Assert ($w2.since -eq $captured.AddSeconds(-60)) 'since should overlap last capture by lookbackSeconds'
+    _Assert ($w2.since -eq $captured.AddSeconds(-5)) 'since should use overlapSeconds not lookbackSeconds'
+    _Assert ([int]$w2.overlapSecondsUsed -eq 5) 'overlapSecondsUsed should reflect config'
     _Assert ($w2.watermarkBefore -eq '2026-05-26 10:00:00') 'watermarkBefore string should match UTC clock'
+
+    $w2b = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 60
+    _Assert ($w2b.since -eq $captured) 'default steady-state since should equal watermark (no overlap)'
 
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
     _Assert ($read.ToUniversalTime() -eq $captured) 'read watermark should match written UTC value'

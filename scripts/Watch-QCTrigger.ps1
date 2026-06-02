@@ -593,6 +593,7 @@ if ($statusSetRules.Count -ge 0) {
                         untilDisplay = $pollWindow.untilDisplay
                         watermarkBefore = $pollWindow.watermarkBefore
                         isFirstCapture = [bool]$pollWindow.isFirstCapture
+                        overlapSecondsUsed = if ($null -ne $pollWindow.overlapSecondsUsed) { [int]$pollWindow.overlapSecondsUsed } else { 0 }
                         cycleNum = $cycleNum
                         reconcileEvery = $reconcileEvery
                     }
@@ -631,15 +632,37 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        # Capture watermark = end of this poll tick (UTC, matches dms_audt o_acttime clock).
-                        $capturedThrough = $until
-                        $watermarkAfterStr = $pollWindow.untilUtc
+                        # Advance watermark to latest PW o_acttime ingested this tick (or poll end when no rows).
                         $maxPwActTime = $null
+                        $maxPwActTimeUtc = $null
                         try {
                             if ($auditData.stats -and $auditData.stats.maxPwActTime) {
                                 $maxPwActTime = [string]$auditData.stats.maxPwActTime
                             }
+                            if ($auditData.stats -and $auditData.stats.maxPwActTimeUtc) {
+                                $maxPwActTimeUtc = [string]$auditData.stats.maxPwActTimeUtc
+                            }
                         } catch { }
+                        $watermarkAfterStr = if (-not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc)) {
+                            $maxPwActTimeUtc
+                        } elseif ($auditData.watermarkAfter) {
+                            [string]$auditData.watermarkAfter
+                        } else {
+                            $pollWindow.untilUtc
+                        }
+                        $capturedThrough = $until
+                        try {
+                            if (-not [string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
+                                $capturedThrough = [DateTime]::ParseExact(
+                                    $watermarkAfterStr.Trim().TrimEnd('Z'),
+                                    'yyyy-MM-dd HH:mm:ss',
+                                    $null,
+                                    [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                                )
+                            }
+                        } catch {
+                            $capturedThrough = $until
+                        }
                         [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
 
                         $script:pollRunWatermarkBefore = $pollWindow.watermarkBefore
@@ -667,6 +690,11 @@ if ($statusSetRules.Count -ge 0) {
                             dbRowsPrepared = [int]$auditData.stats.dbRowsPrepared
                             dbRowsNullGuid = [int]$auditData.stats.dbRowsNullGuid
                             dbLastError    = if ($auditData.stats.dbLastError) { [string]$auditData.stats.dbLastError } else { $null }
+                            dbUnprocessedLoaded = [int]$auditData.stats.dbUnprocessedLoaded
+                            triggerSource  = if ($auditData.stats.triggerSource) { [string]$auditData.stats.triggerSource } else { $null }
+                            guidCacheHits  = [int]$auditData.stats.guidCacheHits
+                            guidCacheMisses = [int]$auditData.stats.guidCacheMisses
+                            guidResolveSkipped = [int]$auditData.stats.guidResolveSkipped
                             pagesFetched   = [int]$auditData.stats.pagesFetched
                             eventsTruncated = [bool]$auditData.stats.eventsTruncated
                             durationMs     = [int]$auditData.durationMs
@@ -682,6 +710,17 @@ if ($statusSetRules.Count -ge 0) {
                         $auditFoldersSeen = @{}
                         $auditDescCache = @{}
                         $auditSheetPairCache = @{}
+                        $auditTriggerEventIds = [System.Collections.Generic.List[long]]::new()
+                        if ($auditData.events) {
+                            foreach ($evt in @($auditData.events)) {
+                                try {
+                                    $eid = 0
+                                    if ($evt.id) { $eid = [long]$evt.id }
+                                    elseif ($evt.PSObject.Properties['id']) { $eid = [long]$evt.id }
+                                    if ($eid -gt 0) { [void]$auditTriggerEventIds.Add($eid) }
+                                } catch { }
+                            }
+                        }
                         $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
                         foreach ($ac in $auditCandidates) {
                             try {
@@ -1049,6 +1088,17 @@ if ($statusSetRules.Count -ge 0) {
                             } catch {
                                 $errors++
                             }
+                        }
+                        if ($auditTriggerEventIds.Count -gt 0 -and (Get-Command -Name 'Mark-QCAuditEventsProcessed' -ErrorAction SilentlyContinue)) {
+                            try {
+                                $markRes = Mark-QCAuditEventsProcessed -Config $config -EventIds @($auditTriggerEventIds)
+                                if ($markRes.IsSuccess -and $markRes.Data) {
+                                    Write-QCJsonLog -Level 'Information' -Code 'AUDIT_EVENTS_MARK_PROCESSED' -Message 'Marked audit_events rows processed after trigger evaluation.' -Data @{
+                                        requested = $auditTriggerEventIds.Count
+                                        marked = [int]$markRes.Data.marked
+                                    }
+                                }
+                            } catch { }
                         }
                     }
                 } catch {

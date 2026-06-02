@@ -2249,4 +2249,178 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
+function Get-QCDocumentFolderCache {
+    <#
+    .SYNOPSIS
+    Returns document_guid -> folder_path from document_activity for audit folder resolution.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $cache = @{}
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'DOC_FOLDER_CACHE_SKIPPED' -Message 'Database disabled.' -Data @{ cache = $cache; count = 0 }
+    }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT document_guid, folder_path
+FROM document_activity
+WHERE NULLIF(LTRIM(RTRIM(document_guid)), '') IS NOT NULL
+  AND NULLIF(LTRIM(RTRIM(folder_path)), '') IS NOT NULL
+"@
+        if ($res.IsSuccess -and $res.Data -and $res.Data.rows) {
+            foreach ($row in @($res.Data.rows)) {
+                $g = [string]$row.document_guid
+                $fp = [string]$row.folder_path
+                if ($g -and $fp) { $cache[$g.Trim().ToLowerInvariant()] = $fp }
+            }
+        }
+    } catch { }
+    return New-QCSuccessResult -Code 'DOC_FOLDER_CACHE_OK' -Message "Loaded $($cache.Count) cached document folders." -Data @{ cache = $cache; count = $cache.Count }
+}
+
+function Get-QCUnprocessedAuditEvents {
+    <#
+    .SYNOPSIS
+    Loads audit_events rows not yet processed by the watcher trigger pipeline.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [int]$MaxRows = 500,
+        [int[]]$ActionCodes = @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020)
+    )
+
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_SKIPPED' -Message 'Database disabled.' -Data @{ rows = @(); count = 0 }
+    }
+    if ($MaxRows -lt 1) { $MaxRows = 500 }
+    $codes = @($ActionCodes | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+    if ($codes.Count -eq 0) {
+        return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_NONE' -Message 'No action codes configured.' -Data @{ rows = @(); count = 0 }
+    }
+    $codeList = ($codes | ForEach-Object { [string][int]$_ }) -join ','
+    $sql = @"
+SELECT TOP ($MaxRows)
+    id, pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid,
+    pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type
+FROM audit_events
+WHERE processed = 0
+  AND pw_action IN ($codeList)
+ORDER BY pw_acttime ASC, pw_objguid ASC
+"@
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql
+        if (-not $res.IsSuccess) {
+            return New-QCFailureResult -Code 'AUDIT_UNPROCESSED_QUERY_FAILED' -Message $res.Message -Data @{ rows = @(); count = 0 }
+        }
+        $rows = @()
+        if ($res.Data -and $res.Data.rows) { $rows = @($res.Data.rows) }
+        return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_OK' -Message "Loaded $($rows.Count) unprocessed audit events." -Data @{ rows = $rows; count = $rows.Count }
+    } catch {
+        return New-QCFailureResult -Code 'AUDIT_UNPROCESSED_EXCEPTION' -Message $_.Exception.Message -Data @{ rows = @(); count = 0 }
+    }
+}
+
+function Update-QCAuditEventsResolvedFolders {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][array]$Updates
+    )
+
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return New-QCSuccessResult -Code 'AUDIT_FOLDER_UPDATE_SKIPPED' -Message 'Database disabled.' -Data @{ updated = 0 } }
+    if (-not $Updates -or $Updates.Count -eq 0) { return New-QCSuccessResult -Code 'AUDIT_FOLDER_UPDATE_NONE' -Message 'No updates.' -Data @{ updated = 0 } }
+
+    $updated = 0
+    foreach ($u in @($Updates)) {
+        $id = 0
+        try { $id = [long]$u.id } catch { continue }
+        if ($id -le 0) { continue }
+        $folder = [string]$u.resolvedFolder
+        $ctype = if ($u.candidateType) { [string]$u.candidateType } else { $null }
+        if ([string]::IsNullOrWhiteSpace($folder)) { continue }
+        try {
+            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE audit_events
+SET resolved_folder = @folder, candidate_type = COALESCE(@ctype, candidate_type)
+WHERE id = @id AND processed = 0
+"@ -Parameters @{ id = $id; folder = $folder; ctype = $ctype }
+            if ($res.IsSuccess) { $updated += [int]$res.Data.rowsAffected }
+        } catch { }
+    }
+    return New-QCSuccessResult -Code 'AUDIT_FOLDER_UPDATE_OK' -Message "Updated $updated audit event folder paths." -Data @{ updated = $updated }
+}
+
+function Mark-QCAuditEventsProcessed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][long[]]$EventIds
+    )
+
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return New-QCSuccessResult -Code 'AUDIT_MARK_PROCESSED_SKIPPED' -Message 'Database disabled.' -Data @{ marked = 0 } }
+    $ids = @($EventIds | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+    if ($ids.Count -eq 0) { return New-QCSuccessResult -Code 'AUDIT_MARK_PROCESSED_NONE' -Message 'No ids.' -Data @{ marked = 0 } }
+
+    $marked = 0
+    $chunkSize = 200
+    for ($i = 0; $i -lt $ids.Count; $i += $chunkSize) {
+        $chunk = @($ids[$i..[Math]::Min($i + $chunkSize - 1, $ids.Count - 1)])
+        $paramNames = @()
+        $params = @{}
+        for ($j = 0; $j -lt $chunk.Count; $j++) {
+            $paramNames += "@id$j"
+            $params["id$j"] = $chunk[$j]
+        }
+        $inList = $paramNames -join ','
+        try {
+            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql "UPDATE audit_events SET processed = 1 WHERE id IN ($inList) AND processed = 0" -Parameters $params
+            if ($res.IsSuccess) { $marked += [int]$res.Data.rowsAffected }
+        } catch { }
+    }
+    return New-QCSuccessResult -Code 'AUDIT_MARK_PROCESSED_OK' -Message "Marked $marked audit events processed." -Data @{ marked = $marked }
+}
+
+function Upsert-QCDocumentActivityFolder {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$DocumentName = '',
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$LastAction = '',
+        [int]$LastActionCode = 0,
+        [string]$LastActionTime = ''
+    )
+
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    $g = ([string]$DocumentGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($g)) { return }
+    $fp = ([string]$FolderPath).Trim()
+    if ([string]::IsNullOrWhiteSpace($fp)) { return }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+MERGE document_activity AS tgt
+USING (SELECT @guid AS document_guid) AS src
+ON tgt.document_guid = src.document_guid
+WHEN MATCHED THEN UPDATE SET
+    document_name = COALESCE(NULLIF(LTRIM(RTRIM(@name)), ''), tgt.document_name),
+    folder_path = @folder,
+    last_action = COALESCE(NULLIF(LTRIM(RTRIM(@action)), ''), tgt.last_action),
+    last_action_code = CASE WHEN @actionCode > 0 THEN @actionCode ELSE tgt.last_action_code END,
+    last_action_time = COALESCE(NULLIF(LTRIM(RTRIM(@actionTime)), ''), tgt.last_action_time),
+    last_seen = SYSDATETIMEOFFSET(),
+    total_events = tgt.total_events + 1
+WHEN NOT MATCHED THEN INSERT
+    (document_guid, document_name, folder_path, last_action, last_action_code, last_action_time, total_events, first_seen, last_seen)
+VALUES
+    (@guid, @name, @folder, @action, @actionCode, @actionTime, 1, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
+"@ -Parameters @{
+            guid = $g; name = $DocumentName; folder = $fp
+            action = $LastAction; actionCode = $LastActionCode; actionTime = $LastActionTime
+        })
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder

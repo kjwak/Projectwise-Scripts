@@ -31,6 +31,194 @@ $script:AuditActionNames = @{
     1027 = 'DOCUMENT_IMPORT'; 3001 = 'USER_LOGIN';        3002 = 'USER_LOGOUT'
 }
 
+# Session caches: avoid repeated Get-PWDocumentsByGUIDs for missing or known documents.
+$script:AuditPoller_DocFolderCache = @{}
+$script:AuditPoller_UnresolvedGuids = @{}
+
+function _AuditPoller-LoadDocFolderCache {
+    param([hashtable]$Config)
+    if ($script:AuditPoller_DocFolderCache.Count -eq 0 -and (Get-Command -Name 'Get-QCDocumentFolderCache' -ErrorAction SilentlyContinue)) {
+        try {
+            $res = Get-QCDocumentFolderCache -Config $Config
+            if ($res.IsSuccess -and $res.Data -and $res.Data.cache) {
+                foreach ($k in $res.Data.cache.Keys) { $script:AuditPoller_DocFolderCache[$k] = $res.Data.cache[$k] }
+            }
+        } catch { }
+    }
+    return $script:AuditPoller_DocFolderCache
+}
+
+function _AuditPoller-ResolveDocFoldersBatched {
+    param(
+        [hashtable]$Config,
+        [string[]]$DocGuids,
+        [hashtable]$DocToFolder,
+        [ref]$StatsRef
+    )
+
+    $needPw = [System.Collections.Generic.List[string]]::new()
+    foreach ($dg in @($DocGuids)) {
+        if ([string]::IsNullOrWhiteSpace($dg)) { continue }
+        $key = $dg.Trim().ToLowerInvariant()
+        if ($DocToFolder.ContainsKey($dg)) { continue }
+        if ($script:AuditPoller_DocFolderCache.ContainsKey($key)) {
+            $DocToFolder[$dg] = $script:AuditPoller_DocFolderCache[$key]
+            if ($StatsRef.Value) { $StatsRef.Value.guidCacheHits++ }
+            continue
+        }
+        if ($script:AuditPoller_UnresolvedGuids.ContainsKey($key)) {
+            if ($StatsRef.Value) { $StatsRef.Value.guidResolveSkipped++ }
+            continue
+        }
+        [void]$needPw.Add($dg)
+        if ($StatsRef.Value) { $StatsRef.Value.guidCacheMisses++ }
+    }
+
+    $batchSize = 200
+    for ($i = 0; $i -lt $needPw.Count; $i += $batchSize) {
+        $chunk = @($needPw[$i..[Math]::Min($i + $batchSize - 1, $needPw.Count - 1)])
+        try {
+            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $chunk -ErrorAction SilentlyContinue)
+            $found = @{}
+            foreach ($doc in $docs) {
+                $dg = [string]$doc.DocumentGUID
+                if (-not $dg) { continue }
+                $fp = $null
+                if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
+                elseif ($doc.FullPath) {
+                    $full = [string]$doc.FullPath
+                    $fp = [System.IO.Path]::GetDirectoryName($full) -replace '/', '\'
+                }
+                if ($fp) {
+                    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $fp
+                    if ($canonical) {
+                        $found[$dg] = $canonical
+                        $DocToFolder[$dg] = $canonical
+                        $script:AuditPoller_DocFolderCache[$dg.Trim().ToLowerInvariant()] = $canonical
+                        if ($StatsRef.Value) { $StatsRef.Value.foldersResolved++ }
+                        if (Get-Command -Name 'Upsert-QCDocumentActivityFolder' -ErrorAction SilentlyContinue) {
+                            $dn = [string]$doc.Name
+                            if (-not $dn) { $dn = [string]$doc.DocumentName }
+                            Upsert-QCDocumentActivityFolder -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $canonical | Out-Null
+                        }
+                    }
+                }
+            }
+            foreach ($dg in $chunk) {
+                if (-not $found.ContainsKey($dg)) {
+                    $script:AuditPoller_UnresolvedGuids[$dg.Trim().ToLowerInvariant()] = $true
+                }
+            }
+        } catch {
+            foreach ($dg in $chunk) { $script:AuditPoller_UnresolvedGuids[$dg.Trim().ToLowerInvariant()] = $true }
+        }
+    }
+}
+
+function _AuditPoller-BuildCandidatesFromTriggerRows {
+    param(
+        [array]$Rows,
+        [hashtable]$DocToFolder,
+        [hashtable]$FolderMap,
+        [array]$WatchRootConfigs,
+        [hashtable]$Config
+    )
+
+    $watchRoots = @()
+    if ($WatchRootConfigs.Count -gt 0) {
+        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
+    } elseif ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
+        $WatchRootConfigs = @($Config.projectWise.watchList.roots)
+        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
+    }
+    $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
+    $candidates = @()
+    $folderUpdates = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in @($Rows)) {
+        $auditId = $null
+        try { if ($row.id) { $auditId = [long]$row.id } } catch { }
+        $actionCode = 0
+        try { $actionCode = [int]$row.pw_action } catch {
+            try { $actionCode = _AuditPoller-GetActionCode -Row $row } catch { $actionCode = 0 }
+        }
+        if (-not $script:QCRelevantActions.ContainsKey($actionCode)) { continue }
+        $actionName = $script:QCRelevantActions[$actionCode]
+        $objGuid = [string]$row.pw_objguid
+        if ([string]::IsNullOrWhiteSpace($objGuid)) {
+            $objGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid')
+        }
+        $parentGuid = [string]$row.pw_parentguid
+        if ([string]::IsNullOrWhiteSpace($parentGuid)) {
+            $parentGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_parentguid')
+        }
+
+        $resolvedFolder = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$row.resolved_folder)) {
+            $resolvedFolder = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$row.resolved_folder)
+        }
+        if (-not $resolvedFolder -and $objGuid -and $DocToFolder.ContainsKey($objGuid)) { $resolvedFolder = $DocToFolder[$objGuid] }
+        elseif (-not $resolvedFolder -and $parentGuid -and $FolderMap.ContainsKey($parentGuid)) { $resolvedFolder = $FolderMap[$parentGuid] }
+
+        $isWatchMatch = $false
+        $isSheetsFolder = $false
+        if ($resolvedFolder) {
+            $isWatchMatch = _AuditPoller-MatchesWatchRoot -FolderPath $resolvedFolder -MatchRoots $matchRoots
+            if ($isWatchMatch) {
+                $isSheetsFolder = _AuditPoller-GetSheetsSubpath -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs -MatchRoots $matchRoots
+            }
+        }
+
+        $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
+        if ($auditId -and $resolvedFolder) {
+            [void]$folderUpdates.Add(@{ id = $auditId; resolvedFolder = $resolvedFolder; candidateType = $candidateType })
+        }
+
+        if (-not $isWatchMatch) { continue }
+
+        $enableQcPrepend = $false
+        $enableQcCommentSync = $false
+        $enableStatusSet = $false
+        $watchRootPath = $null
+        $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
+        if ($rootCfg) {
+            try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
+            try { if ($rootCfg.enableQcCommentSync) { $enableQcCommentSync = [bool]$rootCfg.enableQcCommentSync } } catch { }
+            try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
+            if ($rootCfg.path) { $watchRootPath = [string]$rootCfg.path }
+        }
+
+        $actTime = [string]$row.pw_acttime
+        if ([string]::IsNullOrWhiteSpace($actTime)) { $actTime = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_acttime') }
+        $userno = 0
+        try { $userno = [int]$row.pw_userno } catch {
+            try { $userno = [int](_AuditPoller-GetRowValue -Row $row -Name 'o_userno') } catch { $userno = 0 }
+        }
+        $itemName = [string]$row.pw_itemname
+        if ([string]::IsNullOrWhiteSpace($itemName)) { $itemName = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_itemname') }
+
+        $candidates += @{
+            auditEventId        = $auditId
+            objGuid             = $objGuid
+            parentGuid          = $parentGuid
+            actionCode          = $actionCode
+            actionName          = $actionName
+            itemName            = $itemName
+            actTime             = $actTime
+            userno              = $userno
+            resolvedFolder      = $resolvedFolder
+            isSheetsFolder      = $isSheetsFolder
+            candidateType       = $candidateType
+            enableQcPrepend     = $enableQcPrepend
+            enableQcCommentSync = $enableQcCommentSync
+            enableStatusSet     = $enableStatusSet
+            watchRoot           = $watchRootPath
+        }
+    }
+
+    return @{ candidates = $candidates; folderUpdates = @($folderUpdates) }
+}
+
 function _AuditPoller-NormalizeFolderPath {
     param([AllowNull()][string]$FolderPath)
     $t = ($FolderPath -as [string]).Trim().TrimEnd('\').Replace('/', '\')
@@ -392,7 +580,11 @@ function Set-AuditTrailCaptureWatermark {
 function Get-AuditTrailPollWindow {
     <#
     .SYNOPSIS
-    Computes the audit poll interval: (last capture, now], or lookback on first run.
+    Computes the audit poll interval: (last successful watermark, now], or initialLookback on first run.
+
+    .DESCRIPTION
+    Steady-state queries use the last capture watermark only (optional small overlapSeconds).
+    lookbackSeconds applies only when no watermark file exists yet (bootstrap).
     #>
     [CmdletBinding()]
     param(
@@ -405,30 +597,33 @@ function Get-AuditTrailPollWindow {
     $until = [DateTime]::UtcNow
     $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
     $initialLookbackSeconds = $LookbackSeconds
+    $overlapSeconds = 0
     try {
         if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
             $ap = $Config.auditPoller
-            if ($ap -is [hashtable] -and $ap.ContainsKey('initialLookbackSeconds') -and $null -ne $ap.initialLookbackSeconds) {
-                $initialLookbackSeconds = [int]$ap.initialLookbackSeconds
-            } elseif ($ap.PSObject -and $ap.initialLookbackSeconds) {
-                $initialLookbackSeconds = [int]$ap.initialLookbackSeconds
+            if ($ap -is [hashtable]) {
+                if ($ap.ContainsKey('initialLookbackSeconds') -and $null -ne $ap.initialLookbackSeconds) {
+                    $initialLookbackSeconds = [int]$ap.initialLookbackSeconds
+                }
+                if ($ap.ContainsKey('overlapSeconds') -and $null -ne $ap.overlapSeconds) {
+                    $overlapSeconds = [int]$ap.overlapSeconds
+                }
+            } elseif ($ap.PSObject) {
+                if ($null -ne $ap.initialLookbackSeconds) { $initialLookbackSeconds = [int]$ap.initialLookbackSeconds }
+                if ($null -ne $ap.overlapSeconds) { $overlapSeconds = [int]$ap.overlapSeconds }
             }
         }
     } catch { }
     if ($initialLookbackSeconds -lt 1) { $initialLookbackSeconds = $LookbackSeconds }
-
-    $overlapSeconds = $LookbackSeconds
-    if ($overlapSeconds -lt 1) { $overlapSeconds = 1 }
+    if ($overlapSeconds -lt 0) { $overlapSeconds = 0 }
 
     $since = if ($lastCapture) {
-        # Steady-state: overlap by lookbackSeconds so late-indexed PW events are not missed
-        # (watermark is second-precision; polls are sub-second apart).
-        $lastCapture.AddSeconds(-$overlapSeconds)
+        if ($overlapSeconds -gt 0) { $lastCapture.AddSeconds(-$overlapSeconds) } else { $lastCapture }
     } else {
         $until.AddSeconds(-$initialLookbackSeconds)
     }
     if ($since -ge $until) {
-        $since = $until.AddSeconds(-$overlapSeconds)
+        $since = if ($overlapSeconds -gt 0) { $until.AddSeconds(-$overlapSeconds) } else { $until.AddSeconds(-1) }
     }
     $tz = _AuditPoller-GetDisplayTimeZone -Config $Config
     $watermarkBefore = if ($lastCapture) { _AuditPoller-FormatSqlUtc -Utc $lastCapture } else { $null }
@@ -443,6 +638,7 @@ function Get-AuditTrailPollWindow {
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
         lookbackSecondsUsed = if ($lastCapture) { $overlapSeconds } else { $initialLookbackSeconds }
+        overlapSecondsUsed  = $overlapSeconds
         displayTimeZoneId = $tz.Id
     }
 }
@@ -472,18 +668,23 @@ function Invoke-AuditTrailScan {
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stats = @{
-        totalEvents     = 0
-        relevantEvents  = 0
-        foldersResolved = 0
-        watchMatches    = 0
-        sheetsMatches   = 0
-        dbWrites        = 0
-        dbSkipped       = 0
-        dbRowsPrepared  = 0
-        dbRowsNullGuid  = 0
-        pagesFetched    = 0
-        eventsTruncated = $false
-        dbLastError     = $null
+        totalEvents        = 0
+        relevantEvents     = 0
+        foldersResolved    = 0
+        watchMatches       = 0
+        sheetsMatches      = 0
+        dbWrites           = 0
+        dbSkipped          = 0
+        dbRowsPrepared     = 0
+        dbRowsNullGuid     = 0
+        pagesFetched       = 0
+        eventsTruncated    = $false
+        dbLastError        = $null
+        dbUnprocessedLoaded = 0
+        guidCacheHits      = 0
+        guidCacheMisses    = 0
+        guidResolveSkipped = 0
+        triggerSource      = 'pw_batch'
     }
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
@@ -531,7 +732,7 @@ function Invoke-AuditTrailScan {
         if ($pageNum -ge $maxPages -and $allEvents.Count -gt 0) {
             $stats.eventsTruncated = $true
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_QUERY_TRUNCATED' -Message "dms_audt page cap reached ($maxPages x $pageSize); re-run will continue from watermark overlap." -Data @{
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_QUERY_TRUNCATED' -Message "dms_audt page cap reached ($maxPages x $pageSize); re-run will continue from watermark cursor." -Data @{
                     since = $sinceStr; until = $untilStr; pagesFetched = $pageNum; eventsFetched = $allEvents.Count
                 }
             }
@@ -554,12 +755,23 @@ function Invoke-AuditTrailScan {
 
     # 2. Ingest every fetched row into audit_events (no QC/watch/action filtering).
     $maxPwActTime = $null
+    $maxPwActTimeUtc = $null
     $watermarkAfter = $queryUntilStr
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
-            $actTime = _AuditPoller-FormatActTime -Value (_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime') -Config $Config
+            $rawAct = _AuditPoller-GetRowValue -Row $evt -Name 'o_acttime'
+            $actTime = _AuditPoller-FormatActTime -Value $rawAct -Config $Config
             if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTime -Candidate $actTime }
+            if ($null -ne $rawAct -and -not ($rawAct -is [DBNull])) {
+                $utcStr = if ($rawAct -is [DateTime]) {
+                    _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $rawAct)
+                } else {
+                    $parsed = _AuditPoller-ParseActTime -ActTime ([string]$rawAct)
+                    if ($parsed) { _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $parsed) } else { $null }
+                }
+                if ($utcStr) { $maxPwActTimeUtc = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTimeUtc -Candidate $utcStr }
+            }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt -Config $Config)
         }
     } else {
@@ -621,129 +833,85 @@ function Invoke-AuditTrailScan {
     }
 
     if ($maxPwActTime) { $stats.maxPwActTime = $maxPwActTime }
+    if ($maxPwActTimeUtc) {
+        $stats.maxPwActTimeUtc = $maxPwActTimeUtc
+        $watermarkAfter = $maxPwActTimeUtc
+    } elseif ($allEvents.Count -eq 0) {
+        $watermarkAfter = $queryUntilStr
+    }
 
-    # 3. QC trigger pipeline — filter applies only to job candidates, not audit_events ingestion.
-    $relevant = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
-    $stats.relevantEvents = $relevant.Count
+    # 3. QC trigger pipeline — database is source of truth for unprocessed rows.
+    $triggerRows = @()
+    $useDbTriggers = $false
+    if (Test-QCDatabaseEnabled -Config $Config) {
+        $maxUnprocessed = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxUnprocessedPerPoll' -Default 500
+        if (Get-Command -Name 'Get-QCUnprocessedAuditEvents' -ErrorAction SilentlyContinue) {
+            $unprocRes = Get-QCUnprocessedAuditEvents -Config $Config -MaxRows $maxUnprocessed
+            if ($unprocRes.IsSuccess -and $unprocRes.Data.rows) {
+                $triggerRows = @($unprocRes.Data.rows)
+                $stats.dbUnprocessedLoaded = $triggerRows.Count
+                $stats.triggerSource = 'audit_events_db'
+                $useDbTriggers = $true
+            }
+        }
+    }
+    if (-not $useDbTriggers) {
+        $triggerRows = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
+        $stats.triggerSource = 'pw_batch'
+    }
+    $stats.relevantEvents = $triggerRows.Count
 
-    if ($relevant.Count -eq 0) {
+    if ($triggerRows.Count -eq 0) {
         if ($userNumbersToSync.Count -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
             try { Sync-PWUserDirectory -Config $Config -UserNumbers @($userNumbersToSync) -MaxUsers 25 | Out-Null } catch { }
         }
         $sw.Stop()
-        return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit ingest complete: $($stats.totalEvents) fetched, 0 QC-relevant for triggers." -Data @{
+        return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit ingest complete: $($stats.totalEvents) fetched, 0 unprocessed QC-relevant events." -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
             watermarkAfter = $watermarkAfter; durationMs = [int]$sw.ElapsedMilliseconds
             pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
         }
     }
 
-    # 4. Resolve folders via document GUIDs (batched) — QC-relevant document events only
-    $docGuids = @($relevant | ForEach-Object { [string](_AuditPoller-GetRowValue -Row $_ -Name 'o_objguid') } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
+    [void](_AuditPoller-LoadDocFolderCache -Config $Config)
     $docToFolder = @{}
-    $folderMap = @{}
-
-    $batchSize = 200
-    for ($i = 0; $i -lt $docGuids.Count; $i += $batchSize) {
-        $chunk = @($docGuids[$i..[Math]::Min($i + $batchSize - 1, $docGuids.Count - 1)])
-        try {
-            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $chunk -ErrorAction SilentlyContinue)
-            foreach ($doc in $docs) {
-                $dg = [string]$doc.DocumentGUID
-                if (-not $dg) { continue }
-                $fp = $null
-                if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
-                elseif ($doc.FullPath) {
-                    $full = [string]$doc.FullPath
-                    $fp = [System.IO.Path]::GetDirectoryName($full) -replace '/', '\'
-                }
-                if ($fp) {
-                    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $fp
-                    if ($canonical) {
-                        $docToFolder[$dg] = $canonical
-                        $stats.foldersResolved++
-                    }
-                }
-            }
-        } catch { }
+    foreach ($row in $triggerRows) {
+        $og = [string]$row.pw_objguid
+        if ([string]::IsNullOrWhiteSpace($og)) { $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid') }
+        if (-not $og) { continue }
+        $key = $og.Trim().ToLowerInvariant()
+        if ($script:AuditPoller_DocFolderCache.ContainsKey($key)) {
+            $docToFolder[$og] = $script:AuditPoller_DocFolderCache[$key]
+        }
     }
 
-    # Build parent-GUID to folder map from resolved documents
-    foreach ($evt in $relevant) {
-        $og = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_objguid')
-        $pg = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_parentguid')
+    $docGuids = @($triggerRows | ForEach-Object {
+        $g = [string]$_.pw_objguid
+        if ([string]::IsNullOrWhiteSpace($g)) { $g = [string](_AuditPoller-GetRowValue -Row $_ -Name 'o_objguid') }
+        $g
+    } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
+
+    $statsRef = [ref]$stats
+    _AuditPoller-ResolveDocFoldersBatched -Config $Config -DocGuids $docGuids -DocToFolder $docToFolder -StatsRef $statsRef | Out-Null
+
+    $folderMap = @{}
+    foreach ($row in $triggerRows) {
+        $og = [string]$row.pw_objguid
+        if ([string]::IsNullOrWhiteSpace($og)) { $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid') }
+        $pg = [string]$row.pw_parentguid
+        if ([string]::IsNullOrWhiteSpace($pg)) { $pg = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_parentguid') }
         if ($og -and $docToFolder.ContainsKey($og) -and $pg -and -not $folderMap.ContainsKey($pg)) {
             $folderMap[$pg] = $docToFolder[$og]
         }
     }
 
-    # 5. Match against watch roots (job candidates only)
-    $watchRoots = @()
-    if ($WatchRootConfigs.Count -gt 0) {
-        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
-    } elseif ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
-        $WatchRootConfigs = @($Config.projectWise.watchList.roots)
-        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
-    }
-    $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
+    $built = _AuditPoller-BuildCandidatesFromTriggerRows -Rows $triggerRows -DocToFolder $docToFolder -FolderMap $folderMap -WatchRootConfigs $WatchRootConfigs -Config $Config
+    $candidates = @($built.candidates)
+    $stats.watchMatches = @($candidates).Count
+    $stats.sheetsMatches = @($candidates | Where-Object { [bool]$_.isSheetsFolder }).Count
 
-    $candidates = @()
-
-    foreach ($evt in $relevant) {
-        $actionCode = _AuditPoller-GetActionCode -Row $evt
-        $actionName = $script:QCRelevantActions[$actionCode]
-        $objGuid = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_objguid')
-        $parentGuid = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_parentguid')
-
-        $resolvedFolder = $null
-        if ($docToFolder.ContainsKey($objGuid)) { $resolvedFolder = $docToFolder[$objGuid] }
-        elseif ($folderMap.ContainsKey($parentGuid)) { $resolvedFolder = $folderMap[$parentGuid] }
-
-        $isWatchMatch = $false
-        $isSheetsFolder = $false
-        if ($resolvedFolder) {
-            $isWatchMatch = _AuditPoller-MatchesWatchRoot -FolderPath $resolvedFolder -MatchRoots $matchRoots
-            if ($isWatchMatch) {
-                $stats.watchMatches++
-                $isSheetsFolder = _AuditPoller-GetSheetsSubpath -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs -MatchRoots $matchRoots
-                if ($isSheetsFolder) { $stats.sheetsMatches++ }
-            }
-        }
-
-        $actTime = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
-        $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
-        $userno = 0
-        try { $userno = [int](_AuditPoller-GetRowValue -Row $evt -Name 'o_userno') } catch { $userno = 0 }
-
-        $enableQcPrepend = $false
-        $enableQcCommentSync = $false
-        $enableStatusSet = $false
-        $watchRootPath = $null
-        if ($isWatchMatch) {
-            $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
-            if ($rootCfg) {
-                try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
-                try { if ($rootCfg.enableQcCommentSync) { $enableQcCommentSync = [bool]$rootCfg.enableQcCommentSync } } catch { }
-                try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
-                if ($rootCfg.path) { $watchRootPath = [string]$rootCfg.path }
-            }
-            $candidates += @{
-                objGuid              = $objGuid
-                parentGuid           = $parentGuid
-                actionCode           = $actionCode
-                actionName           = $actionName
-                itemName             = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_itemname')
-                actTime              = $actTime
-                userno               = $userno
-                resolvedFolder       = $resolvedFolder
-                isSheetsFolder       = $isSheetsFolder
-                candidateType        = $candidateType
-                enableQcPrepend      = $enableQcPrepend
-                enableQcCommentSync  = $enableQcCommentSync
-                enableStatusSet      = $enableStatusSet
-                watchRoot            = $watchRootPath
-            }
-        }
+    if ($built.folderUpdates.Count -gt 0 -and (Get-Command -Name 'Update-QCAuditEventsResolvedFolders' -ErrorAction SilentlyContinue)) {
+        try { Update-QCAuditEventsResolvedFolders -Config $Config -Updates $built.folderUpdates | Out-Null } catch { }
     }
 
     if ($userNumbersToSync.Count -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
@@ -753,8 +921,8 @@ function Invoke-AuditTrailScan {
     }
 
     $sw.Stop()
-    return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit scan complete: $($stats.relevantEvents) relevant, $($stats.watchMatches) matched." -Data @{
-        events         = $relevant
+    return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "Audit scan complete: $($stats.relevantEvents) unprocessed, $($stats.watchMatches) watch candidates." -Data @{
+        events         = $triggerRows
         candidates     = $candidates
         docToFolder    = $docToFolder
         stats          = $stats
