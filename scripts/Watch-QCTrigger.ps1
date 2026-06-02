@@ -599,6 +599,8 @@ if ($statusSetRules.Count -ge 0) {
                         $watchRootConfigs = @($watchList.roots | ForEach-Object { ConvertTo-HashtableDeep -Value $_ })
                     }
 
+                    $watermarkAgeSeconds = $null
+                    try { $watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { }
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
                         sinceUtc = $pollWindow.sinceUtc
                         untilUtc = $pollWindow.untilUtc
@@ -608,7 +610,7 @@ if ($statusSetRules.Count -ge 0) {
                         isFirstCapture = [bool]$pollWindow.isFirstCapture
                         overlapSecondsUsed = if ($null -ne $pollWindow.overlapSecondsUsed) { [int]$pollWindow.overlapSecondsUsed } else { 0 }
                         restartOverlapUsed = if ($null -ne $pollWindow.restartOverlapUsed) { [bool]$pollWindow.restartOverlapUsed } else { $false }
-                        watermarkAgeSeconds = try { Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { $null }
+                        watermarkAgeSeconds = $watermarkAgeSeconds
                         cycleNum = $cycleNum
                         reconcileEvery = $reconcileEvery
                     }
