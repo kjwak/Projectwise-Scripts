@@ -1201,7 +1201,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         [void](Ensure-PWDiscoveryModuleLoaded)
     }
 
-    if (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue) {
+    if (([string]$DocumentName -match '(?i)\.dgn$') -and (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
             Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
                 -TriggerDocumentGuid $DocumentGuid `

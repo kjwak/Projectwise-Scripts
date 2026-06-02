@@ -10,6 +10,9 @@ if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction Si
         Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
     }
 }
+if (-not (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'QC.Queue.Json.psm1') -Force -ErrorAction SilentlyContinue
+}
 
 function _QCR-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -478,11 +481,9 @@ function New-QCRenditionQueueJob {
         return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NAME_MISSING' -Message 'Could not derive source document name from QC PDF.' -Data @{ qcPdfName = $qcName }
     }
 
-    $readinessKey = Get-QCReadinessKey -DocumentGuid $DocumentGuid -FolderPath $folder -QcPdfName $qcName
-    $stable = ('dedupeV2_rendition|folder={0}|source={1}|qc={2}' -f $folder, $sourceDoc, $qcName)
-    $dedupeKey = 'dq_qcrendition_' + (_QCR-Sha256Hex -Text $stable).Substring(0, 24)
-
-    $jobId = 'rendition-' + (_QCR-Sha256Hex -Text ($ParentJob.id + '|' + $readinessKey)).Substring(0, 16)
+    $readinessKey = Get-QCRenditionSheetReadinessKey -FolderPath $folder -SourceDgnFileName $sourceDoc
+    $dedupeKey = _QCR-GetRenditionDedupeKeyForSheet -FolderPath $folder -SourceDgnFileName $sourceDoc
+    $jobId = _QCR-GetRenditionJobIdForSheet -FolderPath $folder -SourceDgnFileName $sourceDoc
     $sourcePath = if ($folder) { Join-Path $folder $sourceDoc } else { $sourceDoc }
 
     $job = @{
@@ -504,6 +505,7 @@ function New-QCRenditionQueueJob {
             rendition = @{
                 parentPrependJobId = [string]$ParentJob.id
                 readinessKey = $readinessKey
+                sheetReadinessKey = $readinessKey
                 documentGuid = $DocumentGuid
                 qcPdfName = $qcName
                 profileName = $profile.profileName
@@ -557,11 +559,6 @@ function Add-QCRenditionJobAfterPrepend {
     $docGuid = _QCR-GetDocumentGuidFromObject $Document
     $folder = if ($Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
     $qcName = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
-    $readinessKey = Get-QCReadinessKey -DocumentGuid $docGuid -FolderPath $folder -QcPdfName $qcName
-
-    Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -PrependComplete `
-        -ParentPrependJobId ([string]$Job.id) -DocumentGuid $docGuid -FolderPath $folder -QcPdfName $qcName | Out-Null
-
     $built = New-QCRenditionQueueJob -Config $Config -ParentJob $Job -DocumentGuid $docGuid -Document $Document
     if (-not $built.IsSuccess) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -569,30 +566,65 @@ function Add-QCRenditionJobAfterPrepend {
                 jobId = [string]$Job.id; code = [string]$built.Code
             } | Out-Null
         }
+        $sheetKeyFail = $null
+        try {
+            if ($built.Data -and $built.Data.job -and $built.Data.job.sourceName) {
+                $sheetKeyFail = Get-QCRenditionSheetReadinessKey -FolderPath $folder -SourceDgnFileName ([string]$built.Data.job.sourceName)
+            }
+        } catch { }
+        if (-not $sheetKeyFail) { $sheetKeyFail = Get-QCReadinessKey -DocumentGuid $docGuid -FolderPath $folder -QcPdfName $qcName }
         if ([bool]$rendition.deferReadyForQcNotification) {
-            Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -RenditionComplete | Out-Null
-            Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $readinessKey `
+            Set-QCReadinessFlag -Config $Config -ReadinessKey $sheetKeyFail -RenditionComplete | Out-Null
+            Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $sheetKeyFail `
                 -Document $Document -Job $Job -DocumentName $qcName -DocumentGuid $docGuid -FolderPath $folder | Out-Null
         }
         return $built
     }
+
+    $renditionJobPreview = $built.Data.job
+    $sheetKey = Get-QCRenditionSheetReadinessKey -FolderPath $folder -SourceDgnFileName ([string]$renditionJobPreview.sourceName)
+    Set-QCReadinessFlag -Config $Config -ReadinessKey $sheetKey -PrependComplete `
+        -ParentPrependJobId ([string]$Job.id) -DocumentGuid $docGuid -FolderPath $folder -QcPdfName $qcName | Out-Null
 
     if (-not (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_RENDITION_QUEUE_UNAVAILABLE' -Message 'QC.Queue.Json not loaded.' -Data @{}
     }
 
     $renditionJob = $built.Data.job
-    $enq = Add-QCQueueJob -Job $renditionJob -Config $Config
-    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-        Write-QCJsonLog -Level $(if ($enq.IsSuccess) { 'Information' } else { 'Warning' }) `
-            -Code $(if ($enq.IsSuccess) { 'QC_RENDITION_ENQUEUED' } else { 'QC_RENDITION_ENQUEUE_FAILED' }) `
-            -Message $(if ($enq.IsSuccess) { 'QC_RENDITION job enqueued after prepend.' } else { $enq.Message }) -Data @{
+    $sheetKey = Get-QCRenditionSheetReadinessKey -FolderPath $folder -SourceDgnFileName ([string]$renditionJob.sourceName)
+    $block = _QCR-TestRenditionEnqueueBlocked -Config $Config -DedupeKey ([string]$renditionJob.dedupeKey) -SheetReadinessKey $sheetKey
+    if ([bool]$block.blocked) {
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' `
+            -Message 'QC_RENDITION skipped after prepend; sheet rendition already queued or complete.' -Data @{
             parentJobId = [string]$Job.id
             renditionJobId = [string]$renditionJob.id
-            readinessKey = $readinessKey
             dedupeKey = [string]$renditionJob.dedupeKey
-            code = [string]$enq.Code
-        } | Out-Null
+            skipReason = [string]$block.reason
+        }
+        return New-QCSuccessResult -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' -Message 'Rendition already in flight or complete for this sheet.' -Data @{
+            jobId = [string]$renditionJob.id
+            skipReason = [string]$block.reason
+        }
+    }
+
+    $enq = Add-QCQueueJob -Job $renditionJob -Config $Config
+    if ($enq.IsSuccess) {
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_ENQUEUED' `
+            -Message 'QC_RENDITION job enqueued after prepend.' -Data @{
+            parentJobId = [string]$Job.id
+            renditionJobId = [string]$renditionJob.id
+            readinessKey = $sheetKey
+            dedupeKey = [string]$renditionJob.dedupeKey
+        }
+        return $enq
+    }
+    if ([string]$enq.Code -eq 'QUEUE_JOB_ALREADY_EXISTS') {
+        return New-QCSuccessResult -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' -Message $enq.Message -Data @{ jobId = [string]$renditionJob.id }
+    }
+    _QCR-WriteRenditionStateEnqueueLog -Level 'Warning' -Code 'QC_RENDITION_ENQUEUE_FAILED' -Message $enq.Message -Data @{
+        parentJobId = [string]$Job.id
+        renditionJobId = [string]$renditionJob.id
+        enqueueCode = [string]$enq.Code
     }
     return $enq
 }
@@ -606,6 +638,101 @@ function _QCR-DeriveSourceFromStateChange([string]$TriggerDocumentName) {
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
     if (_QCR-IsNullOrWhiteSpace $stem) { return $null }
     return ($stem + '.dgn')
+}
+
+function Get-QCRenditionSheetReadinessKey {
+    <#
+    .SYNOPSIS
+    Stable readiness key for a sheet (folder + DGN stem), shared by DGN/PDF/QC-PDF siblings.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDgnFileName
+    )
+
+    $fk = _QCR-NormalizeFolderKey $FolderPath
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDgnFileName)
+    if ($stem -match '(?i)\.dgn$') { $stem = [System.IO.Path]::GetFileNameWithoutExtension($stem) }
+    return ('sheet:' + $fk + '|' + $stem.ToLowerInvariant())
+}
+
+function _QCR-GetRenditionDedupeKeyForSheet {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDgnFileName
+    )
+
+    $stable = ('dedupeV3_rendition|folder={0}|source={1}' -f $FolderPath, $SourceDgnFileName)
+    return 'dq_qcrendition_' + (_QCR-Sha256Hex -Text $stable).Substring(0, 24)
+}
+
+function _QCR-GetRenditionJobIdForSheet {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDgnFileName
+    )
+
+    return 'rendition-' + (_QCR-Sha256Hex -Text ('sheet|' + $FolderPath + '|' + $SourceDgnFileName)).Substring(0, 16)
+}
+
+function _QCR-TestRenditionEnqueueBlocked {
+    <#
+    Returns $true when a sheet-level rendition is already pending, running, succeeded, or marked complete.
+    Failed jobs are not blocked so a retry can be enqueued.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [Parameter(Mandatory)][string]$SheetReadinessKey
+    )
+
+    $ready = Get-QCReadinessState -Config $Config -ReadinessKey $SheetReadinessKey
+    if ([bool]$ready.renditionComplete) {
+        return @{
+            blocked = $true
+            reason = 'readiness_complete'
+            matches = @()
+        }
+    }
+
+    if (-not (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) { return @{ blocked = $false } }
+
+    $dup = Test-QCDuplicateJob -DedupeKey $DedupeKey -Config $Config
+    if (-not $dup.IsSuccess -or -not [bool]$dup.Data.isDuplicate) {
+        return @{ blocked = $false }
+    }
+
+    $matches = @()
+    try { if ($dup.Data.matches) { $matches = @($dup.Data.matches) } } catch { }
+    $blockStates = @('pending', 'running', 'succeeded')
+    $blocking = @($matches | Where-Object { $blockStates -contains [string]$_.state })
+    if ($blocking.Count -eq 0) {
+        return @{ blocked = $false }
+    }
+
+    $reason = 'queue_pending'
+    if (@($blocking | Where-Object { $_.state -eq 'running' }).Count -gt 0) { $reason = 'queue_running' }
+    elseif (@($blocking | Where-Object { $_.state -eq 'succeeded' }).Count -gt 0) { $reason = 'queue_succeeded' }
+
+    return @{
+        blocked = $true
+        reason = $reason
+        matches = $blocking
+    }
+}
+
+function _QCR-WriteRenditionStateEnqueueLog {
+    param(
+        [string]$Level,
+        [string]$Code,
+        [string]$Message,
+        [hashtable]$Data
+    )
+
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $Data | Out-Null
 }
 
 function Add-QCRenditionJobForReadyForQcStateChange {
@@ -638,6 +765,11 @@ function Add-QCRenditionJobForReadyForQcStateChange {
         }
     }
 
+    $triggerFile = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
+    if ($triggerFile -notmatch '(?i)\.dgn$') {
+        return $null
+    }
+
     if (-not (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_RENDITION_QUEUE_UNAVAILABLE' -Message 'QC.Queue.Json not loaded.' -Data @{}
     }
@@ -649,24 +781,44 @@ function Add-QCRenditionJobForReadyForQcStateChange {
         }
     }
 
-    $readinessKey = Get-QCReadinessKey -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath -QcPdfName $TriggerDocumentName
-    Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -PrependComplete `
+    $sheetReadinessKey = Get-QCRenditionSheetReadinessKey -FolderPath $FolderPath -SourceDgnFileName $sourceDoc
+    $dedupeKey = _QCR-GetRenditionDedupeKeyForSheet -FolderPath $FolderPath -SourceDgnFileName $sourceDoc
+    $jobId = _QCR-GetRenditionJobIdForSheet -FolderPath $FolderPath -SourceDgnFileName $sourceDoc
+
+    $block = _QCR-TestRenditionEnqueueBlocked -Config $Config -DedupeKey $dedupeKey -SheetReadinessKey $sheetReadinessKey
+    if ([bool]$block.blocked) {
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' `
+            -Message 'QC_RENDITION skipped; sheet rendition already queued, running, succeeded, or marked complete.' -Data @{
+            renditionJobId = $jobId
+            dedupeKey = $dedupeKey
+            sheetReadinessKey = $sheetReadinessKey
+            folderPath = $FolderPath
+            sourceDocument = $sourceDoc
+            triggerDocumentGuid = $TriggerDocumentGuid
+            skipReason = [string]$block.reason
+            queueMatches = @($block.matches)
+        }
+        return New-QCSuccessResult -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' -Message 'Rendition already in flight or complete for this sheet.' -Data @{
+            jobId = $jobId
+            dedupeKey = $dedupeKey
+            sheetReadinessKey = $sheetReadinessKey
+            skipReason = [string]$block.reason
+        }
+    }
+
+    Set-QCReadinessFlag -Config $Config -ReadinessKey $sheetReadinessKey -PrependComplete `
         -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath -QcPdfName $TriggerDocumentName | Out-Null
 
     $profileRes = Resolve-QCRenditionProfile -Config $Config -FolderPath $FolderPath
     if (-not $profileRes.IsSuccess) {
         if ([bool]$rendition.deferReadyForQcNotification) {
-            Set-QCReadinessFlag -Config $Config -ReadinessKey $readinessKey -RenditionComplete | Out-Null
-            Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $readinessKey `
+            Set-QCReadinessFlag -Config $Config -ReadinessKey $sheetReadinessKey -RenditionComplete | Out-Null
+            Invoke-QCReadyForQcNotificationIfReady -Config $Config -ReadinessKey $sheetReadinessKey `
                 -DocumentName $TriggerDocumentName -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath | Out-Null
         }
         return $profileRes
     }
     $profile = $profileRes.Data.profile
-
-    $stable = ('dedupeV2_rendition|folder={0}|source={1}|triggerGuid={2}' -f $FolderPath, $sourceDoc, $TriggerDocumentGuid)
-    $dedupeKey = 'dq_qcrendition_' + (_QCR-Sha256Hex -Text $stable).Substring(0, 24)
-    $jobId = 'rendition-' + (_QCR-Sha256Hex -Text ('state|' + $readinessKey)).Substring(0, 16)
 
     $job = @{
         id         = $jobId
@@ -685,7 +837,8 @@ function Add-QCRenditionJobForReadyForQcStateChange {
         }
         metadata = @{
             rendition = @{
-                readinessKey         = $readinessKey
+                readinessKey         = $sheetReadinessKey
+                sheetReadinessKey    = $sheetReadinessKey
                 documentGuid         = $TriggerDocumentGuid
                 triggerDocumentName  = $TriggerDocumentName
                 triggerCurrentState  = $curr
@@ -700,23 +853,46 @@ function Add-QCRenditionJobForReadyForQcStateChange {
     if ($DryRun) {
         return New-QCSuccessResult -Code 'QC_RENDITION_PLANNED' -Message 'Dry-run: QC_RENDITION job planned from Ready for QC state change.' -Data @{
             job = $job
-            readinessKey = $readinessKey
+            readinessKey = $sheetReadinessKey
             profile = $profile
         }
     }
 
     $enq = Add-QCQueueJob -Job $job -Config $Config
-    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-        Write-QCJsonLog -Level $(if ($enq.IsSuccess) { 'Information' } else { 'Warning' }) `
-            -Code $(if ($enq.IsSuccess) { 'QC_RENDITION_ENQUEUED' } else { 'QC_RENDITION_ENQUEUE_FAILED' }) `
-            -Message $(if ($enq.IsSuccess) { 'QC_RENDITION job enqueued from Ready for QC state change.' } else { $enq.Message }) -Data @{
+    if ($enq.IsSuccess) {
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_ENQUEUED' `
+            -Message 'QC_RENDITION job enqueued from Ready for QC state change (DGN trigger).' -Data @{
             renditionJobId = [string]$job.id
-            readinessKey   = $readinessKey
-            folderPath     = $FolderPath
+            dedupeKey = $dedupeKey
+            sheetReadinessKey = $sheetReadinessKey
+            folderPath = $FolderPath
             sourceDocument = $sourceDoc
             triggerDocumentGuid = $TriggerDocumentGuid
-            changedByUser  = $ChangedByUser
-        } | Out-Null
+            changedByUser = $ChangedByUser
+        }
+        return $enq
+    }
+
+    if ([string]$enq.Code -eq 'QUEUE_JOB_ALREADY_EXISTS') {
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' `
+            -Message 'QC_RENDITION skipped; job id already pending in queue.' -Data @{
+            renditionJobId = [string]$job.id
+            dedupeKey = $dedupeKey
+            sheetReadinessKey = $sheetReadinessKey
+            folderPath = $FolderPath
+            sourceDocument = $sourceDoc
+            skipReason = 'queue_pending_same_job_id'
+        }
+        return New-QCSuccessResult -Code 'QC_RENDITION_SKIPPED_ALREADY_DONE' -Message $enq.Message -Data @{ jobId = $jobId; dedupeKey = $dedupeKey }
+    }
+
+    _QCR-WriteRenditionStateEnqueueLog -Level 'Warning' -Code 'QC_RENDITION_ENQUEUE_FAILED' `
+        -Message $enq.Message -Data @{
+        renditionJobId = [string]$job.id
+        dedupeKey = $dedupeKey
+        folderPath = $FolderPath
+        sourceDocument = $sourceDoc
+        enqueueCode = [string]$enq.Code
     }
     return $enq
 }
@@ -769,8 +945,16 @@ function Invoke-QCRenditionProcessor {
     if ($Job.metadata -and $Job.metadata.rendition) { $renditionMeta = _QCR-ToHashtable $Job.metadata.rendition }
     if (-not $renditionMeta) { $renditionMeta = @{} }
 
-    $readinessKey = if ($renditionMeta.readinessKey) { [string]$renditionMeta.readinessKey } else {
-        Get-QCReadinessKey -DocumentGuid ([string]$renditionMeta.documentGuid) -FolderPath ([string]$Job.sourceFolder) -QcPdfName ([string]$renditionMeta.qcPdfName)
+    $readinessKey = $null
+    if ($renditionMeta.sheetReadinessKey) { $readinessKey = [string]$renditionMeta.sheetReadinessKey }
+    elseif ($renditionMeta.readinessKey) { $readinessKey = [string]$renditionMeta.readinessKey }
+    else {
+        $src = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
+        if ($src -and $Job.sourceFolder) {
+            $readinessKey = Get-QCRenditionSheetReadinessKey -FolderPath ([string]$Job.sourceFolder) -SourceDgnFileName $src
+        } else {
+            $readinessKey = Get-QCReadinessKey -DocumentGuid ([string]$renditionMeta.documentGuid) -FolderPath ([string]$Job.sourceFolder) -QcPdfName ([string]$renditionMeta.qcPdfName)
+        }
     }
 
     $folder = if ($Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }

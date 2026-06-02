@@ -113,6 +113,18 @@ try {
     Assert-Eq $built.Data.job.type 'QC_RENDITION' 'Built rendition job type'
     Assert-Eq $built.Data.job.metadata.rendition.parentPrependJobId 'prepend-job-1' 'Parent job link'
 
+    $sheetKey = Get-QCRenditionSheetReadinessKey -FolderPath 'ProjectX\CADD\Sheets' -SourceDgnFileName 'sheet.dgn'
+    Assert-Eq $sheetKey 'sheet:projectx\cadd\sheets|sheet' 'Sheet readiness key'
+
+    $dk1 = _QCR-GetRenditionDedupeKeyForSheet -FolderPath 'ProjectX\CADD\Sheets' -SourceDgnFileName 'sheet.dgn'
+    $dk2 = _QCR-GetRenditionDedupeKeyForSheet -FolderPath 'ProjectX\CADD\Sheets' -SourceDgnFileName 'sheet.dgn'
+    Assert-Eq $dk1 $dk2 'Sheet dedupe key stable'
+    Assert-True ($dk1.StartsWith('dq_qcrendition_')) 'Sheet dedupe prefix'
+
+    $jid1 = _QCR-GetRenditionJobIdForSheet -FolderPath 'ProjectX\CADD\Sheets' -SourceDgnFileName 'sheet.dgn'
+    $jid2 = _QCR-GetRenditionJobIdForSheet -FolderPath 'ProjectX\CADD\Sheets' -SourceDgnFileName 'sheet.dgn'
+    Assert-Eq $jid1 $jid2 'Sheet job id stable'
+
     Write-Host 'All QC rendition tests passed.' -ForegroundColor Green
 }
 finally {
