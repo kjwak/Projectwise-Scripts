@@ -35,13 +35,13 @@ Relevant audit actions monitored:
 
 ### Secondary: Full Folder Reconciliation
 
-Every Nth cycle (configured by `auditPoller.reconcileEveryNCycles`, default 20), the watcher runs a full directory scan using the original folder-walking logic. This:
+At each configured wall-clock time (`auditPoller.fullScanSchedule.times`, e.g. `06:00` and `18:00` in `runtime.displayTimeZoneId`), the watcher runs a full directory scan using the original folder-walking logic. This:
 
 - Catches any events the audit trail missed (retention gaps, edge cases).
 - Populates the `sheet_index` database table with document metadata.
 - Runs STATUS_SET_GEN manifest comparison for all watched folders.
 
-Full folder reconciliation runs every `reconcileEveryNCycles` audit ticks (default 20), not on the first audit tick.
+Full folder reconciliation runs once per schedule slot per calendar day (after the configured time), not on the first audit tick.
 
 ### Fallback Behavior
 

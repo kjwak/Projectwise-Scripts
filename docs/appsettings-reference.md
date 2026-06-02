@@ -292,7 +292,7 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 
 | Value | Behavior |
 |-------|----------|
-| `audit_only` | Audit SQL each tick; full folder scan every `auditPoller.reconcileEveryNCycles`. |
+| `audit_only` | Audit SQL each tick; full folder scan at `auditPoller.fullScanSchedule.times` (wall clock). |
 | `hybrid` | Audit first; full scan if `reconciliation.downtimeThresholdSeconds` exceeded. |
 | `recovery` | Like hybrid for catch-up after outage. |
 | `reconciliation` | Full PW folder walk **every** tick (heaviest; repair mode). |
@@ -312,7 +312,7 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `reconcileStatusSetsOnStart` | Startup `Invoke-StatusSetReconcile` (local PDF → PW only). |
 | `downtimeThresholdSeconds` | `0` = off; else audit lag triggers full scan in hybrid/recovery. |
 
-**Note:** Pass 20 full scan (`reconcileEveryNCycles`) is separate from `reconcileStatusSetsOnStart`.
+**Note:** Scheduled full scans (`fullScanSchedule.times`) are separate from `reconcileStatusSetsOnStart`.
 
 ---
 
@@ -323,7 +323,8 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `enabled` | true | Query `dms_audt`. |
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
-| `reconcileEveryNCycles` | 100 | Full folder scan every N watcher passes; reconciles `sheet_index` EM/QC attributes for paired sheets. |
+| `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
+| `reconcileEveryNCycles` | — | Legacy fallback when `fullScanSchedule.times` is empty. |
 | `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events (includes `DOCUMENT_ATTR`), re-read description for `QC_Archivist` and enqueue `QC_PREPEND` when matched. |
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on `*-qc.pdf`. |
 | `workflowTriggers.recordFromProcessor` | true | Also record state/attribute changes from `QC_PREPEND` and `QC_COMMENT_STATUS_SYNC` processors. |

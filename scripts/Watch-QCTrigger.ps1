@@ -252,6 +252,7 @@ function _Reset-WatcherPassState {
     $script:pollRunWatermarkBefore = $null
     $script:pollRunWatermarkAfter = $null
     $script:watcherRanReconciliationScan = $false
+    $script:fullScanScheduleInFlightSlotKey = $null
     $script:watcherPassNumber = $null
     $script:passNumberSource = 'unset'
     $script:runMode = 'manual'
@@ -564,11 +565,9 @@ if ($statusSetRules.Count -ge 0) {
                 $passNumberSource = 'error'
                 Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath = $counterPath }
             }
-            $reconcileEvery = 20
-            if ($auditPollerCfg -and $auditPollerCfg.ContainsKey('reconcileEveryNCycles') -and $auditPollerCfg.reconcileEveryNCycles) {
-                try { $reconcileEvery = [int]$auditPollerCfg.reconcileEveryNCycles } catch { $reconcileEvery = 20 }
-            }
-            $isReconciliationCycle = ($cycleNum -ge $reconcileEvery) -and (($cycleNum % $reconcileEvery) -eq 0)
+            $fullScanPlan = Get-QCFullFolderScanReconciliationPlan -Config $config -CycleNum $cycleNum -QueueRoot $queueRoot
+            $isReconciliationCycle = [bool]$fullScanPlan.due
+            $reconcileEvery = if ($null -ne $fullScanPlan.reconcileEvery) { [int]$fullScanPlan.reconcileEvery } else { $null }
             $lastWatermark = $null
             try { if ($auditPollTelemetry -and $auditPollTelemetry.watermarkAfter) { $lastWatermark = [datetime]::Parse([string]$auditPollTelemetry.watermarkAfter).ToUniversalTime() } } catch { }
             $recPlan = Get-QCReconciliationPlan -Config $config -WatcherMode $watcherMode -LastSuccessfulAuditWatermark $lastWatermark
@@ -612,7 +611,8 @@ if ($statusSetRules.Count -ge 0) {
                         restartOverlapUsed = if ($null -ne $pollWindow.restartOverlapUsed) { [bool]$pollWindow.restartOverlapUsed } else { $false }
                         watermarkAgeSeconds = $watermarkAgeSeconds
                         cycleNum = $cycleNum
-                        reconcileEvery = $reconcileEvery
+                        fullScanScheduleTimes = @($fullScanPlan.scheduledTimes)
+                        fullScanScheduleDue = [bool]$fullScanPlan.due
                     }
 
                     $runMode = 'audit'
@@ -1143,12 +1143,27 @@ if ($statusSetRules.Count -ge 0) {
             if ($isReconciliationCycle) {
                 $watcherRanReconciliationScan = $true
                 $runMode = 'reconciliation'
-                $reconciliationReason = 'scheduled_cycle'
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message 'Running full folder scan (reconciliation cycle).' -Data @{
-                    cycleNum = $cycleNum; reconcileEvery = $reconcileEvery
+                $reconciliationReason = [string]$fullScanPlan.reason
+                if ($fullScanPlan.mode -eq 'schedule' -and $fullScanPlan.slotKey) {
+                    $script:fullScanScheduleInFlightSlotKey = [string]$fullScanPlan.slotKey
+                }
+                $scanMsg = if ($fullScanPlan.mode -eq 'schedule') {
+                    "Running full folder scan (scheduled time $($fullScanPlan.scheduledTime))."
+                } else {
+                    "Running full folder scan (reconciliation cycle $cycleNum, every $reconcileEvery)."
+                }
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message $scanMsg -Data @{
+                    cycleNum = $cycleNum
+                    reconcileEvery = $reconcileEvery
+                    fullScanMode = [string]$fullScanPlan.mode
+                    scheduledTime = [string]$fullScanPlan.scheduledTime
+                    scheduledTimes = @($fullScanPlan.scheduledTimes)
+                    slotKey = [string]$fullScanPlan.slotKey
                 }
                 $runFullScan = $true
-                Reset-AuditPollCycleCounter -CounterPath $counterPath
+                if ($fullScanPlan.mode -eq 'cycle') {
+                    Reset-AuditPollCycleCounter -CounterPath $counterPath
+                }
             }
 
             # --- FULL FOLDER SCAN (reconciliation or fallback) ---
@@ -1412,7 +1427,7 @@ if ($statusSetRules.Count -ge 0) {
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
                                     reconciliationCycle = [bool]$isReconciliationCycle
-                                    reconcileEvery = $reconcileEvery
+                                    scheduledTime = [string]$fullScanPlan.scheduledTime
                                 }
                                 $stateGuids = @()
                                 foreach ($ps in @($state.pairedSheets)) {
@@ -1711,6 +1726,22 @@ if ($statusSetRules.Count -ge 0) {
                         scriptStackTrace = [string]$_.ScriptStackTrace
                     }
                 }
+            }
+
+            if ($script:fullScanScheduleInFlightSlotKey) {
+                try {
+                    $slotDone = Set-QCFullScanScheduleSlotComplete -Config $config -SlotKey $script:fullScanScheduleInFlightSlotKey -QueueRoot $queueRoot
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
+                        slotKey = $script:fullScanScheduleInFlightSlotKey
+                        persisted = [bool]$slotDone
+                    }
+                } catch {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_FAILED' -Message 'Could not persist full-scan schedule slot completion.' -Data @{
+                        slotKey = $script:fullScanScheduleInFlightSlotKey
+                        error = [string]$_.Exception.Message
+                    }
+                }
+                $script:fullScanScheduleInFlightSlotKey = $null
             }
 
             } # end if ($runFullScan)

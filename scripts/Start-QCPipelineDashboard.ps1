@@ -1291,12 +1291,17 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                         $state.pwFoldersPreparedSeen = $false
                     }
                     if ($o.code -eq 'WATCH_RECONCILE_CYCLE') {
-                        $cn = 0; $every = 20
+                        $stage = 'scheduled full folder scan'
                         try {
-                            $cn = [int]$o.data.cycleNum
-                            $every = [int]$o.data.reconcileEvery
+                            if ($o.data -and $o.data.scheduledTime) {
+                                $stage = "scheduled full folder scan ($([string]$o.data.scheduledTime))"
+                            } elseif ($o.data -and $o.data.reconcileEvery) {
+                                $cn = [int]$o.data.cycleNum
+                                $every = [int]$o.data.reconcileEvery
+                                $stage = "scheduled full folder scan (cycle $cn, every $every)"
+                            }
                         } catch { }
-                        $state.currentScanStage = "scheduled full folder scan (cycle $cn, every $every)"
+                        $state.currentScanStage = $stage
                         $state.pwFoldersPreparedSeen = $false
                     }
                     if ($o.code -eq 'WATCH_PW_ERROR') {

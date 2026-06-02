@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $orchRoot = $PSScriptRoot
 Import-Module (Join-Path $orchRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $orchRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 
 function Get-QCReconcileStatusSetsOnStart {
     [CmdletBinding()]
@@ -310,4 +311,201 @@ function Invoke-QCWatcherStartupSequence {
     return New-QCSuccessResult -Code $code -Message 'Watcher startup sequence completed.' -Data $telemetry
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds
+function _QCWO-GetConfigSectionHashtable {
+    param([hashtable]$Config, [string]$Key)
+    if (-not $Config -or -not $Config.ContainsKey($Key) -or -not $Config[$Key]) { return $null }
+    $sec = $Config[$Key]
+    if ($sec -is [hashtable]) { return $sec }
+    if (Get-Command -Name 'ConvertTo-HashtableDeep' -ErrorAction SilentlyContinue) {
+        return ConvertTo-HashtableDeep -Value $sec
+    }
+    return $null
+}
+
+function Get-QCFullScanScheduleTimesFromConfig {
+    <#
+    .SYNOPSIS
+    Wall-clock times (HH:mm) for scheduled full PW folder scans. Uses auditPoller.fullScanSchedule.times, then reconciliation.folderScanSchedule.times.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $raw = @()
+    foreach ($loc in @(
+            @{ section = 'auditPoller'; scheduleKey = 'fullScanSchedule' },
+            @{ section = 'reconciliation'; scheduleKey = 'folderScanSchedule' }
+        )) {
+        $sec = _QCWO-GetConfigSectionHashtable -Config $Config -Key $loc.section
+        if (-not $sec) { continue }
+        $sched = $null
+        if ($sec.ContainsKey($loc.scheduleKey) -and $sec[$loc.scheduleKey]) {
+            $sched = $sec[$loc.scheduleKey]
+        }
+        if (-not $sched) { continue }
+        $list = $null
+        if ($sched -is [hashtable] -and $sched.ContainsKey('times')) { $list = $sched.times }
+        elseif ($sched.PSObject -and $sched.times) { $list = $sched.times }
+        if ($list) { $raw = @($list) }
+        if ($raw.Count -gt 0) { break }
+    }
+
+    $normalized = [System.Collections.Generic.List[string]]::new()
+    foreach ($t in $raw) {
+        $text = ([string]$t).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if ($text -notmatch '^(\d{1,2}):(\d{2})$') { continue }
+        $h = [int]$Matches[1]
+        $m = [int]$Matches[2]
+        if ($h -lt 0 -or $h -gt 23 -or $m -lt 0 -or $m -gt 59) { continue }
+        $hhmm = '{0:D2}:{1:D2}' -f $h, $m
+        if ($normalized -notcontains $hhmm) { [void]$normalized.Add($hhmm) }
+    }
+    return @($normalized | Sort-Object)
+}
+
+function _QCWO-GetFullScanScheduleStatePath {
+    param([hashtable]$Config, [string]$QueueRoot)
+    $root = $QueueRoot
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        $q = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'queue'
+        if ($q -and $q.ContainsKey('rootDir') -and $q.rootDir) { $root = [string]$q.rootDir }
+    }
+    if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+    return Join-Path (Join-Path $root '_watcher') 'full-scan-schedule-state.json'
+}
+
+function Test-QCFullScanScheduleSlotComplete {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$SlotKey,
+        [string]$QueueRoot = ''
+    )
+    if (Get-Command -Name 'Get-QCWatcherStateValue' -ErrorAction SilentlyContinue) {
+        $v = Get-QCWatcherStateValue -Config $Config -StateKey $SlotKey
+        if (-not [string]::IsNullOrWhiteSpace($v)) { return $true }
+    }
+    $path = _QCWO-GetFullScanScheduleStatePath -Config $Config -QueueRoot $QueueRoot
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($doc.completedSlots) {
+            return @($doc.completedSlots | ForEach-Object { [string]$_ }) -contains $SlotKey
+        }
+    } catch { }
+    return $false
+}
+
+function Set-QCFullScanScheduleSlotComplete {
+    <#
+    .SYNOPSIS
+    Marks a full-scan schedule slot (full_scan_schedule|yyyy-MM-dd|HH:mm) complete for today.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$SlotKey,
+        [string]$QueueRoot = ''
+    )
+    $completedAt = (Get-Date).ToUniversalTime().ToString('o')
+    $ok = $false
+    if (Get-Command -Name 'Set-QCWatcherStateValue' -ErrorAction SilentlyContinue) {
+        $ok = [bool](Set-QCWatcherStateValue -Config $Config -StateKey $SlotKey -StateValue $completedAt)
+    }
+    $path = _QCWO-GetFullScanScheduleStatePath -Config $Config -QueueRoot $QueueRoot
+    if ($path) {
+        try {
+            $dir = Split-Path -Parent $path
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $slots = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            if (Test-Path -LiteralPath $path) {
+                $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+                foreach ($s in @($doc.completedSlots)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$s)) { [void]$slots.Add([string]$s) }
+                }
+            }
+            [void]$slots.Add($SlotKey)
+            $payload = @{ completedSlots = @($slots | Sort-Object) }
+            Set-Content -LiteralPath $path -Value ($payload | ConvertTo-Json -Compress) -Encoding UTF8
+            $ok = $true
+        } catch { }
+    }
+    return $ok
+}
+
+function Get-QCFullFolderScanReconciliationPlan {
+    <#
+    .SYNOPSIS
+    Returns whether a scheduled full folder scan is due (wall-clock times in display time zone).
+    Falls back to reconcileEveryNCycles when no schedule times are configured.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Nullable[int]]$CycleNum = $null,
+        [string]$QueueRoot = ''
+    )
+
+    $none = @{
+        due = $false
+        mode = 'none'
+        reason = $null
+        scheduledTime = $null
+        slotKey = $null
+        scheduledTimes = @()
+        reconcileEvery = $null
+    }
+
+    $times = Get-QCFullScanScheduleTimesFromConfig -Config $Config
+    if ($times.Count -gt 0) {
+        Set-QCDisplayTimeZoneFromConfig -Config $Config
+        $now = Get-QCWallClockNow
+        $day = $now.Date.ToString('yyyy-MM-dd')
+        foreach ($hhmm in $times) {
+            $parts = $hhmm.Split(':')
+            $slotAt = $now.Date.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])
+            if ($now -lt $slotAt) { continue }
+            $slotKey = "full_scan_schedule|$day|$hhmm"
+            if (-not (Test-QCFullScanScheduleSlotComplete -Config $Config -SlotKey $slotKey -QueueRoot $QueueRoot)) {
+                return @{
+                    due = $true
+                    mode = 'schedule'
+                    reason = 'scheduled_time'
+                    scheduledTime = $hhmm
+                    slotKey = $slotKey
+                    scheduledTimes = $times
+                    reconcileEvery = $null
+                }
+            }
+        }
+        return @{
+            due = $false
+            mode = 'schedule'
+            reason = 'all_slots_complete_today'
+            scheduledTime = $null
+            slotKey = $null
+            scheduledTimes = $times
+            reconcileEvery = $null
+        }
+    }
+
+    $reconcileEvery = 0
+    $ap = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'auditPoller'
+    if ($ap -and $ap.ContainsKey('reconcileEveryNCycles') -and $ap.reconcileEveryNCycles) {
+        try { $reconcileEvery = [int]$ap.reconcileEveryNCycles } catch { $reconcileEvery = 0 }
+    }
+    if ($reconcileEvery -lt 1 -or -not $CycleNum) { return $none }
+    $dueCycle = ($CycleNum -ge $reconcileEvery) -and (($CycleNum % $reconcileEvery) -eq 0)
+    if (-not $dueCycle) { return $none }
+    return @{
+        due = $true
+        mode = 'cycle'
+        reason = 'scheduled_cycle'
+        scheduledTime = $null
+        slotKey = $null
+        scheduledTimes = @()
+        reconcileEvery = $reconcileEvery
+    }
+}
+
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete
