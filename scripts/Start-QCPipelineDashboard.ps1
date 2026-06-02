@@ -60,6 +60,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+function _Resolve-RepoRootFromSettings([string]$SettingsPath, [string]$DefaultRoot) {
+    if ([string]::IsNullOrWhiteSpace($SettingsPath)) { return $DefaultRoot }
+    try {
+        $dir = Split-Path -Parent (Resolve-Path -LiteralPath $SettingsPath).Path
+        if ($dir -and (Test-Path -LiteralPath (Join-Path $dir 'modules\Core.Runtime.psm1'))) { return $dir }
+    } catch { }
+    return $DefaultRoot
+}
+
+$repoRoot = _Resolve-RepoRootFromSettings -SettingsPath $AppSettingsPath -DefaultRoot $repoRoot
+
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
@@ -406,6 +417,7 @@ function _Format-StatusSetJobLine([hashtable]$Cfg, [object]$Entry, [int]$ColWidt
 }
 
 $AppSettingsPath = _Resolve-AppSettingsPath -ProvidedPath $AppSettingsPath
+$repoRoot = _Resolve-RepoRootFromSettings -SettingsPath $AppSettingsPath -DefaultRoot $repoRoot
 $watcher = Join-Path $repoRoot 'scripts\\Watch-QCTrigger.ps1'
 $worker = Join-Path $repoRoot 'scripts\\Run-QCProcessor.ps1'
 if (-not (Test-Path -LiteralPath $watcher)) { throw "Watcher script not found: $watcher" }

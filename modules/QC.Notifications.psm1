@@ -6,6 +6,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction 
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
 
@@ -35,6 +36,29 @@ function _QCN-IsBlank([object]$Value) {
 function _QCN-GetProp([object]$Object, [string[]]$Names) {
     foreach ($n in @($Names)) {
         try { if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n } } catch { }
+    }
+    return $null
+}
+
+function _QCN-GetJobValue([hashtable]$Job, [string[]]$Keys) {
+    if (-not $Job) { return $null }
+    foreach ($k in @($Keys)) {
+        if ($Job.ContainsKey($k) -and $null -ne $Job[$k]) { return $Job[$k] }
+    }
+    $md = $null
+    if ($Job.ContainsKey('metadata') -and $Job.metadata) { $md = _QCN-ToHashtable $Job.metadata }
+    if ($md) {
+        foreach ($k in @($Keys)) {
+            if ($md.ContainsKey($k) -and $null -ne $md[$k]) { return $md[$k] }
+        }
+        if ($md.ContainsKey('candidate') -and $md.candidate) {
+            $cand = _QCN-ToHashtable $md.candidate
+            if ($cand) {
+                foreach ($k in @($Keys)) {
+                    if ($cand.ContainsKey($k) -and $null -ne $cand[$k]) { return $cand[$k] }
+                }
+            }
+        }
     }
     return $null
 }
@@ -351,6 +375,123 @@ function _QCN-UsesHtmlEmailBody([hashtable]$Settings, [hashtable]$EventCfg) {
     return ($format.Equals('Html', [StringComparison]::OrdinalIgnoreCase))
 }
 
+function _QCN-ResolveNotificationRoleEmails {
+    param(
+        [object]$Document,
+        [hashtable]$Settings,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null,
+        [hashtable]$RoleOverrides = $null
+    )
+
+    $attr = _QCN-ToHashtable $Settings.attributes
+    if (-not $attr) { $attr = @{} }
+    $reviewerField = if ($attr.reviewerEmailField) { [string]$attr.reviewerEmailField } else { 'EM_Reviewer_Email' }
+    $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
+    $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
+
+    $designer = ''
+    $reviewer = ''
+    $checker = ''
+    if ($RoleOverrides) {
+        if ($RoleOverrides.ContainsKey('designerEmail')) { $designer = [string]$RoleOverrides.designerEmail }
+        if ($RoleOverrides.ContainsKey('reviewerEmail')) { $reviewer = [string]$RoleOverrides.reviewerEmail }
+        if ($RoleOverrides.ContainsKey('checkerEmail')) { $checker = [string]$RoleOverrides.checkerEmail }
+    }
+    if ($Job) {
+        if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetJobValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')) }
+        if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail')) }
+        if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetJobValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')) }
+    }
+    if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
+    if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
+    if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $checkerField) }
+
+    $folderPath = ''
+    $sourceName = ''
+    if ($Job) {
+        $folderPath = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder','folderPath','incomingFolderPath'))
+        $sourceName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName','sourceDocumentName','incomingDocName'))
+        if (_QCN-IsBlank $sourceName) {
+            $sp = [string](_QCN-GetJobValue -Job $Job -Keys @('sourcePath'))
+            if (-not (_QCN-IsBlank $sp) -and $sp -match '\\') { $sourceName = [System.IO.Path]::GetFileName($sp) }
+        }
+    }
+    if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
+    if (_QCN-IsBlank $sourceName) { $sourceName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')) }
+    if (-not (_QCN-IsBlank $sourceName) -and $sourceName -match '(?i)-qc\.pdf$') {
+        $sourceName = [string]([System.IO.Path]::GetFileNameWithoutExtension($sourceName)) + '.pdf'
+    }
+
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $sourceName)) {
+        if ((_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer)) {
+            if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+                $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folderPath -SourceDocumentName $sourceName -Config $Config
+                if ($pw.found) {
+                    if (_QCN-IsBlank $designer) { $designer = [string]$pw.designerEmail }
+                    if (_QCN-IsBlank $reviewer) { $reviewer = [string]$pw.reviewerEmail }
+                    if (_QCN-IsBlank $checker) { $checker = [string]$pw.checkerEmail }
+                }
+            }
+        }
+    }
+
+    return @{ designerEmail = $designer; reviewerEmail = $reviewer; checkerEmail = $checker }
+}
+
+function _QCN-ResolveQcPdfNotificationTarget {
+    param(
+        [object]$Document,
+        [hashtable]$Config,
+        [hashtable]$Job,
+        [string]$DocumentName,
+        [string]$DocumentGuid,
+        [string]$DocumentPath
+    )
+
+    $out = @{
+        document = $Document
+        documentName = $DocumentName
+        documentGuid = $DocumentGuid
+        documentPath = $DocumentPath
+    }
+    if ($DocumentName -match '(?i)-qc\.pdf$') { return $out }
+
+    $folderPath = $DocumentPath
+    $triggerName = $DocumentName
+    if ($Job) {
+        if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder','folderPath','incomingFolderPath')) }
+        if (_QCN-IsBlank $triggerName) { $triggerName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName','sourceDocumentName','incomingDocName')) }
+    }
+    if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
+    if (_QCN-IsBlank $triggerName) { $triggerName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName')) }
+
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $triggerName) -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
+        $guid = $DocumentGuid
+        if (_QCN-IsBlank $guid) { $guid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID','DocumentGuid','GUID')) }
+        try {
+            $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
+            foreach ($m in $members) {
+                $dn = [string]$m.documentName
+                if ($dn -match '(?i)-qc\.pdf$') {
+                    $out.documentName = $dn
+                    $out.documentGuid = [string]$m.documentGuid
+                    $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
+                    if ($m.document) { $out.document = $m.document }
+                    return $out
+                }
+            }
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($triggerName)
+            if ($stem) {
+                $qcName = $stem + '-qc.pdf'
+                $out.documentName = $qcName
+                $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $qcName) } else { $DocumentPath }
+            }
+        } catch { }
+    }
+    return $out
+}
+
 function Resolve-QCNotificationRecipients {
     <#
     .SYNOPSIS
@@ -362,7 +503,10 @@ function Resolve-QCNotificationRecipients {
         [hashtable]$Settings,
         [string[]]$ToRoles = @(),
         [string[]]$CcRoles = @(),
-        [string[]]$ExplicitCc = @()
+        [string[]]$ExplicitCc = @(),
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null,
+        [hashtable]$RoleOverrides = $null
     )
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
@@ -373,8 +517,9 @@ function Resolve-QCNotificationRecipients {
     $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
     $ccField = if ($attr.ccEmailField) { [string]$attr.ccEmailField } else { 'CcEmails' }
 
-    $reviewers = _QCN-ParseEmailList (_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField)
-    $designers = _QCN-ParseEmailList (_QCN-GetAttributeValue -Document $Document -AttributeName $designerField)
+    $roles = _QCN-ResolveNotificationRoleEmails -Document $Document -Settings $Settings -Config $Config -Job $Job -RoleOverrides $RoleOverrides
+    $reviewers = _QCN-ParseEmailList $roles.reviewerEmail
+    $designers = _QCN-ParseEmailList $roles.designerEmail
     $ccFromAttr = _QCN-ParseEmailList (_QCN-GetAttributeValue -Document $Document -AttributeName $ccField)
 
     $to = [System.Collections.Generic.List[string]]::new()
@@ -862,7 +1007,30 @@ function Invoke-QCNotificationForStateChange {
     $actionRequired = if ($eventCfg.actionRequired) { [string]$eventCfg.actionRequired } else { '' }
     $sourceJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
 
-    $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc)
+    $roleOverrides = $null
+    if ($Job -and $Job.ContainsKey('metadata') -and $Job.metadata) {
+        $md = _QCN-ToHashtable $Job.metadata
+        if ($md -and ($md.ContainsKey('attributes') -or $md.ContainsKey('designerEmail'))) {
+            $attrs = if ($md.attributes) { _QCN-ToHashtable $md.attributes } else { $md }
+            if ($attrs) {
+                $roleOverrides = @{
+                    designerEmail = if ($attrs.designerEmail) { [string]$attrs.designerEmail } else { '' }
+                    reviewerEmail = if ($attrs.reviewerEmail) { [string]$attrs.reviewerEmail } else { '' }
+                    checkerEmail = if ($attrs.checkerEmail) { [string]$attrs.checkerEmail } else { '' }
+                }
+            }
+        }
+    }
+
+    $qcTarget = _QCN-ResolveQcPdfNotificationTarget -Document $Document -Config $Config -Job $Job `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -DocumentPath $DocumentPath
+    $Document = $qcTarget.document
+    $DocumentName = [string]$qcTarget.documentName
+    $DocumentGuid = [string]$qcTarget.documentGuid
+    if (-not (_QCN-IsBlank $qcTarget.documentPath)) { $DocumentPath = [string]$qcTarget.documentPath }
+
+    $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc) `
+        -Config $Config -Job $Job -RoleOverrides $roleOverrides
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId

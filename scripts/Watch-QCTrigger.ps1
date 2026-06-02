@@ -271,6 +271,9 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+    throw "Core.Runtime.psm1 did not load (Write-QCJsonLog missing). Repo root: $repoRoot"
+}
 Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -WarningAction SilentlyContinue

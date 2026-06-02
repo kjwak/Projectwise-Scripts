@@ -118,8 +118,26 @@ function _QCW-InvokeStateChangeNotification {
     $job = $null
     if ($Context -and $Context.ContainsKey('job')) { $job = $Context.job }
     try {
+        $notifJob = $job
+        if ($Context -and $Context.ContainsKey('attributes') -and $Context.attributes) {
+            if (-not $notifJob) { $notifJob = @{} }
+            if (-not $notifJob.ContainsKey('metadata') -or -not $notifJob.metadata) { $notifJob['metadata'] = @{} }
+            $notifJob.metadata['attributes'] = $Context.attributes
+        }
+        if ($Context -and $Context.ContainsKey('jobId') -and $notifJob -and -not $notifJob.ContainsKey('id')) {
+            $notifJob['id'] = [string]$Context.jobId
+        }
+        if ($Context -and $Context.ContainsKey('documentPath') -and $notifJob) {
+            if (-not $notifJob.ContainsKey('sourceFolder')) {
+                $dp = [string]$Context.documentPath
+                if ($dp -match '\\') { $notifJob['sourceFolder'] = [System.IO.Path]::GetDirectoryName($dp) }
+            }
+            if (-not $notifJob.ContainsKey('sourceName') -and $Document) {
+                try { $notifJob['sourceName'] = [string]$Document.Name } catch { }
+            }
+        }
         return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
-            -Document $Document -Job $job
+            -Document $Document -Job $notifJob
     } catch {
         if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
             Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `

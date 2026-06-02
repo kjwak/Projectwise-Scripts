@@ -248,11 +248,20 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
     $reviewerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail','reviewer','qcReviewer')
     $checkerEmail = _QCP-GetJobMetadataValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')
     $reviewType = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType','qcReviewType')
+    $pwFolder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath','sourceFolder','incomingFolderPath')
+    $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName','incomingDocName','sourceDocumentName')
+    if (_QCP-IsNullOrWhiteSpace $pwDoc) { $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourcePath') }
+    if (-not (_QCP-IsNullOrWhiteSpace $pwDoc) -and $pwDoc -match '\\') { $pwDoc = [System.IO.Path]::GetFileName([string]$pwDoc) }
+    if (-not (_QCP-IsNullOrWhiteSpace $pwFolder) -and -not (_QCP-IsNullOrWhiteSpace $pwDoc)) {
+        $pwRoles = _QCP-GetReviewStampRoleFieldsFromJob -Job $Job -Config $Config -FolderPath ([string]$pwFolder) -SourceDocumentName ([string]$pwDoc)
+        if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.designerEmail)) { $designerEmail = [string]$pwRoles.designerEmail }
+        if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.reviewerEmail)) { $reviewerEmail = [string]$pwRoles.reviewerEmail }
+        if (-not (_QCP-IsNullOrWhiteSpace $pwRoles.checkerEmail)) { $checkerEmail = [string]$pwRoles.checkerEmail }
+        if (_QCP-IsNullOrWhiteSpace $reviewType) -and -not (_QCP-IsNullOrWhiteSpace $pwRoles.qcReviewType)) {
+            $reviewType = [string]$pwRoles.qcReviewType
+        }
+    }
     if (_QCP-IsNullOrWhiteSpace $reviewType) {
-        $pwFolder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath','sourceFolder','incomingFolderPath')
-        $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName','incomingDocName','sourceDocumentName')
-        if (_QCP-IsNullOrWhiteSpace $pwDoc) { $pwDoc = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourcePath') }
-        if (-not (_QCP-IsNullOrWhiteSpace $pwDoc) -and $pwDoc -match '\\') { $pwDoc = [System.IO.Path]::GetFileName([string]$pwDoc) }
         $qcRtEnabled = $true
         if (-not (_QCP-IsNullOrWhiteSpace $pwFolder) -and (Get-Command -Name 'Test-PWQcReviewTypeAttributesEnabled' -ErrorAction SilentlyContinue)) {
             $qcRtEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath ([string]$pwFolder)
@@ -266,6 +275,7 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
             }
         }
     }
+
     $lastActionBy = _QCP-GetJobMetadataValue -Job $Job -Keys @('lastActionBy','userName','triggeredBy')
     $cycleId = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleId','qcCycleId')
     $cycleNumber = _QCP-GetJobMetadataValue -Job $Job -Keys @('cycleNumber','qcCycleNumber')

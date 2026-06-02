@@ -177,6 +177,19 @@ function _QCAT-BuildNotificationDocument {
         if ($Attributes.ContainsKey($reviewerField)) { $doc[$reviewerField] = $Attributes[$reviewerField] }
         if ($Attributes.ContainsKey($designerField)) { $doc[$designerField] = $Attributes[$designerField] }
     }
+    elseif ($Config -and -not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
+        $srcName = [string]$DocumentName
+        if ($srcName -match '(?i)-qc\.pdf$') {
+            $srcName = [System.IO.Path]::GetFileNameWithoutExtension($srcName) + '.pdf'
+        }
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $srcName -Config $Config
+            if ($pw.found) {
+                if ($pw.designerEmail) { $doc[$designerField] = [string]$pw.designerEmail }
+                if ($pw.reviewerEmail) { $doc[$reviewerField] = [string]$pw.reviewerEmail }
+            }
+        }
+    }
     return [pscustomobject]$doc
 }
 

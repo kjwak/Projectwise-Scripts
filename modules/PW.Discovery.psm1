@@ -1935,12 +1935,57 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     )
 
     $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
-    $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+    $folderCandidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($fp in @($FolderPath)) {
+        if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+        $t = $fp.Trim().TrimEnd('\')
+        if (-not $folderCandidates.Contains($t)) { $folderCandidates.Add($t) | Out-Null }
+        if ($t -notmatch '^(?i)Documents\\') {
+            $withDocs = 'Documents\' + $t
+            if (-not $folderCandidates.Contains($withDocs)) { $folderCandidates.Add($withDocs) | Out-Null }
+        }
+    }
+
+    $read = @{ found = $false; error = 'Document not found'; attributes = @{}; pwStateName = '' }
+    $resolvedFolder = $FolderPath
+    foreach ($fp in @($folderCandidates)) {
+        $tryRead = Get-PWDocumentAttributesByColumns -FolderPath $fp -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+        if ($tryRead.found) {
+            $read = $tryRead
+            $resolvedFolder = $fp
+            break
+        }
+        if (-not $read.found -and $tryRead.error) { $read.error = [string]$tryRead.error }
+    }
     if (-not $read.found) {
         return @{ found = $false; error = [string]$read.error; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
     }
 
     $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $designerEmail = [string]$fields.designerEmail
+    $reviewerEmail = [string]$fields.reviewerEmail
+    $checkerEmail = [string]$fields.checkerEmail
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
+    if (-not [string]::IsNullOrWhiteSpace($stem)) {
+        $dgnName = $stem + '.dgn'
+        if ($dgnName -ne [string]$SourceDocumentName) {
+            $needDgn = [string]::IsNullOrWhiteSpace($designerEmail) -or [string]::IsNullOrWhiteSpace($reviewerEmail)
+            if ($needDgn) {
+                $dgnRead = Get-PWDocumentAttributesByColumns -FolderPath $resolvedFolder -DocumentName $dgnName -ColumnsToReturn $cols
+                if ($dgnRead.found) {
+                    $dgnFields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $dgnRead.attributes -PwStateName ([string]$dgnRead.pwStateName)
+                    if ([string]::IsNullOrWhiteSpace($designerEmail)) { $designerEmail = [string]$dgnFields.designerEmail }
+                    if ([string]::IsNullOrWhiteSpace($reviewerEmail)) { $reviewerEmail = [string]$dgnFields.reviewerEmail }
+                    if ([string]::IsNullOrWhiteSpace($checkerEmail)) { $checkerEmail = [string]$dgnFields.checkerEmail }
+                    if ([string]::IsNullOrWhiteSpace($fields.qcReviewType) -and $dgnFields.qcReviewType) {
+                        $fields.qcReviewType = [string]$dgnFields.qcReviewType
+                    }
+                }
+            }
+        }
+    }
+
     $qcReviewType = [string]$fields.qcReviewType
     if ([string]::IsNullOrWhiteSpace($qcReviewType) -and (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
         $qcReviewType = Get-PWQcDefaultReviewType -Config $Config
@@ -1948,9 +1993,9 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     return @{
         found          = $true
         error          = ''
-        designerEmail  = [string]$fields.designerEmail
-        reviewerEmail  = [string]$fields.reviewerEmail
-        checkerEmail   = [string]$fields.checkerEmail
+        designerEmail  = $designerEmail
+        reviewerEmail  = $reviewerEmail
+        checkerEmail   = $checkerEmail
         qcReviewType   = $qcReviewType
     }
 }
