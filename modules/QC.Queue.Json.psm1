@@ -1154,7 +1154,10 @@ function Lock-QCJob {
 
             $job = _QCQJ-ReadJobFile -Path $pending
             $job.status = 'running'
-            $job.startedAtUtc = (Get-QCTimestamp)
+            $nowTs = Get-QCTimestamp
+            $job.startedAtUtc = $nowTs
+            $job.heartbeatUtc = $nowTs
+            if (-not $job.ContainsKey('recoveryCount')) { $job.recoveryCount = 0 }
             _QCQJ-WriteJobFileAtomic -Path $pending -Job $job -Config $Config
             _QCQJ-MoveItemWithRetry -LiteralPath $pending -Destination $running -Config $Config
             $dupLock = _QCQJ-RemoveDuplicateJobFiles -Root $root -JobId $JobId -KeepState 'running' -Config $Config
@@ -1289,9 +1292,13 @@ function Recover-QCStaleJobs {
             if ($job.ContainsKey('startedAtUtc') -and $job.startedAtUtc) {
                 try { $started = [DateTime]::Parse([string]$job.startedAtUtc).ToUniversalTime() } catch { $started = $null }
             }
-            if (-not $started) { $started = $f.LastWriteTimeUtc }
+            $heartbeat = $null
+            if ($job.ContainsKey('heartbeatUtc') -and $job.heartbeatUtc) {
+                try { $heartbeat = [DateTime]::Parse([string]$job.heartbeatUtc).ToUniversalTime() } catch { $heartbeat = $null }
+            }
+            $reference = if ($heartbeat) { $heartbeat } elseif ($started) { $started } else { $f.LastWriteTimeUtc }
 
-            $age = ($now - $started).TotalSeconds
+            $age = ($now - $reference).TotalSeconds
 
             $lockPathJob = _QCQJ-LockFilePath -Root $root -JobId $jobId
             $isOrphan = $false
@@ -1339,8 +1346,12 @@ function Recover-QCStaleJobs {
                 if ($job.ContainsKey('startedAtUtc') -and $job.startedAtUtc) {
                     try { $started2 = [DateTime]::Parse([string]$job.startedAtUtc).ToUniversalTime() } catch { $started2 = $null }
                 }
-                if (-not $started2) { $started2 = $f2.LastWriteTimeUtc }
-                $age2 = ($now - $started2).TotalSeconds
+                $heartbeat2 = $null
+                if ($job.ContainsKey('heartbeatUtc') -and $job.heartbeatUtc) {
+                    try { $heartbeat2 = [DateTime]::Parse([string]$job.heartbeatUtc).ToUniversalTime() } catch { $heartbeat2 = $null }
+                }
+                $reference2 = if ($heartbeat2) { $heartbeat2 } elseif ($started2) { $started2 } else { $f2.LastWriteTimeUtc }
+                $age2 = ($now - $reference2).TotalSeconds
 
                 $lockPathJob2 = _QCQJ-LockFilePath -Root $root -JobId $jobId
                 $isOrphan2 = $false
@@ -1367,7 +1378,15 @@ function Recover-QCStaleJobs {
                 if ($job.ContainsKey('attempts') -and $job.attempts -ne $null) { $attempts = [int]$job.attempts }
                 $attempts++
                 $job.attempts = $attempts
+                $recoveryCount = 0
+                if ($job.ContainsKey('recoveryCount') -and $null -ne $job.recoveryCount) {
+                    try { $recoveryCount = [int]$job.recoveryCount } catch { $recoveryCount = 0 }
+                }
+                $recoveryCount++
+                $job.recoveryCount = $recoveryCount
+                $job.recoveryReason = if ($isOrphan2) { [string]$orphanReason2 } else { 'STALE_HEARTBEAT' }
                 $job.updatedAtUtc = (ConvertTo-QCTimestamp -DateTime $now)
+                $job.heartbeatUtc = $null
 
                 _QCQJ-ReleaseLockFile -LockPath $lockPathJob2
 
@@ -1498,6 +1517,54 @@ function Repair-QCQueueDuplicateJobs {
         repaired = $repaired
         removeFailed = $removeFailed
         duplicateJobCount = $repaired.Count
+    }
+}
+
+function Update-QCJobHeartbeat {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [hashtable]$Job = $null
+    )
+    $ts = Get-QCTimestamp
+    if ($Job) {
+        $Job.heartbeatUtc = $ts
+        $Job.updatedAtUtc = $ts
+        try {
+            $root = _QCQJ-GetQueueRoot -Config $Config
+            $runningPath = _QCQJ-JobFilePath -Root $root -State 'running' -JobId $JobId
+            if (Test-Path -LiteralPath $runningPath) {
+                _QCQJ-WriteJobFileAtomic -Path $runningPath -Job $Job -Config $Config | Out-Null
+            }
+        } catch { }
+    }
+    if (Get-Command -Name 'Update-QCProcessingJobHeartbeat' -ErrorAction SilentlyContinue) {
+        try { Update-QCProcessingJobHeartbeat -Config $Config -JobId $JobId | Out-Null } catch { }
+    }
+}
+
+function Set-QCJobCheckpoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Job,
+        [Parameter(Mandatory)][string]$Checkpoint,
+        [string]$CheckpointData = ''
+    )
+    $Job.checkpoint = [string]$Checkpoint
+    if ($CheckpointData) { $Job.checkpointData = $CheckpointData }
+    $Job.updatedAtUtc = Get-QCTimestamp
+    try {
+        $root = _QCQJ-GetQueueRoot -Config $Config
+        $runningPath = _QCQJ-JobFilePath -Root $root -State 'running' -JobId $JobId
+        if (Test-Path -LiteralPath $runningPath) {
+            _QCQJ-WriteJobFileAtomic -Path $runningPath -Job $Job -Config $Config | Out-Null
+        }
+    } catch { }
+    if (Get-Command -Name 'Update-QCProcessingJobCheckpoint' -ErrorAction SilentlyContinue) {
+        try { Update-QCProcessingJobCheckpoint -Config $Config -JobId $JobId -Checkpoint $Checkpoint -CheckpointData $CheckpointData | Out-Null } catch { }
     }
 }
 

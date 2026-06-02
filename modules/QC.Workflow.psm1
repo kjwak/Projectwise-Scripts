@@ -114,9 +114,58 @@ function _QCW-InvokeStateChangeNotification {
     )
 
     if (-not $Config) { return $null }
-    if (-not (Get-Command -Name Invoke-QCNotificationForStateChange -ErrorAction SilentlyContinue)) { return $null }
+    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return $null }
+
     $job = $null
     if ($Context -and $Context.ContainsKey('job')) { $job = $Context.job }
+
+    $enqueueAsJob = $false
+    if (Get-Command -Name 'Test-QCNotificationsEnqueueAsJob' -ErrorAction SilentlyContinue) {
+        try { $enqueueAsJob = Test-QCNotificationsEnqueueAsJob -Config $Config } catch { $enqueueAsJob = $false }
+    }
+    if ($enqueueAsJob -and (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
+        $dedupeKey = $null
+        if (Get-Command -Name 'Get-QCNotificationDedupeKey' -ErrorAction SilentlyContinue) {
+            try {
+                $dedupeKey = Get-QCNotificationDedupeKey -Config $Config -Document $Document -EventType $CurrentState -CurrentState $CurrentState
+            } catch { }
+        }
+        if ($dedupeKey) {
+            $dup = Test-QCDuplicateJob -DedupeKey $dedupeKey -Config $Config
+            if ($dup.IsSuccess -and [bool]$dup.Data.isDuplicate) {
+                return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
+            }
+        }
+        $notifJob = @{
+            id = ('qc_notification_' + [guid]::NewGuid().ToString('n').Substring(0, 12))
+            type = 'QC_NOTIFICATION'
+            status = 'pending'
+            createdAt = (Get-Date).ToUniversalTime().ToString('o')
+            attempts = 0
+            sourceFolder = if ($job -and $job.sourceFolder) { [string]$job.sourceFolder } else { '' }
+            sourceName = if ($Document) { try { [string]$Document.Name } catch { '' } } else { '' }
+            dedupeKey = $dedupeKey
+            metadata = @{
+                previousState = $PreviousState
+                currentState = $CurrentState
+                documentGuid = if ($Document) { try { [string]$Document.DocumentGUID } catch { '' } } else { '' }
+                parentJobId = if ($Context -and $Context.jobId) { [string]$Context.jobId } elseif ($job -and $job.id) { [string]$job.id } else { '' }
+            }
+        }
+        if ($Context -and $Context.ContainsKey('documentPath') -and $Context.documentPath) {
+            $dp = [string]$Context.documentPath
+            if ($dp -match '\\') { $notifJob.sourceFolder = [System.IO.Path]::GetDirectoryName($dp) }
+            if (-not $notifJob.sourceName) { $notifJob.sourceName = [System.IO.Path]::GetFileName($dp) }
+        }
+        if ($job) {
+            if (-not $notifJob.sourceFolder -and $job.sourceFolder) { $notifJob.sourceFolder = [string]$job.sourceFolder }
+            if (-not $notifJob.sourceName -and $job.sourceName) { $notifJob.sourceName = [string]$job.sourceName }
+        }
+        $enq = Add-QCQueueJob -Job $notifJob -Config $Config
+        if ($enq.IsSuccess) {
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_ENQUEUED' -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{ jobId = [string]$notifJob.id }
+        }
+    }
     try {
         $notifJob = $job
         if ($Context -and $Context.ContainsKey('attributes') -and $Context.attributes) {

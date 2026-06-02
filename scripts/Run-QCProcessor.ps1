@@ -370,6 +370,9 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         }
 
         Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
+        if (Get-Command -Name 'Update-QCJobHeartbeat' -ErrorAction SilentlyContinue) {
+            try { Update-QCJobHeartbeat -JobId $jobId -Config $Config -Job $Job | Out-Null } catch { }
+        }
         $jobSw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = Invoke-QCProcessorByType -Job $Job -Config $Config
         $jobSw.Stop()

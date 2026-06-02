@@ -702,6 +702,7 @@ function Invoke-QCProcessorByType {
         elseif ($jobType -eq 'QC_REPORTING_SCAN') { $handlerName = 'Invoke-QCReportingScanProcessor' }
         elseif ($jobType -eq 'QC_COMMENT_STATUS_SYNC') { $handlerName = 'Invoke-QCCommentStatusSyncProcessor' }
         elseif ($jobType -eq 'QC_RENDITION') { $handlerName = 'Invoke-QCRenditionProcessor' }
+        elseif ($jobType -eq 'QC_NOTIFICATION') { $handlerName = 'Invoke-QCNotificationProcessor' }
     }
 
     if (_QCP-IsNullOrWhiteSpace $handlerName) {
@@ -1459,6 +1460,58 @@ function Add-QCPrependJobForQcInitiatedStateChange {
         }
     }
     return $enq
+}
+
+function Test-QCNotificationsEnqueueAsJob {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    try {
+        if ($Config.ContainsKey('notifications') -and $Config.notifications) {
+            $n = $Config.notifications
+            if ($n -is [hashtable] -and $n.ContainsKey('enqueueAsJob')) { return [bool]$n.enqueueAsJob }
+            if ($n.PSObject -and $null -ne $n.enqueueAsJob) { return [bool]$n.enqueueAsJob }
+        }
+    } catch { }
+    return $false
+}
+
+function Invoke-QCNotificationProcessor {
+    <#
+    .SYNOPSIS
+    Sends a deferred QC notification job (decoupled from QC_PREPEND).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Job,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
+        return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
+    }
+    $meta = @{}
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) { $meta = $Job.metadata }
+    $prev = if ($meta.ContainsKey('previousState')) { [string]$meta.previousState } else { '' }
+    $curr = if ($meta.ContainsKey('currentState')) { [string]$meta.currentState } else { '' }
+    $doc = $null
+    if ($meta.ContainsKey('documentGuid') -and $meta.documentGuid) {
+        $doc = @{ DocumentGUID = [string]$meta.documentGuid; Name = if ($Job.sourceName) { [string]$Job.sourceName } else { '' } }
+    }
+    if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
+        Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint 'notification_send' | Out-Null
+    }
+    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc -Job $Job
+    if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
+        $cp = if ($res -and $res.IsSuccess) { 'notification_complete' } else { 'notification_failed' }
+        Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $cp | Out-Null
+    }
+    if ($null -eq $res) {
+        return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED' -Message 'Notification skipped or unavailable.' -Data @{}
+    }
+    if ($res.IsSuccess) {
+        return New-QCSuccessResult -Code 'QC_NOTIFICATION_JOB_OK' -Message 'Notification job completed.' -Data @{ notification = $res.Data }
+    }
+    return New-QCFailureResult -Code 'QC_NOTIFICATION_JOB_FAILED' -Message ([string]$res.Message) -Data @{ notificationCode = [string]$res.Code }
 }
 
 function Invoke-QCReportingScanProcessor {

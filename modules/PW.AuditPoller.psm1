@@ -53,13 +53,44 @@ function _AuditPoller-ResolveDocFoldersBatched {
         [hashtable]$Config,
         [string[]]$DocGuids,
         [hashtable]$DocToFolder,
-        [ref]$StatsRef
+        [ref]$StatsRef,
+        [hashtable]$InvalidateGuids = @{}
     )
+
+    $ttlSeconds = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'metadataCacheTtlSeconds' -Default 3600
+    $negTtlSeconds = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'negativeCacheTtlSeconds' -Default 1800
+    if (Get-Command -Name 'Get-QCPwDocumentCacheBatch' -ErrorAction SilentlyContinue) {
+        try {
+            $cacheRes = Get-QCPwDocumentCacheBatch -Config $Config -DocumentGuids @($DocGuids)
+            if ($cacheRes.IsSuccess -and $cacheRes.Data.cache) {
+                foreach ($k in $cacheRes.Data.cache.Keys) {
+                    $entry = $cacheRes.Data.cache[$k]
+                    if ($InvalidateGuids.ContainsKey($k)) { continue }
+                    if ($entry.resolveFailed) {
+                        $script:AuditPoller_UnresolvedGuids[$k] = $true
+                        if ($StatsRef.Value) { $StatsRef.Value.failedGuidCacheHits++ }
+                        continue
+                    }
+                    if ($entry.folderPath) {
+                        $script:AuditPoller_DocFolderCache[$k] = $entry.folderPath
+                        foreach ($dg in @($DocGuids)) {
+                            if ($dg.Trim().ToLowerInvariant() -eq $k) { $DocToFolder[$dg] = $entry.folderPath; break }
+                        }
+                        if ($StatsRef.Value) { $StatsRef.Value.guidCacheHits++ }
+                    }
+                }
+            }
+        } catch { }
+    }
 
     $needPw = [System.Collections.Generic.List[string]]::new()
     foreach ($dg in @($DocGuids)) {
         if ([string]::IsNullOrWhiteSpace($dg)) { continue }
         $key = $dg.Trim().ToLowerInvariant()
+        if ($InvalidateGuids.ContainsKey($key)) {
+            if ($script:AuditPoller_DocFolderCache.ContainsKey($key)) { $script:AuditPoller_DocFolderCache.Remove($key) | Out-Null }
+            if ($script:AuditPoller_UnresolvedGuids.ContainsKey($key)) { $script:AuditPoller_UnresolvedGuids.Remove($key) | Out-Null }
+        }
         if ($DocToFolder.ContainsKey($dg)) { continue }
         if ($script:AuditPoller_DocFolderCache.ContainsKey($key)) {
             $DocToFolder[$dg] = $script:AuditPoller_DocFolderCache[$key]
@@ -101,16 +132,32 @@ function _AuditPoller-ResolveDocFoldersBatched {
                             if (-not $dn) { $dn = [string]$doc.DocumentName }
                             Upsert-QCDocumentActivityFolder -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $canonical | Out-Null
                         }
+                        if (Get-Command -Name 'Set-QCPwDocumentCacheEntry' -ErrorAction SilentlyContinue) {
+                            $desc = ''
+                            try { if ($doc.Description) { $desc = [string]$doc.Description } } catch { }
+                            $wf = ''
+                            try { if ($doc.WorkflowState) { $wf = [string]$doc.WorkflowState } } catch { }
+                            Set-QCPwDocumentCacheEntry -Config $Config -DocumentGuid $dg -FolderPath $canonical -Description $desc -WorkflowState $wf -TtlSeconds $ttlSeconds | Out-Null
+                        }
                     }
                 }
             }
             foreach ($dg in $chunk) {
                 if (-not $found.ContainsKey($dg)) {
-                    $script:AuditPoller_UnresolvedGuids[$dg.Trim().ToLowerInvariant()] = $true
+                    $key = $dg.Trim().ToLowerInvariant()
+                    $script:AuditPoller_UnresolvedGuids[$key] = $true
+                    if (Get-Command -Name 'Set-QCPwDocumentCacheEntry' -ErrorAction SilentlyContinue) {
+                        Set-QCPwDocumentCacheEntry -Config $Config -DocumentGuid $dg -ResolveFailed -TtlSeconds $negTtlSeconds | Out-Null
+                    }
                 }
             }
         } catch {
-            foreach ($dg in $chunk) { $script:AuditPoller_UnresolvedGuids[$dg.Trim().ToLowerInvariant()] = $true }
+            foreach ($dg in $chunk) {
+                $script:AuditPoller_UnresolvedGuids[$dg.Trim().ToLowerInvariant()] = $true
+                if (Get-Command -Name 'Set-QCPwDocumentCacheEntry' -ErrorAction SilentlyContinue) {
+                    Set-QCPwDocumentCacheEntry -Config $Config -DocumentGuid $dg -ResolveFailed -TtlSeconds $negTtlSeconds | Out-Null
+                }
+            }
         }
     }
 }
@@ -496,12 +543,10 @@ function Get-AuditTrailHighWaterMarkFromDatabase {
 function Get-AuditTrailCaptureWatermark {
     <#
     .SYNOPSIS
-    Returns the latest audit capture timestamp from the local watermark file and/or poll_runs.
+    Returns the latest successful audit watermark (DB watcher_state is primary when enabled).
 
     .DESCRIPTION
-    poll_runs.watermark_after is only consulted when audit-capture-watermark.txt exists.
-    Deleting queue/_watcher (no file) resets capture to initialLookbackSeconds even if poll_runs
-    still has rows — avoids a stale DB watermark after a queue reset.
+    Order: watcher_state.audit_watermark_utc, local watermark file, poll_runs.watermark_after.
     #>
     [CmdletBinding()]
     param(
@@ -510,16 +555,21 @@ function Get-AuditTrailCaptureWatermark {
     )
 
     $found = @()
-    $watermarkFileExists = ($WatermarkPath -and (Test-Path -LiteralPath $WatermarkPath))
-    if ($watermarkFileExists) {
+    if (Get-Command -Name 'Get-QCAuditWatermarkUtc' -ErrorAction SilentlyContinue) {
+        try {
+            $dbWm = Get-QCAuditWatermarkUtc -Config $Config
+            if ($dbWm) { $found += $dbWm }
+        } catch { }
+    }
+    if ($WatermarkPath -and (Test-Path -LiteralPath $WatermarkPath)) {
         try {
             $raw = (Get-Content -LiteralPath $WatermarkPath -Raw -ErrorAction Stop).Trim()
             $parsed = _AuditPoller-ParseWatermarkToUtc -Raw $raw
             if ($parsed) { $found += $parsed }
         } catch { }
-        $db = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
-        if ($db) { $found += $db }
     }
+    $dbPoll = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
+    if ($dbPoll) { $found += $dbPoll }
     if ($found.Count -eq 0) { return $null }
     return ($found | Sort-Object -Descending | Select-Object -First 1)
 }
@@ -558,20 +608,28 @@ function Get-AuditTrailHighWaterMark {
 function Set-AuditTrailCaptureWatermark {
     <#
     .SYNOPSIS
-    Persists the audit capture high-water mark to the local watermark file.
+    Persists the audit capture high-water mark to watcher_state (when DB enabled) and the local file.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WatermarkPath,
-        [Parameter(Mandatory)][DateTime]$CapturedThrough
+        [Parameter(Mandatory)][DateTime]$CapturedThrough,
+        [hashtable]$Config = @{}
     )
 
+    $utc = $CapturedThrough.ToUniversalTime()
+    $ok = $true
+    if ($Config.Count -gt 0 -and (Get-Command -Name 'Set-QCAuditWatermarkUtc' -ErrorAction SilentlyContinue)) {
+        try { $ok = (Set-QCAuditWatermarkUtc -Config $Config -WatermarkUtc $utc) } catch { $ok = $false }
+    }
     try {
-        $dir = Split-Path -Parent $WatermarkPath
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $value = (_AuditPoller-FormatSqlUtc -Utc $CapturedThrough.ToUniversalTime()) + 'Z'
-        Set-Content -LiteralPath $WatermarkPath -Value $value -Encoding UTF8 -NoNewline
-        return $true
+        if ($WatermarkPath) {
+            $dir = Split-Path -Parent $WatermarkPath
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $value = (_AuditPoller-FormatSqlUtc -Utc $utc) + 'Z'
+            Set-Content -LiteralPath $WatermarkPath -Value $value -Encoding UTF8 -NoNewline
+        }
+        return $ok
     } catch {
         return $false
     }
@@ -590,7 +648,8 @@ function Get-AuditTrailPollWindow {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [string]$WatermarkPath = '',
-        [int]$LookbackSeconds = 120
+        [int]$LookbackSeconds = 120,
+        [switch]$UseRestartOverlap
     )
 
     # dms_audt o_acttime compares as UTC wall clock; do not use machine LocalDateTime for SQL bounds.
@@ -598,6 +657,7 @@ function Get-AuditTrailPollWindow {
     $lastCapture = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
     $initialLookbackSeconds = $LookbackSeconds
     $overlapSeconds = 0
+    $restartOverlapSeconds = 300
     try {
         if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
             $ap = $Config.auditPoller
@@ -608,17 +668,28 @@ function Get-AuditTrailPollWindow {
                 if ($ap.ContainsKey('overlapSeconds') -and $null -ne $ap.overlapSeconds) {
                     $overlapSeconds = [int]$ap.overlapSeconds
                 }
+                if ($ap.ContainsKey('restartOverlapSeconds') -and $null -ne $ap.restartOverlapSeconds) {
+                    $restartOverlapSeconds = [int]$ap.restartOverlapSeconds
+                }
             } elseif ($ap.PSObject) {
                 if ($null -ne $ap.initialLookbackSeconds) { $initialLookbackSeconds = [int]$ap.initialLookbackSeconds }
                 if ($null -ne $ap.overlapSeconds) { $overlapSeconds = [int]$ap.overlapSeconds }
+                if ($null -ne $ap.restartOverlapSeconds) { $restartOverlapSeconds = [int]$ap.restartOverlapSeconds }
             }
         }
     } catch { }
     if ($initialLookbackSeconds -lt 1) { $initialLookbackSeconds = $LookbackSeconds }
     if ($overlapSeconds -lt 0) { $overlapSeconds = 0 }
+    if ($restartOverlapSeconds -lt 0) { $restartOverlapSeconds = 0 }
 
     $since = if ($lastCapture) {
-        if ($overlapSeconds -gt 0) { $lastCapture.AddSeconds(-$overlapSeconds) } else { $lastCapture }
+        if ($UseRestartOverlap.IsPresent -and $restartOverlapSeconds -gt 0) {
+            $lastCapture.AddSeconds(-$restartOverlapSeconds)
+        } elseif ($overlapSeconds -gt 0) {
+            $lastCapture.AddSeconds(-$overlapSeconds)
+        } else {
+            $lastCapture
+        }
     } else {
         $until.AddSeconds(-$initialLookbackSeconds)
     }
@@ -637,8 +708,11 @@ function Get-AuditTrailPollWindow {
         untilDisplay    = _AuditPoller-FormatDisplayTime -Utc $until -Config $Config
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
-        lookbackSecondsUsed = if ($lastCapture) { $overlapSeconds } else { $initialLookbackSeconds }
-        overlapSecondsUsed  = $overlapSeconds
+        lookbackSecondsUsed = if ($lastCapture) {
+            if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $overlapSeconds }
+        } else { $initialLookbackSeconds }
+        overlapSecondsUsed  = if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $overlapSeconds }
+        restartOverlapUsed  = [bool]$UseRestartOverlap.IsPresent
         displayTimeZoneId = $tz.Id
     }
 }
@@ -684,6 +758,7 @@ function Invoke-AuditTrailScan {
         guidCacheHits      = 0
         guidCacheMisses    = 0
         guidResolveSkipped = 0
+        failedGuidCacheHits = 0
         triggerSource      = 'pw_batch'
     }
 
@@ -891,8 +966,17 @@ function Invoke-AuditTrailScan {
         $g
     } | Where-Object { $_ -and $_ -ne '' } | Select-Object -Unique)
 
+    $invalidate = @{}
+    foreach ($row in $triggerRows) {
+        $ac = 0
+        try { $ac = [int]$row.pw_action } catch { }
+        if ($ac -eq 1003) {
+            $og = [string]$row.pw_objguid
+            if (-not [string]::IsNullOrWhiteSpace($og)) { $invalidate[$og.Trim().ToLowerInvariant()] = $true }
+        }
+    }
     $statsRef = [ref]$stats
-    _AuditPoller-ResolveDocFoldersBatched -Config $Config -DocGuids $docGuids -DocToFolder $docToFolder -StatsRef $statsRef | Out-Null
+    _AuditPoller-ResolveDocFoldersBatched -Config $Config -DocGuids $docGuids -DocToFolder $docToFolder -StatsRef $statsRef -InvalidateGuids $invalidate | Out-Null
 
     $folderMap = @{}
     foreach ($row in $triggerRows) {

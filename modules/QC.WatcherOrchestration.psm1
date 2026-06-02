@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$orchRoot = $PSScriptRoot
+Import-Module (Join-Path $orchRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
+
 function Get-QCReconcileStatusSetsOnStart {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Config)
@@ -138,4 +141,173 @@ function Get-QCPrependAuditActions {
     return $defaults
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions
+function Invoke-QCRecoverQueue {
+    <#
+    .SYNOPSIS
+    RecoverQueue: stale/orphan running jobs, duplicate repair, optional watcher-active clear.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$ClearWatcherActive
+    )
+    if (Get-Command -Name 'Invoke-QCQueueStartupCheck' -ErrorAction SilentlyContinue) {
+        return Invoke-QCQueueStartupCheck -Config $Config -ClearWatcherActive:$ClearWatcherActive.IsPresent
+    }
+    return New-QCFailureResult -Code 'RECOVER_QUEUE_UNAVAILABLE' -Message 'QC.Queue.Json not loaded.' -Data @{}
+}
+
+function Invoke-QCReconcileAudit {
+    <#
+    .SYNOPSIS
+    ReconcileAudit: ingest audit events from watermark minus restart overlap; does not run folder scans.
+    Requires an open PW session and Invoke-AuditTrailScan.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$WatermarkPath,
+        [array]$WatchRootConfigs = @(),
+        [switch]$DryRun
+    )
+
+    $stats = @{ eventsFetched = 0; dbWrites = 0; candidates = 0; watermarkBefore = $null; watermarkAfter = $null; durationMs = 0 }
+    if (-not (Get-Command -Name 'Get-AuditTrailPollWindow' -ErrorAction SilentlyContinue)) {
+        return New-QCFailureResult -Code 'RECONCILE_AUDIT_UNAVAILABLE' -Message 'PW.AuditPoller not loaded.' -Data $stats
+    }
+    $pollWindow = Get-AuditTrailPollWindow -Config $Config -WatermarkPath $WatermarkPath -UseRestartOverlap
+    $stats.watermarkBefore = $pollWindow.watermarkBefore
+    if ($DryRun.IsPresent) {
+        return New-QCSuccessResult -Code 'RECONCILE_AUDIT_DRYRUN' -Message 'Audit reconcile dry-run (no PW query).' -Data @{
+            sinceUtc = $pollWindow.sinceUtc
+            untilUtc = $pollWindow.untilUtc
+            watermarkBefore = $pollWindow.watermarkBefore
+            restartOverlapUsed = [bool]$pollWindow.restartOverlapUsed
+        }
+    }
+    $scan = Invoke-AuditTrailScan -Config $Config -Since $pollWindow.since -Until $pollWindow.until -WatchRootConfigs $WatchRootConfigs
+    if (-not $scan.IsSuccess) {
+        return New-QCFailureResult -Code 'RECONCILE_AUDIT_SCAN_FAILED' -Message $scan.Message -Data $stats
+    }
+    $d = $scan.Data
+    if ($d.stats) {
+        $stats.eventsFetched = [int]$d.stats.totalEvents
+        $stats.dbWrites = [int]$d.stats.dbWrites
+        $stats.durationMs = [int]$d.durationMs
+    }
+    if ($d.candidates) { $stats.candidates = @($d.candidates).Count }
+    $stats.watermarkAfter = [string]$d.watermarkAfter
+    return New-QCSuccessResult -Code 'RECONCILE_AUDIT_OK' -Message 'Startup audit reconcile completed.' -Data @{
+        stats = $stats
+        pollWindow = $pollWindow
+        scan = $d
+    }
+}
+
+function Invoke-QCReconcileOutputs {
+    <#
+    .SYNOPSIS
+    ReconcileOutputs: lightweight verification of recent succeeded jobs and pending notification work.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $out = @{
+        notificationJobsPending = 0
+        recentSucceededJobs = 0
+        warnings = @()
+    }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'RECONCILE_OUTPUTS_SKIPPED' -Message 'Database disabled.' -Data $out
+    }
+    try {
+        $res = Invoke-QCDatabaseScalar -Config $Config -Sql @"
+SELECT COUNT(*) FROM processing_jobs
+WHERE job_type = 'QC_NOTIFICATION' AND status IN ('pending','running')
+"@
+        if ($res.IsSuccess) { $out.notificationJobsPending = [int]$res.Data.value }
+    } catch {
+        $out.warnings += $_.Exception.Message
+    }
+    try {
+        $root = $null
+        if ($Config.queue -and $Config.queue.rootDir) { $root = [string]$Config.queue.rootDir }
+        if ($root -and (Test-Path -LiteralPath (Join-Path $root 'succeeded'))) {
+            $out.recentSucceededJobs = @(Get-ChildItem -LiteralPath (Join-Path $root 'succeeded') -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+        }
+    } catch { }
+    return New-QCSuccessResult -Code 'RECONCILE_OUTPUTS_OK' -Message 'Output reconcile snapshot complete.' -Data $out
+}
+
+function Get-QCAuditWatermarkAgeSeconds {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config, [string]$WatermarkPath = '')
+    $wm = $null
+    if (Get-Command -Name 'Get-AuditTrailCaptureWatermark' -ErrorAction SilentlyContinue) {
+        $wm = Get-AuditTrailCaptureWatermark -Config $Config -WatermarkPath $WatermarkPath
+    }
+    if (-not $wm) { return $null }
+    return [int][Math]::Max(0, ((Get-Date).ToUniversalTime() - $wm.ToUniversalTime()).TotalSeconds)
+}
+
+function Invoke-QCWatcherStartupSequence {
+    <#
+    .SYNOPSIS
+    Startup: RecoverQueue → ReconcileAudit → ReconcileOutputs. Returns telemetry for WATCH_STARTUP_SEQUENCE log.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [array]$WatchRootConfigs = @(),
+        [switch]$ClearWatcherActive,
+        [switch]$DryRun,
+        [switch]$SkipAuditReconcile
+    )
+
+    $watermarkPath = Join-Path (Join-Path $QueueRoot '_watcher') 'audit-capture-watermark.txt'
+    $telemetry = @{
+        queueRecovery = $null
+        auditReconcile = $null
+        outputReconcile = $null
+        watermarkAgeSeconds = $null
+        errors = [System.Collections.Generic.List[string]]::new()
+    }
+
+    $rec = Invoke-QCRecoverQueue -Config $Config -ClearWatcherActive:$ClearWatcherActive.IsPresent
+    if ($rec.IsSuccess) { $telemetry.queueRecovery = $rec.Data } else { [void]$telemetry.errors.Add([string]$rec.Message) }
+
+    try { $telemetry.watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $Config -WatermarkPath $watermarkPath } catch { }
+
+    if (-not $SkipAuditReconcile.IsPresent) {
+        $auditRec = Invoke-QCReconcileAudit -Config $Config -WatermarkPath $watermarkPath -WatchRootConfigs $WatchRootConfigs -DryRun:$DryRun.IsPresent
+        if ($auditRec.IsSuccess) {
+            $telemetry.auditReconcile = $auditRec.Data
+            if (-not $DryRun.IsPresent -and $auditRec.Data.scan) {
+                $scanData = $auditRec.Data.scan
+                $captured = [DateTime]::UtcNow
+                if ($scanData.watermarkAfter) {
+                    try {
+                        $captured = [DateTime]::ParseExact(
+                            ([string]$scanData.watermarkAfter).Trim().TrimEnd('Z'),
+                            'yyyy-MM-dd HH:mm:ss',
+                            $null,
+                            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                        )
+                    } catch { }
+                }
+                [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $captured -Config $Config)
+            }
+        } else {
+            [void]$telemetry.errors.Add([string]$auditRec.Message)
+        }
+    }
+
+    $outRec = Invoke-QCReconcileOutputs -Config $Config
+    if ($outRec.IsSuccess) { $telemetry.outputReconcile = $outRec.Data } else { [void]$telemetry.errors.Add([string]$outRec.Message) }
+
+    $code = if ($telemetry.errors.Count -gt 0) { 'WATCHER_STARTUP_PARTIAL' } else { 'WATCHER_STARTUP_OK' }
+    return New-QCSuccessResult -Code $code -Message 'Watcher startup sequence completed.' -Data $telemetry
+}
+
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds

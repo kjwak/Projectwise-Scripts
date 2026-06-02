@@ -362,9 +362,20 @@ Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch 
 
 $queueRoot = _Get-WatcherQueueRoot -Config $config
 
+$script:auditRestartOverlapDone = $false
+$script:startupOutputsReconcileDone = $false
 try {
-    $startupRes = Invoke-QCQueueStartupCheck -Config $config -ClearWatcherActive
+    $startupRes = Invoke-QCRecoverQueue -Config $config -ClearWatcherActive
     $startupData = if ($startupRes.IsSuccess) { $startupRes.Data } else { @{} }
+    $wmAge = $null
+    try {
+        $wmPathStartup = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
+        $wmAge = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $wmPathStartup
+    } catch { }
+    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_STARTUP_SEQUENCE' -Message 'RecoverQueue completed (audit reconcile on first PW tick).' -Data @{
+        watermarkAgeSeconds = $wmAge
+        queueRecovery = $startupData.recovery
+    }
     $qStates = $null
     if ($startupData.queueStats -and $startupData.queueStats.states) { $qStates = $startupData.queueStats.states }
     $sqPending = 0; $sqRunning = 0; $sqSucceeded = 0; $sqFailed = 0
@@ -577,7 +588,9 @@ if ($statusSetRules.Count -ge 0) {
                     }
 
                     $watermarkPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
-                    $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds
+                    $useRestartOverlap = (-not $script:auditRestartOverlapDone)
+                    if ($useRestartOverlap) { $script:auditRestartOverlapDone = $true }
+                    $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds -UseRestartOverlap:$useRestartOverlap
                     $since = $pollWindow.since
                     $until = $pollWindow.until
 
@@ -594,6 +607,8 @@ if ($statusSetRules.Count -ge 0) {
                         watermarkBefore = $pollWindow.watermarkBefore
                         isFirstCapture = [bool]$pollWindow.isFirstCapture
                         overlapSecondsUsed = if ($null -ne $pollWindow.overlapSecondsUsed) { [int]$pollWindow.overlapSecondsUsed } else { 0 }
+                        restartOverlapUsed = if ($null -ne $pollWindow.restartOverlapUsed) { [bool]$pollWindow.restartOverlapUsed } else { $false }
+                        watermarkAgeSeconds = try { Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { $null }
                         cycleNum = $cycleNum
                         reconcileEvery = $reconcileEvery
                     }
@@ -663,7 +678,7 @@ if ($statusSetRules.Count -ge 0) {
                         } catch {
                             $capturedThrough = $until
                         }
-                        [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough)
+                        [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough -Config $config)
 
                         $script:pollRunWatermarkBefore = $pollWindow.watermarkBefore
                         $script:pollRunWatermarkAfter = $watermarkAfterStr
@@ -695,6 +710,7 @@ if ($statusSetRules.Count -ge 0) {
                             guidCacheHits  = [int]$auditData.stats.guidCacheHits
                             guidCacheMisses = [int]$auditData.stats.guidCacheMisses
                             guidResolveSkipped = [int]$auditData.stats.guidResolveSkipped
+                            failedGuidCacheHits = [int]$auditData.stats.failedGuidCacheHits
                             pagesFetched   = [int]$auditData.stats.pagesFetched
                             eventsTruncated = [bool]$auditData.stats.eventsTruncated
                             durationMs     = [int]$auditData.durationMs
@@ -1097,6 +1113,15 @@ if ($statusSetRules.Count -ge 0) {
                                         requested = $auditTriggerEventIds.Count
                                         marked = [int]$markRes.Data.marked
                                     }
+                                }
+                            } catch { }
+                        }
+                        if (-not $script:startupOutputsReconcileDone) {
+                            $script:startupOutputsReconcileDone = $true
+                            try {
+                                $outRec = Invoke-QCReconcileOutputs -Config $config
+                                if ($outRec.IsSuccess) {
+                                    Write-QCJsonLog -Level 'Information' -Code 'WATCH_RECONCILE_OUTPUTS' -Message 'Startup output reconcile snapshot.' -Data $outRec.Data
                                 }
                             } catch { }
                         }

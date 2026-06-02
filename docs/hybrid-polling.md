@@ -1,8 +1,8 @@
 # Hybrid Polling Architecture
 
-## Status: Operational (May 2026)
+## Status: Operational (June 2026)
 
-The pipeline uses a **hybrid polling** model where ProjectWise audit-trail events are the primary trigger source, with periodic full folder scanning as a reconciliation fallback.
+The pipeline is **audit-driven**: incremental `dms_audt` ingest into SQL, trigger evaluation on `audit_events.processed = 0`, and a durable watermark in `watcher_state` (plus local file mirror). Periodic full folder scans are reconciliation-only, not the steady-state path.
 
 ---
 

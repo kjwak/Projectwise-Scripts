@@ -364,15 +364,16 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.5.0'
+    $targetVersion = '1.6.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
     $schemaV1_3 = _QDB-GetSchemaV1dot3
     $schemaV1_4 = _QDB-GetSchemaV1dot4
     $schemaV1_5 = _QDB-GetSchemaV1dot5
-    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $schemaV1_6 = _QDB-GetSchemaV1dot6
+    $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1149,6 +1150,91 @@ SELECT
     s.file_modified_at,
     s.watch_root
 FROM sheet_index s');
+'@
+}
+
+function _QDB-GetSchemaV1dot6 {
+    return @'
+
+GO
+
+-- watcher_state: durable watcher cursor and operational flags (DB source of truth for audit watermark)
+IF OBJECT_ID('dbo.watcher_state', 'U') IS NULL
+CREATE TABLE watcher_state (
+    state_key       NVARCHAR(100) NOT NULL PRIMARY KEY,
+    state_value     NVARCHAR(500) NOT NULL,
+    updated_at      DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+
+GO
+
+-- pw_document_cache: TTL metadata cache to minimize repeated PW GUID lookups
+IF OBJECT_ID('dbo.pw_document_cache', 'U') IS NULL
+CREATE TABLE pw_document_cache (
+    document_guid       NVARCHAR(50) NOT NULL PRIMARY KEY,
+    folder_path         NVARCHAR(1000) NULL,
+    description         NVARCHAR(1000) NULL,
+    workflow_state      NVARCHAR(200) NULL,
+    resolve_failed      BIT NOT NULL DEFAULT 0,
+    last_audit_action   NVARCHAR(100) NULL,
+    cached_at           DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    expires_at          DATETIMEOFFSET(3) NOT NULL
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_document_cache_expires')
+    CREATE INDEX IX_pw_document_cache_expires ON pw_document_cache(expires_at);
+
+GO
+
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.processing_jobs', 'last_heartbeat_at') IS NULL
+        ALTER TABLE processing_jobs ADD last_heartbeat_at DATETIMEOFFSET(3) NULL;
+    IF COL_LENGTH('dbo.processing_jobs', 'recovery_count') IS NULL
+        ALTER TABLE processing_jobs ADD recovery_count INT NOT NULL DEFAULT 0;
+    IF COL_LENGTH('dbo.processing_jobs', 'recovery_reason') IS NULL
+        ALTER TABLE processing_jobs ADD recovery_reason NVARCHAR(200) NULL;
+    IF COL_LENGTH('dbo.processing_jobs', 'checkpoint') IS NULL
+        ALTER TABLE processing_jobs ADD checkpoint NVARCHAR(100) NULL;
+    IF COL_LENGTH('dbo.processing_jobs', 'checkpoint_data') IS NULL
+        ALTER TABLE processing_jobs ADD checkpoint_data NVARCHAR(MAX) NULL;
+END
+
+'@
+}
+
+function _QDB-GetSchemaV1dot6Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.watcher_state', 'U') IS NULL
+CREATE TABLE watcher_state (
+    state_key       NVARCHAR(100) NOT NULL PRIMARY KEY,
+    state_value     NVARCHAR(500) NOT NULL,
+    updated_at      DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
+);
+IF OBJECT_ID('dbo.pw_document_cache', 'U') IS NULL
+CREATE TABLE pw_document_cache (
+    document_guid       NVARCHAR(50) NOT NULL PRIMARY KEY,
+    folder_path         NVARCHAR(1000) NULL,
+    description         NVARCHAR(1000) NULL,
+    workflow_state      NVARCHAR(200) NULL,
+    resolve_failed      BIT NOT NULL DEFAULT 0,
+    last_audit_action   NVARCHAR(100) NULL,
+    cached_at           DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    expires_at          DATETIMEOFFSET(3) NOT NULL
+);
+IF OBJECT_ID('dbo.pw_document_cache', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_document_cache_expires')
+    CREATE INDEX IX_pw_document_cache_expires ON pw_document_cache(expires_at);
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'last_heartbeat_at') IS NULL
+    ALTER TABLE processing_jobs ADD last_heartbeat_at DATETIMEOFFSET(3) NULL;
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'recovery_count') IS NULL
+    ALTER TABLE processing_jobs ADD recovery_count INT NOT NULL DEFAULT 0;
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'recovery_reason') IS NULL
+    ALTER TABLE processing_jobs ADD recovery_reason NVARCHAR(200) NULL;
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'checkpoint') IS NULL
+    ALTER TABLE processing_jobs ADD checkpoint NVARCHAR(100) NULL;
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'checkpoint_data') IS NULL
+    ALTER TABLE processing_jobs ADD checkpoint_data NVARCHAR(MAX) NULL;
 '@
 }
 
@@ -2423,4 +2509,190 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder
+function Get-QCWatcherStateValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$StateKey
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
+    try {
+        $res = Invoke-QCDatabaseScalar -Config $Config -Sql 'SELECT state_value FROM watcher_state WHERE state_key = @k' -Parameters @{ k = $StateKey }
+        if ($res.IsSuccess -and $res.Data.value) { return [string]$res.Data.value }
+    } catch { }
+    return $null
+}
+
+function Set-QCWatcherStateValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$StateKey,
+        [Parameter(Mandatory)][string]$StateValue
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $false }
+    try {
+        $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+MERGE watcher_state AS tgt
+USING (SELECT @k AS state_key, @v AS state_value) AS src
+ON tgt.state_key = src.state_key
+WHEN MATCHED THEN UPDATE SET state_value = src.state_value, updated_at = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT (state_key, state_value) VALUES (src.state_key, src.state_value);
+"@ -Parameters @{ k = $StateKey; v = $StateValue }
+        return [bool]$res.IsSuccess
+    } catch { return $false }
+}
+
+function Get-QCAuditWatermarkUtc {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $raw = Get-QCWatcherStateValue -Config $Config -StateKey 'audit_watermark_utc'
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    try {
+        $s = $raw.Trim().TrimEnd('Z')
+        return [DateTime]::ParseExact(
+            $s,
+            'yyyy-MM-dd HH:mm:ss',
+            $null,
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+        )
+    } catch {
+        try { return [DateTime]::Parse($raw).ToUniversalTime() } catch { return $null }
+    }
+}
+
+function Set-QCAuditWatermarkUtc {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][DateTime]$WatermarkUtc
+    )
+    $value = $WatermarkUtc.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
+    return (Set-QCWatcherStateValue -Config $Config -StateKey 'audit_watermark_utc' -StateValue $value)
+}
+
+function Get-QCPwDocumentCacheBatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string[]]$DocumentGuids
+    )
+    $cache = @{}
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'PW_DOC_CACHE_SKIPPED' -Message 'Database disabled.' -Data @{ cache = $cache; hits = 0; failedHits = 0 }
+    }
+    $guids = @($DocumentGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($guids.Count -eq 0) {
+        return New-QCSuccessResult -Code 'PW_DOC_CACHE_NONE' -Message 'No GUIDs.' -Data @{ cache = $cache; hits = 0; failedHits = 0 }
+    }
+    $hits = 0; $failedHits = 0
+    $chunkSize = 100
+    for ($i = 0; $i -lt $guids.Count; $i += $chunkSize) {
+        $chunk = @($guids[$i..[Math]::Min($i + $chunkSize - 1, $guids.Count - 1)])
+        $paramNames = @(); $params = @{}
+        for ($j = 0; $j -lt $chunk.Count; $j++) {
+            $paramNames += "@g$j"
+            $params["g$j"] = $chunk[$j]
+        }
+        $inList = $paramNames -join ','
+        $sql = @"
+SELECT document_guid, folder_path, description, workflow_state, resolve_failed
+FROM pw_document_cache
+WHERE document_guid IN ($inList)
+  AND expires_at > SYSDATETIMEOFFSET()
+"@
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+            if ($res.IsSuccess -and $res.Data.rows) {
+                foreach ($row in @($res.Data.rows)) {
+                    $g = ([string]$row.document_guid).Trim().ToLowerInvariant()
+                    if ([bool]$row.resolve_failed) {
+                        $cache[$g] = @{ resolveFailed = $true }
+                        $failedHits++
+                    } else {
+                        $cache[$g] = @{
+                            folderPath = [string]$row.folder_path
+                            description = [string]$row.description
+                            workflowState = [string]$row.workflow_state
+                            resolveFailed = $false
+                        }
+                        $hits++
+                    }
+                }
+            }
+        } catch { }
+    }
+    return New-QCSuccessResult -Code 'PW_DOC_CACHE_OK' -Message "Cache loaded: $hits hits, $failedHits negative." -Data @{ cache = $cache; hits = $hits; failedHits = $failedHits }
+}
+
+function Set-QCPwDocumentCacheEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$FolderPath = '',
+        [string]$Description = '',
+        [string]$WorkflowState = '',
+        [string]$LastAuditAction = '',
+        [int]$TtlSeconds = 3600,
+        [switch]$ResolveFailed
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    $g = ([string]$DocumentGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($g)) { return }
+    if ($TtlSeconds -lt 60) { $TtlSeconds = 60 }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+MERGE pw_document_cache AS tgt
+USING (SELECT @guid AS document_guid) AS src
+ON tgt.document_guid = src.document_guid
+WHEN MATCHED THEN UPDATE SET
+    folder_path = CASE WHEN @failed = 1 THEN tgt.folder_path ELSE COALESCE(NULLIF(@folder,''), tgt.folder_path) END,
+    description = CASE WHEN @failed = 1 THEN tgt.description ELSE COALESCE(NULLIF(@desc,''), tgt.description) END,
+    workflow_state = CASE WHEN @failed = 1 THEN tgt.workflow_state ELSE COALESCE(NULLIF(@state,''), tgt.workflow_state) END,
+    resolve_failed = @failed,
+    last_audit_action = COALESCE(NULLIF(@action,''), tgt.last_audit_action),
+    cached_at = SYSDATETIMEOFFSET(),
+    expires_at = DATEADD(SECOND, @ttl, SYSDATETIMEOFFSET())
+WHEN NOT MATCHED THEN INSERT
+    (document_guid, folder_path, description, workflow_state, resolve_failed, last_audit_action, expires_at)
+VALUES
+    (@guid, @folder, @desc, @state, @failed, @action, DATEADD(SECOND, @ttl, SYSDATETIMEOFFSET()));
+"@ -Parameters @{
+            guid = $g; folder = $FolderPath; desc = $Description; state = $WorkflowState
+            action = $LastAuditAction; ttl = $TtlSeconds; failed = [bool]$ResolveFailed.IsPresent
+        })
+    } catch { }
+}
+
+function Update-QCProcessingJobCheckpoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][string]$Checkpoint,
+        [string]$CheckpointData = ''
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE processing_jobs
+SET checkpoint = @cp, checkpoint_data = @data, last_heartbeat_at = SYSDATETIMEOFFSET()
+WHERE job_id = @jobId
+"@ -Parameters @{ jobId = $JobId; cp = $Checkpoint; data = $CheckpointData })
+    } catch { }
+}
+
+function Update-QCProcessingJobHeartbeat {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobId
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql 'UPDATE processing_jobs SET last_heartbeat_at = SYSDATETIMEOFFSET() WHERE job_id = @jobId' -Parameters @{ jobId = $JobId })
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
