@@ -7,6 +7,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction S
 Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -308,6 +309,40 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
     }
 }
 
+function _QCP-ResolvePwDocumentForJob([hashtable]$Job, [hashtable]$Config) {
+    if (-not $Job) { return $null }
+    if ($Job.ContainsKey('document') -and $Job.document) { return $Job.document }
+
+    if (Get-Command -Name 'Get-QCCommentSyncPwDocument' -ErrorAction SilentlyContinue) {
+        try {
+            $res = Get-QCCommentSyncPwDocument -Job $Job -Config $Config
+            if ($res.IsSuccess -and $res.Data -and $res.Data.document) {
+                $Job['document'] = $res.Data.document
+                return $res.Data.document
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_PREPEND_PW_DOC_RESOLVE_FAILED' `
+                    -Message 'Could not resolve ProjectWise document for workflow writeback.' -Data @{
+                    jobId = if ($Job.id) { [string]$Job.id } else { $null }
+                    code = [string]$res.Code
+                    message = [string]$res.Message
+                    sourceFolder = if ($Job.sourceFolder) { [string]$Job.sourceFolder } else { $null }
+                    sourceName = if ($Job.sourceName) { [string]$Job.sourceName } else { $null }
+                } | Out-Null
+            }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_PREPEND_PW_DOC_RESOLVE_FAILED' `
+                    -Message 'ProjectWise document resolution threw.' -Data @{
+                    jobId = if ($Job.id) { [string]$Job.id } else { $null }
+                    errorMessage = [string]$_.Exception.Message
+                } | Out-Null
+            }
+        }
+    }
+    return $null
+}
+
 function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [object]$Writeback, [string]$PrependTrigger) {
     if (-not (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue)) { return }
 
@@ -328,6 +363,7 @@ function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [
     $dryRun = $false
     $warnings = @()
 
+    $transitionDetail = $null
     if ($Writeback -and $Writeback.Data) {
         $wbData = _QCP-ToHashtable $Writeback.Data
         if ($wbData) {
@@ -345,6 +381,10 @@ function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [
                         if ($ad.currentStateName) { $previousState = [string]$ad.currentStateName }
                         if ($ad.ContainsKey('planned')) { try { $planned = [bool]$ad.planned } catch { } }
                         if ($ad.ContainsKey('changed')) { try { $changed = [bool]$ad.changed } catch { } }
+                        if ($ad.transition) {
+                            $tr = _QCP-ToHashtable $ad.transition
+                            if ($tr -and $tr.Data) { $transitionDetail = _QCP-ToHashtable $tr.Data }
+                        }
                     }
                     break
                 }
@@ -387,13 +427,15 @@ function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [
         mode              = if ($settings) { [string]$settings.mode } else { $null }
         workflowName      = if ($settings) { [string]$settings.workflowName } else { $null }
         warnings          = @($warnings)
+        targetStateExists = if ($transitionDetail -and $transitionDetail.ContainsKey('targetStateExists')) { $transitionDetail.targetStateExists } else { $null }
+        transitionValid   = if ($transitionDetail -and $transitionDetail.ContainsKey('transitionValid')) { $transitionDetail.transitionValid } else { $null }
+        workflowStates    = if ($transitionDetail -and $transitionDetail.states) { @($transitionDetail.states) } else { @() }
     } | Out-Null
 }
 
 function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath) {
     if ($null -eq $Result -or -not $Result.IsSuccess) { return $Result }
-    $document = $null
-    if ($Job -and $Job.ContainsKey('document')) { $document = $Job.document }
+    $document = _QCP-ResolvePwDocumentForJob -Job $Job -Config $Config
     $ctx = _QCP-NewWorkflowContext -Job $Job -Config $Config -SourcePath $SourcePath -OutputPath $OutputPath -HistoryPath $HistoryPath -ResultStatus 'Succeeded' -ErrorMessage $null -Document $document
     $ctx['config'] = $Config
     $ctx['job'] = $Job
@@ -808,8 +850,19 @@ function Invoke-QCPrependProcessor {
 
             $tagCleared = $null
             $tagClearError = $null
+            $writebackWhileConnected = $null
             $clearTag = $true
             if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
+            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
+                exitCode = [int]$p.ExitCode
+                stdout = $stdout
+                stderr = $stderr
+                legacyScript = $legacyPrepend
+                incomingFolderPath = $incomingFolder
+                incomingDocName = $incomingDocName
+                triggerTagCleared = $tagCleared
+                triggerTagClearError = $tagClearError
+            }
             if ($clearTag) {
                 try {
                     $repoRoot = _QCP-GetRepoRoot
@@ -840,24 +893,27 @@ function Invoke-QCPrependProcessor {
                         $tagCleared = $false
                         $tagClearError = 'Could not re-find document to clear trigger tag.'
                     }
+                    if ($doc) {
+                        $Job['document'] = $doc
+                        $success.Data.triggerTagCleared = $tagCleared
+                        $success.Data.triggerTagClearError = $tagClearError
+                        $writebackWhileConnected = _QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $incomingDocName -OutputPath $null -HistoryPath $null
+                    }
                 } catch {
                     $tagCleared = $false
                     $tagClearError = [string]$_.Exception.Message
+                    try {
+                        if ($success.Data) {
+                            $success.Data.triggerTagCleared = $tagCleared
+                            $success.Data.triggerTagClearError = $tagClearError
+                        }
+                    } catch { }
                 } finally {
                     try { Disconnect-PW | Out-Null } catch { }
+                    if ($Job.ContainsKey('document')) { $Job.Remove('document') }
                 }
             }
-
-            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data @{
-                exitCode = [int]$p.ExitCode
-                stdout = $stdout
-                stderr = $stderr
-                legacyScript = $legacyPrepend
-                incomingFolderPath = $incomingFolder
-                incomingDocName = $incomingDocName
-                triggerTagCleared = $tagCleared
-                triggerTagClearError = $tagClearError
-            }
+            if ($writebackWhileConnected) { return $writebackWhileConnected }
             return (_QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $incomingDocName -OutputPath $null -HistoryPath $null)
         } finally {
             Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
