@@ -22,7 +22,7 @@ Use a **test profile** so queue folders, dry-run behavior, and optional SQL tele
 
 The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/database-telemetry.md`.
 
-`appsettings.test.json` and `appsettings.local.json` are **gitignored**. Only `appsettings.test.json.example` is committed.
+`appsettings.test.json`, `appsettings.local.json`, and `appsettings.secrets.json` are **gitignored**. Only `*.example` templates are committed.
 
 ## How merge works
 
@@ -30,8 +30,8 @@ The example sets **`database.enabled: false`** so you can test on a laptop with 
 
 | You pass | Load order |
 |----------|------------|
-| `appsettings.json` | `appsettings.json` → `appsettings.local.json` (if present) |
-| `appsettings.test.json` | `appsettings.json` → `appsettings.test.json` → `appsettings.test.local.json` (if present) |
+| `appsettings.json` | `appsettings.json` → `appsettings.local.json` (if present) → `appsettings.secrets.json` (if present) |
+| `appsettings.test.json` | `appsettings.json` → `appsettings.test.json` → `appsettings.test.local.json` (if present) → `appsettings.secrets.json` (if present) |
 | Any other filename | That file only |
 
 The result’s `Data.mergeChain` lists the files that were merged (useful in logs).
@@ -76,7 +76,8 @@ The `db\DatabaseProjectQC_Pipeline\` folder is an SSDT schema project for publis
 
 | File | Purpose |
 |------|---------|
-| `appsettings.local.json` | Secrets and paths when using default `appsettings.json` |
+| `appsettings.secrets.json` | Microsoft Graph credentials (`notifications.graph`); copy from `appsettings.secrets.json.example` |
+| `appsettings.local.json` | Other machine-only overrides (paths, credentials) |
 | `appsettings.test.local.json` | Extra overrides on top of `appsettings.test.json` (e.g. credential path) |
 
 Example `appsettings.test.local.json`:

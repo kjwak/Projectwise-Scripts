@@ -243,8 +243,8 @@ function Resolve-QCAppSettingsMergeChain {
     .SYNOPSIS
     Returns ordered config file paths to load for a given appsettings path.
   .DESCRIPTION
-    appsettings.json + optional appsettings.local.json;
-    appsettings.{profile}.json merges appsettings.json then profile then appsettings.{profile}.local.json.
+    appsettings.json + optional appsettings.local.json + optional appsettings.secrets.json;
+    appsettings.{profile}.json merges appsettings.json then profile then appsettings.{profile}.local.json then secrets.
     Other filenames load only that file (no automatic merge).
     #>
     [CmdletBinding()]
@@ -264,16 +264,24 @@ function Resolve-QCAppSettingsMergeChain {
     $name = [System.IO.Path]::GetFileName($fullPath)
     $chain = [System.Collections.Generic.List[string]]::new()
 
+    $secretsFile = Join-Path $dir 'appsettings.secrets.json'
+    $appendSecrets = {
+        if (Test-Path -LiteralPath $secretsFile) {
+            $chain.Add((Resolve-Path -LiteralPath $secretsFile).Path)
+        }
+    }
+
     if ($name -eq 'appsettings.json') {
         $chain.Add($fullPath)
         $local = Join-Path $dir 'appsettings.local.json'
         if (Test-Path -LiteralPath $local) { $chain.Add((Resolve-Path -LiteralPath $local).Path) }
+        & $appendSecrets
         return [string[]]$chain
     }
 
     if ($name -match '^appsettings\.([^.]+)\.json$') {
         $profile = $Matches[1]
-        if ($profile -eq 'local') {
+        if ($profile -in @('local', 'secrets')) {
             $chain.Add($fullPath)
             return [string[]]$chain
         }
@@ -285,6 +293,7 @@ function Resolve-QCAppSettingsMergeChain {
         $chain.Add($fullPath)
         $profileLocal = Join-Path $dir ("appsettings.{0}.local.json" -f $profile)
         if (Test-Path -LiteralPath $profileLocal) { $chain.Add((Resolve-Path -LiteralPath $profileLocal).Path) }
+        & $appendSecrets
         return [string[]]$chain
     }
 

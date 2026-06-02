@@ -10,11 +10,13 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 | `-AppSettingsPath` | Override path on `Watch-QCTrigger.ps1`, `Start-QCPipelineDashboard.ps1`, etc. |
 | `-DryRun` (CLI) | Forces `dryRun: true` even when JSON says false. |
 | `$schema` in JSON | IDE only; ignored at runtime. |
-| Profile merge | `appsettings.test.json` loads `appsettings.json` then the profile then `appsettings.test.local.json`. `appsettings.json` also merges `appsettings.local.json`. |
+| Profile merge | `appsettings.test.json` loads `appsettings.json` then the profile then `appsettings.test.local.json` then `appsettings.secrets.json`. `appsettings.json` also merges `appsettings.local.json` and `appsettings.secrets.json`. |
 
 **Testing / local overlays:** see [`docs/testing-config.md`](testing-config.md). Copy `appsettings.test.json.example` → `appsettings.test.json` (gitignored).
 
-Optional: keep **machine-only** secrets in `appsettings.local.json` or `appsettings.test.local.json` — do not commit them.
+**Graph credentials:** copy `appsettings.secrets.json.example` → `appsettings.secrets.json` (gitignored). Do not commit Entra client secrets.
+
+Optional: other machine-only paths in `appsettings.local.json` or `appsettings.test.local.json`.
 
 ## Section map
 

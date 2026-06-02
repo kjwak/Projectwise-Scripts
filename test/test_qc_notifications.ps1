@@ -32,6 +32,7 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
             graph = @{
                 tenantId = ''
                 clientId = ''
+                clientSecret = ''
                 senderMailbox = ''
                 certificateThumbprint = ''
             }
@@ -117,5 +118,16 @@ Assert-True ($graph.Message -match 'not configured') 'Graph should report not co
 
 $graphValidation = Test-QCNotificationGraphConfigured -GraphSettings @{ tenantId = ''; clientId = ''; senderMailbox = '' }
 Assert-True (-not $graphValidation.configured) 'Blank Graph settings should not be configured'
+
+# Graph configured with client secret + dryRun (no live API call)
+$graphDryCfg = New-NotifyConfig -Enabled $true -Provider 'MicrosoftGraph'
+$graphDryCfg.notifications.graph.tenantId = '00000000-0000-0000-0000-000000000001'
+$graphDryCfg.notifications.graph.clientId = '00000000-0000-0000-0000-000000000002'
+$graphDryCfg.notifications.graph.clientSecret = 'test-secret'
+$graphDryCfg.notifications.graph.senderMailbox = 'qc-notify@example.com'
+$graphDry = Send-QCNotification -Event $event -Config $graphDryCfg -Subject 'Test' -To @('a@b.com') -Body 'Body'
+Assert-True $graphDry.IsSuccess 'Graph dry run with client secret should succeed'
+Assert-True $graphDry.Data.dryRun 'Graph dry run should set dryRun flag'
+Assert-Eq $graphDry.Code 'QC_NOTIFICATION_GRAPH_DRY_RUN' 'Graph dry run code'
 
 Write-Host 'All QC notification tests passed.'

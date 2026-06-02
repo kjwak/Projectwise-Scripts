@@ -65,6 +65,18 @@ try {
     _Assert $baseRes.IsSuccess $baseRes.Message
     _Assert (-not [bool]$baseRes.Data.config.dryRun) 'appsettings.local.json should override base dryRun'
 
+    $secretsPath = Join-Path $tempRoot 'appsettings.secrets.json'
+    @'
+{
+  "notifications": {
+    "graph": { "clientSecret": "from-secrets-file" }
+  }
+}
+'@ | Set-Content -LiteralPath $secretsPath -Encoding UTF8
+    $secretsRes = Read-QCAppSettings -Path $basePath
+    _Assert $secretsRes.IsSuccess $secretsRes.Message
+    _Assert ($secretsRes.Data.config.notifications.graph.clientSecret -eq 'from-secrets-file') 'appsettings.secrets.json should merge graph secrets'
+
     Write-Host 'OK: config profile merge' -ForegroundColor Green
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

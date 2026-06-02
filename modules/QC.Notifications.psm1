@@ -109,6 +109,7 @@ function Get-QCNotificationSettings {
         graph = @{
             tenantId = ''
             clientId = ''
+            clientSecret = ''
             senderMailbox = ''
             certificateThumbprint = ''
             certificatePath = ''

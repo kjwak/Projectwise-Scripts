@@ -21,7 +21,9 @@ __pycache__/
 
 # Local / test appsettings (merged at runtime; see docs/testing-config.md)
 appsettings.local.json
+appsettings.secrets.json
 appsettings.test.json
 appsettings.*.local.json
 !appsettings.test.json.example
+!appsettings.secrets.json.example
 

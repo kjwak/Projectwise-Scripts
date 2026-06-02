@@ -15,7 +15,7 @@ Send actionable email notifications when **QC PDF** workflow states change in Pr
 | Provider | Status | Notes |
 | --- | --- | --- |
 | **Mock** | Implemented | Writes JSON payloads under `notifications/mock/` and logs structured events. Default while Graph credentials are unavailable. |
-| **MicrosoftGraph** | Stub | Validates config; returns `not configured` or `not implemented` until certificate-based sendMail is added. |
+| **MicrosoftGraph** | Implemented | Client-secret app auth + `sendMail`. Certificate auth reserved for future use. |
 
 Enable notifications in `appsettings.json`:
 
@@ -62,29 +62,28 @@ When `notifications.dedupe.enabled` is true, the same notification is not sent t
 
 Future watchers can call `Invoke-QCNotificationForStateChange` directly when polling QC PDF workflow state.
 
-## Microsoft Graph (future production)
+## Microsoft Graph (production)
 
-Do **not** store secrets in the repository. IT will provide:
+Keep **non-secret** notification settings in `appsettings.json` (`enabled`, `provider`, `events`, etc.). Put Entra credentials in **`appsettings.secrets.json`** (gitignored):
 
-| Setting | `appsettings.json` path |
+```powershell
+Copy-Item .\appsettings.secrets.json.example .\appsettings.secrets.json
+```
+
+| Setting | Path |
 | --- | --- |
 | Entra tenant ID | `notifications.graph.tenantId` |
 | Application (client) ID | `notifications.graph.clientId` |
+| Client secret **Value** (not Secret ID) | `notifications.graph.clientSecret` |
 | Sender mailbox (UPN) | `notifications.graph.senderMailbox` |
-| Certificate thumbprint **or** path to `.pfx` | `notifications.graph.certificateThumbprint` / `certificatePath` |
 
-Implementation plan (see `modules/QC.NotificationGraph.psm1`):
+`Read-QCAppSettings` merges `appsettings.secrets.json` after `appsettings.json` and `appsettings.local.json`.
 
-1. Certificate-based client credentials token against Entra.
-2. `POST /v1.0/users/{senderMailbox}/sendMail` with plain-text body from templates.
-3. Honor `dryRun` by building the payload without calling Graph.
+The app registration needs **application** permission `Mail.Send` with admin consent.
 
-Switch provider:
+In `appsettings.json`, set `"provider": "MicrosoftGraph"` and use `"dryRun": true` first, then `false` when ready.
 
-```json
-"provider": "MicrosoftGraph",
-"dryRun": false
-```
+Smoke test: `.\scripts\Test-QCNotificationGraph.ps1 -To you@company.com -Live`
 
 ## Modules
 

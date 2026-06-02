@@ -9,5 +9,6 @@ For a local SQL test database and isolated queue paths, see [`docs/testing-confi
 Helpful operational tests also live under `scripts/`:
 
 - `scripts/Test-PWConnection.ps1`
+- `scripts/Test-QCNotificationGraph.ps1` — Graph email smoke test (`-To` your address; `-Live` to send)
 - `scripts/Show-QCQueueDiag.ps1`
 

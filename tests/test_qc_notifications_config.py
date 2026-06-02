@@ -48,12 +48,14 @@ def test_notifications_module_exports_state_change_entrypoint():
         assert f"function {fn}" in text
 
 
-def test_graph_module_documents_not_configured_and_todo():
+def test_graph_module_supports_client_secret_sendmail():
     text = GRAPH.read_text(encoding="utf-8")
+    config = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))
 
     assert "QC_NOTIFICATION_GRAPH_NOT_CONFIGURED" in text
-    assert "TODO:" in text
+    assert "clientSecret" in text
     assert "sendMail" in text
+    assert "clientSecret" in config["notifications"]["graph"]
 
 
 def test_notifications_doc_covers_qc_pdf_authority_and_graph():
@@ -63,4 +65,4 @@ def test_notifications_doc_covers_qc_pdf_authority_and_graph():
     assert "not synchronized" in text.lower() or "not synchron" in text.lower()
     assert "Microsoft Graph" in text
     assert "tenantId" in text
-    assert "certificateThumbprint" in text
+    assert "clientSecret" in text
