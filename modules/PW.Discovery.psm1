@@ -4,6 +4,40 @@
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
+function Ensure-PWDiscoveryModuleLoaded {
+    <#
+    .SYNOPSIS
+    Ensures PW.Discovery exports are present in the current runspace.
+    .DESCRIPTION
+    Nested Import-Module -Force (e.g. from QC.Rendition during DOCUMENT_STATE sync) can drop
+    watcher exports such as Find-PWSheetsFoldersUnderRoot. Re-import PW.Discovery and restore
+    Core.Database when QC.AuditTriggers reload clears session exports.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $required = @(
+        'Find-PWSheetsFoldersUnderRoot',
+        'Get-PWDocumentDescriptionForFolder',
+        'Sync-PWAssociatedSheetWorkflowState',
+        'Get-PWDocumentsInFolder',
+        'ConvertTo-PWCmdletFolderPath'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+
+    $modPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
+    Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+
+    $dbPath = Join-Path $PSScriptRoot 'Core.Database.psm1'
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+        Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
 function Resolve-WatchPaths {
     <#
     .SYNOPSIS
@@ -1158,8 +1192,13 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
-            Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+            $rendPath = Join-Path $PSScriptRoot 'QC.Rendition.psm1'
+            Import-Module $rendPath -ErrorAction SilentlyContinue
+            if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
+                Import-Module $rendPath -Force -ErrorAction SilentlyContinue
+            }
         } catch { }
+        [void](Ensure-PWDiscoveryModuleLoaded)
     }
 
     if (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue) {

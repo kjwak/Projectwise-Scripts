@@ -280,6 +280,9 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -Warning
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Users.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
+if (-not (Ensure-PWDiscoveryModuleLoaded)) {
+    throw "PW.Discovery.psm1 did not load required exports (e.g. Find-PWSheetsFoldersUnderRoot). Repo: $repoRoot"
+}
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 # QC.AuditTriggers (via PW.Discovery) can reload Core.Database and drop session exports; restore before use.
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -438,6 +441,7 @@ if ($statusSetRules.Count -gt 0) {
 
 $watcherTick = 0
 $pwSessionOpen = $false
+$script:pwConnectFailureStreak = 0
 do {
     $watcherTick++
     _Reset-WatcherPassState
@@ -463,6 +467,9 @@ if ($statusSetRules.Count -ge 0) {
 
             # Re-import here to avoid any odd module/session state where exports are not visible.
             Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
+            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
+                throw 'PW.Discovery exports are unavailable at tick start (Find-PWSheetsFoldersUnderRoot missing).'
+            }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
             if (-not $pwSessionOpen) {
@@ -473,8 +480,12 @@ if ($statusSetRules.Count -ge 0) {
                     tick = $watcherTick
                 }
                 $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
-                if (-not $connRes.IsSuccess) { throw ($connRes.Code + ': ' + $connRes.Message) }
+                if (-not $connRes.IsSuccess) {
+                    $script:pwConnectFailureStreak++
+                    throw ($connRes.Code + ': ' + $connRes.Message)
+                }
                 $pwSessionOpen = $true
+                $script:pwConnectFailureStreak = 0
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
                     datasourceName = $ds
                     userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
@@ -843,12 +854,7 @@ if ($statusSetRules.Count -ge 0) {
                                             $dd = [string]$auditDescCache[$descKey]
                                         } else {
                                             $pwDescriptionLookups++
-                                            if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
-                                                try {
-                                                    Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
-                                                } catch { }
-                                            }
-                                            if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
+                                            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
                                                 throw "Get-PWDocumentDescriptionForFolder is unavailable (PW.Discovery failed to load). Repo: $repoRoot"
                                             }
                                             $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
@@ -1040,6 +1046,10 @@ if ($statusSetRules.Count -ge 0) {
 
             # --- FULL FOLDER SCAN (reconciliation or fallback) ---
             if ($runFullScan) {
+
+            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
+                throw 'PW.Discovery exports are unavailable before full folder scan (Find-PWSheetsFoldersUnderRoot missing).'
+            }
 
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
@@ -1604,8 +1614,25 @@ if ($statusSetRules.Count -ge 0) {
             }
         } catch {
             $errors++
-            if ($watcherContinuous) { $pwSessionOpen = $false }
-            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{ errorMessage = [string]$_.Exception.Message; scriptStackTrace = [string]$_.ScriptStackTrace }
+            if ($watcherContinuous) {
+                if ($pwSessionOpen) {
+                    try {
+                        Disconnect-PW | Out-Null
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after watch error (will reconnect).' -Data @{ tick = $watcherTick }
+                    } catch {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after watch error.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
+                    }
+                }
+                $pwSessionOpen = $false
+                if ($_.Exception.Message -match 'PW_CONNECT_FAILED') {
+                    $script:pwConnectFailureStreak++
+                }
+            }
+            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{
+                errorMessage = [string]$_.Exception.Message
+                scriptStackTrace = [string]$_.ScriptStackTrace
+                pwConnectFailureStreak = $script:pwConnectFailureStreak
+            }
         } finally {
             $pwWatchSw.Stop()
             _Add-WatchPhaseMs -PhaseMs $phaseMs -Name 'projectWiseWatchList' -Stopwatch $pwWatchSw
@@ -1993,14 +2020,21 @@ if (-not $telemetryRes.IsSuccess) {
 }
 
     if ($watcherContinuous) {
+        $sleepMs = $watcherPollSleepMs
+        if ($script:pwConnectFailureStreak -gt 0) {
+            $backoffMs = [int][Math]::Min(60000, 1000 * [Math]::Pow(2, [Math]::Min($script:pwConnectFailureStreak - 1, 6)))
+            $sleepMs = [Math]::Max($sleepMs, $backoffMs)
+        }
         $sleepSw = [System.Diagnostics.Stopwatch]::StartNew()
-        Start-Sleep -Milliseconds $watcherPollSleepMs
+        Start-Sleep -Milliseconds $sleepMs
         $sleepSw.Stop()
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_SLEEP' -Message 'Watcher poll tick sleeping.' -Data @{
             tick = $watcherTick
             pollSleepMs = $watcherPollSleepMs
             sleptMs = [int]$sleepSw.ElapsedMilliseconds
             pwSessionOpen = $pwSessionOpen
+            pwConnectFailureStreak = $script:pwConnectFailureStreak
+            reconnectBackoffMs = if ($script:pwConnectFailureStreak -gt 0) { $sleepMs } else { 0 }
         }
     }
 } while ($watcherContinuous)

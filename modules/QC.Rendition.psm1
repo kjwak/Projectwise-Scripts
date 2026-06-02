@@ -4,7 +4,12 @@
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -ErrorAction SilentlyContinue
+    if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function _QCR-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
