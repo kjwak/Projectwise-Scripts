@@ -1134,8 +1134,24 @@ function Sync-PWAssociatedSheetWorkflowState {
         [Parameter(Mandatory)][string]$FolderPath,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
-        [bool]$DryRun = $false
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
     )
+
+    if (Get-Command -Name 'Test-QCShouldSuppressAuditSheetStateSync' -ErrorAction SilentlyContinue) {
+        if (Test-QCShouldSuppressAuditSheetStateSync -Config $Config -DocumentName $DocumentName `
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_SKIPPED_AUTOMATION' `
+                    -Message 'Skipped sibling sheet state sync for automation-originated DOCUMENT_STATE echo.' -Data @{
+                    documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+                    changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
+                } | Out-Null
+            }
+            return
+        }
+    }
 
     $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
     if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
@@ -1184,7 +1200,8 @@ WHERE document_guid = @docGuid
         if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
                 -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
-                -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' | Out-Null
+                -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
+                -ChangedByUser $ChangedByUser | Out-Null
         }
 
         $change = @{

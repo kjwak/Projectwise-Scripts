@@ -44,4 +44,24 @@ Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfgDbOff -DocumentGuid 'g1' -
 Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $cfgDbOff -DocumentGuid 'g1' -DocumentName 'a.pdf' `
     -FolderPath 'Documents\X\CADD\Sheets' -FieldChanges @{ designer_email = @{ oldValue = 'a@x.com'; newValue = 'b@x.com' } } | Out-Null
 
+$cfgAuto = @{
+    auditPoller = @{
+        workflowTriggers = @{
+            enabled = $true
+            ignoreStateChangeFromAutomation = $true
+            automationPwUsernames = @('srv_typsa_archivist')
+            automationPwUserNumbers = @(42)
+            notifyOnStateChange = $true
+        }
+    }
+}
+Assert-True (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUser 42) 'userno match'
+Assert-True (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUsername 'srv_typsa_archivist') 'username match'
+Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUser 99 -ChangedByUsername 'human')) 'non-automation'
+Assert-True (-not (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -DocumentName 'sheet-qc.pdf' -ChangedByUser 42)) 'allow sync on qc pdf'
+Assert-True (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -DocumentName 'sheet.dgn' -ChangedByUser 42) 'suppress sync echo on dgn'
+
+$cfgAutoOff = @{ auditPoller = @{ workflowTriggers = @{ ignoreStateChangeFromAutomation = $false; automationPwUsernames = @('srv_typsa_archivist') } } }
+Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAutoOff -ChangedByUsername 'srv_typsa_archivist')) 'ignore flag off'
+
 Write-Host 'test_audit_workflow_triggers.ps1 passed'

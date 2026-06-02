@@ -41,14 +41,17 @@ function Get-QCAuditWorkflowTriggerSettings {
     param([Parameter(Mandatory)][hashtable]$Config)
 
     $defaults = @{
-        enabled                = $true
-        recordStateHistory     = $true
-        recordAttributeHistory = $true
-        recordTransitions      = $true
-        recordFromProcessor    = $true
-        recordProcessingJobs   = $true
-        notifyOnStateChange    = $true
-        qcPdfNotificationsOnly = $true
+        enabled                         = $true
+        recordStateHistory              = $true
+        recordAttributeHistory          = $true
+        recordTransitions               = $true
+        recordFromProcessor             = $true
+        recordProcessingJobs            = $true
+        notifyOnStateChange             = $true
+        qcPdfNotificationsOnly          = $true
+        ignoreStateChangeFromAutomation = $true
+        automationPwUsernames           = @('srv_typsa_archivist')
+        automationPwUserNumbers         = @()
     }
     try {
         if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
@@ -57,15 +60,88 @@ function Get-QCAuditWorkflowTriggerSettings {
                 $wt = _QCAT-ToHashtable $ap.workflowTriggers
                 if ($wt) {
                     foreach ($k in $wt.Keys) {
-                        if ($defaults.ContainsKey($k)) {
-                            try { $defaults[$k] = [bool]$wt[$k] } catch { }
+                        if (-not $defaults.ContainsKey($k)) { continue }
+                        if ($k -in @('automationPwUsernames', 'automationPwUserNumbers')) {
+                            if ($wt[$k] -is [System.Collections.IEnumerable] -and -not ($wt[$k] -is [string])) {
+                                $defaults[$k] = @($wt[$k] | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                            } elseif (-not [string]::IsNullOrWhiteSpace([string]$wt[$k])) {
+                                $defaults[$k] = @([string]$wt[$k])
+                            }
+                            continue
                         }
+                        try { $defaults[$k] = [bool]$wt[$k] } catch { }
                     }
                 }
             }
         }
     } catch { }
     return $defaults
+}
+
+function Test-QCIsAutomationPwActor {
+    <#
+    .SYNOPSIS
+    True when the audit actor matches configured automation service accounts (by PW user number or login name).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if (-not [bool]$settings.ignoreStateChangeFromAutomation) { return $false }
+
+    if ($null -ne $ChangedByUser) {
+        try {
+            $n = [int]$ChangedByUser
+            if ($n -gt 0) {
+                foreach ($configured in @($settings.automationPwUserNumbers)) {
+                    try { if ([int]$configured -eq $n) { return $true } } catch { }
+                }
+            }
+        } catch { }
+    }
+
+    $user = _QCAT-NormalizeValue $ChangedByUsername
+    if ([string]::IsNullOrWhiteSpace($user)) { return $false }
+    foreach ($configured in @($settings.automationPwUsernames)) {
+        if ([string]::IsNullOrWhiteSpace([string]$configured)) { continue }
+        if ($user.Equals([string]$configured, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Test-QCShouldSuppressAuditStateChangeNotification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+    return (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername)
+}
+
+function Test-QCShouldSuppressAuditSheetStateSync {
+    <#
+    .SYNOPSIS
+    Skips sibling sheet sync for automation-originated DOCUMENT_STATE echoes (e.g. DGN after QC PDF was already aligned).
+    Allows sync when automation changed a *-qc.pdf (prepend set Ready for QC → propagate to siblings once).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    if (-not (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername)) {
+        return $false
+    }
+    if (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName) { return $false }
+    return $true
 }
 
 function _QCAT-BuildNotificationDocument {
@@ -134,6 +210,16 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     $shouldNotify = [bool]$settings.notifyOnStateChange
     if ($shouldNotify -and [bool]$settings.qcPdfNotificationsOnly -and -not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
         $shouldNotify = $false
+    }
+    if ($shouldNotify -and (Test-QCShouldSuppressAuditStateChangeNotification -Config $Config -ChangedByUser $ChangedByUser)) {
+        $shouldNotify = $false
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_SKIPPED_AUTOMATION' `
+                -Message 'Skipped QC notification for automation-originated DOCUMENT_STATE.' -Data @{
+                documentGuid = $DocumentGuid; documentName = $DocumentName; changedByUser = $ChangedByUser
+                currentState = $curr; previousState = $prev
+            } | Out-Null
+        }
     }
 
     if ([bool]$settings.recordStateHistory) {
@@ -368,5 +454,6 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Test-QCIsQcPdfDocumentName, `
+    Test-QCIsAutomationPwActor, Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

@@ -325,7 +325,12 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events (includes `DOCUMENT_ATTR`), re-read description for `QC_Archivist` and enqueue `QC_PREPEND` when matched. |
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on `*-qc.pdf`. |
 | `workflowTriggers.recordFromProcessor` | true | Also record state/attribute changes from `QC_PREPEND` and `QC_COMMENT_STATUS_SYNC` processors. |
+| `workflowTriggers.ignoreStateChangeFromAutomation` | true | Skip audit notifications and sibling-sync **echoes** when `o_userno` / login matches `automationPwUsernames` (still ingests `audit_events` / history). |
+| `workflowTriggers.automationPwUsernames` | `["srv_typsa_archivist"]` | Service account logins from `dms_user` / `pw_users`. |
+| `workflowTriggers.automationPwUserNumbers` | `[]` | Optional numeric `o_userno` list if usernames differ by environment. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |
+
+When `ignoreStateChangeFromAutomation` is true, `DOCUMENT_STATE` on `*-qc.pdf` by the automation account still runs **one** `Sync-PWAssociatedSheetWorkflowState` (prepend → Ready for QC → align DGN/sheet PDF). Later `DOCUMENT_STATE` echoes on DGN/sheet PDF from the same account are ignored for sync/notify.
 
 Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf` for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`).
 

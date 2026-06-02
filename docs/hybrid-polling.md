@@ -141,7 +141,7 @@ When `auditPoller.workflowTriggers.enabled` is true (default):
 
 | Audit action | Runtime behavior |
 |--------------|------------------|
-| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings; each real state change writes `document_state_history` / `transition_events`; `Invoke-QCNotificationForStateChange` runs for `*-qc.pdf` when `notifications.enabled` and `notifyOnStateChange` are true |
+| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings; history/transitions recorded; `*-qc.pdf` notifications when enabled. Events whose `o_userno` matches `workflowTriggers.automationPwUsernames` skip notify and skip sibling-sync echoes (except the initial `*-qc.pdf` change, so prepend can still propagate Ready for QC once). |
 | `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; per-field diffs write `ATTR_CHANGE` rows to `document_state_history` and `transition_events` |
 
 Configure under `auditPoller.workflowTriggers` in `appsettings.json`. Notifications still require `notifications.enabled` (separate master switch).

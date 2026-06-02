@@ -712,6 +712,8 @@ function Invoke-AuditTrailScan {
 
         $actTime = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_acttime')
         $candidateType = if ($isWatchMatch) { 'WATCH_MATCH' } else { $null }
+        $userno = 0
+        try { $userno = [int](_AuditPoller-GetRowValue -Row $evt -Name 'o_userno') } catch { $userno = 0 }
 
         $enableQcPrepend = $false
         $enableQcCommentSync = $false
@@ -732,6 +734,7 @@ function Invoke-AuditTrailScan {
                 actionName           = $actionName
                 itemName             = [string](_AuditPoller-GetRowValue -Row $evt -Name 'o_itemname')
                 actTime              = $actTime
+                userno               = $userno
                 resolvedFolder       = $resolvedFolder
                 isSheetsFolder       = $isSheetsFolder
                 candidateType        = $candidateType

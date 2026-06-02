@@ -695,13 +695,18 @@ if ($statusSetRules.Count -ge 0) {
                                     $acWatchRoot = ''
                                     try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
                                     if ($isDocumentState) {
+                                        $acUserno = $null
+                                        try {
+                                            if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
+                                        } catch { $acUserno = $null }
                                         Sync-PWAssociatedSheetWorkflowState -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName ([string]$ac.itemName) `
                                             -FolderPath $fp `
                                             -WatchRoot $acWatchRoot `
                                             -LastAuditEventAt ([string]$ac.actTime) `
-                                            -DryRun:$isDryRun
+                                            -DryRun:$isDryRun `
+                                            -ChangedByUser $acUserno
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
