@@ -1202,6 +1202,21 @@ WHERE document_guid = @docGuid
             try {
                 _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState
                 $change.applied = $true
+                if (Get-Command -Name 'Write-QCStateChangeJobTelemetry' -ErrorAction SilentlyContinue) {
+                    $recordJobs = $true
+                    if (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue) {
+                        try {
+                            $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+                            $recordJobs = [bool]$wt.recordProcessingJobs
+                        } catch { }
+                    }
+                    if ($recordJobs) {
+                        Write-QCStateChangeJobTelemetry -Config $Config `
+                            -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
+                            -DocumentGuid $dg -DocumentName $dn -SourceFolder $FolderPath `
+                            -TriggerSource 'audit_sheet_sync' -Operation 'sheet_state_sync' | Out-Null
+                    }
+                }
             } catch {
                 $change.error = [string]$_.Exception.Message
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

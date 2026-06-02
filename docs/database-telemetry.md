@@ -139,7 +139,7 @@ Operational health of the audit poller. One row per watcher tick.
 ### `processing_jobs`
 Mirrors JSON queue job outcomes for dashboards. Written by `Write-QCJobTelemetry` in `Run-QCProcessor.ps1`.
 
-Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (mapping via `Get-QCProcessingJobType`). Other queue types are stored unchanged unless `database.processingJobTypeMap` overrides them.
+Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (mapping via `Get-QCProcessingJobType`). Automation state writes (audit sheet sync, QC_PREPEND workflow state) use **`Write-QCStateChangeJobTelemetry`**, which always upserts `job_type = QC_STATE` (often with `job_id` like `{queueJobId}|state` or `qc-state-{guid}-{from}-{to}`). Other queue types are stored unchanged unless `database.processingJobTypeMap` overrides them.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -213,6 +213,8 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCDocumentStateHistoryRow` | `QC.AuditTriggers.psm1` | State/attribute change time-series |
 | `Write-QCTransitionEvent` | `QC.AuditTriggers.psm1` | Business-level transition row |
 | `Update-QCTransitionEventNotification` | `QC.AuditTriggers.psm1` | Mark transition after email sent |
+| `Write-QCStateChangeJobTelemetry` | `QC.AuditTriggers`, `PW.Discovery` | `processing_jobs` row with `job_type = QC_STATE` for automation state applies |
+| `New-QCStateChangeJobId` | `Core.Database.psm1` | Stable `job_id` for state-only telemetry |
 | `Invoke-QCProcessorWorkflowStateTelemetry` | `QC.Workflow.psm1`, `QC.CommentStatusProcessor.psm1` | Processor state writes (no duplicate email) |
 | `Invoke-QCProcessorWorkflowAttributeTelemetry` | `QC.Workflow.psm1` | Processor attribute writeback rows |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |

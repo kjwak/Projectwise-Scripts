@@ -1444,6 +1444,7 @@ function Get-QCProcessingJobType {
 
     $map = @{
         'QC_COMMENT_STATUS_SYNC' = 'QC_STATE'
+        'QC_STATE'               = 'QC_STATE'
     }
     if ($Config -and $Config.ContainsKey('database') -and $Config.database -and $Config.database.processingJobTypeMap) {
         $custom = $Config.database.processingJobTypeMap
@@ -1465,6 +1466,85 @@ function _QDB-TruncateTelemetryPayload {
     if ([string]::IsNullOrEmpty($Text)) { return $null }
     if ($Text.Length -le $MaxLength) { return $Text }
     return $Text.Substring(0, $MaxLength)
+}
+
+function New-QCStateChangeJobId {
+    <#
+    .SYNOPSIS
+    Builds a stable processing_jobs.job_id for an automation state write (separate from queue prepend jobs).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ParentJobId = '',
+        [string]$DocumentGuid = '',
+        [string]$PreviousState = '',
+        [string]$CurrentState = '',
+        [string]$Operation = 'state'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ParentJobId)) {
+        return ([string]$ParentJobId).Trim() + '|state'
+    }
+    $g = if ([string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        [guid]::NewGuid().ToString('n')
+    } else {
+        $DocumentGuid.Trim().ToLowerInvariant()
+    }
+    $from = if ($PreviousState) { $PreviousState.Trim().Replace(' ', '_') } else { '_' }
+    $to = if ($CurrentState) { $CurrentState.Trim().Replace(' ', '_') } else { '_' }
+    return "qc-$Operation-$g-$from-$to"
+}
+
+function Write-QCStateChangeJobTelemetry {
+    <#
+    .SYNOPSIS
+    Records a workflow state change performed by QC automation in processing_jobs as job_type QC_STATE.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$PreviousState,
+        [Parameter(Mandatory)][string]$CurrentState,
+        [string]$JobId = '',
+        [string]$ParentJobId = '',
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$SourceFolder = '',
+        [string]$TriggerSource = 'automation',
+        [string]$Operation = 'state',
+        [string]$Status = 'succeeded',
+        [string]$ErrorMessage = '',
+        [int]$DurationMs = 0
+    )
+
+    $prev = if ($PreviousState) { $PreviousState.Trim() } else { '' }
+    $curr = if ($CurrentState) { $CurrentState.Trim() } else { '' }
+    if ($prev -eq $curr) { return }
+
+    if ([string]::IsNullOrWhiteSpace($JobId)) {
+        $JobId = New-QCStateChangeJobId -ParentJobId $ParentJobId -DocumentGuid $DocumentGuid `
+            -PreviousState $prev -CurrentState $curr -Operation $Operation
+    }
+
+    $sourcePath = $null
+    if ($SourceFolder -and $DocumentName) {
+        $sourcePath = ($SourceFolder.TrimEnd('\') + '\' + $DocumentName)
+    }
+
+    $resultObj = @{
+        previousState = $prev
+        currentState  = $curr
+        documentGuid  = $DocumentGuid
+        documentName  = $DocumentName
+        operation     = $Operation
+    }
+    $resultJson = $null
+    try { $resultJson = ($resultObj | ConvertTo-Json -Compress) } catch { }
+
+    return Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType 'QC_STATE' -Status $Status `
+        -SourcePath $sourcePath -SourceFolder $SourceFolder -TriggerSource $TriggerSource `
+        -DurationMs $(if ($DurationMs -gt 0) { $DurationMs } else { $null }) `
+        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
+        -ResultData $resultJson
 }
 
 function Write-QCJobTelemetry {
@@ -2169,4 +2249,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory

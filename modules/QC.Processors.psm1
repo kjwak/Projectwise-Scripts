@@ -308,6 +308,88 @@ function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$S
     }
 }
 
+function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [object]$Writeback, [string]$PrependTrigger) {
+    if (-not (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue)) { return }
+
+    $jobId = $null
+    if ($Job) {
+        if ($Job.ContainsKey('id') -and $Job.id) { $jobId = [string]$Job.id }
+        elseif ($Job.ContainsKey('jobId') -and $Job.jobId) { $jobId = [string]$Job.jobId }
+    }
+
+    $settings = $null
+    try { $settings = Get-QCWorkflowSettings -Config $Config } catch { }
+
+    $targetState = $null
+    $previousState = $null
+    $stateCode = $null
+    $planned = $false
+    $changed = $false
+    $dryRun = $false
+    $warnings = @()
+
+    if ($Writeback -and $Writeback.Data) {
+        $wbData = _QCP-ToHashtable $Writeback.Data
+        if ($wbData) {
+            if ($wbData.ContainsKey('dryRun')) { try { $dryRun = [bool]$wbData.dryRun } catch { } }
+            if ($wbData.warnings) { $warnings = @($wbData.warnings) }
+            if ($wbData.actions) {
+                foreach ($a in @($wbData.actions)) {
+                    if (-not $a) { continue }
+                    $ac = [string]$a.Code
+                    if ($ac -notmatch '^QC_WORKFLOW_STATE') { continue }
+                    $stateCode = $ac
+                    $ad = _QCP-ToHashtable $a.Data
+                    if ($ad) {
+                        if ($ad.stateName) { $targetState = [string]$ad.stateName }
+                        if ($ad.currentStateName) { $previousState = [string]$ad.currentStateName }
+                        if ($ad.ContainsKey('planned')) { try { $planned = [bool]$ad.planned } catch { } }
+                        if ($ad.ContainsKey('changed')) { try { $changed = [bool]$ad.changed } catch { } }
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    if ((_QCP-IsNullOrWhiteSpace $targetState) -and $settings) {
+        try {
+            $resolveCtx = @{ resultStatus = 'Succeeded' }
+            if (-not (_QCP-IsNullOrWhiteSpace $PrependTrigger)) { $resolveCtx['prependTrigger'] = $PrependTrigger }
+            $targetState = Resolve-QCWorkflowStateAfterPrepend -Settings $settings -Context $resolveCtx
+        } catch { }
+    }
+
+    $level = 'Information'
+    if ($Writeback -and -not $Writeback.IsSuccess) { $level = 'Warning' }
+    elseif ($stateCode -match 'FAILED|INVALID|UNAVAILABLE|MISSING') { $level = 'Warning' }
+
+    $msg = if ($changed) {
+        "QC_PREPEND set workflow state to '$targetState'."
+    } elseif ($planned -or $dryRun) {
+        "QC_PREPEND planned workflow state '$targetState' (dry-run)."
+    } else {
+        'QC_PREPEND workflow state writeback finished (no ProjectWise state change).'
+    }
+
+    Write-QCJsonLog -Level $level -Code 'QC_PREPEND_WORKFLOW_STATE' -Message $msg -Data @{
+        jobId             = $jobId
+        prependTrigger    = $PrependTrigger
+        targetState       = $targetState
+        previousState     = $previousState
+        stateActionCode   = $stateCode
+        planned           = $planned
+        changed           = $changed
+        dryRun            = $dryRun
+        writebackCode     = if ($Writeback) { [string]$Writeback.Code } else { $null }
+        writebackSuccess  = if ($Writeback) { [bool]$Writeback.IsSuccess } else { $false }
+        autoSetState      = if ($settings) { [bool]$settings.autoSetState } else { $null }
+        mode              = if ($settings) { [string]$settings.mode } else { $null }
+        workflowName      = if ($settings) { [string]$settings.workflowName } else { $null }
+        warnings          = @($warnings)
+    } | Out-Null
+}
+
 function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath) {
     if ($null -eq $Result -or -not $Result.IsSuccess) { return $Result }
     $document = $null
@@ -319,6 +401,7 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
     if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
+    _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
     $strict = $false
     try {
         $settings = Get-QCWorkflowSettings -Config $Config

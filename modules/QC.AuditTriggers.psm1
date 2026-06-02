@@ -46,6 +46,7 @@ function Get-QCAuditWorkflowTriggerSettings {
         recordAttributeHistory = $true
         recordTransitions      = $true
         recordFromProcessor    = $true
+        recordProcessingJobs   = $true
         notifyOnStateChange    = $true
         qcPdfNotificationsOnly = $true
     }
@@ -275,6 +276,17 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
         Write-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
             -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
             -JobId $jobId -JobType $JobType | Out-Null
+    }
+
+    if ([bool]$settings.recordProcessingJobs -and (Get-Command -Name 'Write-QCStateChangeJobTelemetry' -ErrorAction SilentlyContinue)) {
+        if ($JobType -eq 'QC_COMMENT_STATUS_SYNC' -and $jobId) {
+            return
+        }
+        $triggerSource = 'processor'
+        if ($JobType -eq 'QC_PREPEND') { $triggerSource = 'qc_prepend' }
+        Write-QCStateChangeJobTelemetry -Config $Config -PreviousState $prev -CurrentState $curr `
+            -ParentJobId $jobId -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+            -SourceFolder $id.folderPath -TriggerSource $triggerSource -Operation $JobType | Out-Null
     }
 }
 

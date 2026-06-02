@@ -2,6 +2,7 @@
 # Responsibility: Configurable ProjectWise QC workflow/state/attribute writeback framework.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
@@ -38,9 +39,13 @@ function _QCW-GetPropertyValue([object]$Object, [string[]]$Names) {
 
 function _QCW-Log([string]$Event, [string]$Level, [string]$Message, [hashtable]$Data) {
     try {
+        $payload = @{}
+        if ($Data) { foreach ($k in $Data.Keys) { $payload[$k] = $Data[$k] } }
+        if (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level $Level -Code $Event -Message $Message -Data $payload | Out-Null
+            return
+        }
         if (Get-Command -Name Write-QCLog -ErrorAction SilentlyContinue) {
-            $payload = @{}
-            if ($Data) { foreach ($k in $Data.Keys) { $payload[$k] = $Data[$k] } }
             $payload['event'] = $Event
             Write-QCLog -Level $Level -Message $Message -Data $payload | Out-Null
         }
@@ -812,6 +817,22 @@ function Invoke-QCWorkflowWriteback {
         if (-not $attrs.IsSuccess -and [bool]$settings.strictMode) { return New-QCFailureResult -Code 'QC_WORKFLOW_STRICT_FAILURE' -Message $attrs.Message -Data @{ actions = @($actions); warnings = @($warnings); settings = $settings; dryRun = $dryRun } }
     }
 
+    $summary = @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); mode = [string]$settings.mode; autoSetState = [bool]$settings.autoSetState; workflowName = [string]$settings.workflowName }
+    foreach ($a in @($actions)) {
+        if (-not $a) { continue }
+        $ac = [string]$a.Code
+        if ($ac -notmatch '^QC_WORKFLOW_STATE') { continue }
+        $ad = _QCW-ToHashtable $a.Data
+        if ($ad) {
+            $summary['targetState'] = [string]$ad.stateName
+            $summary['previousState'] = [string]$ad.currentStateName
+            $summary['statePlanned'] = [bool]$ad.planned
+            $summary['stateChanged'] = [bool]$ad.changed
+            $summary['stateActionCode'] = $ac
+        }
+        break
+    }
+    _QCW-Log -Event 'QC_WORKFLOW_WRITEBACK_OK' -Level 'Information' -Message 'QC workflow writeback completed.' -Data $summary
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
