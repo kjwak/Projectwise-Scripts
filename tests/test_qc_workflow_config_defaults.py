@@ -65,6 +65,8 @@ def test_processors_workflow_context_does_not_write_qc_stage():
     assert "reviewType = $reviewType" in text
     assert "Resolve-QCWorkflowAssignee" in text
     assert "Add-QCPrependJobForQcFinalizingStateChange" in text
+    assert "_QCP-IsFinalQcPrependJob" in text
+    assert "Review stamps skipped for QC Finalizing prepend" in text
 
 
 def test_reporting_docs_include_state_based_metric_names():

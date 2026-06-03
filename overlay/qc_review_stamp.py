@@ -143,6 +143,7 @@ def apply_review_stamp(
     margin_inset_pt: float = DEFAULT_MARGIN_INSET_PT,
     position_x_pt: float | None = None,
     position_y_pt: float | None = None,
+    populate_text_fields: bool = True,
     in_place: bool = True,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -154,7 +155,7 @@ def apply_review_stamp(
     fitz = _get_fitz()
     pdf_path = Path(pdf_path)
     stamp_path = Path(stamp_path)
-    values = _parse_field_values(field_values)
+    values = _parse_field_values(field_values) if populate_text_fields else {}
 
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -177,7 +178,8 @@ def apply_review_stamp(
         stamp_w = sw * scale
         stamp_h = sh * scale
 
-        _fill_stamp_template_widgets(stamp_page, values)
+        if populate_text_fields:
+            _fill_stamp_template_widgets(stamp_page, values)
 
         with fitz.open(pdf_path) as doc:
             if page_index < 0 or page_index >= doc.page_count:
@@ -288,26 +290,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Vertical offset from page top to stamp top (PDF pt; negative = above page)",
     )
     parser.add_argument("--page-index", type=int, default=0)
+    parser.add_argument(
+        "--no-populate-text-fields",
+        action="store_true",
+        help="Apply blank stamp appearance without filling AcroForm role/date fields",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
     fields: dict[str, str] = {}
-    if args.fields_json:
-        fields = _parse_field_values(json.loads(args.fields_json.read_text(encoding="utf-8")))
-    else:
-        fields = build_peer_review_field_values(
-            originator=args.originator,
-            checker=args.checker,
-            backchecker=args.backchecker,
-            originator_date=args.originator_date,
-        )
+    if not args.no_populate_text_fields:
+        if args.fields_json:
+            fields = _parse_field_values(json.loads(args.fields_json.read_text(encoding="utf-8")))
+        else:
+            fields = build_peer_review_field_values(
+                originator=args.originator,
+                checker=args.checker,
+                backchecker=args.backchecker,
+                originator_date=args.originator_date,
+            )
 
     in_place = args.output is None
     stamp_kwargs: dict[str, Any] = {
         "page_index": args.page_index,
         "stamp_height_pt": args.stamp_height_pt,
+        "populate_text_fields": not args.no_populate_text_fields,
         "in_place": in_place,
         "output_path": args.output,
     }

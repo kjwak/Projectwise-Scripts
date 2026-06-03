@@ -183,6 +183,11 @@ function Get-QCReviewStampSettings {
         }
     }
 
+    $populateTextFields = $false
+    if ($rs.ContainsKey('populateTextFields')) {
+        try { $populateTextFields = [bool]$rs.populateTextFields } catch { $populateTextFields = $false }
+    }
+
     $stampHeight = 200.0
     $marginOutside = 12.0
     $stampX = $null
@@ -222,6 +227,7 @@ function Get-QCReviewStampSettings {
 
     return @{
         profiles             = @($profiles)
+        populateTextFields   = $populateTextFields
         productionReviewType = $productionType
         stampHeightPt        = $stampHeight
         marginOutsidePt      = $marginOutside
@@ -286,7 +292,8 @@ function Invoke-QCReviewStamp {
         [double]$StampHeightPt = 200,
         [double]$MarginOutsidePt = 12,
         [Nullable[double]]$StampXPt = $null,
-        [Nullable[double]]$StampYPt = $null
+        [Nullable[double]]$StampYPt = $null,
+        [bool]$PopulateTextFields = $false
     )
 
     if (-not (Test-Path -LiteralPath $OverlayExe)) {
@@ -299,7 +306,7 @@ function Invoke-QCReviewStamp {
         return @{ applied = $false; reason = "Stamp template not found: $StampPath" }
     }
 
-    if (_QCRS-IsBlank $OriginatorDate) {
+    if ($PopulateTextFields -and (_QCRS-IsBlank $OriginatorDate)) {
         $OriginatorDate = (Get-Date).ToString('MM/dd/yyyy')
     }
 
@@ -310,10 +317,14 @@ function Invoke-QCReviewStamp {
         [void]$stampTokens.Add('--apply-review-stamp')
         [void]$stampTokens.Add([string]$PdfPath)
         [void]$stampTokens.Add([string]$StampPath)
-        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--originator' -Value $Originator
-        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--checker' -Value $Checker
-        _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--backchecker' -Value $Backchecker
-        _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--originator-date' -Value ([string]$OriginatorDate)
+        if (-not $PopulateTextFields) {
+            [void]$stampTokens.Add('--no-populate-text-fields')
+        } else {
+            _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--originator' -Value $Originator
+            _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--checker' -Value $Checker
+            _QCRS-AppendOptionalCliFlags -TokenList $stampTokens -Flag '--backchecker' -Value $Backchecker
+            _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--originator-date' -Value ([string]$OriginatorDate)
+        }
         _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--stamp-height-pt' -Value ([string]$StampHeightPt)
         $supportsXY = _QCRS-TestOverlaySupportsStampPositionPt -OverlayExe $OverlayExe
         if ($null -ne $StampXPt -and $null -ne $StampYPt -and $supportsXY) {
@@ -392,16 +403,23 @@ function Invoke-QCReviewStampForReviewType {
         & $Log "Applying $($profile.logLabel) stamp ($posHint) on page 1: $PdfPath"
     }
 
+    $populateTextFields = $false
+    if ($stampCfg.ContainsKey('populateTextFields')) {
+        try { $populateTextFields = [bool]$stampCfg.populateTextFields } catch { }
+    }
     $roleValues = _QCRS-ResolveStampRoleValues -RoleFields $RoleFields -ProfileKey ([string]$profile.profileKey)
     $stampParams = @{
-        OverlayExe      = $exe
-        PdfPath         = $PdfPath
-        StampPath       = [string]$profile.stampPath
-        Originator      = [string]$roleValues.Originator
-        Checker         = [string]$roleValues.Checker
-        Backchecker     = [string]$roleValues.Backchecker
-        StampHeightPt   = [double]$stampCfg.stampHeightPt
-        MarginOutsidePt = [double]$stampCfg.marginOutsidePt
+        OverlayExe           = $exe
+        PdfPath              = $PdfPath
+        StampPath            = [string]$profile.stampPath
+        StampHeightPt        = [double]$stampCfg.stampHeightPt
+        MarginOutsidePt      = [double]$stampCfg.marginOutsidePt
+        PopulateTextFields   = $populateTextFields
+    }
+    if ($populateTextFields) {
+        $stampParams['Originator'] = [string]$roleValues.Originator
+        $stampParams['Checker'] = [string]$roleValues.Checker
+        $stampParams['Backchecker'] = [string]$roleValues.Backchecker
     }
     if ($null -ne $stampCfg.stampXPt -and $null -ne $stampCfg.stampYPt) {
         $stampParams['StampXPt'] = [double]$stampCfg.stampXPt
@@ -412,7 +430,8 @@ function Invoke-QCReviewStampForReviewType {
     $result['reviewType'] = $reviewType
     $result['profileKey'] = [string]$profile.profileKey
     if ($result.applied -and $Log) {
-        & $Log "$($profile.logLabel) stamp applied (editable fields)."
+        $fieldNote = if ($populateTextFields) { 'with role/date fields' } else { 'blank template (no field population)' }
+        & $Log "$($profile.logLabel) stamp applied ($fieldNote)."
     }
     return $result
 }

@@ -18,6 +18,9 @@ function Assert-True($Condition, $Message) {
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
+function Assert-Contains($Haystack, $Needle, $Message) {
+    if ($Haystack -notlike "*$Needle*") { throw "ASSERT FAILED: $Message`nExpected substring: $Needle" }
+}
 
 function Assert-NonEmptyPath([object]$Value, [string]$Message) {
     $s = ''
@@ -330,6 +333,10 @@ try {
         Assert-Eq (Get-PdfPageCount -QpdfExe $qpdfExe -Path $r3.Data.targetHistoryPdf) 3 'History pages after v3'
     }
 } finally { Remove-Item -LiteralPath $tmp7 -Recurse -Force -ErrorAction SilentlyContinue }
+
+$procText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Raw -Encoding UTF8
+Assert-Contains $procText '_QCP-IsFinalQcPrependJob' 'Processors should detect QC Finalizing prepend jobs'
+Assert-Contains $procText 'Review stamps skipped for QC Finalizing prepend' 'Finalizing prepend must skip review stamps'
 
 Write-Host 'All QC_PREPEND processor tests passed.' -ForegroundColor Green
 

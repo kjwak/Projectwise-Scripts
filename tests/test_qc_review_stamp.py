@@ -91,6 +91,38 @@ def test_apply_ic_stamp_single_annotation_no_page_widgets(tmp_path: Path) -> Non
     after.close()
 
 
+def test_apply_review_stamp_without_field_population(tmp_path: Path) -> None:
+    fitz = qc_review_stamp._get_fitz()
+    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"
+    if not stamp_src.is_file():
+        pytest.skip("Peer_Review_Stamp.pdf not in repo")
+
+    target = tmp_path / "sheet.pdf"
+    make_minimal_pdf(target, label="sheet", width=1584, height=2448)
+
+    result = qc_review_stamp.apply_review_stamp(
+        target,
+        stamp_src,
+        qc_review_stamp.build_peer_review_field_values(
+            originator="o@x.com",
+            checker="c@x.com",
+            backchecker="b@x.com",
+        ),
+        stamp_height_pt=180,
+        populate_text_fields=False,
+    )
+
+    assert result["stamp_annotation"] is True
+    assert result["field_values"] == {}
+
+    after = fitz.open(target)
+    stamp_annots = [a for a in after[0].annots() or [] if a.type[1] == "Stamp"]
+    assert len(stamp_annots) == 1
+    content = stamp_annots[0].info.get("content") or ""
+    assert "o@x.com" not in content
+    after.close()
+
+
 def test_apply_review_stamp_single_annotation_no_page_widgets(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"

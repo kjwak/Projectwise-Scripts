@@ -206,6 +206,14 @@ function Get-QCNotificationSettings {
                 subjectTemplate = 'QC Automation Error - {documentName}'
                 actionRequired = 'Manual review required.'
             }
+            'QC Complete' = @{
+                enabled = $true
+                eventType = 'QC_COMPLETE'
+                to = @('designers', 'reviewers')
+                cc = @()
+                subjectTemplate = 'QC Complete - {documentName}'
+                actionRequired = 'QC review cycle is complete.'
+            }
         }
     }
 

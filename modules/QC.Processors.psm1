@@ -138,6 +138,10 @@ function _QCP-TryApplyReviewStampFromJob {
         [string]$OverlayExe = ''
     )
 
+    if (_QCP-IsFinalQcPrependJob -Job $Job) {
+        return @{ applied = $false; skipped = $true; reason = 'Review stamps skipped for QC Finalizing prepend.' }
+    }
+
     if (-not (Get-Command -Name 'Invoke-QCReviewStampForReviewType' -ErrorAction SilentlyContinue)) {
         return @{ applied = $false; reason = 'QC.ReviewStamp module not loaded' }
     }
@@ -235,6 +239,11 @@ function _QCP-ResolvePrependTrigger([hashtable]$Job) {
     } catch { }
 
     return $null
+}
+
+function _QCP-IsFinalQcPrependJob([hashtable]$Job) {
+    $trigger = _QCP-ResolvePrependTrigger -Job $Job
+    return ($trigger -eq 'finalQcComplete')
 }
 
 function _QCP-NewWorkflowContext([hashtable]$Job, [hashtable]$Config, [string]$SourcePath, [string]$OutputPath, [string]$HistoryPath, [string]$ResultStatus, [string]$ErrorMessage, [object]$Document) {
