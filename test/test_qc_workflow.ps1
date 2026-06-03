@@ -53,9 +53,9 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
                 independentCheck = 'Independent Check'
             }
             defaultReviewType = 'Production QC'
-            stateAfterSuccessfulPrepend = 'QC Received'
+            stateAfterSuccessfulPrepend = 'Ready for QC'
             stateAfterPrependByTrigger = @{
-                initialQcPdf = 'QC Received'
+                initialQcPdf = 'Ready for QC'
                 reviewerRedlineUpdate = 'Redlines Issued'
                 designerCorrectionComplete = 'Verification In Progress'
             }
@@ -214,10 +214,10 @@ Assert-True (-not $attrs.Data.attributes.ContainsKey('QC_Stage')) 'QC_Stage must
 
 # prepend trigger selects target state when autoSetState runs
 $triggerSettings = Get-QCWorkflowSettings -Config $writeCfg
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'QC Received' 'initialQcPdf -> QC Received'
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'Ready for QC' 'initialQcPdf -> Ready for QC'
 Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'reviewerRedlineUpdate' }) 'Redlines Issued' 'reviewerRedlineUpdate -> Redlines Issued'
 Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'designerCorrectionComplete' }) 'Verification In Progress' 'designerCorrectionComplete -> Verification In Progress'
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{}) 'QC Received' 'unknown trigger falls back to stateAfterSuccessfulPrepend'
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{}) 'Ready for QC' 'unknown trigger falls back to stateAfterSuccessfulPrepend'
 
 # state write uses explicit targetState when provided
 $script:stateWrites = 0

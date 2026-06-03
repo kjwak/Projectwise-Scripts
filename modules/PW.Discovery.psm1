@@ -1168,7 +1168,7 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     Sets the same workflow state on all associated DGN, sheet PDF, and QC PDF siblings in a folder.
   .DESCRIPTION
     Used after QC_PREPEND writeback so every sheet member reaches the configured post-prepend state
-    (e.g. QC Received). Does not enqueue jobs or fire audit notifications on siblings.
+    (e.g. Ready for QC). Does not enqueue jobs or fire audit notifications on siblings.
     #>
     [CmdletBinding()]
     param(

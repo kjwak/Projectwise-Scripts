@@ -165,11 +165,11 @@ Successful `QC_PREPEND` does **not** always move documents to `Redlines Issued`.
 
 | Trigger key | Typical use | Default target state |
 | --- | --- | --- |
-| `initialQcPdf` | Initial QC PDF creation / rendition (e.g. `QC_Initiated` intake) | `QC Received` |
+| `initialQcPdf` | Initial QC PDF creation / rendition (e.g. `QC_Initiated` intake) | `Ready for QC` |
 | `reviewerRedlineUpdate` | Reviewer issued redlines / comment overlay update | `Redlines Issued` |
 | `designerCorrectionComplete` | Designer explicitly marked corrections complete | `Verification In Progress` |
 
-Configure targets in `qcWorkflow.stateAfterPrependByTrigger`. Unknown triggers fall back to `stateAfterSuccessfulPrepend` (`QC Received` by default).
+Configure targets in `qcWorkflow.stateAfterPrependByTrigger`. Unknown triggers fall back to `stateAfterSuccessfulPrepend` (`Ready for QC` by default).
 
 Explicit flags on job metadata (alternative to `prependTrigger` string): `reviewerRedlineUpdate=true`, `correctionComplete=true` / `designerCorrectionComplete=true`.
 

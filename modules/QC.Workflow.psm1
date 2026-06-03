@@ -258,7 +258,7 @@ function _QCW-DefaultWorkflowStates {
     return @{
         production = 'In Production'
         qcInitiated = 'QC Initiated'
-        qcReceived = 'QC Received'
+        qcReceived = 'Ready for QC'
         readyForQc = 'Ready for QC'
         reviewInProgress = 'Review In Progress'
         redlinesIssued = 'Redlines Issued'
@@ -334,7 +334,7 @@ function Get-QCWorkflowDeprecationWarnings {
 function _QCW-DefaultPrependStateTriggers {
     $states = _QCW-DefaultWorkflowStates
     return @{
-        initialQcPdf = [string]$states.qcReceived
+        initialQcPdf = [string]$states.readyForQc
         reviewerRedlineUpdate = [string]$states.redlinesIssued
         designerCorrectionComplete = [string]$states.verificationInProgress
     }
@@ -462,7 +462,7 @@ function Resolve-QCWorkflowAssignee {
     $state = if ($StateName) { [string]$StateName } else { '' }
     $production = [string]$states.production
     $qcInitiated = if ($states.qcInitiated) { [string]$states.qcInitiated } else { 'QC Initiated' }
-    $qcReceived = if ($states.qcReceived) { [string]$states.qcReceived } else { 'QC Received' }
+    $qcReceived = if ($states.qcReceived) { [string]$states.qcReceived } elseif ($states.readyForQc) { [string]$states.readyForQc } else { 'Ready for QC' }
     $ready = [string]$states.readyForQc
     $review = [string]$states.reviewInProgress
     $redlinesIssued = [string]$states.redlinesIssued
@@ -510,8 +510,8 @@ function Get-QCWorkflowSettings {
         states = @{}
         reviewTypes = @{}
         defaultReviewType = 'Production QC'
-        defaultStateAfterPrepend = 'QC Received'
-        stateAfterSuccessfulPrepend = 'QC Received'
+        defaultStateAfterPrepend = 'Ready for QC'
+        stateAfterSuccessfulPrepend = 'Ready for QC'
         stateAfterFailedPrepend = 'Error Needs Attention'
         defaultPrependTrigger = 'initialQcPdf'
         stateAfterPrependByTrigger = @{}

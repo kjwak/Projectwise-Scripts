@@ -352,7 +352,7 @@ function _QCR-GetQcReceivedStateName([hashtable]$Config) {
         $wf = _QCR-ToHashtable $Config.qcWorkflow
         if ($wf -and $wf.receivedStateName) { return [string]$wf.receivedStateName }
     }
-    return 'QC Received'
+    return _QCR-GetReadyForQcStateName -Config $Config
 }
 
 function Test-QCShouldDeferReadyForQcNotification {

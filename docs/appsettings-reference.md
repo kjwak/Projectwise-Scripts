@@ -333,7 +333,7 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `workflowTriggers.automationPwUserNumbers` | `[]` | Optional numeric `o_userno` list if usernames differ by environment. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |
 
-After successful prepend, `QC.Workflow` calls `Sync-PWAssociatedSheetMembersToWorkflowState` so **DGN**, sheet **PDF**, and **`*-qc.pdf`** all receive `stateAfterSuccessfulPrepend` (**QC Received**). The **QC Received** email is sent from the workflow hook (not deferred when `deferReadyForQcNotification` is false). Set `ignoreStateChangeFromAutomation` to **true** only if you want audit to ignore service-account `DOCUMENT_STATE` echoes entirely.
+After successful prepend, `QC.Workflow` calls `Sync-PWAssociatedSheetMembersToWorkflowState` so **DGN**, sheet **PDF**, and **`*-qc.pdf`** all receive `stateAfterSuccessfulPrepend` (**Ready for QC** by default). The **Ready for QC** email is sent from the workflow hook when `notifications.events['Ready for QC'].enabled` is true (not deferred when `deferReadyForQcNotification` is false). Set `ignoreStateChangeFromAutomation` to **true** only if you want audit to ignore service-account `DOCUMENT_STATE` echoes entirely.
 
 Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf` for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`).
 
