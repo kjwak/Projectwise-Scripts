@@ -39,6 +39,8 @@ $prependActions = Get-QCPrependAuditActions -Config $cfgDefault
 Assert-True ($prependActions -contains 'DOCUMENT_ATTR') 'default prepend actions include DOCUMENT_ATTR'
 Assert-True ($prependActions -contains 'DOCUMENT_STATE') 'default prepend actions include DOCUMENT_STATE'
 
+Assert-Eq (Get-QCAuditStateTransitionKey -AuditEventId 99 -TriggerDocumentGuid 'g') 'audit:99' 'audit event id wins'
+Assert-Eq (Get-QCAuditStateTransitionKey -TransitionId 12 -TriggerDocumentGuid 'g') 'transition:12' 'transition id when no audit id'
 Assert-Eq (Get-QCInitiatedWorkflowStateName -Config $cfgDefault) 'QC Initiated' 'default initiated state name'
 Assert-True (Test-QCWorkflowStateIsQcInitiated -StateName 'QC Initiated' -Config $cfgDefault) 'qc initiated match'
 Assert-True (-not (Test-QCWorkflowStateIsQcInitiated -StateName 'In Production' -Config $cfgDefault)) 'non-initiated state'

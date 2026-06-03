@@ -1620,7 +1620,9 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$CanonicalState,
         [bool]$DryRun = $false,
-        [Nullable[int]]$ChangedByUser = $null
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null
     )
 
     if (-not (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue)) { return }
@@ -1652,7 +1654,8 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
 
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
             -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
-            -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser | Out-Null
+            -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
+            -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
     }
 }
 
@@ -1803,7 +1806,8 @@ function Sync-PWAssociatedSheetWorkflowState {
     }
 
     _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
-        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser
+        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+        -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
 
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
@@ -1834,7 +1838,7 @@ WHERE document_guid = @docGuid
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
                 -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
                 -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
-                -ChangedByUser $ChangedByUser | Out-Null
+                -ChangedByUser $ChangedByUser -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
         }
 
         $change = @{
@@ -2025,6 +2029,7 @@ function Sync-PWSheetIndexOwnership {
         [bool]$IsSheetsFolder = $false,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null,
         [string]$AuditActionName = '',
         [Nullable[int]]$ChangedByUser = $null,
         [switch]$SkipQcInitiatedFallback
@@ -2134,7 +2139,8 @@ WHERE document_guid = @docGuid
         if ($stateDiffers) {
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
                 -DocumentName $DocumentName -FolderPath $FolderPath -PreviousState $dbState -CurrentState $pwState `
-                -PwAttributes $read.attributes -AuditActionName $AuditActionName | Out-Null
+                -PwAttributes $read.attributes -AuditActionName $AuditActionName -ChangedByUser $ChangedByUser `
+                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
         }
     }
 

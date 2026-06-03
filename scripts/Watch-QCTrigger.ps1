@@ -1030,6 +1030,10 @@ if ($statusSetRules.Count -ge 0) {
                                         try {
                                             if ($null -ne $ac.userno) { $acUsernoAttr = [int]$ac.userno }
                                         } catch { $acUsernoAttr = $null }
+                                        $acAuditIdAttr = $null
+                                        try {
+                                            if ($null -ne $ac.auditEventId) { $acAuditIdAttr = [long]$ac.auditEventId }
+                                        } catch { $acAuditIdAttr = $null }
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName ([string]$ac.itemName) `
@@ -1037,6 +1041,7 @@ if ($statusSetRules.Count -ge 0) {
                                             -IsSheetsFolder ([bool]$ac.isSheetsFolder) `
                                             -WatchRoot $acWatchRoot `
                                             -LastAuditEventAt ([string]$ac.actTime) `
+                                            -AuditEventId $acAuditIdAttr `
                                             -AuditActionName $acAction `
                                             -ChangedByUser $acUsernoAttr
                                     }

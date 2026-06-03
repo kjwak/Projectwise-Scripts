@@ -1390,6 +1390,10 @@ function _QCP-GetQcInitiatedStateTransitionKey {
         [Nullable[int]]$ChangedByUser = $null,
         [string]$TriggerDocumentGuid = ''
     )
+    if (Get-Command -Name 'Get-QCAuditStateTransitionKey' -ErrorAction SilentlyContinue) {
+        return Get-QCAuditStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+            -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
+    }
     if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
         return ('audit:' + [string]$AuditEventId)
     }
@@ -1667,7 +1671,13 @@ function Invoke-QCNotificationProcessor {
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint 'notification_send' | Out-Null
     }
-    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc -Job $Job
+    $stKey = $null
+    if ($meta.ContainsKey('stateTransitionKey') -and $meta.stateTransitionKey) {
+        $stKey = [string]$meta.stateTransitionKey
+    } elseif ($Job.id) {
+        $stKey = 'workflow:job:' + [string]$Job.id + '|state:' + $curr
+    }
+    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc -Job $Job -StateTransitionKey $stKey
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         $cp = if ($res -and $res.IsSuccess) { 'notification_complete' } else { 'notification_failed' }
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $cp | Out-Null

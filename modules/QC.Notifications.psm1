@@ -811,11 +811,16 @@ function Get-QCNotificationDedupeKey {
             'currentState' { $value = [string]$Event.currentState }
             'previousState' { $value = [string]$Event.previousState }
             'project' { $value = [string]$Event.project }
+            'stateTransitionKey' { $value = [string]$Event.stateTransitionKey }
             default {
                 if ($Event.ContainsKey($field)) { $value = [string]$Event[$field] }
             }
         }
         $parts.Add(('{0}={1}' -f $field, $value)) | Out-Null
+    }
+    # Per-transition dedupe when audit/processor supplies a key (all configured state emails).
+    if (-not ($fields -contains 'stateTransitionKey') -and $Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
+        $parts.Add(('stateTransitionKey=' + [string]$Event.stateTransitionKey)) | Out-Null
     }
     return ($parts -join '|')
 }
@@ -1139,6 +1144,7 @@ function Invoke-QCNotificationForStateChange {
         [string]$DocumentGuid = '',
         [string]$Project = '',
         [hashtable]$Job,
+        [string]$StateTransitionKey = '',
         [switch]$Force
     )
 
@@ -1287,6 +1293,10 @@ function Invoke-QCNotificationForStateChange {
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
     if (-not (_QCN-IsBlank $folderForRoles)) { $event['folderPath'] = $folderForRoles }
+    if (-not (_QCN-IsBlank $StateTransitionKey)) { $event['stateTransitionKey'] = [string]$StateTransitionKey }
+    elseif ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
+        $event['stateTransitionKey'] = [string]$Job.metadata.stateTransitionKey
+    }
 
     $folderForRt = ''
     $sourceForRt = $DocumentName

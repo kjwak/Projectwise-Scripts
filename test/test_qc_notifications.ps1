@@ -160,11 +160,33 @@ $dupDedupe = Join-Path $testRoot 'dedupe-dup\sent-keys.jsonl'
 New-Item -ItemType Directory -Path (Split-Path $dupDedupe) -Force | Out-Null
 $dupCfg.notifications.dedupe.storePath = $dupDedupe
 $first = Invoke-QCNotificationForStateChange -Config $dupCfg -PreviousState 'In Production' -CurrentState 'QC Received' `
-    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com')
+    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com') -StateTransitionKey 'audit:1001'
 $second = Invoke-QCNotificationForStateChange -Config $dupCfg -PreviousState 'In Production' -CurrentState 'QC Received' `
-    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com')
+    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com') -StateTransitionKey 'audit:1001'
 Assert-True $second.Data.skipped 'Second identical notification should be deduped'
 Assert-Eq $second.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Duplicate should use skip code'
+
+# New transition to same state should not dedupe (repeat QC cycle)
+$cycleDedupe = Join-Path $testRoot 'dedupe-cycle\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $cycleDedupe) -Force | Out-Null
+$cycleCfg = New-NotifyConfig -Enabled $true
+$cycleCfg.notifications.dedupe.storePath = $cycleDedupe
+$cycleCfg.notifications.events['Redlines Received'] = @{
+    enabled = $true
+    eventType = 'REDLINES_RECEIVED'
+    to = @('designers')
+    cc = @('reviewers')
+    subjectTemplate = 'Redlines - {documentName}'
+    actionRequired = 'Designer corrections.'
+}
+$docCycle = [pscustomobject]@{ Name = 'S1-qc.pdf'; DocumentGUID = 'guid-cycle'; EM_Designer_Email = 'd@x.com'; EM_Reviewer_Email = 'r@x.com' }
+$r1 = Invoke-QCNotificationForStateChange -Config $cycleCfg -PreviousState 'Ready for QC' -CurrentState 'Redlines Received' `
+    -Document $docCycle -StateTransitionKey 'audit:2001'
+Assert-True $r1.IsSuccess 'First Redlines Received send should succeed'
+$r2 = Invoke-QCNotificationForStateChange -Config $cycleCfg -PreviousState 'Corrections Received' -CurrentState 'Redlines Received' `
+    -Document $docCycle -StateTransitionKey 'audit:2002'
+Assert-True $r2.IsSuccess 'Second cycle Redlines Received should succeed with new transition key'
+Assert-True (-not $r2.Data.skipped) 'Second cycle should not be deduped'
 
 # Graph not configured
 $graphCfg = New-NotifyConfig -Enabled $true -Provider 'MicrosoftGraph'

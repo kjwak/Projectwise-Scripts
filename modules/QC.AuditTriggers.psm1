@@ -26,6 +26,34 @@ function _QCAT-NormalizeValue([string]$Value) {
     return ([string]$Value).Trim()
 }
 
+function Get-QCAuditStateTransitionKey {
+    <#
+    .SYNOPSIS
+    Stable id for one workflow state transition (audit event, DB transition row, or user+time).
+    Used by notification dedupe and QC_PREPEND enqueue so repeat cycles are not blocked by prior sends.
+    #>
+    [CmdletBinding()]
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$TriggerDocumentGuid = '',
+        [Nullable[int]]$TransitionId = $null
+    )
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
+        return ('audit:' + [string]$AuditEventId)
+    }
+    if ($null -ne $TransitionId -and $TransitionId -gt 0) {
+        return ('transition:' + [string]$TransitionId)
+    }
+    $at = ([string]$LastAuditEventAt).Trim()
+    $guid = ([string]$TriggerDocumentGuid).Trim()
+    if ($at.Length -eq 0) { return $null }
+    $userPart = ''
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0) { $userPart = ('user:' + [string]$ChangedByUser + '|') }
+    return ($userPart + 'at:' + $at + '|doc:' + $guid)
+}
+
 function Test-QCIsQcPdfDocumentName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentName)
@@ -237,7 +265,9 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         [hashtable]$PwAttributes = $null,
         [bool]$DryRun = $false,
         [string]$AuditActionName = 'DOCUMENT_STATE',
-        [Nullable[int]]$ChangedByUser = $null
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null
     )
 
     $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
@@ -305,10 +335,16 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         return
     }
 
+    $stateTransitionKey = $null
+    if (Get-Command -Name 'Get-QCAuditStateTransitionKey' -ErrorAction SilentlyContinue) {
+        $stateTransitionKey = Get-QCAuditStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+            -ChangedByUser $ChangedByUser -TriggerDocumentGuid $DocumentGuid -TransitionId $transitionId
+    }
+
     try {
         $notif = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr `
             -Document $Document -DocumentName $DocumentName -DocumentGuid $DocumentGuid `
-            -DocumentPath ($FolderPath + '\' + $DocumentName)
+            -DocumentPath ($FolderPath + '\' + $DocumentName) -StateTransitionKey $stateTransitionKey
         if ($notif -is [System.Array]) { $notif = $notif[-1] }
         $notifData = if ($notif -and $notif.Data -is [hashtable]) { $notif.Data } elseif ($notif -and $notif.Data) { _QCAT-ToHashtable $notif.Data } else { $null }
         if ($transitionId -and $notif -and $notif.IsSuccess -and $notifData) {
@@ -513,7 +549,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     }
 }
 
-Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Test-QCIsQcPdfDocumentName, `
+Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCAuditStateTransitionKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

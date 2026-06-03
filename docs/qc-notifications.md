@@ -53,7 +53,7 @@ Configured under `notifications.events` keyed by **current workflow state name**
 
 ## Deduplication
 
-When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key (default: `documentGuid|eventType|currentState`). Keys are stored in `notifications/dedupe/sent-keys.jsonl`.
+When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key. Default fields: `documentGuid`, `eventType`, `currentState`. When an audit or workflow path supplies `stateTransitionKey` (audit event id, `transition_events` row id, or user+timestamp+document), that value is **always appended** to the dedupe key so a **new** human transition to the same state (e.g. Redlines Received on a second QC cycle) can send email again. Duplicate notify attempts on the **same** audit event still dedupe. Keys are stored in `notifications/dedupe/sent-keys.jsonl`.
 
 ## Integration points
 

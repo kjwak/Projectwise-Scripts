@@ -136,6 +136,12 @@ function _QCW-InvokeStateChangeNotification {
                 return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
             }
         }
+        $wfTransitionKey = $null
+        if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
+            $wfTransitionKey = [string]$Context.stateTransitionKey
+        } elseif ($job -and $job.id) {
+            $wfTransitionKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
+        }
         $notifJob = @{
             id = ('qc_notification_' + [guid]::NewGuid().ToString('n').Substring(0, 12))
             type = 'QC_NOTIFICATION'
@@ -150,6 +156,7 @@ function _QCW-InvokeStateChangeNotification {
                 currentState = $CurrentState
                 documentGuid = if ($Document) { try { [string]$Document.DocumentGUID } catch { '' } } else { '' }
                 parentJobId = if ($Context -and $Context.jobId) { [string]$Context.jobId } elseif ($job -and $job.id) { [string]$job.id } else { '' }
+                stateTransitionKey = $wfTransitionKey
             }
         }
         if ($Context -and $Context.ContainsKey('documentPath') -and $Context.documentPath) {
@@ -204,8 +211,14 @@ function _QCW-InvokeStateChangeNotification {
                 try { $notifJob['sourceName'] = [string]$Document.Name } catch { }
             }
         }
+        $stKey = $null
+        if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
+            $stKey = [string]$Context.stateTransitionKey
+        } elseif ($job -and $job.id) {
+            $stKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
+        }
         return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
-            -Document $Document -Job $notifJob
+            -Document $Document -Job $notifJob -StateTransitionKey $stKey
     } catch {
         if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
             Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `
