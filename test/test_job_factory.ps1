@@ -90,6 +90,47 @@ Assert-Eq $jT1.Data.job.dedupeKey (Get-QCDedupeKey -Job $jT1.Data.job -Config $c
 $jT1b = New-QCJobObject -Candidate $candT1 -Rule $ruleInitiated -Config $config
 Assert-Eq $jT1.Data.job.dedupeKey $jT1b.Data.job.dedupeKey 'Same transition should produce stable dedupe key'
 
+# qc-finalizing prepend: new job per human state transition (audit event), same key for duplicate enqueue on one transition
+$ruleFinalizing = @{
+    id = 'qc-prepend-qc-finalizing'
+    jobType = 'QC_PREPEND'
+    triggerType = 'audit_state_change'
+    grouping = @{ enabled = $false; groupBy = 'file' }
+}
+$candF1 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = 'audit:9101'
+}
+$candF2 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = 'audit:9102'
+}
+$jF1 = New-QCJobObject -Candidate $candF1 -Rule $ruleFinalizing -Config $config
+$jF2 = New-QCJobObject -Candidate $candF2 -Rule $ruleFinalizing -Config $config
+Assert-True $jF1.IsSuccess 'QC Finalizing job creation should succeed'
+Assert-True $jF2.IsSuccess 'QC Finalizing job creation should succeed (second transition)'
+Assert-True ($jF1.Data.job.dedupeKey -ne $jF2.Data.job.dedupeKey) 'QC Finalizing dedupe should differ per audit transition'
+$jF1b = New-QCJobObject -Candidate $candF1 -Rule $ruleFinalizing -Config $config
+Assert-Eq $jF1.Data.job.dedupeKey $jF1b.Data.job.dedupeKey 'QC Finalizing same transition should produce stable dedupe key'
+
+# sheet-level prepend transition: same sheet+from+to dedupes across PDF/DGN audit echoes
+$sheetKey = 'sheet:080j082001ab|from:ready for qc|to:qc initiated'
+$candSheet1 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = $sheetKey
+}
+$candSheet2 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = $sheetKey
+}
+$jS1 = New-QCJobObject -Candidate $candSheet1 -Rule $ruleInitiated -Config $config
+$jS2 = New-QCJobObject -Candidate $candSheet2 -Rule $ruleInitiated -Config $config
+Assert-Eq $jS1.Data.job.dedupeKey $jS2.Data.job.dedupeKey 'Sheet-level transition key should dedupe duplicate audit echoes'
+
 # STATUS_SET_GEN grouped-by-folder dedupe should be same for different triggering files in same folder
 $ruleStatus = @{
     id = 'status-rule'

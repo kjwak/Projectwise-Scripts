@@ -1659,6 +1659,126 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
     }
 }
 
+function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
+    <#
+    .SYNOPSIS
+    Enqueues QC_PREPEND once per sheet workflow transition after sibling state sync.
+    .DESCRIPTION
+    QC Initiated uses the canonical synced workflow state (first prepend often runs before *-qc.pdf exists).
+    QC Finalizing prefers *-qc.pdf workflow state when that file exists. Sheet-level dedupe avoids duplicate
+    jobs from separate PDF/DGN audit events for the same user action.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][array]$Members,
+        [Parameter(Mandatory)][string]$CanonicalState,
+        [string]$PreviousSheetState = '',
+        [string]$TriggerDocumentGuid = '',
+        [string]$TriggerDocumentName = '',
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [hashtable]$StateByGuid = $null
+    )
+
+    if (-not (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) { return }
+    $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $TriggerDocumentName
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) { return }
+
+    $sheetPdfName = $sheetStem + '.pdf'
+    $sheetPdfGuid = ''
+    $qcPdfGuid = ''
+    $qcPdfName = ''
+    foreach ($member in $Members) {
+        $dn = [string]$member.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+            $sheetPdfGuid = [string]$member.documentGuid
+        } elseif ($dn -match '(?i)-qc\.pdf$') {
+            $qcPdfGuid = [string]$member.documentGuid
+            $qcPdfName = $dn
+        }
+    }
+
+    $qcState = ''
+    if (-not [string]::IsNullOrWhiteSpace($qcPdfName)) {
+        if ($StateByGuid -and $qcPdfGuid -and $StateByGuid.ContainsKey($qcPdfGuid.ToLowerInvariant())) {
+            $qcState = [string]$StateByGuid[$qcPdfGuid.ToLowerInvariant()]
+        }
+        if ([string]::IsNullOrWhiteSpace($qcState) -and (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) {
+            try {
+                $qcState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $qcPdfName -DocumentGuid $qcPdfGuid)
+            } catch { }
+        }
+    }
+    $hasQcPdf = -not [string]::IsNullOrWhiteSpace($qcPdfName)
+    $canonical = ([string]$CanonicalState).Trim()
+    if ($canonical.Length -eq 0) { return }
+
+    # Finalizing: *-qc.pdf is the history target; use its state when the file exists.
+    $finalizingState = $canonical
+    if ($hasQcPdf) {
+        if ([string]::IsNullOrWhiteSpace($qcState)) { $qcState = $canonical }
+        $finalizingState = ([string]$qcState).Trim()
+        if ($finalizingState.Length -eq 0) { $finalizingState = $canonical }
+    }
+
+    $prependGuid = if (-not [string]::IsNullOrWhiteSpace($qcPdfGuid)) { $qcPdfGuid } else { $TriggerDocumentGuid }
+    if ([string]::IsNullOrWhiteSpace($prependGuid)) { $prependGuid = $sheetPdfGuid }
+
+    $stKey = $null
+    if (Get-Command -Name '_QCP-GetSheetPrependStateTransitionKey' -ErrorAction SilentlyContinue) {
+        $stKey = _QCP-GetSheetPrependStateTransitionKey -SheetStem $sheetStem -FromState $PreviousSheetState -ToState $canonical
+    }
+
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+        if (Test-QCWorkflowStateIsQcInitiated -StateName $canonical -Config $Config) {
+            if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
+                try {
+                    Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
+                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $sheetPdfName -FolderPath $FolderPath `
+                        -CurrentStateName $canonical -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+                        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
+                        -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
+                } catch {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
+                            folderPath = $FolderPath; sheetPdf = $sheetPdfName; qcPdf = $qcPdfName
+                            canonicalState = $canonical; hasQcPdf = $hasQcPdf; stateTransitionKey = $stKey
+                        } | Out-Null
+                    }
+                }
+            }
+            return
+        }
+    }
+
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
+        if (Test-QCWorkflowStateIsQcFinalizing -StateName $finalizingState -Config $Config) {
+            if (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue) {
+                try {
+                    Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
+                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $sheetPdfName -FolderPath $FolderPath `
+                        -CurrentStateName $finalizingState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+                        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
+                        -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
+                } catch {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_FINAL_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
+                            folderPath = $FolderPath; sheetPdf = $sheetPdfName; qcPdf = $qcPdfName
+                            finalizingState = $finalizingState; hasQcPdf = $hasQcPdf; stateTransitionKey = $stKey
+                        } | Out-Null
+                    }
+                }
+            }
+        }
+    }
+}
+
 function Sync-PWAssociatedSheetWorkflowState {
     <#
     .SYNOPSIS
@@ -1667,6 +1787,7 @@ function Sync-PWAssociatedSheetWorkflowState {
     The audit event document is the source of truth for the new workflow state. Associated files
     in the same folder (same sheet stem) are updated via Set-PWDocumentState when they differ.
     sheet_index pw_state_name is updated for every member that was aligned.
+    QC_PREPEND is enqueued once after sync (Initiated from canonical state; Finalizing from *-qc.pdf when present).
     #>
     [CmdletBinding()]
     param(
@@ -1717,57 +1838,6 @@ function Sync-PWAssociatedSheetWorkflowState {
         } catch { }
     }
 
-    $isPrependSource = ([string]$DocumentName -match '(?i)\.(dgn|pdf)$') -and ([string]$DocumentName -notmatch '(?i)-qc\.pdf$')
-    if ($isPrependSource -and (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
-        try {
-            Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
-                -TriggerDocumentGuid $DocumentGuid `
-                -TriggerDocumentName $DocumentName `
-                -FolderPath $FolderPath `
-                -CurrentStateName $canonicalState `
-                -DryRun:$DryRun `
-                -ChangedByUser $ChangedByUser `
-                -ChangedByUsername $ChangedByUsername `
-                -LastAuditEventAt $LastAuditEventAt `
-                -AuditEventId $AuditEventId | Out-Null
-        } catch {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
-                    documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-                    changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
-                    currentState = $canonicalState
-                } | Out-Null
-            }
-        }
-    }
-
-    if (-not (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
-        try {
-            $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
-            Import-Module $procPath -Force -ErrorAction SilentlyContinue
-        } catch { }
-    }
-    if ($isPrependSource -and (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
-        try {
-            Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
-                -TriggerDocumentGuid $DocumentGuid `
-                -TriggerDocumentName $DocumentName `
-                -FolderPath $FolderPath `
-                -CurrentStateName $canonicalState `
-                -DryRun:$DryRun `
-                -ChangedByUser $ChangedByUser `
-                -ChangedByUsername $ChangedByUsername | Out-Null
-        } catch {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_FINAL_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
-                    documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-                    changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
-                    currentState = $canonicalState
-                } | Out-Null
-            }
-        }
-    }
-
     if (([string]$DocumentName -match '(?i)\.dgn$') -and (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
             Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
@@ -1792,6 +1862,24 @@ function Sync-PWAssociatedSheetWorkflowState {
     $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
     if ($members.Count -eq 0) { return }
+
+    $previousSheetState = ''
+    $sheetStemForPrepend = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $sheetStemForPrepend = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+    if (-not [string]::IsNullOrWhiteSpace($sheetStemForPrepend)) {
+        foreach ($member in $members) {
+            $dn = [string]$member.documentName
+            if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+                $dg = [string]$member.documentGuid
+                if ($dg) {
+                    $previousSheetState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+                }
+                break
+            }
+        }
+    }
 
     $guids = @($members | ForEach-Object { [string]$_.documentGuid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ })
     $stateByGuid = @{}
@@ -1934,6 +2022,21 @@ WHERE document_guid = @docGuid
             }
         }
     }
+
+    if (-not $DryRun) {
+        try {
+            $refreshed = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
+            if ($refreshed) {
+                foreach ($k in @($refreshed.Keys)) { $stateByGuid[$k] = $refreshed[$k] }
+            }
+        } catch { }
+    }
+
+    _PWD-EnqueuePrependJobsFromAssociatedQcPdfState -Config $Config -FolderPath $FolderPath -Members $members `
+        -CanonicalState $canonicalState -PreviousSheetState $previousSheetState `
+        -TriggerDocumentGuid $DocumentGuid -TriggerDocumentName $DocumentName -DryRun:$DryRun `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+        -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId -StateByGuid $stateByGuid
 }
 
 function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
@@ -2144,55 +2247,6 @@ WHERE document_guid = @docGuid
         }
     }
 
-    if ($stateDiffers) {
-        if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
-            try {
-                $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
-                Import-Module $procPath -Force -ErrorAction SilentlyContinue
-            } catch { }
-        }
-        if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
-            try {
-                Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
-                    -TriggerDocumentGuid $DocumentGuid `
-                    -TriggerDocumentName $DocumentName `
-                    -FolderPath $FolderPath `
-                    -CurrentStateName $pwState `
-                    -ChangedByUser $ChangedByUser `
-                    -LastAuditEventAt $LastAuditEventAt | Out-Null
-            } catch {
-                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
-                        documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-                        changedByUser = $ChangedByUser; currentState = $pwState; auditActionName = $AuditActionName
-                    } | Out-Null
-                }
-            }
-        }
-        if (-not (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
-            try {
-                $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
-                Import-Module $procPath -Force -ErrorAction SilentlyContinue
-            } catch { }
-        }
-        if (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue) {
-            try {
-                Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
-                    -TriggerDocumentGuid $DocumentGuid `
-                    -TriggerDocumentName $DocumentName `
-                    -FolderPath $FolderPath `
-                    -CurrentStateName $pwState `
-                    -ChangedByUser $ChangedByUser | Out-Null
-            } catch {
-                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_FINAL_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
-                        documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-                        changedByUser = $ChangedByUser; currentState = $pwState; auditActionName = $AuditActionName
-                    } | Out-Null
-                }
-            }
-        }
-    }
     if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {
         $fieldChanges = @{}
         if ($emailsDiffer) {

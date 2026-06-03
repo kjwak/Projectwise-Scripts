@@ -36,7 +36,7 @@ function _QCJF-GetCandidateStateTransitionKey {
     if ($Candidate.ContainsKey('stateTransitionKey') -and -not (_QCJF-IsNullOrWhiteSpace $Candidate.stateTransitionKey)) {
         return [string]$Candidate.stateTransitionKey
     }
-    if ([string]$RuleId -ne 'qc-prepend-qc-initiated') { return $null }
+    if ($RuleId -notin @('qc-prepend-qc-initiated', 'qc-prepend-qc-finalizing')) { return $null }
     return $null
 }
 
