@@ -2410,7 +2410,7 @@ SELECT TOP ($MaxRows)
 FROM audit_events
 WHERE processed = 0
   AND pw_action IN ($codeList)
-ORDER BY pw_acttime ASC, pw_objguid ASC
+ORDER BY CASE WHEN pw_action = 1012 THEN 0 ELSE 1 END, pw_acttime ASC, pw_objguid ASC
 "@
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql

@@ -1536,6 +1536,81 @@ WHERE document_guid = @docGuid
     }
 }
 
+function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
+    <#
+    .SYNOPSIS
+    When DOCUMENT_STATE is backlog-starved, sibling DOCUMENT_ATTR events may still run.
+    If the associated sheet PDF is already QC Initiated in PW, run the normal state-sync + prepend path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [bool]$IsSheetsFolder = $false,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    if (-not $IsSheetsFolder) { return }
+    if (-not (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-Command -Name 'Sync-PWAssociatedSheetWorkflowState' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) { return }
+
+    $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) { return }
+    $sheetPdfName = $sheetStem + '.pdf'
+
+    $sheetGuid = ''
+    if (($DocumentName -match '(?i)\.pdf$') -and ($DocumentName -notmatch '(?i)-qc\.pdf$')) {
+        $sheetGuid = [string]$DocumentGuid
+    } else {
+        try {
+            $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+                -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+            foreach ($member in $members) {
+                $mn = [string]$member.documentName
+                if (($mn -match '(?i)\.pdf$') -and ($mn -notmatch '(?i)-qc\.pdf$')) {
+                    $sheetGuid = [string]$member.documentGuid
+                    break
+                }
+            }
+        } catch { return }
+    }
+
+    if (-not (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) { return }
+    $sheetState = ''
+    try {
+        $sheetState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $sheetPdfName -DocumentGuid $sheetGuid)
+    } catch { return }
+    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $sheetState -Config $Config)) { return }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QC_INITIATED_SHEET_PDF_FALLBACK' `
+            -Message 'Associated sheet PDF is QC Initiated; running state sync/prepend fallback from sibling audit event.' -Data @{
+            triggerDocumentGuid = $DocumentGuid; triggerDocumentName = $DocumentName; folderPath = $FolderPath
+            sheetPdfName = $sheetPdfName; sheetPdfGuid = $sheetGuid; sheetPdfState = $sheetState
+        } | Out-Null
+    }
+
+    try {
+        Sync-PWAssociatedSheetWorkflowState -Config $Config -DocumentGuid $sheetGuid -DocumentName $sheetPdfName `
+            -FolderPath $FolderPath -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+    } catch {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_QC_INITIATED_SHEET_PDF_FALLBACK_ERROR' `
+                -Message $_.Exception.Message -Data @{
+                triggerDocumentGuid = $DocumentGuid; triggerDocumentName = $DocumentName; folderPath = $FolderPath
+                sheetPdfName = $sheetPdfName; sheetPdfGuid = $sheetGuid
+            } | Out-Null
+        }
+    }
+}
+
 function Sync-PWSheetIndexOwnership {
     <#
     .SYNOPSIS
@@ -1717,6 +1792,12 @@ WHERE document_guid = @docGuid
             qcFieldsChanged = $qcFieldsDiffer
             stateChanged    = $stateDiffers
         }
+    }
+
+    if ($IsSheetsFolder -and $isDocumentAttr) {
+        _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -IsSheetsFolder:$IsSheetsFolder `
+            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser
     }
 }
 
