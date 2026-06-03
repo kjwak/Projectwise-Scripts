@@ -89,6 +89,11 @@ WHERE pw_objguid = @g AND pw_itemdesc = @m
     _Assert $q.IsSuccess "count query failed: $($q.Message)"
     _Assert ([int]$q.Data.value -eq 1) "expected exactly 1 row for test guid (got $($q.Data.value))"
 
+    $unproc = Get-QCUnprocessedAuditEvents -Config $config -MaxRows 500
+    _Assert $unproc.IsSuccess "Get-QCUnprocessedAuditEvents failed: $($unproc.Message)"
+    $found = @($unproc.Data.rows | Where-Object { [string]$_.pw_objguid -eq $testGuid })
+    _Assert ($found.Count -ge 1) 'unprocessed query should return inserted test row from audit_events table'
+
     # Null objguid rows must not insert (production filter).
     $bad = Write-QCAuditEventRows -Config $config -Rows @(@{
             acttime = $actTime; action = 1002; actionName = 'DOCUMENT_MODIFY'; objtype = 2

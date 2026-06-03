@@ -180,10 +180,7 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
     foreach ($row in @($Rows)) {
         $auditId = $null
         try { if ($row.id) { $auditId = [long]$row.id } } catch { }
-        $actionCode = 0
-        try { $actionCode = [int]$row.pw_action } catch {
-            try { $actionCode = _AuditPoller-GetActionCode -Row $row } catch { $actionCode = 0 }
-        }
+        $actionCode = _AuditPoller-GetTriggerActionCode -Row $row
         if (-not $script:QCRelevantActions.ContainsKey($actionCode)) { continue }
         $actionName = $script:QCRelevantActions[$actionCode]
         $objGuid = [string]$row.pw_objguid
@@ -224,10 +221,16 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
         $watchRootPath = $null
         $rootCfg = _AuditPoller-GetWatchRootConfigForFolder -FolderPath $resolvedFolder -WatchRootConfigs $WatchRootConfigs
         if ($rootCfg) {
-            try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
-            try { if ($rootCfg.enableQcCommentSync) { $enableQcCommentSync = [bool]$rootCfg.enableQcCommentSync } } catch { }
-            try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
-            if ($rootCfg.path) { $watchRootPath = [string]$rootCfg.path }
+            if ($rootCfg -is [hashtable]) {
+                try { if ($rootCfg.ContainsKey('enableQcPrepend')) { $enableQcPrepend = [bool]$rootCfg['enableQcPrepend'] } } catch { }
+                try { if ($rootCfg.ContainsKey('enableQcCommentSync')) { $enableQcCommentSync = [bool]$rootCfg['enableQcCommentSync'] } } catch { }
+                try { if ($rootCfg.ContainsKey('enableStatusSet')) { $enableStatusSet = [bool]$rootCfg['enableStatusSet'] } } catch { }
+            } else {
+                try { if ($rootCfg.enableQcPrepend) { $enableQcPrepend = [bool]$rootCfg.enableQcPrepend } } catch { }
+                try { if ($rootCfg.enableQcCommentSync) { $enableQcCommentSync = [bool]$rootCfg.enableQcCommentSync } } catch { }
+                try { if ($rootCfg.enableStatusSet) { $enableStatusSet = [bool]$rootCfg.enableStatusSet } } catch { }
+            }
+            $watchRootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $rootCfg
         }
 
         $actTime = [string]$row.pw_acttime
@@ -543,6 +546,20 @@ function _AuditPoller-GetActionCode {
     $v = _AuditPoller-GetRowValue -Row $Row -Name 'o_action'
     if ($null -eq $v) { return 0 }
     try { return [int]$v } catch { return 0 }
+}
+
+function _AuditPoller-GetTriggerActionCode {
+    param($Row)
+    $code = 0
+    try {
+        if ($Row -is [hashtable] -and $Row.ContainsKey('pw_action') -and $null -ne $Row['pw_action']) {
+            $code = [int]$Row['pw_action']
+        } elseif ($Row.PSObject -and $null -ne $Row.pw_action) {
+            $code = [int]$Row.pw_action
+        }
+    } catch { $code = 0 }
+    if ($code -eq 0) { $code = _AuditPoller-GetActionCode -Row $Row }
+    return $code
 }
 
 function _AuditPoller-GetActionName {
@@ -987,11 +1004,14 @@ function Invoke-AuditTrailScan {
         $maxUnprocessed = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxUnprocessedPerPoll' -Default 500
         if (Get-Command -Name 'Get-QCUnprocessedAuditEvents' -ErrorAction SilentlyContinue) {
             $unprocRes = Get-QCUnprocessedAuditEvents -Config $Config -MaxRows $maxUnprocessed
-            if ($unprocRes.IsSuccess -and $unprocRes.Data.rows) {
-                $triggerRows = @($unprocRes.Data.rows)
-                $stats.dbUnprocessedLoaded = $triggerRows.Count
-                $stats.triggerSource = 'audit_events_db'
-                $useDbTriggers = $true
+            if ($unprocRes.IsSuccess -and $null -ne $unprocRes.Data -and $unprocRes.Data.rows) {
+                $dbRows = @($unprocRes.Data.rows)
+                if ($dbRows.Count -gt 0) {
+                    $triggerRows = $dbRows
+                    $stats.dbUnprocessedLoaded = $triggerRows.Count
+                    $stats.triggerSource = 'audit_events_db'
+                    $useDbTriggers = $true
+                }
             }
         }
     }
@@ -1033,8 +1053,7 @@ function Invoke-AuditTrailScan {
 
     $invalidate = @{}
     foreach ($row in $triggerRows) {
-        $ac = 0
-        try { $ac = [int]$row.pw_action } catch { }
+        $ac = _AuditPoller-GetTriggerActionCode -Row $row
         if ($ac -eq 1003) {
             $og = [string]$row.pw_objguid
             if (-not [string]::IsNullOrWhiteSpace($og)) { $invalidate[$og.Trim().ToLowerInvariant()] = $true }
@@ -1061,9 +1080,10 @@ function Invoke-AuditTrailScan {
     $stats.sheetsMatches = @($candidates | Where-Object { [bool]$_.isSheetsFolder }).Count
 
     if ($stats.relevantEvents -gt 0 -and $stats.watchMatches -eq 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        $watchRootPaths = @()
         $watchRootPaths = @($normalizedWatchRoots | ForEach-Object { _AuditPoller-GetWatchRootPathFromConfig -Cfg $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $diagMatchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRootPaths
         $resolvedSamples = [System.Collections.Generic.List[string]]::new()
+        $sampleMatchChecks = [System.Collections.Generic.List[string]]::new()
         foreach ($row in $triggerRows) {
             if ($resolvedSamples.Count -ge 5) { break }
             $og = [string]$row.pw_objguid
@@ -1071,13 +1091,23 @@ function Invoke-AuditTrailScan {
             $fp = $null
             if ($og -and $docToFolder.ContainsKey($og)) { $fp = [string]$docToFolder[$og] }
             elseif (-not [string]::IsNullOrWhiteSpace([string]$row.resolved_folder)) { $fp = [string]$row.resolved_folder }
-            if ($fp) { [void]$resolvedSamples.Add($fp) }
+            if ($fp) {
+                [void]$resolvedSamples.Add($fp)
+                if ($sampleMatchChecks.Count -lt 3) {
+                    $normFp = _AuditPoller-NormalizeFolderPath -FolderPath $fp
+                    $matched = _AuditPoller-MatchesWatchRoot -FolderPath $fp -MatchRoots $diagMatchRoots
+                    [void]$sampleMatchChecks.Add("$normFp => $matched")
+                }
+            }
         }
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_NO_WATCH_MATCH' -Message 'QC-relevant audit events did not match any projectWise.watchList.roots path.' -Data @{
             relevantEvents = $stats.relevantEvents
+            triggerSource = [string]$stats.triggerSource
             watchRootCount = $watchRootPaths.Count
+            matchRootsCount = $diagMatchRoots.Count
             watchRoots = @($watchRootPaths | Select-Object -First 5)
             resolvedFolderSamples = @($resolvedSamples)
+            sampleMatchChecks = @($sampleMatchChecks)
             foldersResolved = [int]$stats.foldersResolved
             guidCacheMisses = [int]$stats.guidCacheMisses
             guidResolveSkipped = [int]$stats.guidResolveSkipped

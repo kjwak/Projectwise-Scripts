@@ -122,6 +122,23 @@ function Invoke-QCDatabaseQuery {
     }
 }
 
+function _QDB-ConvertDataTableToRowHashtables {
+    param([AllowNull()][System.Data.DataTable]$Table)
+    if (-not $Table -or $Table.Rows.Count -eq 0) { return @() }
+    $list = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($dataRow in @($Table.Rows)) {
+        if ($null -eq $dataRow) { continue }
+        $h = @{}
+        foreach ($col in $Table.Columns) {
+            $name = [string]$col.ColumnName
+            $val = $dataRow[$name]
+            if ($val -is [DBNull]) { $h[$name] = $null } else { $h[$name] = $val }
+        }
+        $list.Add($h)
+    }
+    return @($list)
+}
+
 function Invoke-QCDatabaseNonQuery {
     <#
     .SYNOPSIS
@@ -2354,8 +2371,8 @@ FROM document_activity
 WHERE NULLIF(LTRIM(RTRIM(document_guid)), '') IS NOT NULL
   AND NULLIF(LTRIM(RTRIM(folder_path)), '') IS NOT NULL
 "@
-        if ($res.IsSuccess -and $res.Data -and $res.Data.rows) {
-            foreach ($row in @($res.Data.rows)) {
+        if ($res.IsSuccess -and $res.Data -and $res.Data.table) {
+            foreach ($row in @(_QDB-ConvertDataTableToRowHashtables -Table $res.Data.table)) {
                 $g = [string]$row.document_guid
                 $fp = [string]$row.folder_path
                 if ($g -and $fp) { $cache[$g.Trim().ToLowerInvariant()] = $fp }
@@ -2401,7 +2418,9 @@ ORDER BY pw_acttime ASC, pw_objguid ASC
             return New-QCFailureResult -Code 'AUDIT_UNPROCESSED_QUERY_FAILED' -Message $res.Message -Data @{ rows = @(); count = 0 }
         }
         $rows = @()
-        if ($res.Data -and $res.Data.rows) { $rows = @($res.Data.rows) }
+        if ($res.Data -and $res.Data.table) {
+            $rows = @(_QDB-ConvertDataTableToRowHashtables -Table $res.Data.table)
+        }
         return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_OK' -Message "Loaded $($rows.Count) unprocessed audit events." -Data @{ rows = $rows; count = $rows.Count }
     } catch {
         return New-QCFailureResult -Code 'AUDIT_UNPROCESSED_EXCEPTION' -Message $_.Exception.Message -Data @{ rows = @(); count = 0 }
@@ -2603,8 +2622,8 @@ WHERE document_guid IN ($inList)
 "@
         try {
             $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
-            if ($res.IsSuccess -and $res.Data.rows) {
-                foreach ($row in @($res.Data.rows)) {
+            if ($res.IsSuccess -and $res.Data.table) {
+                foreach ($row in @(_QDB-ConvertDataTableToRowHashtables -Table $res.Data.table)) {
                     $g = ([string]$row.document_guid).Trim().ToLowerInvariant()
                     if ([bool]$row.resolve_failed) {
                         $cache[$g] = @{ resolveFailed = $true }

@@ -18,6 +18,7 @@ $tests = @(
     'test\test_audit_poll_window.ps1',
     'test\test_audit_watch_match.ps1',
     'test\test_audit_events_db.ps1',
+    'test\test_audit_watch_match.ps1',
     'test\test_audit_workflow_triggers.ps1',
     'test\test_watcher_module_bootstrap.ps1'
 )
