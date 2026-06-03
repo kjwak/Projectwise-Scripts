@@ -1673,6 +1673,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         [Parameter(Mandatory)][string]$FolderPath,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null,
         [bool]$DryRun = $false,
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = ''
@@ -1723,7 +1724,9 @@ function Sync-PWAssociatedSheetWorkflowState {
                 -CurrentStateName $canonicalState `
                 -DryRun:$DryRun `
                 -ChangedByUser $ChangedByUser `
-                -ChangedByUsername $ChangedByUsername | Out-Null
+                -ChangedByUsername $ChangedByUsername `
+                -LastAuditEventAt $LastAuditEventAt `
+                -AuditEventId $AuditEventId | Out-Null
         } catch {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
@@ -2149,7 +2152,8 @@ WHERE document_guid = @docGuid
                     -TriggerDocumentName $DocumentName `
                     -FolderPath $FolderPath `
                     -CurrentStateName $pwState `
-                    -ChangedByUser $ChangedByUser | Out-Null
+                    -ChangedByUser $ChangedByUser `
+                    -LastAuditEventAt $LastAuditEventAt | Out-Null
             } catch {
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                     Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{

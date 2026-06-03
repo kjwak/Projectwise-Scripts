@@ -1383,6 +1383,24 @@ function _QCP-ResolveSheetPdfForPrependTrigger {
     return $null
 }
 
+function _QCP-GetQcInitiatedStateTransitionKey {
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$TriggerDocumentGuid = ''
+    )
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
+        return ('audit:' + [string]$AuditEventId)
+    }
+    $at = ([string]$LastAuditEventAt).Trim()
+    $guid = ([string]$TriggerDocumentGuid).Trim()
+    if ($at.Length -eq 0) { return $null }
+    $userPart = ''
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0) { $userPart = ('user:' + [string]$ChangedByUser + '|') }
+    return ($userPart + 'at:' + $at + '|doc:' + $guid)
+}
+
 function Add-QCPrependJobForQcInitiatedStateChange {
     <#
     .SYNOPSIS
@@ -1397,7 +1415,9 @@ function Add-QCPrependJobForQcInitiatedStateChange {
         [Parameter(Mandatory)][string]$CurrentStateName,
         [bool]$DryRun = $false,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null
     )
 
     $initiatedName = 'QC Initiated'
@@ -1424,6 +1444,8 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     }
 
     $sourcePath = Join-Path $FolderPath $sheetPdf
+    $stateTransitionKey = _QCP-GetQcInitiatedStateTransitionKey -AuditEventId $AuditEventId `
+        -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
     $candidate = @{
         path = $sourcePath
         fileName = $sheetPdf
@@ -1437,6 +1459,9 @@ function Add-QCPrependJobForQcInitiatedStateChange {
             length = 0
             lastWriteTimeUtc = (Get-QCTimestamp)
         }
+    }
+    if (-not (_QCP-IsNullOrWhiteSpace $stateTransitionKey)) {
+        $candidate['stateTransitionKey'] = [string]$stateTransitionKey
     }
 
     $rule = @{
@@ -1456,6 +1481,7 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     $md['pwStateName'] = $curr
     $md['triggerDocumentGuid'] = $TriggerDocumentGuid
     $md['triggerDocumentName'] = $TriggerDocumentName
+    if (-not (_QCP-IsNullOrWhiteSpace $stateTransitionKey)) { $md['stateTransitionKey'] = [string]$stateTransitionKey }
     $job['metadata'] = $md
 
     if ($DryRun) {
@@ -1463,6 +1489,7 @@ function Add-QCPrependJobForQcInitiatedStateChange {
             Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned from QC Initiated state change.' -Data @{
                 jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
                 triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr
+                stateTransitionKey = $stateTransitionKey
             } | Out-Null
         }
         return New-QCSuccessResult -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned.' -Data @{ job = $job }
@@ -1471,8 +1498,8 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     if (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue) {
         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $Config
         if ($dupRes.IsSuccess -and [bool]$dupRes.Data.isDuplicate) {
-            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_DUPLICATE' -Message 'QC_PREPEND already queued for this sheet.' -Data @{
-                dedupeKey = [string]$job['dedupeKey']; sourcePath = $sourcePath
+            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_DUPLICATE' -Message 'QC_PREPEND already queued for this QC Initiated transition.' -Data @{
+                dedupeKey = [string]$job['dedupeKey']; sourcePath = $sourcePath; stateTransitionKey = $stateTransitionKey
             }
         }
     }

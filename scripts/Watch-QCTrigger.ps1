@@ -1009,12 +1009,17 @@ if ($statusSetRules.Count -ge 0) {
                                         try {
                                             if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
                                         } catch { $acUserno = $null }
+                                        $acAuditIdSync = $null
+                                        try {
+                                            if ($null -ne $ac.auditEventId) { $acAuditIdSync = [long]$ac.auditEventId }
+                                        } catch { $acAuditIdSync = $null }
                                         Sync-PWAssociatedSheetWorkflowState -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName ([string]$ac.itemName) `
                                             -FolderPath $fp `
                                             -WatchRoot $acWatchRoot `
                                             -LastAuditEventAt ([string]$ac.actTime) `
+                                            -AuditEventId $acAuditIdSync `
                                             -DryRun:$isDryRun `
                                             -ChangedByUser $acUserno
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
@@ -1209,13 +1214,19 @@ if ($statusSetRules.Count -ge 0) {
                                                 try {
                                                     if ($null -ne $ac.userno) { $acUsernoPrepend = [int]$ac.userno }
                                                 } catch { $acUsernoPrepend = $null }
+                                                $acAuditIdPrepend = $null
+                                                try {
+                                                    if ($null -ne $ac.auditEventId) { $acAuditIdPrepend = [long]$ac.auditEventId }
+                                                } catch { $acAuditIdPrepend = $null }
                                                 $prependRes = Add-QCPrependJobForQcInitiatedStateChange -Config $config `
                                                     -TriggerDocumentGuid ([string]$ac.objGuid) `
                                                     -TriggerDocumentName $itemName `
                                                     -FolderPath $fp `
                                                     -CurrentStateName $pwStateForPrepend `
                                                     -DryRun:$isDryRun `
-                                                    -ChangedByUser $acUsernoPrepend
+                                                    -ChangedByUser $acUsernoPrepend `
+                                                    -LastAuditEventAt ([string]$ac.actTime) `
+                                                    -AuditEventId $acAuditIdPrepend
                                                 if ($null -ne $prependRes) {
                                                     $prependCode = [string]$prependRes.Code
                                                     if ($prependRes.IsSuccess) {

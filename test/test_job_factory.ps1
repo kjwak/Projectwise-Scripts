@@ -64,6 +64,32 @@ $d3 = Get-QCDedupeKey -Job $jobSeed2 -Config $config
 Assert-True $d3.IsSuccess 'Get-QCDedupeKey should succeed with different file hash'
 Assert-True ($d1.Data.dedupeKey -ne $d3.Data.dedupeKey) 'QC_PREPEND dedupe should differ when file hash differs'
 
+# qc-initiated prepend: new job per human state transition (audit event), same key for duplicate enqueue on one transition
+$ruleInitiated = @{
+    id = 'qc-prepend-qc-initiated'
+    jobType = 'QC_PREPEND'
+    triggerType = 'audit_state_change'
+    grouping = @{ enabled = $false; groupBy = 'file' }
+}
+$candT1 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = 'audit:9001'
+}
+$candT2 = @{
+    path = 'Documents\Caltrans\Proj\CADD\Sheets\Seg_1\080J082001ab001.pdf'
+    fileName = '080J082001ab001.pdf'
+    stateTransitionKey = 'audit:9002'
+}
+$jT1 = New-QCJobObject -Candidate $candT1 -Rule $ruleInitiated -Config $config
+$jT2 = New-QCJobObject -Candidate $candT2 -Rule $ruleInitiated -Config $config
+Assert-True $jT1.IsSuccess 'QC Initiated job creation should succeed'
+Assert-True $jT2.IsSuccess 'QC Initiated job creation should succeed (second transition)'
+Assert-True ($jT1.Data.job.dedupeKey -ne $jT2.Data.job.dedupeKey) 'QC Initiated dedupe should differ per audit transition'
+Assert-Eq $jT1.Data.job.dedupeKey (Get-QCDedupeKey -Job $jT1.Data.job -Config $config).Data.dedupeKey 'Job dedupeKey should match Get-QCDedupeKey'
+$jT1b = New-QCJobObject -Candidate $candT1 -Rule $ruleInitiated -Config $config
+Assert-Eq $jT1.Data.job.dedupeKey $jT1b.Data.job.dedupeKey 'Same transition should produce stable dedupe key'
+
 # STATUS_SET_GEN grouped-by-folder dedupe should be same for different triggering files in same folder
 $ruleStatus = @{
     id = 'status-rule'

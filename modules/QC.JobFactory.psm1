@@ -28,6 +28,18 @@ function _QCJF-Sha256Hex([string]$Text) {
     return -join ($hash | ForEach-Object { $_.ToString('x2') })
 }
 
+function _QCJF-GetCandidateStateTransitionKey {
+    param(
+        [Parameter(Mandatory)][hashtable]$Candidate,
+        [string]$RuleId = ''
+    )
+    if ($Candidate.ContainsKey('stateTransitionKey') -and -not (_QCJF-IsNullOrWhiteSpace $Candidate.stateTransitionKey)) {
+        return [string]$Candidate.stateTransitionKey
+    }
+    if ([string]$RuleId -ne 'qc-prepend-qc-initiated') { return $null }
+    return $null
+}
+
 function _QCJF-GetLocalRootId([string]$Path) {
     try {
         $root = [System.IO.Path]::GetPathRoot($Path)
@@ -110,6 +122,10 @@ function New-QCJobId {
     # The watcher provides Candidate.folderStateHash; include it when present.
     if ($jobType -eq 'STATUS_SET_GEN' -and $Candidate.ContainsKey('folderStateHash') -and -not (_QCJF-IsNullOrWhiteSpace $Candidate.folderStateHash)) {
         $stableParts += ('folderStateHash=' + [string]$Candidate.folderStateHash)
+    }
+    $stateTransitionKey = _QCJF-GetCandidateStateTransitionKey -Candidate $Candidate -RuleId $ruleId
+    if (-not (_QCJF-IsNullOrWhiteSpace $stateTransitionKey)) {
+        $stableParts += ('stateTransition=' + $stateTransitionKey)
     }
 
     $stable = ($stableParts -join '|')
@@ -440,6 +456,13 @@ function Get-QCDedupeKey {
         )
         if ($type -in @('QC_PREPEND', 'QC_COMMENT_STATUS_SYNC') -and -not (_QCJF-IsNullOrWhiteSpace $fileHash)) {
             $stableParts += ('fileHash=' + $fileHash)
+        }
+        $stateTransitionKey = $null
+        if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('candidate') -and $Job.metadata.candidate -is [hashtable]) {
+            $stateTransitionKey = _QCJF-GetCandidateStateTransitionKey -Candidate $Job.metadata.candidate -RuleId $ruleId
+        }
+        if (-not (_QCJF-IsNullOrWhiteSpace $stateTransitionKey)) {
+            $stableParts += ('stateTransition=' + $stateTransitionKey)
         }
         $stable = ($stableParts -join '|')
     }
