@@ -899,6 +899,10 @@ function Invoke-QCPrependProcessor {
         if (Test-Path -LiteralPath $appsettingsPath) {
             $args += @('-AppsettingsPath', $appsettingsPath)
         }
+        $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
+        if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) {
+            $args += @('-PrependTrigger', $prependTrigger)
+        }
 
         $stdoutPath = [System.IO.Path]::GetTempFileName()
         $stderrPath = [System.IO.Path]::GetTempFileName()

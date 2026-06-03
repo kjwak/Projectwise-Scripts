@@ -337,6 +337,11 @@ try {
 $procText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Raw -Encoding UTF8
 Assert-Contains $procText '_QCP-IsFinalQcPrependJob' 'Processors should detect QC Finalizing prepend jobs'
 Assert-Contains $procText 'Review stamps skipped for QC Finalizing prepend' 'Finalizing prepend must skip review stamps'
+Assert-Contains $procText '-PrependTrigger' 'Legacy prepend must receive prependTrigger from job metadata'
+
+$legacyText = Get-Content -LiteralPath (Join-Path $repoRoot 'legacy\prepend_qc.ps1') -Raw -Encoding UTF8
+Assert-Contains $legacyText 'Test-PrependQcSkipReviewStamp' 'Legacy prepend must skip review stamp for finalQcComplete'
+Assert-Contains $legacyText 'QC Finalizing prepend (finalQcComplete)' 'Legacy prepend skip message'
 
 Write-Host 'All QC_PREPEND processor tests passed.' -ForegroundColor Green
 

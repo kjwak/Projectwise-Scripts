@@ -71,7 +71,11 @@ param(
 
   # Optional appsettings path (defaults to repo appsettings.json) for review stamp + QC_Review_Type sync.
   [Parameter(Mandatory=$false)]
-  [string] $AppsettingsPath = ""
+  [string] $AppsettingsPath = "",
+
+  # initialQcPdf | finalQcComplete — QC Finalizing prepend must not apply review stamps.
+  [Parameter(Mandatory=$false)]
+  [string] $PrependTrigger = ""
 )
 
 if (-not $HistoryDocName) {
@@ -109,7 +113,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
   $paramNames = @(
     'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'LocalRoot', 'QpdfExe',
     'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'OverlaySheetWorkDir', 'NoOverlayLayers',
-    'PromptForCredential', 'LogDir'
+    'PromptForCredential', 'LogDir', 'AppsettingsPath', 'PrependTrigger'
   )
   $bp = @{}
   foreach ($n in $paramNames) {
@@ -423,12 +427,22 @@ function Invoke-PrependQcPdfAttributeSync {
   }
 }
 
+function Test-PrependQcSkipReviewStamp {
+  if (-not $PrependTrigger) { return $false }
+  $t = ([string]$PrependTrigger).Trim().ToLowerInvariant()
+  return ($t -in @('finalqccomplete', 'qcfinalizing', 'finalprepend'))
+}
+
 function Invoke-QcReviewStampIfNeeded {
   param(
     [Parameter(Mandatory)][string]$MergedPdfPath,
     [Parameter(Mandatory)][string]$FolderPath,
     [Parameter(Mandatory)][string]$SourceDocumentName
   )
+  if (Test-PrependQcSkipReviewStamp) {
+    Write-Log 'Review stamp skipped: QC Finalizing prepend (finalQcComplete).'
+    return
+  }
   $repoRoot = Split-Path -Parent $PSScriptRoot
   $stampMod = Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1'
   if (-not (Test-Path -LiteralPath $stampMod)) {
