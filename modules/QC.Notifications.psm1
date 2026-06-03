@@ -964,7 +964,7 @@ function Invoke-QCNotificationForStateChange {
             $skipped = @{
                 success = $false
                 skipped = $true
-                message = 'QC Received notification deferred until prepend and rendition complete.'
+                message = 'Ready for QC notification deferred until prepend and rendition complete.'
                 currentState = $curr
                 timestampUtc = Get-QCTimestamp
             }
@@ -1076,7 +1076,7 @@ function Invoke-QCNotificationForStateChange {
     if ($resultData) {
         $resultData['dedupeKey'] = $dedupeKey
     }
-    $notifyCode = if ($send.IsSuccess) { 'QC_NOTIFICATION_SENT' } else { 'QC_NOTIFICATION_FAILED' }
+    $notifyCode = if ($send.IsSuccess) { 'QC_NOTIFICATION_SENT' } elseif ($send.Code) { [string]$send.Code } else { 'QC_NOTIFICATION_FAILED' }
     $notifyMessage = [string]$send.Message
     if ($send.IsSuccess) {
         return New-QCSuccessResult -Code $notifyCode -Message $notifyMessage -Data $resultData

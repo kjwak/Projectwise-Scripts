@@ -469,7 +469,7 @@ function Invoke-QCReadyForQcNotificationIfReady {
 
     $curr = _QCR-GetQcReceivedStateName -Config $Config
     if (-not (_QCR-IsNullOrWhiteSpace $CurrentState)) { $curr = ([string]$CurrentState).Trim() }
-    if (_QCR-IsNullOrWhiteSpace $curr) { $curr = 'QC Received' }
+    if (_QCR-IsNullOrWhiteSpace $curr) { $curr = _QCR-GetReadyForQcStateName -Config $Config }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }

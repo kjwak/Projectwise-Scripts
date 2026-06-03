@@ -39,7 +39,7 @@ try {
         }
         qcWorkflow = @{
             enabled = $true
-            states = @{ qcReceived = 'QC Received'; readyForQc = 'Ready for QC' }
+            states = @{ qcReceived = 'Ready for QC'; readyForQc = 'Ready for QC' }
         }
         qcRendition = @{
             enabled = $true
@@ -58,11 +58,11 @@ try {
             provider = 'Mock'
             dryRun = $true
             events = @{
-                'QC Received' = @{
+                'Ready for QC' = @{
                     enabled = $true
-                    eventType = 'QC_RECEIVED'
+                    eventType = 'READY_FOR_QC'
                     to = @('reviewers')
-                    subjectTemplate = 'QC Received - {documentName}'
+                    subjectTemplate = 'Ready for QC - {documentName}'
                 }
             }
         }
@@ -88,17 +88,17 @@ try {
     Assert-True $state.prependComplete 'Prepend flagged'
     Assert-True (-not $state.renditionComplete) 'Rendition not yet'
 
-    Assert-True (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'QC Received') 'Defer QC Received notification'
+    Assert-True (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Ready for QC') 'Defer Ready for QC notification'
     Assert-True (-not (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Review In Progress')) 'No defer other states'
 
-    $defer = Invoke-QCNotificationForStateChange -Config $config -PreviousState 'In Production' -CurrentState 'QC Received' `
+    $defer = Invoke-QCNotificationForStateChange -Config $config -PreviousState 'In Production' -CurrentState 'Ready for QC' `
         -DocumentName 'sheet-qc.pdf' -DocumentGuid 'abc-123'
     Assert-Eq $defer.Code 'QC_NOTIFICATION_DEFERRED_READY_FOR_QC' 'Notification deferred'
 
     Set-QCReadinessFlag -Config $config -ReadinessKey $key -RenditionComplete | Out-Null
     $sent = Invoke-QCReadyForQcNotificationIfReady -Config $config -ReadinessKey $key `
         -PreviousState 'In Production' -DocumentName 'sheet-qc.pdf' -DocumentGuid 'abc-123'
-    Assert-True ($sent.IsSuccess -or $sent.Code -eq 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS') 'Ready notification path invoked'
+    Assert-True (($sent.IsSuccess) -or ($sent.Code -eq 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS')) 'Ready notification path invoked'
 
     $parentJob = @{
         id = 'prepend-job-1'
