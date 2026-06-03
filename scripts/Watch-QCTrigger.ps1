@@ -813,9 +813,36 @@ if ($statusSetRules.Count -ge 0) {
                                             queueState = [string]$acInFlightRes.Data.queueState
                                         }
                                     } else {
+                                    $acStatusSetScanSw = [System.Diagnostics.Stopwatch]::StartNew()
                                     $acState = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$acOneLevelDeep
+                                    $acStatusSetScanSw.Stop()
                                     $acListingMethod = ''
+                                    $acDocumentCount = 0
+                                    $acDurationMs = [int]$acStatusSetScanSw.ElapsedMilliseconds
                                     try { $acListingMethod = [string]$acState.docListingMethod } catch { }
+                                    try { $acDocumentCount = [int]$acState.documentCount } catch { $acDocumentCount = 0 }
+                                    try { if ($null -ne $acState.scanDurationMs) { $acDurationMs = [int]$acState.scanDurationMs } } catch { }
+                                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'Audit-sourced PW status-set folder query completed.' -Data @{
+                                        folder = $fp
+                                        folderPath = $fp
+                                        FolderPath = $fp
+                                        scanReason = 'audit_status_set_candidate'
+                                        ScanReason = 'audit_status_set_candidate'
+                                        oneLevelDeep = $acOneLevelDeep
+                                        pdfCount = [int]$acState.pdfCount
+                                        dgnCount = [int]$acState.dgnCount
+                                        pairedCount = [int]$acState.pairedCount
+                                        documentCount = $acDocumentCount
+                                        DocumentCount = $acDocumentCount
+                                        listingMethod = $acListingMethod
+                                        ListingMethod = $acListingMethod
+                                        docListingMethod = $acListingMethod
+                                        durationMs = $acDurationMs
+                                        DurationMs = $acDurationMs
+                                        scannedFolders = @($acState.scannedFolders)
+                                        expandedChildFolders = @($acState.expandedChildFolders)
+                                        listingDetails = @($acState.listingDetails)
+                                    }
                                     if ([int]$acState.pairedCount -le 0) {
                                         if ([int]$acState.pdfCount -gt 0 -or [int]$acState.dgnCount -gt 0) {
                                             Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_PAIRS' -Message 'Audit STATUS_SET_GEN skipped: no PDF/DGN pairs.' -Data @{
@@ -1196,6 +1223,7 @@ if ($statusSetRules.Count -ge 0) {
                         $d['EnableQcPrepend'] = $enableQcPrepend
                         $d['EnableQcCommentSync'] = $enableQcCommentSync
                         $d['EnableStatusSet'] = $enableStatusSet
+                        $d['ScanReason'] = 'full_reconciliation_discovered'
                         $pwFolders += $d
                     }
                 }
@@ -1222,14 +1250,30 @@ if ($statusSetRules.Count -ge 0) {
                         EnableQcPrepend = $enableQcPrepend
                         EnableQcCommentSync = $enableQcCommentSync
                         EnableStatusSet = $enableStatusSet
+                        ScanReason = 'full_reconciliation_configured'
                     })
                 }
             }
 
-            # Expand oneLevelDeep for explicit folders
+            # Expand oneLevelDeep once during folder preparation.  The prepared list is
+            # concrete for reconciliation: parent entries are kept for direct documents, but
+            # their OneLevelDeep flag is suppressed when children are appended so the later
+            # status-set scan cannot enumerate those same child folders again.
             $expanded = @()
             foreach ($e in @($pwFolders)) {
-                $expanded += $e
+                $entryForScan = ConvertTo-HashtableDeep -Value $e
+                if (-not ($entryForScan -is [hashtable])) {
+                    $entryForScan = @{
+                        DatasourceName = $ds
+                        FolderPath = [string]$e.FolderPath
+                        OneLevelDeep = $false
+                        EnableQcPrepend = $false
+                        EnableQcCommentSync = $false
+                        EnableStatusSet = $false
+                    }
+                }
+                if (-not $entryForScan.ContainsKey('ScanReason')) { $entryForScan['ScanReason'] = 'full_reconciliation_prepared' }
+                $expanded += $entryForScan
                 try {
                     if ($e.OneLevelDeep) {
                         $fp = [string]$e.FolderPath
@@ -1239,15 +1283,23 @@ if ($statusSetRules.Count -ge 0) {
                             inProgress = $true
                         }
                         $kids = @(Get-PWImmediateChildFolders -FolderPath $apiPath)
+                        $entryForScan['OneLevelDeep'] = $false
+                        $entryForScan['OneLevelDeepSuppressed'] = $true
+                        $entryForScan['ExpandedChildFolderCount'] = [int]@($kids).Count
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
                             folder = $fp
                             inProgress = $false
                             childCount = [int]@($kids).Count
                         }
                         if (@($kids).Count -eq 0) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; only this folder will be scanned (normal for flat Sheets or empty areas).' -Data @{
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; parent will be scanned as an exact folder (normal for flat Sheets or empty areas).' -Data @{
                                 folder = $fp
                                 apiPath = $apiPath
+                            }
+                        } else {
+                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_SUPPRESSED' -Message 'oneLevelDeep expansion completed; parent will be scanned as an exact folder to avoid duplicate child document enumeration.' -Data @{
+                                folder = $fp
+                                childCount = [int]@($kids).Count
                             }
                         }
                         foreach ($k in $kids) {
@@ -1260,7 +1312,10 @@ if ($statusSetRules.Count -ge 0) {
                                     FolderPath = $canonical
                                     OneLevelDeep = $false
                                     EnableQcPrepend = [bool]$e.EnableQcPrepend
+                                    EnableQcCommentSync = [bool]$e.EnableQcCommentSync
                                     EnableStatusSet = [bool]$e.EnableStatusSet
+                                    ScanReason = 'full_reconciliation_onelevel_child'
+                                    ParentFolderPath = $fp
                                 }
                             }
                         }
@@ -1271,7 +1326,30 @@ if ($statusSetRules.Count -ge 0) {
                     }
                 }
             }
-            $pwFolders = $expanded
+            $dedupedFolders = @()
+            $folderByKey = @{}
+            foreach ($prepared in @($expanded)) {
+                $preparedPath = ''
+                try { $preparedPath = [string]$prepared.FolderPath } catch { }
+                if ([string]::IsNullOrWhiteSpace($preparedPath)) { continue }
+                $preparedKey = $preparedPath.Trim().TrimEnd('\').ToLowerInvariant()
+                if ($folderByKey.ContainsKey($preparedKey)) {
+                    $existing = $folderByKey[$preparedKey]
+                    try { $existing['EnableQcPrepend'] = ([bool]$existing.EnableQcPrepend -or [bool]$prepared.EnableQcPrepend) } catch { }
+                    try { $existing['EnableQcCommentSync'] = ([bool]$existing.EnableQcCommentSync -or [bool]$prepared.EnableQcCommentSync) } catch { }
+                    try { $existing['EnableStatusSet'] = ([bool]$existing.EnableStatusSet -or [bool]$prepared.EnableStatusSet) } catch { }
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DEDUPED' -Message 'Duplicate prepared folder suppressed before reconciliation scan.' -Data @{
+                        folder = $preparedPath
+                        FolderPath = $preparedPath
+                        existingScanReason = [string]$existing.ScanReason
+                        duplicateScanReason = [string]$prepared.ScanReason
+                    }
+                    continue
+                }
+                $folderByKey[$preparedKey] = $prepared
+                $dedupedFolders += $prepared
+            }
+            $pwFolders = $dedupedFolders
             Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
                 folderCount = [int]$pwFolders.Count
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
@@ -1288,17 +1366,25 @@ if ($statusSetRules.Count -ge 0) {
                     $enableQcPrepend = $false
                     $enableQcCommentSync = $false
                     $enableStatusSet = $false
+                    $scanReason = 'full_reconciliation'
+                    $parentFolderPath = ''
                     try { $oneLevelDeep = [bool]$entry.OneLevelDeep } catch { $oneLevelDeep = $false }
                     try { $enableQcPrepend = [bool]$entry.EnableQcPrepend } catch { $enableQcPrepend = $false }
                     try { $enableQcCommentSync = [bool]$entry.EnableQcCommentSync } catch { $enableQcCommentSync = $enableQcPrepend }
                     try { $enableStatusSet = [bool]$entry.EnableStatusSet } catch { $enableStatusSet = $false }
+                    try { if ($entry.ScanReason) { $scanReason = [string]$entry.ScanReason } } catch { }
+                    try { if ($entry.ParentFolderPath) { $parentFolderPath = [string]$entry.ParentFolderPath } } catch { }
 
                     # Emit a "scan start" event even if filters later skip the folder.
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
                         folder = $fp
+                        FolderPath = $fp
                         oneLevelDeep = $oneLevelDeep
                         enableQcPrepend = $enableQcPrepend
                         enableStatusSet = $enableStatusSet
+                        scanReason = $scanReason
+                        ScanReason = $scanReason
+                        parentFolderPath = $parentFolderPath
                     }
 
                     # STATUS_SET_GEN (folder-level)
@@ -1330,18 +1416,38 @@ if ($statusSetRules.Count -ge 0) {
                             oneLevelDeep = $oneLevelDeep
                         }
                         $folderPhase = 'statusset_pw_state'
+                        $statusSetScanSw = [System.Diagnostics.Stopwatch]::StartNew()
                         $state = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$oneLevelDeep
+                        $statusSetScanSw.Stop()
                         $listingMethod = ''
                         $oneLevelRetry = $false
+                        $documentCount = 0
+                        $durationMs = [int]$statusSetScanSw.ElapsedMilliseconds
                         try { $listingMethod = [string]$state.docListingMethod } catch { }
                         try { $oneLevelRetry = [bool]$state.oneLevelDeepRetry } catch { }
+                        try { $documentCount = [int]$state.documentCount } catch { $documentCount = 0 }
+                        try { if ($null -ne $state.scanDurationMs) { $durationMs = [int]$state.scanDurationMs } } catch { }
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
+                            folderPath = $fp
+                            FolderPath = $fp
+                            scanReason = $scanReason
+                            ScanReason = $scanReason
+                            parentFolderPath = $parentFolderPath
                             oneLevelDeep = $oneLevelDeep
                             pdfCount = [int]$state.pdfCount
                             dgnCount = [int]$state.dgnCount
                             pairedCount = [int]$state.pairedCount
+                            documentCount = $documentCount
+                            DocumentCount = $documentCount
+                            listingMethod = $listingMethod
+                            ListingMethod = $listingMethod
                             docListingMethod = $listingMethod
+                            durationMs = $durationMs
+                            DurationMs = $durationMs
+                            scannedFolders = @($state.scannedFolders)
+                            expandedChildFolders = @($state.expandedChildFolders)
+                            listingDetails = @($state.listingDetails)
                             oneLevelDeepRetry = $oneLevelRetry
                         }
                         if ([int]$state.pairedCount -gt 0) {

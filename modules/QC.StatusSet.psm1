@@ -1512,22 +1512,37 @@ function _SSS-BuildPWStatusSetState {
         [bool]$IncludeOrderedPdfDocuments
     )
 
+    $scanSw = [System.Diagnostics.Stopwatch]::StartNew()
     $paths = @([string]$FolderPath)
+    $expandedChildFolders = @()
     if ($OneLevelDeep) {
         try {
             $kids = @(Get-PWImmediateChildFolders -FolderPath $FolderPath)
             foreach ($k in $kids) {
                 $kp = _SSS-PWGetProp -Obj $k -Name 'FolderPath'
-                if ($kp) { $paths += [string]$kp }
+                if ($kp) {
+                    $childPath = [string]$kp
+                    $paths += $childPath
+                    $expandedChildFolders += $childPath
+                }
             }
         } catch { }
     }
 
     $docs = @()
+    $listingDetails = @()
     $dateCols = @('Name','DocumentID','DocumentGUID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size','StateName')
     foreach ($p in @($paths | Select-Object -Unique)) {
         # Targeted query: only the extensions that can affect pairing/fingerprint.
-        $docs += @(_SSS-PWListDocsInFolderByExtensions -FolderPath $p -Extensions @('.pdf','.dgn','.dwg') -DateCols $dateCols)
+        $docsForPath = @(_SSS-PWListDocsInFolderByExtensions -FolderPath $p -Extensions @('.pdf','.dgn','.dwg') -DateCols $dateCols)
+        $docs += @($docsForPath)
+        $pathListingMethod = 'unknown'
+        try { if ($script:_SSS_LastDocListingMethod) { $pathListingMethod = [string]$script:_SSS_LastDocListingMethod } } catch { }
+        $listingDetails += @{
+            folderPath = [string]$p
+            listingMethod = $pathListingMethod
+            documentCount = [int]@($docsForPath).Count
+        }
     }
     $pdfs = @()
     $dgns = @()
@@ -1658,18 +1673,24 @@ function _SSS-BuildPWStatusSetState {
 
     $listingMethod = 'unknown'
     try { if ($script:_SSS_LastDocListingMethod) { $listingMethod = [string]$script:_SSS_LastDocListingMethod } } catch { }
+    $scanSw.Stop()
 
     return @{
         folderStateHash = $hash
         pairedCount = $sortedRows.Count
         pdfCount = $pdfs.Count
         dgnCount = $dgns.Count
+        documentCount = @($docs).Count
         stableInput = $stable
         orderKey = $orderKey
         pairedSheets = $pairedSheets
         orderedPdfDocuments = $orderedPdfDocs
         qcPdfDocs = $qcPdfDocs
         docListingMethod = $listingMethod
+        listingDetails = $listingDetails
+        scannedFolders = @($paths | Select-Object -Unique)
+        expandedChildFolders = @($expandedChildFolders | Select-Object -Unique)
+        scanDurationMs = [int]$scanSw.ElapsedMilliseconds
     }
 }
 
