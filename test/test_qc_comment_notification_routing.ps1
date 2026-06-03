@@ -10,9 +10,9 @@ function Assert-Eq($Actual, $Expected, $Message) {
 $config = @{
     qcCommentSync = @{
         targetStates = @{
-            redlinesIssued = 'Redlines Issued'
-            correctionsInProgress = 'Corrections In Progress'
-            verificationInProgress = 'Verification In Progress'
+            redlinesReceived = 'Redlines Received'
+            correctionsReceived = 'Corrections Received'
+            qcFinalizing = 'QC Finalizing'
             completed = 'QC Complete'
             error = 'Error Needs Attention'
         }
@@ -22,17 +22,17 @@ $config = @{
 
 $meta = @{ fileName = 'A101-qc.pdf'; pwPath = 'Documents\X\A101-qc.pdf'; documentId = 'guid-1'; projectId = 'proj' }
 
-$p0 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Redlines Issued'; decisionCode = 'REDLINES_ISSUED'; summary = 'x' } -JobMetadata $meta
-Assert-Eq $p0.eventType 'REDLINES_ISSUED' 'Redlines issued event'
-Assert-Eq $p0.toRoles[0] 'designers' 'Redlines issued to designers'
+$p0 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Redlines Received'; decisionCode = 'REDLINES_RECEIVED'; summary = 'x' } -JobMetadata $meta
+Assert-Eq $p0.eventType 'REDLINES_RECEIVED' 'Redlines received event'
+Assert-Eq $p0.toRoles[0] 'designers' 'Redlines received to designers'
 
-$p1 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Corrections In Progress'; decisionCode = 'CORRECTIONS_REQUIRED'; summary = 'x' } -JobMetadata $meta
-Assert-Eq $p1.eventType 'CORRECTIONS_IN_PROGRESS' 'Corrections routes to designers event'
-Assert-Eq $p1.toRoles[0] 'designers' 'To designers'
+$p1 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Corrections Received'; decisionCode = 'CORRECTIONS_RECEIVED'; summary = 'x' } -JobMetadata $meta
+Assert-Eq $p1.eventType 'CORRECTIONS_RECEIVED' 'Corrections received routes to reviewers event'
+Assert-Eq $p1.toRoles[0] 'reviewers' 'To reviewers'
 
-$p2 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Verification In Progress'; decisionCode = 'VERIFICATION_REQUIRED'; summary = 'x' } -JobMetadata $meta
-Assert-Eq $p2.eventType 'VERIFICATION_IN_PROGRESS' 'Verification event'
-Assert-Eq $p2.toRoles[0] 'reviewers' 'To reviewers'
+$p2 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'QC Finalizing'; decisionCode = 'QC_FINALIZING'; summary = 'x' } -JobMetadata $meta
+Assert-Eq $p2.eventType 'QC_FINALIZING' 'QC Finalizing event'
+Assert-Eq $p2.toRoles.Count 0 'No email on QC Finalizing'
 
 $p3 = Get-QCCommentSyncNotificationPlan -Config $config -Decision @{ targetState = 'Error Needs Attention'; decisionCode = 'PARSE_ERROR'; summary = 'x' } -JobMetadata $meta
 Assert-Eq $p3.eventType 'QC_ERROR' 'Error event'

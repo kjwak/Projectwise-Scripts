@@ -106,7 +106,7 @@ Assert-Eq $icResolved.reviewers.Count 1 'Independent Check should not include EM
 
 # EM_* on document properties (audit rows without Attributes bag)
 $emCfg = New-NotifyConfig -Enabled $true
-$emCfg.notifications.events['Redlines Issued'] = @{
+$emCfg.notifications.events['Redlines Received'] = @{
     enabled = $true
     eventType = 'REDLINES_ISSUED'
     to = @('designers')
@@ -122,7 +122,7 @@ $emDoc = [pscustomobject]@{
     EM_Reviewer_Email = 'JFlint@aztec.us'
     EM_Checker_Email = 'jflint@aztec.us'
 }
-$emSend = Invoke-QCNotificationForStateChange -Config $emCfg -PreviousState 'Ready for QC' -CurrentState 'Redlines Issued' `
+$emSend = Invoke-QCNotificationForStateChange -Config $emCfg -PreviousState 'Ready for QC' -CurrentState 'Redlines Received' `
     -Document $emDoc -DocumentPath 'Documents\AZDOT\TEST\CADD\Sheets\080J082001ab001-qc.pdf'
 Assert-True $emSend.IsSuccess 'Notification with EM_* document properties should succeed'
 Assert-True $emSend.Data.success 'EM_* roles should resolve to To recipients'

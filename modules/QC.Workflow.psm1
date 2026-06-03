@@ -279,10 +279,9 @@ function _QCW-DefaultWorkflowStates {
         qcInitiated = 'QC Initiated'
         qcReceived = 'Ready for QC'
         readyForQc = 'Ready for QC'
-        reviewInProgress = 'Review In Progress'
-        redlinesIssued = 'Redlines Issued'
-        correctionsInProgress = 'Corrections In Progress'
-        verificationInProgress = 'Verification In Progress'
+        redlinesReceived = 'Redlines Received'
+        correctionsReceived = 'Corrections Received'
+        qcFinalizing = 'QC Finalizing'
         complete = 'QC Complete'
         error = 'Error Needs Attention'
     }
@@ -333,6 +332,7 @@ function Get-QCWorkflowDeprecationWarnings {
         'errorStateName'
         'stageMap'
     )
+    $deprecatedStateKeys = @('reviewInProgress', 'correctionsInProgress', 'verificationInProgress', 'redlinesIssued')
     foreach ($key in $deprecatedKeys) {
         if ($RawWorkflowConfig.ContainsKey($key)) {
             $warnings.Add("qcWorkflow.$key is deprecated; use qcWorkflow.states and qcWorkflow.reviewTypes instead.") | Out-Null
@@ -347,6 +347,23 @@ function Get-QCWorkflowDeprecationWarnings {
         $warnings.Add('qcWorkflow.stageMap (red/green/blue) is deprecated and ignored; ProjectWise document state is the lifecycle source of truth.') | Out-Null
     }
 
+    $rawStates = _QCW-ToHashtable $RawWorkflowConfig.states
+    if ($rawStates) {
+        foreach ($sk in $deprecatedStateKeys) {
+            if ($rawStates.ContainsKey($sk)) {
+                $warnings.Add("qcWorkflow.states.$sk is deprecated; use ownership handoff states (redlinesReceived, correctionsReceived, qcFinalizing).") | Out-Null
+            }
+        }
+    }
+    $rawTriggers = _QCW-ToHashtable $RawWorkflowConfig.stateAfterPrependByTrigger
+    if ($rawTriggers) {
+        foreach ($tk in @('reviewerRedlineUpdate', 'designerCorrectionComplete')) {
+            if ($rawTriggers.ContainsKey($tk)) {
+                $warnings.Add("qcWorkflow.stateAfterPrependByTrigger.$tk is deprecated; prepend triggers are initialQcPdf and finalQcComplete only.") | Out-Null
+            }
+        }
+    }
+
     return @($warnings)
 }
 
@@ -354,8 +371,7 @@ function _QCW-DefaultPrependStateTriggers {
     $states = _QCW-DefaultWorkflowStates
     return @{
         initialQcPdf = [string]$states.readyForQc
-        reviewerRedlineUpdate = [string]$states.redlinesIssued
-        designerCorrectionComplete = [string]$states.verificationInProgress
+        finalQcComplete = [string]$states.complete
     }
 }
 
@@ -373,15 +389,11 @@ function Normalize-QCPrependTriggerKey {
         'readyforqc' { return 'initialQcPdf' }
         'qcinitiated' { return 'initialQcPdf' }
         'qcreceived' { return 'initialQcPdf' }
-        'reviewerredlineupdate' { return 'reviewerRedlineUpdate' }
-        'reviewerredline' { return 'reviewerRedlineUpdate' }
-        'redlineupdate' { return 'reviewerRedlineUpdate' }
-        'redlinesissued' { return 'reviewerRedlineUpdate' }
-        'designercorrectioncomplete' { return 'designerCorrectionComplete' }
-        'correctioncomplete' { return 'designerCorrectionComplete' }
-        'correctionscomplete' { return 'designerCorrectionComplete' }
+        'finalqccomplete' { return 'finalQcComplete' }
+        'qcfinalizing' { return 'finalQcComplete' }
+        'finalprepend' { return 'finalQcComplete' }
         default {
-            if ($v -eq 'initialQcPdf' -or $v -eq 'reviewerRedlineUpdate' -or $v -eq 'designerCorrectionComplete') { return $v }
+            if ($v -eq 'initialQcPdf' -or $v -eq 'finalQcComplete') { return $v }
             return $v
         }
     }
@@ -445,8 +457,20 @@ function Get-QCWorkflowStateName {
     if ($states -and $states.ContainsKey($StateKey) -and -not (_QCW-IsNullOrWhiteSpace $states[$StateKey])) {
         return [string]$states[$StateKey]
     }
+    $legacyKeyMap = @{
+        redlinesIssued = 'redlinesReceived'
+        correctionsInProgress = 'correctionsReceived'
+        verificationInProgress = 'correctionsReceived'
+        reviewInProgress = 'readyForQc'
+    }
+    if ($legacyKeyMap.ContainsKey($StateKey) -and $states -and $states.ContainsKey($legacyKeyMap[$StateKey]) -and -not (_QCW-IsNullOrWhiteSpace $states[$legacyKeyMap[$StateKey]])) {
+        return [string]$states[$legacyKeyMap[$StateKey]]
+    }
     $defaults = _QCW-DefaultWorkflowStates
     if ($defaults.ContainsKey($StateKey)) { return [string]$defaults[$StateKey] }
+    if ($legacyKeyMap.ContainsKey($StateKey) -and $defaults.ContainsKey($legacyKeyMap[$StateKey])) {
+        return [string]$defaults[$legacyKeyMap[$StateKey]]
+    }
     return $null
 }
 
@@ -481,21 +505,18 @@ function Resolve-QCWorkflowAssignee {
     $state = if ($StateName) { [string]$StateName } else { '' }
     $production = [string]$states.production
     $qcInitiated = if ($states.qcInitiated) { [string]$states.qcInitiated } else { 'QC Initiated' }
-    $qcReceived = if ($states.qcReceived) { [string]$states.qcReceived } elseif ($states.readyForQc) { [string]$states.readyForQc } else { 'Ready for QC' }
-    $ready = [string]$states.readyForQc
-    $review = [string]$states.reviewInProgress
-    $redlinesIssued = [string]$states.redlinesIssued
-    $corrections = [string]$states.correctionsInProgress
-    $verification = [string]$states.verificationInProgress
+    $ready = if ($states.readyForQc) { [string]$states.readyForQc } elseif ($states.qcReceived) { [string]$states.qcReceived } else { 'Ready for QC' }
+    $redlinesReceived = if ($states.redlinesReceived) { [string]$states.redlinesReceived } elseif ($states.redlinesIssued) { [string]$states.redlinesIssued } else { 'Redlines Received' }
+    $correctionsReceived = if ($states.correctionsReceived) { [string]$states.correctionsReceived } elseif ($states.verificationInProgress) { [string]$states.verificationInProgress } elseif ($states.correctionsInProgress) { [string]$states.correctionsInProgress } else { 'Corrections Received' }
     $complete = [string]$states.complete
 
     if ($state -eq $complete) { return $null }
 
-    if ($state -eq $production -or $state -eq $qcInitiated -or $state -eq $redlinesIssued -or $state -eq $corrections) {
+    if ($state -eq $production -or $state -eq $qcInitiated -or $state -eq $redlinesReceived) {
         if (-not (_QCW-IsNullOrWhiteSpace $DesignerEmail)) { return [string]$DesignerEmail }
         return $null
     }
-    if ($state -in @($qcReceived, $ready, $review, $verification)) {
+    if ($state -in @($ready, $correctionsReceived)) {
         if ($useChecker) {
             if (-not (_QCW-IsNullOrWhiteSpace $CheckerEmail)) { return [string]$CheckerEmail }
             return $null
@@ -573,10 +594,24 @@ function Get-QCWorkflowSettings {
     # Backward compatibility: legacy flat state name keys override states.* when states.* not in raw config.
     if (-not $raw.ContainsKey('states')) {
         if ($raw.ContainsKey('productionStateName') -and $raw.productionStateName) { $settings.states.production = [string]$raw.productionStateName }
-        if ($raw.ContainsKey('receivedStateName') -and $raw.receivedStateName) { $settings.states.qcReceived = [string]$raw.receivedStateName }
-        if ($raw.ContainsKey('correctionsInProgressStateName') -and $raw.correctionsInProgressStateName) { $settings.states.correctionsInProgress = [string]$raw.correctionsInProgressStateName }
-        if ($raw.ContainsKey('backcheckInProgressStateName') -and $raw.backcheckInProgressStateName) { $settings.states.verificationInProgress = [string]$raw.backcheckInProgressStateName }
+        if ($raw.ContainsKey('receivedStateName') -and $raw.receivedStateName) { $settings.states.qcReceived = [string]$raw.receivedStateName; $settings.states.readyForQc = [string]$raw.receivedStateName }
+        if ($raw.ContainsKey('correctionsInProgressStateName') -and $raw.correctionsInProgressStateName) { $settings.states.correctionsReceived = [string]$raw.correctionsInProgressStateName }
+        if ($raw.ContainsKey('backcheckInProgressStateName') -and $raw.backcheckInProgressStateName) { $settings.states.correctionsReceived = [string]$raw.backcheckInProgressStateName }
         if ($raw.ContainsKey('errorStateName') -and $raw.errorStateName) { $settings.states.error = [string]$raw.errorStateName }
+    }
+
+    # Legacy states.* keys → ownership handoff states
+    if ($settings.states.ContainsKey('redlinesIssued') -and -not (_QCW-IsNullOrWhiteSpace $settings.states.redlinesIssued) -and (-not $settings.states.ContainsKey('redlinesReceived') -or (_QCW-IsNullOrWhiteSpace $settings.states.redlinesReceived))) {
+        $settings.states.redlinesReceived = [string]$settings.states.redlinesIssued
+    }
+    if ($settings.states.ContainsKey('verificationInProgress') -and -not (_QCW-IsNullOrWhiteSpace $settings.states.verificationInProgress) -and (-not $settings.states.ContainsKey('correctionsReceived') -or (_QCW-IsNullOrWhiteSpace $settings.states.correctionsReceived))) {
+        $settings.states.correctionsReceived = [string]$settings.states.verificationInProgress
+    }
+    if ($settings.states.ContainsKey('correctionsInProgress') -and -not (_QCW-IsNullOrWhiteSpace $settings.states.correctionsInProgress) -and (-not $settings.states.ContainsKey('correctionsReceived') -or (_QCW-IsNullOrWhiteSpace $settings.states.correctionsReceived))) {
+        $settings.states.correctionsReceived = [string]$settings.states.correctionsInProgress
+    }
+    if ($settings.states.ContainsKey('reviewInProgress') -and -not (_QCW-IsNullOrWhiteSpace $settings.states.reviewInProgress) -and (-not $settings.states.ContainsKey('readyForQc') -or (_QCW-IsNullOrWhiteSpace $settings.states.readyForQc))) {
+        $settings.states.readyForQc = [string]$settings.states.reviewInProgress
     }
 
     if (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName -and -not (_QCW-IsNullOrWhiteSpace $settings.workflowName)) {

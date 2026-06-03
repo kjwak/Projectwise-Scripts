@@ -89,7 +89,7 @@ try {
     Assert-True (-not $state.renditionComplete) 'Rendition not yet'
 
     Assert-True (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Ready for QC') 'Defer Ready for QC notification'
-    Assert-True (-not (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Review In Progress')) 'No defer other states'
+    Assert-True (-not (Test-QCShouldDeferReadyForQcNotification -Config $config -CurrentState 'Redlines Received')) 'No defer other states'
 
     $defer = Invoke-QCNotificationForStateChange -Config $config -PreviousState 'In Production' -CurrentState 'Ready for QC' `
         -DocumentName 'sheet-qc.pdf' -DocumentGuid 'abc-123'

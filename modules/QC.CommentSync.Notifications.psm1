@@ -22,18 +22,18 @@ function Get-QCCommentSyncNotificationPlan {
     $ccRoles = @('reviewers')
     $explicitTo = @()
 
-    if ($targetState -eq [string]$targets.redlinesIssued) {
-        $eventType = 'REDLINES_ISSUED'
+    if ($targetState -eq [string]$targets.redlinesReceived -or $targetState -eq [string]$targets.redlinesIssued) {
+        $eventType = 'REDLINES_RECEIVED'
         $toRoles = @('designers')
         $ccRoles = @('reviewers')
-    } elseif ($targetState -eq [string]$targets.correctionsInProgress) {
-        $eventType = 'CORRECTIONS_IN_PROGRESS'
-        $toRoles = @('designers')
-        $ccRoles = @('reviewers')
-    } elseif ($targetState -eq [string]$targets.verificationInProgress -or $targetState -eq [string]$targets.backcheckInProgress) {
-        $eventType = 'VERIFICATION_IN_PROGRESS'
+    } elseif ($targetState -eq [string]$targets.correctionsReceived -or $targetState -eq [string]$targets.correctionsInProgress -or $targetState -eq [string]$targets.verificationInProgress) {
+        $eventType = 'CORRECTIONS_RECEIVED'
         $toRoles = @('reviewers')
         $ccRoles = @('designers')
+    } elseif ($targetState -eq [string]$targets.qcFinalizing) {
+        $eventType = 'QC_FINALIZING'
+        $toRoles = @()
+        $ccRoles = @()
     } elseif ($targetState -eq [string]$targets.error) {
         $eventType = 'QC_ERROR'
         $toRoles = @()

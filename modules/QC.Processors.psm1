@@ -211,16 +211,10 @@ function _QCP-ResolvePrependTrigger([hashtable]$Job) {
     $t = _QCP-GetJobMetadataValue -Job $Job -Keys @('prependTrigger','qcPrependTrigger','workflowPrependTrigger')
     if (-not (_QCP-IsNullOrWhiteSpace $t)) { return ([string]$t).Trim() }
 
-    $corr = _QCP-GetJobMetadataValue -Job $Job -Keys @('correctionComplete','designerCorrectionComplete','qcCorrectionComplete')
-    if (-not (_QCP-IsNullOrWhiteSpace $corr)) {
-        $cv = ([string]$corr).Trim().ToLowerInvariant()
-        if ($cv -in @('true','1','yes','y')) { return 'designerCorrectionComplete' }
-    }
-
-    $redline = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewerRedlineUpdate','redlineUpdate','qcRedlineUpdate')
-    if (-not (_QCP-IsNullOrWhiteSpace $redline)) {
-        $rv = ([string]$redline).Trim().ToLowerInvariant()
-        if ($rv -in @('true','1','yes','y')) { return 'reviewerRedlineUpdate' }
+    $final = _QCP-GetJobMetadataValue -Job $Job -Keys @('finalQcComplete','qcFinalizing','finalPrepend')
+    if (-not (_QCP-IsNullOrWhiteSpace $final)) {
+        $fv = ([string]$final).Trim().ToLowerInvariant()
+        if ($fv -in @('true','1','yes','y','finalqccomplete')) { return 'finalQcComplete' }
     }
 
     try {
@@ -1456,6 +1450,113 @@ function Add-QCPrependJobForQcInitiatedStateChange {
             Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_ENQUEUED' -Message 'QC_PREPEND job enqueued from QC Initiated state change.' -Data @{
                 jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
                 triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr
+            } | Out-Null
+        }
+    }
+    return $enq
+}
+
+function Add-QCPrependJobForQcFinalizingStateChange {
+    <#
+    .SYNOPSIS
+    Enqueues QC_PREPEND when a non-automation actor sets workflow state to QC Finalizing (final history capture).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TriggerDocumentGuid,
+        [Parameter(Mandatory)][string]$TriggerDocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CurrentStateName,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    $finalizingName = 'QC Finalizing'
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        $wf = Get-QCWorkflowSettings -Config $Config
+        $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing'
+        if (-not (_QCP-IsNullOrWhiteSpace $resolved)) { $finalizingName = [string]$resolved }
+    }
+
+    $curr = ([string]$CurrentStateName).Trim()
+    if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $finalizingName.ToLowerInvariant()) { return $null }
+
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
+            return $null
+        }
+    }
+
+    $sheetPdf = _QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName $TriggerDocumentName
+    if (_QCP-IsNullOrWhiteSpace $sheetPdf) { return $null }
+
+    try { _QCP-EnsureQueueModulesLoaded } catch {
+        return New-QCFailureResult -Code 'QC_PREPEND_QUEUE_UNAVAILABLE' -Message $_.Exception.Message -Data @{}
+    }
+
+    $sourcePath = Join-Path $FolderPath $sheetPdf
+    $candidate = @{
+        path = $sourcePath
+        fileName = $sheetPdf
+        description = 'QC_FinalPrepend'
+        detectedAtUtc = (Get-QCTimestamp)
+        sourceFolder = $FolderPath
+        triggerSource = 'audit_state_change'
+        auditActionName = 'DOCUMENT_STATE'
+        file = @{
+            fullName = $sourcePath
+            length = 0
+            lastWriteTimeUtc = (Get-QCTimestamp)
+        }
+    }
+
+    $rule = @{
+        id = 'qc-prepend-qc-finalizing'
+        jobType = 'QC_PREPEND'
+        triggerType = 'audit_state_change'
+        grouping = @{ enabled = $false; groupBy = 'file' }
+    }
+
+    $jobRes = New-QCJobObject -Candidate $candidate -Rule $rule -Config $Config
+    if (-not $jobRes.IsSuccess) { return $jobRes }
+    $job = [hashtable]$jobRes.Data.job
+    if (-not $job.ContainsKey('metadata') -or -not $job.metadata) { $job['metadata'] = @{} }
+    $md = _QCP-ToHashtable $job.metadata
+    if (-not $md) { $md = @{} }
+    $md['prependTrigger'] = 'finalQcComplete'
+    $md['finalPrepend'] = $true
+    $md['pwStateName'] = $curr
+    $md['triggerDocumentGuid'] = $TriggerDocumentGuid
+    $md['triggerDocumentName'] = $TriggerDocumentName
+    $job['metadata'] = $md
+
+    if ($DryRun) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned from QC Finalizing state change.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr; prependTrigger = 'finalQcComplete'
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_PREPEND_PLANNED' -Message 'Dry-run: QC_PREPEND job planned.' -Data @{ job = $job }
+    }
+
+    if (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue) {
+        $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $Config
+        if ($dupRes.IsSuccess -and [bool]$dupRes.Data.isDuplicate) {
+            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_DUPLICATE' -Message 'QC_PREPEND already queued for this sheet.' -Data @{
+                dedupeKey = [string]$job['dedupeKey']; sourcePath = $sourcePath; prependTrigger = 'finalQcComplete'
+            }
+        }
+    }
+
+    $enq = Add-QCQueueJob -Job $job -Config $Config
+    if ($enq.IsSuccess) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_ENQUEUED' -Message 'QC_PREPEND job enqueued from QC Finalizing state change.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr; prependTrigger = 'finalQcComplete'
             } | Out-Null
         }
     }

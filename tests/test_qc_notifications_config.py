@@ -29,13 +29,14 @@ def test_appsettings_notifications_production_delivery_defaults():
 def test_appsettings_notification_events_include_lifecycle_states():
     events = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["notifications"]["events"]
 
-    assert events["QC Received"]["eventType"] == "QC_RECEIVED"
-    assert events["QC Received"]["enabled"] is True
-    assert events["Review In Progress"]["eventType"] == "REVIEW_IN_PROGRESS"
-    assert events["Redlines Issued"]["eventType"] == "REDLINES_ISSUED"
-    assert events["Corrections In Progress"]["eventType"] == "CORRECTIONS_IN_PROGRESS"
-    assert events["Verification In Progress"]["eventType"] == "VERIFICATION_IN_PROGRESS"
+    assert events["Ready for QC"]["eventType"] == "READY_FOR_QC"
+    assert events["Ready for QC"]["enabled"] is True
+    assert events["Redlines Received"]["eventType"] == "REDLINES_RECEIVED"
+    assert events["Corrections Received"]["eventType"] == "CORRECTIONS_RECEIVED"
     assert events["Error Needs Attention"]["eventType"] == "QC_ERROR"
+    assert "Review In Progress" not in events
+    assert "Corrections In Progress" not in events
+    assert "Verification In Progress" not in events
 
 
 def test_notifications_module_exports_state_change_entrypoint():

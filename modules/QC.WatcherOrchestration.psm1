@@ -154,6 +154,50 @@ function Test-QCWorkflowStateIsQcInitiated {
     return ($StateName.Trim().ToLowerInvariant() -eq $initiated.Trim().ToLowerInvariant())
 }
 
+function Get-QCFinalizingWorkflowStateName {
+    <#
+    .SYNOPSIS
+    Resolved display name for the QC Finalizing workflow state from config (default: QC Finalizing).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
+                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+            }
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing'
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) { return [string]$resolved }
+        } catch { }
+    }
+    try {
+        if ($Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) {
+            $wf = $Config.qcWorkflow
+            if ($wf -is [hashtable] -and $wf.ContainsKey('states') -and $wf.states) {
+                $st = $wf.states
+                if ($st -is [hashtable] -and $st.ContainsKey('qcFinalizing') -and $st.qcFinalizing) {
+                    return [string]$st.qcFinalizing
+                }
+                if ($st.qcFinalizing) { return [string]$st.qcFinalizing }
+            }
+        }
+    } catch { }
+    return 'QC Finalizing'
+}
+
+function Test-QCWorkflowStateIsQcFinalizing {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ([string]::IsNullOrWhiteSpace($StateName)) { return $false }
+    $finalizing = Get-QCFinalizingWorkflowStateName -Config $Config
+    return ($StateName.Trim().ToLowerInvariant() -eq $finalizing.Trim().ToLowerInvariant())
+}
+
 function Get-QCPrependAuditActions {
     <#
     .SYNOPSIS
@@ -559,4 +603,4 @@ function Get-QCFullFolderScanReconciliationPlan {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete

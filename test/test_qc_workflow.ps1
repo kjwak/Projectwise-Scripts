@@ -40,10 +40,9 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
             states = @{
                 production = 'In Production'
                 readyForQc = 'Ready for QC'
-                reviewInProgress = 'Review In Progress'
-                redlinesIssued = 'Redlines Issued'
-                correctionsInProgress = 'Corrections In Progress'
-                verificationInProgress = 'Verification In Progress'
+                redlinesReceived = 'Redlines Received'
+                correctionsReceived = 'Corrections Received'
+                qcFinalizing = 'QC Finalizing'
                 complete = 'QC Complete'
                 error = 'Error Needs Attention'
             }
@@ -56,8 +55,7 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
             stateAfterSuccessfulPrepend = 'Ready for QC'
             stateAfterPrependByTrigger = @{
                 initialQcPdf = 'Ready for QC'
-                reviewerRedlineUpdate = 'Redlines Issued'
-                designerCorrectionComplete = 'Verification In Progress'
+                finalQcComplete = 'QC Complete'
             }
             stateAfterFailedPrepend = 'Error Needs Attention'
             attributeMap = @{
@@ -108,26 +106,27 @@ $defaultSettings = Get-QCWorkflowSettings -Config @{}
 Assert-Eq $defaultSettings.mode 'AttributesOnly' 'AttributesOnly should remain the default workflow mode'
 Assert-Eq $defaultSettings.autoSetState $false 'autoSetState should remain false by default'
 Assert-Eq $defaultSettings.states.readyForQc 'Ready for QC' 'Default ready for QC state'
-Assert-Eq $defaultSettings.states.reviewInProgress 'Review In Progress' 'Default review in progress state'
-Assert-Eq $defaultSettings.states.verificationInProgress 'Verification In Progress' 'Default verification state'
+Assert-Eq $defaultSettings.states.redlinesReceived 'Redlines Received' 'Default redlines received state'
+Assert-Eq $defaultSettings.states.correctionsReceived 'Corrections Received' 'Default corrections received state'
+Assert-Eq $defaultSettings.states.qcFinalizing 'QC Finalizing' 'Default QC Finalizing state'
 Assert-True (-not $defaultSettings.attributeMap.ContainsKey('stage')) 'Default attribute map must not include stage'
 
 # review-type-based assignment
 $assignReviewer = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Ready for QC' -ReviewType 'Production QC' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
 Assert-Eq $assignReviewer 'r@x.com' 'Production QC Ready for QC assigns reviewer'
-$assignChecker = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Review In Progress' -ReviewType 'Independent Check' `
+$assignChecker = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Corrections Received' -ReviewType 'Independent Check' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignChecker 'c@x.com' 'Independent Check review assigns checker'
+Assert-Eq $assignChecker 'c@x.com' 'Independent Check corrections received assigns checker'
 $assignProduction = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'In Production' -ReviewType 'Production QC' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
 Assert-Eq $assignProduction 'd@x.com' 'In Production assigns designer'
-$assignRedlines = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Redlines Issued' -ReviewType 'Peer Review' `
+$assignRedlines = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Redlines Received' -ReviewType 'Peer Review' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignRedlines 'd@x.com' 'Redlines Issued assigns designer'
-$assignDesigner = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Corrections In Progress' -ReviewType 'Peer Review' `
+Assert-Eq $assignRedlines 'd@x.com' 'Redlines Received assigns designer'
+$assignReviewerVerify = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Corrections Received' -ReviewType 'Peer Review' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignDesigner 'd@x.com' 'Corrections assign designer'
+Assert-Eq $assignReviewerVerify 'r@x.com' 'Corrections Received assigns reviewer'
 $assignNone = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'QC Complete' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com'
 Assert-Eq $assignNone $null 'QC Complete has no active assignee'
 
@@ -167,7 +166,7 @@ $script:pwWriteCalls = 0
 function Set-PWDocumentState { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
 function Update-PWDocumentAttributes { $script:pwWriteCalls++; throw 'Should not be called during dry-run' }
 function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
-function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Review In Progress' } }
+function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Redlines Received' } }
 $dry = Invoke-QCWorkflowWriteback -Config (New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true) -Context (New-WorkflowContext)
 Assert-True $dry.IsSuccess 'Dry-run workflow should return success'
 Assert-Eq $script:pwWriteCalls 0 'Dry-run should not call PW write cmdlets'
@@ -215,15 +214,14 @@ Assert-True (-not $attrs.Data.attributes.ContainsKey('QC_Stage')) 'QC_Stage must
 # prepend trigger selects target state when autoSetState runs
 $triggerSettings = Get-QCWorkflowSettings -Config $writeCfg
 Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'Ready for QC' 'initialQcPdf -> Ready for QC'
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'reviewerRedlineUpdate' }) 'Redlines Issued' 'reviewerRedlineUpdate -> Redlines Issued'
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'designerCorrectionComplete' }) 'Verification In Progress' 'designerCorrectionComplete -> Verification In Progress'
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'finalQcComplete' }) 'QC Complete' 'finalQcComplete -> QC Complete'
 Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{}) 'Ready for QC' 'unknown trigger falls back to stateAfterSuccessfulPrepend'
 
 # state write uses explicit targetState when provided
 $script:stateWrites = 0
 $script:attributeWrites = 0
 function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
-function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Review In Progress' } }
+function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Redlines Received' } }
 function Set-PWDocumentState { [CmdletBinding()] param([object[]]$InputDocuments, [string]$StateName, [switch]$ReturnBoolean) $script:stateWrites++; return $true }
 function Update-PWDocumentAttributes { [CmdletBinding()] param([object[]]$InputDocuments, [hashtable]$Attributes, [switch]$ReturnBoolean) $script:attributeWrites++; return $true }
 $writeCfg = New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$false
@@ -234,7 +232,7 @@ $writeSettings = Get-QCWorkflowSettings -Config $writeCfg
 $doc = [pscustomobject]@{ WorkflowName = 'QC Review Workflow'; StateName = 'Ready for QC'; DocumentID = 1; ProjectID = 2 }
 $writeContext = New-WorkflowContext
 $writeContext.document = $doc
-$stateWrite = Set-PWQCWorkflowState -Settings $writeSettings -Context $writeContext -StateName 'Review In Progress' -DryRun:$false
+$stateWrite = Set-PWQCWorkflowState -Settings $writeSettings -Context $writeContext -StateName 'Redlines Received' -DryRun:$false
 Assert-True $stateWrite.IsSuccess 'Set-PWQCWorkflowState should succeed with confirmed Set-PWDocumentState stub'
 Assert-Eq $stateWrite.Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' 'State write success code'
 Assert-Eq $script:stateWrites 1 'Set-PWDocumentState should be called once'

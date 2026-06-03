@@ -13,9 +13,9 @@ function Get-QCCommentDecisionSettings {
             closed = @('Closed', 'Cancelled')
         }
         targetStates = @{
-            redlinesIssued = 'Redlines Issued'
-            correctionsInProgress = 'Corrections In Progress'
-            verificationInProgress = 'Verification In Progress'
+            redlinesReceived = 'Redlines Received'
+            correctionsReceived = 'Corrections Received'
+            qcFinalizing = 'QC Finalizing'
             completed = 'QC Complete'
             error = 'Error Needs Attention'
         }
@@ -35,14 +35,17 @@ function Get-QCCommentDecisionSettings {
         $wfStates = $null
         if ($wf.states) { $wfStates = $wf.states }
         if ($wfStates) {
-            if ($wfStates.redlinesIssued) { $out.targetStates.redlinesIssued = [string]$wfStates.redlinesIssued }
-            if ($wfStates.correctionsInProgress) { $out.targetStates.correctionsInProgress = [string]$wfStates.correctionsInProgress }
-            if ($wfStates.verificationInProgress) { $out.targetStates.verificationInProgress = [string]$wfStates.verificationInProgress }
+            if ($wfStates.redlinesReceived) { $out.targetStates.redlinesReceived = [string]$wfStates.redlinesReceived }
+            elseif ($wfStates.redlinesIssued) { $out.targetStates.redlinesReceived = [string]$wfStates.redlinesIssued }
+            if ($wfStates.correctionsReceived) { $out.targetStates.correctionsReceived = [string]$wfStates.correctionsReceived }
+            elseif ($wfStates.verificationInProgress) { $out.targetStates.correctionsReceived = [string]$wfStates.verificationInProgress }
+            elseif ($wfStates.correctionsInProgress) { $out.targetStates.correctionsReceived = [string]$wfStates.correctionsInProgress }
+            if ($wfStates.qcFinalizing) { $out.targetStates.qcFinalizing = [string]$wfStates.qcFinalizing }
             if ($wfStates.complete) { $out.targetStates.completed = [string]$wfStates.complete }
             if ($wfStates.error) { $out.targetStates.error = [string]$wfStates.error }
         }
-        if ($wf.correctionsInProgressStateName) { $out.targetStates.correctionsInProgress = [string]$wf.correctionsInProgressStateName }
-        if ($wf.backcheckInProgressStateName) { $out.targetStates.verificationInProgress = [string]$wf.backcheckInProgressStateName }
+        if ($wf.correctionsInProgressStateName) { $out.targetStates.correctionsReceived = [string]$wf.correctionsInProgressStateName }
+        if ($wf.backcheckInProgressStateName) { $out.targetStates.correctionsReceived = [string]$wf.backcheckInProgressStateName }
         if ($wf.errorStateName) { $out.targetStates.error = [string]$wf.errorStateName }
         try { if ($null -ne $wf.strictMode) { $out.strictMode = [bool]$wf.strictMode } } catch { }
     }
@@ -129,9 +132,9 @@ function Resolve-QCCommentWorkflowState {
             }
         }
         return @{
-            targetState = [string]$targets.completed
+            targetState = [string]$targets.qcFinalizing
             decisionCode = 'NO_ANNOTATIONS'
-            summary = 'No annotations; defaulting to completed.'
+            summary = 'No annotations; defaulting to QC Finalizing.'
             reviewerOpenCount = 0
             reviewerResolvedCount = 0
             reviewerClosedCount = 0
@@ -171,11 +174,11 @@ function Resolve-QCCommentWorkflowState {
     }
 
     if ($open -gt 0) {
-        $redlinesState = if ($targets.redlinesIssued) { [string]$targets.redlinesIssued } else { 'Redlines Issued' }
+        $redlinesState = if ($targets.redlinesReceived) { [string]$targets.redlinesReceived } elseif ($targets.redlinesIssued) { [string]$targets.redlinesIssued } else { 'Redlines Received' }
         return @{
             targetState = $redlinesState
-            decisionCode = 'REDLINES_ISSUED'
-            summary = "$open reviewer comment(s) still open; redlines issued to designer."
+            decisionCode = 'REDLINES_RECEIVED'
+            summary = "$open reviewer comment(s) still open; redlines returned to designer."
             reviewerOpenCount = $open
             reviewerResolvedCount = $resolved
             reviewerClosedCount = $closed
@@ -184,11 +187,11 @@ function Resolve-QCCommentWorkflowState {
     }
 
     if ($resolved -gt 0) {
-        $verificationState = if ($targets.verificationInProgress) { [string]$targets.verificationInProgress } elseif ($targets.backcheckInProgress) { [string]$targets.backcheckInProgress } else { 'Verification In Progress' }
+        $correctionsState = if ($targets.correctionsReceived) { [string]$targets.correctionsReceived } elseif ($targets.verificationInProgress) { [string]$targets.verificationInProgress } else { 'Corrections Received' }
         return @{
-            targetState = $verificationState
-            decisionCode = 'VERIFICATION_REQUIRED'
-            summary = "$resolved reviewer comment(s) resolved; verification needed."
+            targetState = $correctionsState
+            decisionCode = 'CORRECTIONS_RECEIVED'
+            summary = "$resolved reviewer comment(s) resolved; reviewer verification needed."
             reviewerOpenCount = $open
             reviewerResolvedCount = $resolved
             reviewerClosedCount = $closed
@@ -196,10 +199,11 @@ function Resolve-QCCommentWorkflowState {
         }
     }
 
+    $finalizingState = if ($targets.qcFinalizing) { [string]$targets.qcFinalizing } else { 'QC Finalizing' }
     return @{
-        targetState = [string]$targets.completed
-        decisionCode = 'ALL_CLOSED'
-        summary = 'All reviewer comments closed or accepted.'
+        targetState = $finalizingState
+        decisionCode = 'QC_FINALIZING'
+        summary = 'All reviewer comments closed or accepted; ready for final QC prepend.'
         reviewerOpenCount = $open
         reviewerResolvedCount = $resolved
         reviewerClosedCount = $closed

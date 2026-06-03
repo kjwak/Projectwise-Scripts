@@ -25,14 +25,14 @@ def test_appsettings_uses_states_and_review_types_not_stage_map():
 
     assert "stageMap" not in workflow
     assert workflow["states"]["qcInitiated"] == "QC Initiated"
-    assert workflow["states"]["qcReceived"] == "QC Received"
+    assert workflow["states"]["qcReceived"] == "Ready for QC"
     assert workflow["states"]["readyForQc"] == "Ready for QC"
-    assert workflow["states"]["reviewInProgress"] == "Review In Progress"
-    assert workflow["states"]["redlinesIssued"] == "Redlines Issued"
-    assert workflow["states"]["verificationInProgress"] == "Verification In Progress"
-    assert workflow["stateAfterSuccessfulPrepend"] == "QC Received"
-    assert workflow["stateAfterPrependByTrigger"]["initialQcPdf"] == "QC Received"
-    assert workflow["stateAfterPrependByTrigger"]["reviewerRedlineUpdate"] == "Redlines Issued"
+    assert workflow["states"]["redlinesReceived"] == "Redlines Received"
+    assert workflow["states"]["correctionsReceived"] == "Corrections Received"
+    assert workflow["states"]["qcFinalizing"] == "QC Finalizing"
+    assert workflow["stateAfterSuccessfulPrepend"] == "Ready for QC"
+    assert workflow["stateAfterPrependByTrigger"]["initialQcPdf"] == "Ready for QC"
+    assert workflow["stateAfterPrependByTrigger"]["finalQcComplete"] == "QC Complete"
     assert workflow["states"]["complete"] == "QC Complete"
     assert workflow["reviewTypes"]["independentCheck"] == "Independent Check"
     assert workflow["defaultReviewType"] == "Production QC"
@@ -51,8 +51,9 @@ def test_workflow_module_defaults_exclude_stage_map_and_qc_stage():
     assert "stageMap" not in text or "Deprecated" in text or "deprecated" in text.lower()
     assert "QC_Stage" not in text
     assert "readyForQc = 'Ready for QC'" in text
-    assert "redlinesIssued = 'Redlines Issued'" in text
-    assert "verificationInProgress = 'Verification In Progress'" in text
+    assert "redlinesReceived = 'Redlines Received'" in text
+    assert "correctionsReceived = 'Corrections Received'" in text
+    assert "qcFinalizing = 'QC Finalizing'" in text
     assert "Resolve-QCWorkflowAssignee" in text
     assert "Get-QCWorkflowDeprecationWarnings" in text
 
@@ -63,6 +64,7 @@ def test_processors_workflow_context_does_not_write_qc_stage():
     assert "QC_Stage" not in text
     assert "reviewType = $reviewType" in text
     assert "Resolve-QCWorkflowAssignee" in text
+    assert "Add-QCPrependJobForQcFinalizingStateChange" in text
 
 
 def test_reporting_docs_include_state_based_metric_names():
@@ -71,10 +73,9 @@ def test_reporting_docs_include_state_based_metric_names():
     for metric in [
         "inProductionCount",
         "readyForQcCount",
-        "reviewInProgressCount",
-        "redlinesIssuedCount",
-        "correctionsInProgressCount",
-        "verificationInProgressCount",
+        "redlinesReceivedCount",
+        "correctionsReceivedCount",
+        "qcFinalizingCount",
         "qcCompleteCount",
         "errorNeedsAttentionCount",
         "staleOpenQcCount",
@@ -110,13 +111,13 @@ def test_resolve_qc_workflow_assignee_by_review_type():
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'In Production' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Ready for QC' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Ready for QC' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
-      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Redlines Issued' -ReviewType 'Peer Review' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
-      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Corrections In Progress' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
+      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Redlines Received' -ReviewType 'Peer Review' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
+      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Corrections Received' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'QC Complete' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com')
     ) -join '|'
     """
     out = _pwsh_eval(script)
-    assert out == "d@x.com|r@x.com|c@x.com|d@x.com|d@x.com|"
+    assert out == "d@x.com|r@x.com|c@x.com|d@x.com|c@x.com|"
 
 
 def test_deprecated_config_emits_warnings():
@@ -144,16 +145,15 @@ def test_resolve_state_after_prepend_by_trigger():
     Import-Module './modules/Core.Results.psm1' -Force
     Import-Module './modules/QC.Workflow.psm1' -Force
     $s = Get-QCWorkflowSettings -Config @{}
-    $ctx = @{ prependTrigger = 'reviewerRedlineUpdate' }
     @(
-      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context $ctx),
-      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ prependTrigger = 'designerCorrectionComplete' }),
+      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ prependTrigger = 'finalQcComplete' }),
+      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ prependTrigger = 'initialQcPdf' }),
       (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{}),
-      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ targetState = 'Review In Progress' })
+      (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ targetState = 'QC Finalizing' })
     ) -join '|'
     """
     out = _pwsh_eval(script)
-    assert out == "Redlines Issued|Verification In Progress|QC Received|Review In Progress"
+    assert out == "QC Complete|Ready for QC|Ready for QC|QC Finalizing"
 
 
 def test_dry_run_attributes_do_not_include_qc_stage():

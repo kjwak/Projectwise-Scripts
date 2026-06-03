@@ -173,21 +173,29 @@ function Get-QCNotificationSettings {
                 subjectTemplate = 'QC Received - {documentName}'
                 actionRequired = 'Reviewer to begin QC review.'
             }
-            'Corrections In Progress' = @{
+            'Ready for QC' = @{
                 enabled = $true
-                eventType = 'CORRECTIONS_IN_PROGRESS'
-                to = @('designers')
-                cc = @('reviewers')
-                subjectTemplate = 'QC Corrections Required - {documentName}'
-                actionRequired = 'Designer to address QC comments.'
-            }
-            'Backcheck In Progress' = @{
-                enabled = $true
-                eventType = 'BACKCHECK_IN_PROGRESS'
+                eventType = 'READY_FOR_QC'
                 to = @('reviewers')
                 cc = @('designers')
-                subjectTemplate = 'QC Backcheck Required - {documentName}'
-                actionRequired = 'Reviewer to backcheck corrections.'
+                subjectTemplate = 'Ready for QC - {documentName}'
+                actionRequired = 'Reviewer to begin QC review.'
+            }
+            'Redlines Received' = @{
+                enabled = $true
+                eventType = 'REDLINES_RECEIVED'
+                to = @('designers')
+                cc = @('reviewers')
+                subjectTemplate = 'Redlines Received - {documentName}'
+                actionRequired = 'Designer to address QC comments and return corrections.'
+            }
+            'Corrections Received' = @{
+                enabled = $true
+                eventType = 'CORRECTIONS_RECEIVED'
+                to = @('reviewers')
+                cc = @('designers')
+                subjectTemplate = 'Corrections Received - {documentName}'
+                actionRequired = 'Reviewer to verify corrections and approve or return redlines.'
             }
             'Error Needs Attention' = @{
                 enabled = $true

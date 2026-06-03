@@ -63,7 +63,7 @@ $res = Invoke-QCCommentStatusSyncProcessor -Job $job -Config $config -InputDocum
     -MockExporter $mockExport -MockAnnotations $mockAnnots
 
 Assert-True $res.IsSuccess 'Orchestrator should succeed'
-Assert-True ($res.Data.decision.targetState -eq 'Corrections In Progress') 'Should decide corrections'
+Assert-True ($res.Data.decision.targetState -eq 'Redlines Received') 'Should decide redlines received'
 Assert-True ([bool]$res.Data.dryRun) 'Dry run flag set'
 
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

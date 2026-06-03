@@ -54,10 +54,9 @@ The finalized initial ProjectWise QC workflow model defines these reporting buck
 | --- | --- | --- |
 | `inProductionCount` | Documents in production workflow state. | `In Production` |
 | `readyForQcCount` | Documents ready for QC intake. | `Ready for QC` |
-| `reviewInProgressCount` | Active QC review. | `Review In Progress` |
-| `redlinesIssuedCount` | Review complete; redlines delivered; designer response pending. | `Redlines Issued` |
-| `correctionsInProgressCount` | Designer correction work. | `Corrections In Progress` |
-| `verificationInProgressCount` | Reviewer/checker verification. | `Verification In Progress` |
+| `redlinesReceivedCount` | Review complete; redlines returned to designer. | `Redlines Received` |
+| `correctionsReceivedCount` | Designer returned corrections; reviewer verification pending. | `Corrections Received` |
+| `qcFinalizingCount` | Reviewer approved; automation final prepend pending or running. | `QC Finalizing` |
 | `qcCompleteCount` | Completed QC cycles. | `QC Complete` |
 | `errorNeedsAttentionCount` | Automation/process errors. | `Error Needs Attention` |
 | `staleOpenQcCount` | Active QC documents older than `qcReporting.staleDays`, not in `QC Complete`. | Non-complete active states |
@@ -96,10 +95,9 @@ Each snapshot includes:
 - `staleQcCount`
 - `inProductionCount`
 - `readyForQcCount`
-- `reviewInProgressCount`
-- `redlinesIssuedCount`
-- `correctionsInProgressCount`
-- `verificationInProgressCount`
+- `redlinesReceivedCount`
+- `correctionsReceivedCount`
+- `qcFinalizingCount`
 - `qcCompleteCount`
 - `errorNeedsAttentionCount`
 - `staleOpenQcCount`

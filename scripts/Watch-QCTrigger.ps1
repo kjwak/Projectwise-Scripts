@@ -333,6 +333,8 @@ $script:WatchRequiredCommands = @(
     'Get-QCPrependAuditActions'
     'Get-QCInitiatedWorkflowStateName'
     'Test-QCWorkflowStateIsQcInitiated'
+    'Get-QCFinalizingWorkflowStateName'
+    'Test-QCWorkflowStateIsQcFinalizing'
     'Test-QCIsStatusSetOutputPdfName'
     'Invoke-QCReconcileOutputs'
     'Set-QCFullScanScheduleSlotComplete'
@@ -344,6 +346,7 @@ $script:WatchRequiredCommands = @(
     'Add-QCQueueJob'
     'Test-QCStatusSetJobInFlight'
     'Add-QCPrependJobForQcInitiatedStateChange'
+    'Add-QCPrependJobForQcFinalizingStateChange'
     'Get-StatusSetPWFolderState'
     'Get-StatusSetLocalFolderState'
     'Test-StatusSetWatcherShouldEnqueue'
@@ -1230,6 +1233,50 @@ if ($statusSetRules.Count -ge 0) {
                                                         }
                                                         if ($prependCode -eq 'QC_PREPEND_ENQUEUED' -and -not $isDryRun) { $enqueued++ }
                                                         elseif ($wouldDedupe) { $duplicates++ }
+                                                    }
+                                                    continue
+                                                }
+                                            }
+                                        }
+
+                                        if (-not [string]::IsNullOrWhiteSpace($pwStateForPrepend) `
+                                                -and (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) `
+                                                -and (Test-QCWorkflowStateIsQcFinalizing -StateName $pwStateForPrepend -Config $config)) {
+                                            if (-not (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
+                                                try {
+                                                    Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+                                                } catch { }
+                                            }
+                                            if (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue) {
+                                                $acUsernoFinal = $null
+                                                try {
+                                                    if ($null -ne $ac.userno) { $acUsernoFinal = [int]$ac.userno }
+                                                } catch { $acUsernoFinal = $null }
+                                                $finalPrependRes = Add-QCPrependJobForQcFinalizingStateChange -Config $config `
+                                                    -TriggerDocumentGuid ([string]$ac.objGuid) `
+                                                    -TriggerDocumentName $itemName `
+                                                    -FolderPath $fp `
+                                                    -CurrentStateName $pwStateForPrepend `
+                                                    -DryRun:$isDryRun `
+                                                    -ChangedByUser $acUsernoFinal
+                                                if ($null -ne $finalPrependRes) {
+                                                    $finalPrependCode = [string]$finalPrependRes.Code
+                                                    if ($finalPrependRes.IsSuccess) {
+                                                        $accepted++
+                                                        $wouldDedupeFinal = ($finalPrependCode -eq 'QC_PREPEND_SKIPPED_DUPLICATE')
+                                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND from QC Finalizing state.' -Data @{
+                                                            jobType         = 'QC_PREPEND'
+                                                            sourcePath      = ($fp + '\' + $itemName)
+                                                            triggerSource   = 'qc_finalizing_state'
+                                                            auditActionName = $actionName
+                                                            pwStateName     = $pwStateForPrepend
+                                                            prependTrigger  = 'finalQcComplete'
+                                                            prependCode     = $finalPrependCode
+                                                            dryRun          = $isDryRun
+                                                            wouldDedupe     = $wouldDedupeFinal
+                                                        }
+                                                        if ($finalPrependCode -eq 'QC_PREPEND_ENQUEUED' -and -not $isDryRun) { $enqueued++ }
+                                                        elseif ($wouldDedupeFinal) { $duplicates++ }
                                                     }
                                                     continue
                                                 }

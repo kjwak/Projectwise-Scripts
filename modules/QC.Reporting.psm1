@@ -191,10 +191,9 @@ function New-QCReportingSnapshot {
 
     $inProduction = @($normalized | Where-Object { ([string]$_.stateName) -ieq 'In Production' })
     $readyForQc = @($active | Where-Object { ([string]$_.stateName) -ieq 'Ready for QC' -or ([string]$_.stateName) -ieq 'QC Received' })
-    $reviewInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Review In Progress' })
-    $redlinesIssued = @($active | Where-Object { ([string]$_.stateName) -ieq 'Redlines Issued' })
-    $correctionsInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Corrections In Progress' })
-    $verificationInProgress = @($active | Where-Object { ([string]$_.stateName) -ieq 'Verification In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
+    $redlinesReceived = @($active | Where-Object { ([string]$_.stateName) -ieq 'Redlines Received' -or ([string]$_.stateName) -ieq 'Redlines Issued' })
+    $correctionsReceived = @($active | Where-Object { ([string]$_.stateName) -ieq 'Corrections Received' -or ([string]$_.stateName) -ieq 'Corrections In Progress' -or ([string]$_.stateName) -ieq 'Verification In Progress' -or ([string]$_.stateName) -ieq 'Backcheck In Progress' })
+    $qcFinalizing = @($active | Where-Object { ([string]$_.stateName) -ieq 'QC Finalizing' })
     $qcComplete = @($active | Where-Object { ($completeStateNames | Where-Object { $_ -ieq [string]$_.stateName }).Count -gt 0 })
     $errorNeedsAttention = @($active | Where-Object { ([string]$_.stateName) -ieq 'Error Needs Attention' }) + @($errors)
     $errorNeedsAttention = @($errorNeedsAttention | Select-Object -Unique)
@@ -220,10 +219,13 @@ function New-QCReportingSnapshot {
             staleQcCount = @($stale).Count
             inProductionCount = @($inProduction).Count
             readyForQcCount = @($readyForQc).Count
-            reviewInProgressCount = @($reviewInProgress).Count
-            redlinesIssuedCount = @($redlinesIssued).Count
-            correctionsInProgressCount = @($correctionsInProgress).Count
-            verificationInProgressCount = @($verificationInProgress).Count
+            redlinesReceivedCount = @($redlinesReceived).Count
+            correctionsReceivedCount = @($correctionsReceived).Count
+            qcFinalizingCount = @($qcFinalizing).Count
+            reviewInProgressCount = 0
+            redlinesIssuedCount = @($redlinesReceived).Count
+            correctionsInProgressCount = @($correctionsReceived).Count
+            verificationInProgressCount = @($correctionsReceived).Count
             qcCompleteCount = @($qcComplete).Count
             errorNeedsAttentionCount = @($errorNeedsAttention).Count
             staleOpenQcCount = @($stale).Count
