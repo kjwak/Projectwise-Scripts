@@ -241,11 +241,21 @@ function New-QCNotificationEmailTemplateData {
     }
 
     $reviewType = ''
-    if ($EventCfg -and $EventCfg.ContainsKey('reviewType') -and $EventCfg.reviewType) {
+    if ($Event -and $Event.ContainsKey('reviewType') -and -not (_QCNT-IsBlank $Event.reviewType)) {
+        $reviewType = [string]$Event.reviewType
+    }
+    elseif ($Event -and $Event.ContainsKey('qcReviewType') -and -not (_QCNT-IsBlank $Event.qcReviewType)) {
+        $reviewType = [string]$Event.qcReviewType
+    }
+    elseif ($EventCfg -and $EventCfg.ContainsKey('reviewType') -and $EventCfg.reviewType) {
         $reviewType = [string]$EventCfg.reviewType
     }
     elseif ($attrs.ContainsKey('reviewTypeField') -and -not (_QCNT-IsBlank $attrs['reviewTypeField'])) {
         $rt = _QCNT-GetDocumentAttribute -Document $Document -AttributeName ([string]$attrs['reviewTypeField'])
+        if ($rt) { $reviewType = [string]$rt }
+    }
+    if (_QCNT-IsBlank $reviewType -and $Document) {
+        $rt = _QCNT-GetDocumentAttribute -Document $Document -AttributeName 'QC_Review_Type'
         if ($rt) { $reviewType = [string]$rt }
     }
 

@@ -171,7 +171,7 @@ function _QCW-InvokeStateChangeNotification {
         }
         if ($roleAttrs) {
             $attrsForNotif = @{}
-            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail')) {
+            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail', 'reviewType', 'qcReviewType')) {
                 if ($roleAttrs.ContainsKey($k) -and -not (_QCW-IsNullOrWhiteSpace $roleAttrs[$k])) {
                     $attrsForNotif[$k] = [string]$roleAttrs[$k]
                 }

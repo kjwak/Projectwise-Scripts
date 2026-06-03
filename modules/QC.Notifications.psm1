@@ -51,6 +51,14 @@ function _QCN-GetJobValue([hashtable]$Job, [string[]]$Keys) {
         foreach ($k in @($Keys)) {
             if ($md.ContainsKey($k) -and $null -ne $md[$k]) { return $md[$k] }
         }
+        if ($md.ContainsKey('attributes') -and $md.attributes) {
+            $attrs = _QCN-ToHashtable $md.attributes
+            if ($attrs) {
+                foreach ($k in @($Keys)) {
+                    if ($attrs.ContainsKey($k) -and $null -ne $attrs[$k]) { return $attrs[$k] }
+                }
+            }
+        }
         if ($md.ContainsKey('candidate') -and $md.candidate) {
             $cand = _QCN-ToHashtable $md.candidate
             if ($cand) {
@@ -1158,6 +1166,21 @@ function Invoke-QCNotificationForStateChange {
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
+
+    $folderForRt = ''
+    $sourceForRt = $DocumentName
+    if ($Job) {
+        $folderForRt = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder', 'folderPath', 'incomingFolderPath'))
+        $sourceForRt = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+    }
+    if (_QCN-IsBlank $folderForRt) { $folderForRt = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
+    if (_QCN-IsBlank $sourceForRt) { $sourceForRt = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
+    $resolvedReviewType = _QCN-ResolveNotificationReviewType -Document $Document -Settings $settings -Config $Config -Job $Job `
+        -FolderPath $folderForRt -SourceName $sourceForRt
+    if (-not (_QCN-IsBlank $resolvedReviewType)) {
+        $event['reviewType'] = $resolvedReviewType
+        $event['qcReviewType'] = $resolvedReviewType
+    }
 
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings
     if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings)) {

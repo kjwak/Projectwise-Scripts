@@ -7,31 +7,49 @@ Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAct
 function Ensure-PWDiscoveryModuleLoaded {
     <#
     .SYNOPSIS
-    Ensures PW.Discovery exports are present in the current runspace.
-    .DESCRIPTION
-    Nested Import-Module -Force (e.g. from QC.Rendition during DOCUMENT_STATE sync) can drop
-    watcher exports such as Find-PWSheetsFoldersUnderRoot. Re-import PW.Discovery and restore
-    Core.Database when QC.AuditTriggers reload clears session exports.
+    Ensures PW.Discovery and watcher session exports are present after nested Import-Module -Force.
     #>
     [CmdletBinding()]
     param()
 
     $required = @(
-        'Find-PWSheetsFoldersUnderRoot',
-        'Get-PWDocumentDescriptionForFolder',
-        'Sync-PWAssociatedSheetWorkflowState',
-        'Sync-PWAssociatedSheetMembersToWorkflowState',
-        'Get-PWDocumentsInFolder',
+        'Find-PWSheetsFoldersUnderRoot'
+        'Get-PWDocumentDescriptionForFolder'
+        'Sync-PWAssociatedSheetWorkflowState'
+        'Sync-PWAssociatedSheetMembersToWorkflowState'
+        'Sync-PWSheetIndexOwnership'
+        'Get-PWDocumentsInFolder'
         'ConvertTo-PWCmdletFolderPath'
+        'Test-PWSheetPdfHasMatchingPair'
+        'Test-PWFolderResolvable'
+        'Get-PWDocumentWorkflowStateName'
+        'Get-PWDocName'
+        'Get-PWDocDescription'
+        'Get-PWDocLastModifiedUtc'
+        'Get-PWDocumentWorkflowStateMapByGuid'
+        'New-QCSuccessResult'
+        'Get-StatusSetPWFolderState'
+        'Invoke-AuditTrailScan'
     )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -gt 0) {
-        $modPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
-        Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
 
-        $dbPath = Join-Path $PSScriptRoot 'Core.Database.psm1'
-        if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-            Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
+    $restoreOrder = @(
+        'Core.Results.psm1'
+        'Core.Runtime.psm1'
+        'Core.Database.psm1'
+        'QC.StatusSet.psm1'
+        'PW.AuditPoller.psm1'
+        'PW.Discovery.psm1'
+    )
+
+    for ($pass = 0; $pass -lt 3; $pass++) {
+        $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+        if ($missing.Count -eq 0) { return $true }
+
+        foreach ($modFile in $restoreOrder) {
+            $modPath = Join-Path $PSScriptRoot $modFile
+            if (Test-Path -LiteralPath $modPath) {
+                Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+            }
         }
     }
 
@@ -39,12 +57,6 @@ function Ensure-PWDiscoveryModuleLoaded {
         [void](Ensure-QCJsonLogAvailable -ModulesRoot $PSScriptRoot)
     } elseif (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
         Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-    }
-    if (-not (Get-Command -Name 'Write-QCPollRunTelemetry' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-        if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-            Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-        }
     }
 
     $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
@@ -738,6 +750,33 @@ function ConvertTo-SheetIndexFieldValues {
         qcStatus       = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcStatusCol
         pwStateName    = if ($PwStateName) { $PwStateName.Trim() } else { '' }
     }
+}
+
+function _PWD-EnrichSheetIndexReviewType {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Fields,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Fields.qcReviewType)) { return $Fields }
+
+    $sheetPdfName = [string]$DocumentName
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        if ($sheetPdfName -match '(?i)(?:-qc\.pdf|\.dgn)$') {
+            $stem = Get-PWSheetStemFromDocumentName -DocumentName $sheetPdfName
+            if (-not [string]::IsNullOrWhiteSpace($stem)) { $sheetPdfName = $stem + '.pdf' }
+        }
+    }
+
+    if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+        $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $sheetPdfName -Config $Config
+        if ($pw.found -and -not [string]::IsNullOrWhiteSpace([string]$pw.qcReviewType)) {
+            $Fields.qcReviewType = [string]$pw.qcReviewType
+        }
+    }
+    return $Fields
 }
 
 function Get-PWDocumentAttributesByColumns {
@@ -1546,6 +1585,31 @@ WHERE document_guid = @docGuid
             dryRun              = [bool]$DryRun
         }
     }
+
+    $qcInitiated = $false
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+        $qcInitiated = Test-QCWorkflowStateIsQcInitiated -StateName $canonicalState -Config $Config
+    }
+    if ($qcInitiated -and $dbEnabled -and -not $DryRun -and (Get-Command -Name 'Sync-PWSheetIndexOwnership' -ErrorAction SilentlyContinue)) {
+        foreach ($member in $members) {
+            $dg = [string]$member.documentGuid
+            $dn = [string]$member.documentName
+            if (-not $dg -or -not $dn) { continue }
+            try {
+                Sync-PWSheetIndexOwnership -Config $Config -DocumentGuid $dg -DocumentName $dn `
+                    -FolderPath $FolderPath -IsSheetsFolder:$true -WatchRoot $WatchRoot `
+                    -LastAuditEventAt $LastAuditEventAt -AuditActionName 'DOCUMENT_ATTR' `
+                    -ChangedByUser $ChangedByUser -SkipQcInitiatedFallback
+            } catch {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_INDEX_QC_ATTR_SYNC_ERROR' `
+                        -Message $_.Exception.Message -Data @{
+                        documentGuid = $dg; documentName = $dn; folderPath = $FolderPath; canonicalState = $canonicalState
+                    } | Out-Null
+                }
+            }
+        }
+    }
 }
 
 function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
@@ -1642,7 +1706,8 @@ function Sync-PWSheetIndexOwnership {
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
         [string]$AuditActionName = '',
-        [Nullable[int]]$ChangedByUser = $null
+        [Nullable[int]]$ChangedByUser = $null,
+        [switch]$SkipQcInitiatedFallback
     )
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return }
@@ -1690,6 +1755,7 @@ WHERE document_guid = @docGuid
     if (-not $read.found) { return }
 
     $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $fields = _PWD-EnrichSheetIndexReviewType -Config $Config -Fields $fields -FolderPath $FolderPath -DocumentName $DocumentName
     $pwDesigner = [string]$fields.designerEmail
     $pwReviewer = [string]$fields.reviewerEmail
     $pwChecker = [string]$fields.checkerEmail
@@ -1806,7 +1872,7 @@ WHERE document_guid = @docGuid
         }
     }
 
-    if ($IsSheetsFolder -and $isDocumentAttr) {
+    if ($IsSheetsFolder -and $isDocumentAttr -and -not $SkipQcInitiatedFallback) {
         _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf -Config $Config -FolderPath $FolderPath `
             -DocumentName $DocumentName -DocumentGuid $DocumentGuid -IsSheetsFolder:$IsSheetsFolder `
             -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser

@@ -286,145 +286,135 @@ function _Watch-EnsureJsonLog {
     return [bool](Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)
 }
 
-function _Watch-EnsureDatabaseExports {
-    $required = @(
-        'Test-QCDatabaseEnabled'
-        'Write-QCPollRunTelemetry'
-        'Mark-QCAuditEventsProcessed'
-        'Write-QCSheetIndex'
-    )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
-    $dbPath = Join-Path $script:WatchModulesRoot 'Core.Database.psm1'
-    if (-not (Test-Path -LiteralPath $dbPath)) { return $false }
-    Import-Module (Join-Path $script:WatchModulesRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-    Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
-    [void](_Watch-EnsureJsonLog)
-    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    return ($stillMissing.Count -eq 0)
+$script:WatchModuleLoadOrder = @(
+    'Core.Results.psm1'
+    'Core.Paths.psm1'
+    'Core.Runtime.psm1'
+    'Core.Hashing.psm1'
+    'Core.Database.psm1'
+    'QC.Filters.psm1'
+    'QC.Triggers.psm1'
+    'QC.JobFactory.psm1'
+    'QC.Queue.Json.psm1'
+    'QC.Rendition.psm1'
+    'QC.Processors.psm1'
+    'QC.WatcherOrchestration.psm1'
+    'QC.StatusSet.psm1'
+    'PW.Connection.psm1'
+    'PW.Users.psm1'
+    'PW.Discovery.psm1'
+    'PW.AuditPoller.psm1'
+)
+
+# Commands the watcher calls after nested Import-Module -Force can drop session exports.
+$script:WatchRequiredCommands = @(
+    'Write-QCJsonLog'
+    'Get-QCTimestamp'
+    'Get-Sha256TextHex'
+    'ConvertTo-HashtableDeep'
+    'New-QCSuccessResult'
+    'New-QCFailureResult'
+    'New-QCErrorResult'
+    'Test-QCDatabaseEnabled'
+    'Write-QCPollRunTelemetry'
+    'Mark-QCAuditEventsProcessed'
+    'Write-QCSheetIndex'
+    'Write-QCSheetIndexBatch'
+    'Get-QCAuditWatermarkAgeSeconds'
+    'Get-QCPrependAuditActions'
+    'Get-QCInitiatedWorkflowStateName'
+    'Test-QCWorkflowStateIsQcInitiated'
+    'Test-QCIsStatusSetOutputPdfName'
+    'Invoke-QCReconcileOutputs'
+    'Set-QCFullScanScheduleSlotComplete'
+    'Get-OrderedTriggerRules'
+    'Test-QCPathAllowed'
+    'Test-QCTriggerCandidate'
+    'New-QCJobObject'
+    'Test-QCDuplicateJob'
+    'Add-QCQueueJob'
+    'Test-QCStatusSetJobInFlight'
+    'Add-QCPrependJobForQcInitiatedStateChange'
+    'Get-StatusSetPWFolderState'
+    'Get-StatusSetLocalFolderState'
+    'Test-StatusSetWatcherShouldEnqueue'
+    'Invoke-StatusSetReconcile'
+    'Get-PWCredentialFromFile'
+    'Connect-PW'
+    'Get-PWImmediateChildFolders'
+    'Get-PWObjectPropertyValue'
+    'Sync-PWAssociatedSheetWorkflowState'
+    'Sync-PWAssociatedSheetMembersToWorkflowState'
+    'Sync-PWSheetIndexOwnership'
+    'ConvertTo-PWCmdletFolderPath'
+    'Find-PWSheetsFoldersUnderRoot'
+    'Get-PWDocumentDescriptionForFolder'
+    'Test-PWSheetPdfHasMatchingPair'
+    'Test-PWFolderResolvable'
+    'Get-PWDocumentWorkflowStateName'
+    'Get-PWDocumentsInFolder'
+    'Get-PWDocName'
+    'Get-PWDocDescription'
+    'Get-PWDocLastModifiedUtc'
+    'Get-PWDocumentWorkflowStateMapByGuid'
+    'Ensure-PWDiscoveryModuleLoaded'
+    'Invoke-AuditTrailScan'
+    'Get-AuditTrailPollWindow'
+    'Get-AuditTrailCaptureWatermark'
+    'Set-AuditTrailCaptureWatermark'
+    'Get-AuditPollCycleCounter'
+    'Reset-AuditPollCycleCounter'
+)
+
+function _Watch-GetMissingRequiredCommands {
+    return @($script:WatchRequiredCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
 }
 
-function _Watch-EnsureDiscoveryExports {
-    $required = @(
-        'Sync-PWAssociatedSheetWorkflowState'
-        'Sync-PWSheetIndexOwnership'
-        'ConvertTo-PWCmdletFolderPath'
-        'Find-PWSheetsFoldersUnderRoot'
-        'Get-PWDocumentDescriptionForFolder'
-    )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
-
-    $discPath = Join-Path $script:WatchModulesRoot 'PW.Discovery.psm1'
-    if (Test-Path -LiteralPath $discPath) {
-        Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
+function _Watch-ReloadWatchModules {
+    foreach ($modFile in $script:WatchModuleLoadOrder) {
+        $modPath = Join-Path $script:WatchModulesRoot $modFile
+        if (Test-Path -LiteralPath $modPath) {
+            Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+        }
     }
-    [void](_Watch-EnsureDatabaseExports)
-    [void](_Watch-EnsureJsonLog)
     if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
         [void](Ensure-PWDiscoveryModuleLoaded)
-    } elseif (Test-Path -LiteralPath $discPath) {
-        Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
     }
-    [void](_Watch-EnsureResultsExports)
-
-    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    return ($stillMissing.Count -eq 0)
-}
-
-function _Watch-EnsureStatusSetExports {
-    $required = @(
-        'Get-StatusSetPWFolderState'
-        'Get-StatusSetLocalFolderState'
-        'Test-StatusSetWatcherShouldEnqueue'
-    )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
-
-    $statusSetPath = Join-Path $script:WatchModulesRoot 'QC.StatusSet.psm1'
-    if (-not (Test-Path -LiteralPath $statusSetPath)) { return $false }
-    Import-Module $statusSetPath -Force -WarningAction SilentlyContinue | Out-Null
     [void](_Watch-EnsureJsonLog)
-
-    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    return ($stillMissing.Count -eq 0)
-}
-
-function _Watch-EnsureResultsExports {
-    $required = @(
-        'New-QCSuccessResult'
-        'New-QCFailureResult'
-        'New-QCErrorResult'
-        'ConvertTo-HashtableDeep'
-    )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
-
-    $resultsPath = Join-Path $script:WatchModulesRoot 'Core.Results.psm1'
-    if (Test-Path -LiteralPath $resultsPath) {
-        Import-Module $resultsPath -Force -WarningAction SilentlyContinue | Out-Null
-    }
-    $pathsPath = Join-Path $script:WatchModulesRoot 'Core.Paths.psm1'
-    if (-not (Get-Command -Name 'ConvertTo-HashtableDeep' -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $pathsPath)) {
-        Import-Module $pathsPath -Force -WarningAction SilentlyContinue | Out-Null
-    }
-
-    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    return ($stillMissing.Count -eq 0)
-}
-
-function _Watch-EnsureAuditPollerExports {
-    $required = @(
-        'Invoke-AuditTrailScan'
-        'Get-AuditTrailPollWindow'
-    )
-    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
-
-    $auditPath = Join-Path $script:WatchModulesRoot 'PW.AuditPoller.psm1'
-    if (-not (Test-Path -LiteralPath $auditPath)) { return $false }
-    [void](_Watch-EnsureResultsExports)
-    [void](_Watch-EnsureDatabaseExports)
-    Import-Module $auditPath -Force -WarningAction SilentlyContinue | Out-Null
-    [void](_Watch-EnsureResultsExports)
-
-    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    return ($stillMissing.Count -eq 0)
-}
-
-function _Watch-EnsureStatusSetScanExports {
-    for ($i = 0; $i -lt 3; $i++) {
-        if (-not (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)) {
-            [void](_Watch-EnsureDiscoveryExports)
-        }
-        if (-not (Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue)) {
-            [void](_Watch-EnsureStatusSetExports)
-        }
-        if ((Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) -and
-            (Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue)) {
-            return $true
-        }
-    }
-    return $false
 }
 
 function _Watch-EnsureAllModuleExports {
     [void](_Watch-EnsureJsonLog)
-    [void](_Watch-EnsureResultsExports)
-    [void](_Watch-EnsureDatabaseExports)
-    for ($i = 0; $i -lt 3; $i++) {
-        [void](_Watch-EnsureDiscoveryExports)
-        [void](_Watch-EnsureStatusSetExports)
-        [void](_Watch-EnsureAuditPollerExports)
-        [void](_Watch-EnsureResultsExports)
-        $discoveryOk = (Get-Command -Name 'Sync-PWAssociatedSheetWorkflowState' -ErrorAction SilentlyContinue) -and
-            (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)
-        $statusSetOk = Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue
-        $resultsOk = Get-Command -Name 'New-QCSuccessResult' -ErrorAction SilentlyContinue
-        $auditOk = Get-Command -Name 'Invoke-AuditTrailScan' -ErrorAction SilentlyContinue
-        if ($discoveryOk -and $statusSetOk -and $resultsOk -and $auditOk) { return $true }
+    for ($pass = 0; $pass -lt 3; $pass++) {
+        $missing = @(_Watch-GetMissingRequiredCommands)
+        if ($missing.Count -eq 0) { return $true }
+        _Watch-ReloadWatchModules
     }
-    return $false
+    return (@(_Watch-GetMissingRequiredCommands).Count -eq 0)
+}
+
+function _Watch-EnsureStatusSetScanExports {
+    return (_Watch-EnsureAllModuleExports)
+}
+
+function _Watch-EnsureDiscoveryExports {
+    return (_Watch-EnsureAllModuleExports)
+}
+
+function _Watch-EnsureDatabaseExports {
+    return (_Watch-EnsureAllModuleExports)
+}
+
+function _Watch-EnsureResultsExports {
+    return (_Watch-EnsureAllModuleExports)
+}
+
+function _Watch-EnsureAuditPollerExports {
+    return (_Watch-EnsureAllModuleExports)
+}
+
+function _Watch-EnsureStatusSetExports {
+    return (_Watch-EnsureAllModuleExports)
 }
 
 function _Watch-WriteJsonLog {
@@ -502,7 +492,8 @@ Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 if (-not (_Watch-EnsureAllModuleExports)) {
-    throw "Required module exports unavailable after imports (PW.Discovery/Core.Database/Core.Runtime). Repo root: $repoRoot"
+    $missingAtStart = @(_Watch-GetMissingRequiredCommands)
+    throw "Required module exports unavailable after imports ($($missingAtStart -join ', ')). Repo root: $repoRoot"
 }
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -685,7 +676,8 @@ if ($statusSetRules.Count -ge 0) {
             # Re-import here to avoid any odd module/session state where exports are not visible.
             Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
             if (-not (_Watch-EnsureAllModuleExports)) {
-                throw 'Required module exports unavailable at tick start (PW.Discovery/Core.Database/Core.Runtime).'
+                $missingAtTick = @(_Watch-GetMissingRequiredCommands)
+                throw ('Required module exports unavailable at tick start: ' + ($missingAtTick -join ', '))
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
@@ -818,11 +810,9 @@ if ($statusSetRules.Count -ge 0) {
                     }
 
                     $runMode = 'audit'
-                    if (-not (_Watch-EnsureResultsExports)) {
-                        throw 'Core.Results exports unavailable before audit trail scan (New-QCSuccessResult missing).'
-                    }
-                    if (-not (_Watch-EnsureAuditPollerExports)) {
-                        throw 'PW.AuditPoller exports unavailable before audit trail scan (Invoke-AuditTrailScan missing).'
+                    if (-not (_Watch-EnsureAllModuleExports)) {
+                        $missingAudit = @(_Watch-GetMissingRequiredCommands)
+                        throw ('Required module exports unavailable before audit trail scan: ' + ($missingAudit -join ', '))
                     }
                     $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
@@ -954,6 +944,10 @@ if ($statusSetRules.Count -ge 0) {
                         $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
                         foreach ($ac in $auditCandidates) {
                             try {
+                                if (-not (_Watch-EnsureAllModuleExports)) {
+                                    $missingCand = @(_Watch-GetMissingRequiredCommands)
+                                    throw ('Required module exports unavailable before audit candidate: ' + ($missingCand -join ', '))
+                                }
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
@@ -1425,12 +1419,17 @@ if ($statusSetRules.Count -ge 0) {
                                 try { $errDoc = [string]$ac.itemName } catch { }
                                 try { $errAction = [string]$ac.actionName } catch { }
                                 try { $errFolder = [string]$ac.resolvedFolder } catch { }
-                                _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_CANDIDATE_ERROR' -Message $_.Exception.Message -Data @{
+                                $errData = @{
                                     documentName = $errDoc
                                     actionName   = $errAction
                                     folderPath   = $errFolder
                                     error        = [string]$_.Exception.Message
                                 }
+                                $missingAfter = @(_Watch-GetMissingRequiredCommands)
+                                if ($missingAfter.Count -gt 0) {
+                                    $errData['missingCommands'] = @($missingAfter)
+                                }
+                                _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_CANDIDATE_ERROR' -Message $_.Exception.Message -Data $errData
                             }
                         }
                         if ($auditTriggerEventIds.Count -gt 0 -and (Get-Command -Name 'Mark-QCAuditEventsProcessed' -ErrorAction SilentlyContinue)) {
@@ -1495,8 +1494,9 @@ if ($statusSetRules.Count -ge 0) {
             # --- FULL FOLDER SCAN (reconciliation or fallback) ---
             if ($runFullScan) {
 
-            if (-not (_Watch-EnsureDiscoveryExports)) {
-                throw 'PW.Discovery exports are unavailable before full folder scan (Find-PWSheetsFoldersUnderRoot missing).'
+            if (-not (_Watch-EnsureAllModuleExports)) {
+                $missingScan = @(_Watch-GetMissingRequiredCommands)
+                throw ('PW.Discovery exports unavailable before full folder scan: ' + ($missingScan -join ', '))
             }
 
             $pwFolders = @()
@@ -2519,11 +2519,14 @@ $dedupeSec = if ($phaseMs.ContainsKey('dedupeChecks')) { [math]::Round(([decimal
 $queueWriteSec = if ($phaseMs.ContainsKey('queueWrite')) { [math]::Round(([decimal]$phaseMs['queueWrite']/1000),3) } else { $null }
 $cleanupSec = if ($phaseMs.ContainsKey('localCacheWrite')) { [math]::Round(([decimal]$phaseMs['localCacheWrite']/1000),3) } else { $null }
 $sleepThrottleSec = if ($phaseMs.ContainsKey('sleepThrottle')) { [math]::Round(([decimal]$phaseMs['sleepThrottle']/1000),3) } else { 0 }
-if (-not (_Watch-EnsureDatabaseExports)) {
-    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_TELEMETRY_SKIPPED' -Message 'Write-QCPollRunTelemetry unavailable; poll telemetry skipped.' -Data @{ runId = $runId }
+if (-not (_Watch-EnsureAllModuleExports) -or -not (Get-Command -Name 'Write-QCPollRunTelemetry' -ErrorAction SilentlyContinue)) {
+    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_TELEMETRY_SKIPPED' -Message 'Write-QCPollRunTelemetry unavailable; poll telemetry not written.' -Data @{
+        runId = $runId
+        missingCommands = @(_Watch-GetMissingRequiredCommands)
+    }
     $telemetryRes = New-QCFailureResult -Code 'WATCH_TELEMETRY_SKIPPED' -Message 'Write-QCPollRunTelemetry unavailable.' -Data @{}
 } else {
-$telemetryRes = Write-QCPollRunTelemetry -Config $config `
+    $telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -EventsFetched $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
     -EventsRelevant $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsRelevant}else{$matched}) `
     -CandidatesCreated $(if($script:auditPollTelemetry){$script:auditPollTelemetry.candidatesCreated}else{$accepted}) `
