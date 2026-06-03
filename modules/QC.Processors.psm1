@@ -462,6 +462,13 @@ function _QCP-LogPrependWorkflowWriteback([hashtable]$Job, [hashtable]$Config, [
         prependTrigger    = $PrependTrigger
         targetState       = $targetState
         previousState     = $previousState
+        qcReviewType      = $(if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
+            $docGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid','documentGuid')
+            $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath','sourceFolder','incomingFolderPath')
+            $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName','incomingDocName','sourceDocumentName')
+            Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid ([string]$docGuid) -FolderPath ([string]$folder) `
+                -DocumentName ([string]$docName) -Context @{ job = $Job }
+        } else { '' })
         stateActionCode   = $stateCode
         planned           = $planned
         changed           = $changed

@@ -224,24 +224,142 @@ function _QCAT-BuildNotificationDocument {
     return [pscustomobject]$doc
 }
 
+function Resolve-QCWorkflowEventQcReviewType {
+    <#
+    .SYNOPSIS
+    Resolves QC_Review_Type for qc_workflow_events payload and related telemetry.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = @{},
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$DocumentName = '',
+        [hashtable]$Context = $null,
+        [hashtable]$PwAttributes = $null,
+        [object]$Document = $null
+    )
+
+    if ($Context) {
+        if ($Context.ContainsKey('attributes') -and $Context.attributes) {
+            $attrs = _QCAT-ToHashtable $Context.attributes
+            if ($attrs) {
+                foreach ($k in @('reviewType', 'qcReviewType', 'qc_review_type')) {
+                    if ($attrs.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$attrs[$k])) {
+                        return [string]$attrs[$k]
+                    }
+                }
+            }
+        }
+        foreach ($k in @('reviewType', 'qcReviewType')) {
+            if ($Context.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$Context[$k])) {
+                return [string]$Context[$k]
+            }
+        }
+    }
+
+    $reviewCol = 'QC_Review_Type'
+    if ($Config -and (Get-Command -Name 'Get-PWQcReviewTypeAttributeName' -ErrorAction SilentlyContinue)) {
+        try { $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config } catch { }
+    }
+
+    if ($PwAttributes) {
+        foreach ($k in @('qc_review_type', 'reviewType', 'qcReviewType', $reviewCol, 'QC_Review_Type')) {
+            if ($PwAttributes.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$PwAttributes[$k])) {
+                return [string]$PwAttributes[$k]
+            }
+        }
+    }
+
+    if ($Document) {
+        foreach ($k in @($reviewCol, 'QC_Review_Type', 'qcReviewType', 'reviewType')) {
+            try {
+                if ($Document.PSObject.Properties[$k] -and -not [string]::IsNullOrWhiteSpace([string]$Document.$k)) {
+                    return [string]$Document.$k
+                }
+            } catch { }
+        }
+    }
+
+    $folder = [string]$FolderPath
+    $source = [string]$DocumentName
+    if ($Context) {
+        if ([string]::IsNullOrWhiteSpace($folder) -and $Context.ContainsKey('folderPath') -and $Context.folderPath) {
+            $folder = [string]$Context.folderPath
+        }
+        if ([string]::IsNullOrWhiteSpace($folder) -and $Context.ContainsKey('job') -and $Context.job) {
+            $job = _QCAT-ToHashtable $Context.job
+            if ($job -and $job.sourceFolder) { $folder = [string]$job.sourceFolder }
+        }
+        if ([string]::IsNullOrWhiteSpace($source) -and $Context.ContainsKey('documentName') -and $Context.documentName) {
+            $source = [string]$Context.documentName
+        }
+        if ([string]::IsNullOrWhiteSpace($source) -and $Context.ContainsKey('job') -and $Context.job) {
+            $job = _QCAT-ToHashtable $Context.job
+            if ($job -and $job.sourceName) { $source = [string]$job.sourceName }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($source) -and $source -match '(?i)-qc\.pdf$') {
+        $source = [string]([System.IO.Path]::GetFileNameWithoutExtension($source)) + '.pdf'
+    }
+    if ($Config -and -not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($source)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folder -SourceDocumentName $source -Config $Config
+            if ($pw.found -and -not [string]::IsNullOrWhiteSpace([string]$pw.qcReviewType)) {
+                return [string]$pw.qcReviewType
+            }
+        }
+    }
+
+    if ($Config -and -not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+            if (Test-QCDatabaseEnabled -Config $Config) {
+                try {
+                    $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_review_type FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+                    if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+                        $r = $siRes.Data.table.Rows[0]
+                        if (-not ($r.qc_review_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_review_type)) {
+                            return [string]$r.qc_review_type
+                        }
+                    }
+                } catch { }
+            }
+        }
+    }
+
+    return ''
+}
+
 function _QCAT-WriteWorkflowEventMirror {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$DocumentGuid,
         [string]$DocumentName = '',
+        [string]$FolderPath = '',
         [string]$FromValue = '',
         [string]$ToValue = '',
         [string]$JobId = '',
         [string]$JobType = '',
         [string]$EventType = 'STATE_CHANGE',
-        [string]$AuditActionName = ''
+        [string]$AuditActionName = '',
+        [string]$QcReviewType = '',
+        [hashtable]$Context = $null,
+        [hashtable]$PwAttributes = $null,
+        [object]$Document = $null
     )
 
     if (-not (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue)) { return }
+    if ([string]::IsNullOrWhiteSpace($QcReviewType)) {
+        $QcReviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $DocumentGuid `
+            -FolderPath $FolderPath -DocumentName $DocumentName -Context $Context -PwAttributes $PwAttributes -Document $Document
+    }
     $payload = @{
         documentName = $DocumentName
         auditAction = $AuditActionName
     }
+    if (-not [string]::IsNullOrWhiteSpace($QcReviewType)) { $payload['qc_review_type'] = $QcReviewType }
     $payloadJson = ''
     try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
     Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
@@ -313,9 +431,11 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     if ($transitionWritten) {
+        $attrs = @{}
+        if ($PwAttributes) { $attrs = $PwAttributes }
         _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
-            -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
-            -AuditActionName $AuditActionName
+            -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
+            -AuditActionName $AuditActionName -PwAttributes $attrs -Document $Document
     }
 
     if (-not $shouldNotify) { return }
@@ -456,7 +576,8 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
         } catch { }
         if ($written) {
             _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
-                -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType -EventType 'STATE_CHANGE'
+                -FolderPath $id.folderPath -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType `
+                -EventType 'STATE_CHANGE' -Context $Context -Document $(if ($Context -and $Context.document) { $Context.document } else { $null })
         }
     }
 
@@ -466,9 +587,13 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
         }
         $triggerSource = 'processor'
         if ($JobType -eq 'QC_PREPEND') { $triggerSource = 'qc_prepend' }
+        $qcReviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $id.documentGuid `
+            -FolderPath $id.folderPath -DocumentName $id.documentName -Context $Context `
+            -Document $(if ($Context -and $Context.document) { $Context.document } else { $null })
         Write-QCStateChangeJobTelemetry -Config $Config -PreviousState $prev -CurrentState $curr `
             -ParentJobId $jobId -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
-            -SourceFolder $id.folderPath -TriggerSource $triggerSource -Operation $JobType | Out-Null
+            -SourceFolder $id.folderPath -TriggerSource $triggerSource -Operation $JobType `
+            -QcReviewType $qcReviewType | Out-Null
     }
 }
 
@@ -551,5 +676,5 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCAuditStateTransitionKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
-    Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
+    Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

@@ -1616,7 +1616,8 @@ function Write-QCStateChangeJobTelemetry {
         [string]$Operation = 'state',
         [string]$Status = 'succeeded',
         [string]$ErrorMessage = '',
-        [int]$DurationMs = 0
+        [int]$DurationMs = 0,
+        [string]$QcReviewType = ''
     )
 
     $prev = if ($PreviousState) { $PreviousState.Trim() } else { '' }
@@ -1640,6 +1641,7 @@ function Write-QCStateChangeJobTelemetry {
         documentName  = $DocumentName
         operation     = $Operation
     }
+    if (-not [string]::IsNullOrWhiteSpace($QcReviewType)) { $resultObj['qc_review_type'] = $QcReviewType }
     $resultJson = $null
     try { $resultJson = ($resultObj | ConvertTo-Json -Compress) } catch { }
 

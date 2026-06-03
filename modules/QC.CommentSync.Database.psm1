@@ -4,11 +4,24 @@
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.PdfExport.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCDB-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
     if ($Value -is [string]) { return [string]::IsNullOrWhiteSpace($Value) }
     return $false
+}
+
+function _QCDB-ToHashtable([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value }
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    }
+    return $null
 }
 
 function Test-QCCommentSyncDatabaseWritesAllowed {
@@ -235,7 +248,17 @@ function Invoke-QCCommentSyncPersist {
     }
 
     $payloadJson = $null
-    try { $payloadJson = ($Decision | ConvertTo-Json -Depth 8 -Compress) } catch { }
+    try {
+        $payloadObj = _QCDB-ToHashtable $Decision
+        if (-not $payloadObj) { $payloadObj = @{} }
+        if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
+            $qcReviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config `
+                -DocumentGuid ([string]$JobMetadata.documentId) -FolderPath ([string]$JobMetadata.folderPath) `
+                -DocumentName ([string]$JobMetadata.fileName) -Context @{ job = $Job }
+            if (-not [string]::IsNullOrWhiteSpace($qcReviewType)) { $payloadObj['qc_review_type'] = $qcReviewType }
+        }
+        $payloadJson = ($payloadObj | ConvertTo-Json -Depth 8 -Compress)
+    } catch { }
 
     Write-QCWorkflowEvent -Config $Config -JobId ([string]$Job.id) -DocumentId ([string]$JobMetadata.documentId) `
         -EventType 'STATE_DECIDED' -PreviousPwState $PreviousPwState -TargetPwState ([string]$Decision.targetState) `

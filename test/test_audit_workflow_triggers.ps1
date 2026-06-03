@@ -34,6 +34,11 @@ $s2 = Get-QCAuditWorkflowTriggerSettings -Config $cfgDefault
 Assert-Eq $s2.enabled $true 'defaults enable workflow triggers'
 Assert-Eq $s2.recordFromProcessor $true 'defaults enable processor telemetry'
 
+Assert-Eq (Resolve-QCWorkflowEventQcReviewType -Context @{ attributes = @{ reviewType = 'Independent Check' } }) `
+    'Independent Check' 'context attributes reviewType'
+Assert-Eq (Resolve-QCWorkflowEventQcReviewType -Context @{ attributes = @{ qcReviewType = 'Production QC' } }) `
+    'Production QC' 'context attributes qcReviewType'
+
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force
 $prependActions = Get-QCPrependAuditActions -Config $cfgDefault
 Assert-True ($prependActions -contains 'DOCUMENT_ATTR') 'default prepend actions include DOCUMENT_ATTR'
@@ -73,6 +78,7 @@ Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAutoOff -ChangedByUser
 
 # Final QC prepend success must record QC Finalizing -> QC Complete in transition_events.
 $script:finalPrependTransitions = [System.Collections.Generic.List[object]]::new()
+$script:finalPrependWorkflowEvents = [System.Collections.Generic.List[object]]::new()
 function Write-QCTransitionEvent {
     [CmdletBinding()]
     param(
@@ -95,7 +101,42 @@ function Write-QCTransitionEvent {
         jobId = $JobId
         jobType = $JobType
     }) | Out-Null
-    return New-QCSuccessResult -Code 'TRANSITION_EVENT_WRITTEN' -Message 'Captured for test.' -Data @{ written = $true; transitionId = 99 }
+    return [pscustomobject]@{
+        IsSuccess = $true
+        Code = 'TRANSITION_EVENT_WRITTEN'
+        Message = 'Captured for test.'
+        Data = @{ written = $true; transitionId = 99 }
+    }
+}
+
+function Write-QCWorkflowEventRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$DocumentId = '',
+        [string]$JobId = '',
+        [string]$EventType = '',
+        [string]$PreviousPwState = '',
+        [string]$TargetPwState = '',
+        [string]$DecisionCode = '',
+        [string]$PayloadJson = ''
+    )
+    $payload = $null
+    try { if ($PayloadJson) { $payload = $PayloadJson | ConvertFrom-Json } } catch { }
+    $script:finalPrependWorkflowEvents.Add(@{
+        documentId = $DocumentId
+        eventType = $EventType
+        previousPwState = $PreviousPwState
+        targetPwState = $TargetPwState
+        decisionCode = $DecisionCode
+        payload = $payload
+    }) | Out-Null
+    return [pscustomobject]@{
+        IsSuccess = $true
+        Code = 'QC_WORKFLOW_EVENT_WRITTEN'
+        Message = 'Captured for test.'
+        Data = @{ written = $true }
+    }
 }
 
 $cfgFinalPrepend = @{
@@ -125,6 +166,9 @@ $finalCtx = @{
     lifecycleState = 'QC Finalizing'
     documentGuid = 'guid-final-prepend'
     documentName = 'A101.pdf'
+    attributes = @{
+        reviewType = 'Independent Check'
+    }
 }
 Invoke-QCProcessorWorkflowStateTelemetry -Config $cfgFinalPrepend -Context $finalCtx `
     -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' -JobType 'QC_PREPEND'
@@ -133,5 +177,7 @@ Assert-Eq $script:finalPrependTransitions[0].fromValue 'QC Finalizing' 'transiti
 Assert-Eq $script:finalPrependTransitions[0].toValue 'QC Complete' 'transition to QC Complete'
 Assert-Eq $script:finalPrependTransitions[0].jobType 'QC_PREPEND' 'transition job type QC_PREPEND'
 Assert-Eq $script:finalPrependTransitions[0].documentGuid 'guid-final-prepend' 'transition uses trigger document guid'
+Assert-Eq $script:finalPrependWorkflowEvents.Count 1 'final prepend should mirror one workflow event'
+Assert-Eq $script:finalPrependWorkflowEvents[0].payload.qc_review_type 'Independent Check' 'workflow event payload includes qc_review_type'
 
 Write-Host 'test_audit_workflow_triggers.ps1 passed'
