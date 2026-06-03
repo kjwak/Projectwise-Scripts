@@ -1370,6 +1370,84 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     return $result
 }
 
+function _PWD-InvokeQcPdfNotificationForAuditStateSync {
+    <#
+    .SYNOPSIS
+    Sends QC PDF email when PW already shows the new state (member sync loop skips aligned rows).
+    .DESCRIPTION
+    Audit DOCUMENT_STATE means the trigger document is already at the target state in PW. Sibling sync
+    only calls notification hooks for members that still need Set-PWDocumentState. When the user moves
+    *-qc.pdf (or PW pre-aligns all members), the QC PDF row is skipped and qcPdfNotificationsOnly
+    suppresses email on DGN/PDF updates. Compare sheet_index pw_state_name to the canonical state and
+    notify once on the QC PDF when PW is already aligned but the index still shows the prior state.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][array]$Members,
+        [Parameter(Mandatory)][hashtable]$StateByGuid,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CanonicalState,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null
+    )
+
+    if (-not (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue)) { return }
+
+    $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if (-not [bool]$wt.enabled -or -not [bool]$wt.notifyOnStateChange) { return }
+
+    $canonical = _PWD-NormalizeSheetIndexValue $CanonicalState
+    if ([string]::IsNullOrWhiteSpace($canonical)) { return }
+
+    $qcMember = $null
+    foreach ($m in $Members) {
+        $dn = [string]$m.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
+            if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { $qcMember = $m; break }
+        } elseif ($dn -match '(?i)-qc\.pdf$') {
+            $qcMember = $m; break
+        }
+    }
+    if (-not $qcMember) { return }
+
+    $qcGuid = [string]$qcMember.documentGuid
+    if (-not $qcGuid) { return }
+
+    $prevDb = ''
+    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+        if (Test-QCDatabaseEnabled -Config $Config) {
+            try {
+                $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $qcGuid }
+                if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+                    $r = $siRes.Data.table.Rows[0]
+                    if (-not ($r.pw_state_name -is [DBNull])) { $prevDb = [string]$r.pw_state_name }
+                }
+            } catch { }
+        }
+    }
+
+    if ((_PWD-NormalizeSheetIndexValue $prevDb) -eq $canonical) { return }
+
+    $qcPwCurrent = ''
+    $key = $qcGuid.ToLowerInvariant()
+    if ($StateByGuid.ContainsKey($key)) {
+        $qcPwCurrent = [string]$StateByGuid[$key]
+    } else {
+        $qcPwCurrent = _PWD-GetWorkflowStateFromDocumentRow -DocRow $qcMember.document
+    }
+    if ((_PWD-NormalizeSheetIndexValue $qcPwCurrent) -ne $canonical) { return }
+
+    Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $qcGuid `
+        -DocumentName ([string]$qcMember.documentName) -FolderPath $FolderPath `
+        -PreviousState $prevDb -CurrentState $CanonicalState -Document $qcMember.document `
+        -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser | Out-Null
+}
+
 function Sync-PWAssociatedSheetWorkflowState {
     <#
     .SYNOPSIS
@@ -1485,6 +1563,9 @@ function Sync-PWAssociatedSheetWorkflowState {
     if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
+
+    _PWD-InvokeQcPdfNotificationForAuditStateSync -Config $Config -Members $members -StateByGuid $stateByGuid `
+        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser
 
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
