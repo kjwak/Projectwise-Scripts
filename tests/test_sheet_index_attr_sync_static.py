@@ -48,6 +48,11 @@ def test_document_attr_propagates_qc_review_type_to_associated_sheet():
     assert "$reviewTypeDiffer" in text
     assert "WATCH_SHEET_REVIEW_TYPE_SYNC" in text
     assert "-not $isDocumentAttr" in text
+    assert "CustomAttributes" in text
+    assert "_PWD-ResolveSheetIndexQcReviewType" in text
+    assert "CanonicalReviewType $pwReviewType" in text
+    assert "_PWD-NormalizePwEnvironmentForQcReviewType" in text
+    assert "pwWritesEnabled" in text
 
 
 def test_watcher_audit_loop_calls_sync_on_document_attr():

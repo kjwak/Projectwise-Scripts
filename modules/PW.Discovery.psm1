@@ -515,23 +515,42 @@ function Find-PWSheetsFoldersUnderRoot {
     return $list
 }
 
+function _PWD-MergePwAttributeSourceIntoMap {
+    param(
+        [Parameter(Mandatory)][hashtable]$Map,
+        [AllowNull()][object]$Source
+    )
+
+    if (-not $Source) { return }
+    if ($Source -is [System.Collections.IDictionary]) {
+        foreach ($k in $Source.Keys) {
+            $Map[[string]$k] = [string]$Source[$k]
+        }
+        return
+    }
+    foreach ($bag in @($Source)) {
+        if ($bag -is [System.Collections.IDictionary]) {
+            foreach ($k in $bag.Keys) {
+                $Map[[string]$k] = [string]$bag[$k]
+            }
+        }
+    }
+}
+
 function Get-PWDocumentAttributeMap {
     <#
     .SYNOPSIS
-    Parses .Attributes sorted-list bags from a Get-PWDocumentsBySearchWithReturnColumns row into a hashtable.
+    Parses attribute bags from a Get-PWDocumentsBySearchWithReturnColumns row into a hashtable.
+    Merges .Attributes (sorted-list bags or dictionary), .CustomAttributes, and .EnvironmentAttributes.
     #>
     [CmdletBinding()]
     param([AllowNull()][object]$DocRow)
 
     $map = @{}
-    if (-not $DocRow -or -not $DocRow.Attributes) { return $map }
-    foreach ($bag in @($DocRow.Attributes)) {
-        if ($bag -is [System.Collections.IDictionary]) {
-            foreach ($k in $bag.Keys) {
-                $map[[string]$k] = [string]$bag[$k]
-            }
-        }
-    }
+    if (-not $DocRow) { return $map }
+    _PWD-MergePwAttributeSourceIntoMap -Map $map -Source $DocRow.Attributes
+    try { _PWD-MergePwAttributeSourceIntoMap -Map $map -Source $DocRow.CustomAttributes } catch { }
+    try { _PWD-MergePwAttributeSourceIntoMap -Map $map -Source $DocRow.EnvironmentAttributes } catch { }
     return $map
 }
 
@@ -697,6 +716,9 @@ function _PWD-GetPwAttributeValue {
     )
     if ([string]::IsNullOrWhiteSpace($ColumnName)) { return '' }
     if ($PwAttributes.ContainsKey($ColumnName)) { return ([string]$PwAttributes[$ColumnName]).Trim() }
+    foreach ($key in $PwAttributes.Keys) {
+        if ([string]$key -ieq $ColumnName) { return ([string]$PwAttributes[$key]).Trim() }
+    }
     return ''
 }
 
@@ -786,6 +808,36 @@ function _PWD-EnrichSheetIndexReviewType {
         }
     }
     return $Fields
+}
+
+function _PWD-ResolveSheetIndexQcReviewType {
+    <#
+    .SYNOPSIS
+    Resolves QC_Review_Type for sheet_index sync: direct PW read, source-PDF fallback, then column-only re-read.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$FieldsFromPwRead,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [bool]$EnrichFromSourcePdf = $true
+    )
+
+    $resolved = [string]$FieldsFromPwRead.qcReviewType
+    if ($EnrichFromSourcePdf -and [string]::IsNullOrWhiteSpace($resolved)) {
+        $enriched = _PWD-EnrichSheetIndexReviewType -Config $Config -Fields $FieldsFromPwRead `
+            -FolderPath $FolderPath -DocumentName $DocumentName
+        $resolved = [string]$enriched.qcReviewType
+    }
+    if ([string]::IsNullOrWhiteSpace($resolved)) {
+        $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
+        $solo = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName `
+            -ColumnsToReturn @($reviewCol)
+        if ($solo.found) {
+            $resolved = _PWD-GetPwAttributeValue -PwAttributes $solo.attributes -ColumnName $reviewCol
+        }
+    }
+    return ([string]$resolved).Trim()
 }
 
 function Get-PWDocumentAttributesByColumns {
@@ -1418,12 +1470,12 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         [bool]$DryRun = $false
     )
 
-    if (-not (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) { return }
     if ([string]::IsNullOrWhiteSpace($CanonicalReviewType)) { return }
 
     $canonical = ([string]$CanonicalReviewType).Trim()
     if ([string]::IsNullOrWhiteSpace($canonical)) { return }
 
+    $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
     $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
     $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
@@ -1463,7 +1515,9 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         }
 
         if ($pwNeedsWrite) {
-            if ($DryRun) {
+            if (-not $pwWritesEnabled) {
+                $change.pwWriteSkipped = 'qc_review_type_not_enabled_for_environment'
+            } elseif ($DryRun) {
                 $change.planned = $true
             } else {
                 try {
@@ -1520,6 +1574,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
             folderPath          = $FolderPath
             canonicalReviewType = $canonical
             reviewTypeColumn    = $reviewCol
+            pwWritesEnabled     = $pwWritesEnabled
             memberCount         = $members.Count
             updates             = @($stateUpdates)
             dryRun              = [bool]$DryRun
@@ -1999,14 +2054,18 @@ WHERE document_guid = @docGuid
     $pwDesigner = [string]$fields.designerEmail
     $pwReviewer = [string]$fields.reviewerEmail
     $pwChecker = [string]$fields.checkerEmail
-    $pwReviewType = if (-not [string]::IsNullOrWhiteSpace($rawReviewType)) { $rawReviewType } else { [string]$fields.qcReviewType }
+    $pwReviewType = _PWD-ResolveSheetIndexQcReviewType -Config $Config -FieldsFromPwRead $fieldsRaw `
+        -FolderPath $FolderPath -DocumentName $DocumentName -EnrichFromSourcePdf:$isDocumentAttr
+    if ([string]::IsNullOrWhiteSpace($pwReviewType) -and -not $isDocumentAttr) {
+        $pwReviewType = [string]$fields.qcReviewType
+    }
     $pwAssignedTo = [string]$fields.qcAssignedTo
     $pwQcStatus = [string]$fields.qcStatus
     $pwState = [string]$fields.pwStateName
 
     $emailsDiffer = (_PWD-NormalizeSheetIndexValue $pwDesigner) -ne (_PWD-NormalizeSheetIndexValue $dbDesigner) `
         -or (_PWD-NormalizeSheetIndexValue $pwReviewer) -ne (_PWD-NormalizeSheetIndexValue $dbReviewer)
-    $reviewTypeDiffer = (_PWD-NormalizeSheetIndexValue $rawReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType)
+    $reviewTypeDiffer = (_PWD-NormalizeSheetIndexValue $pwReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType)
     $qcFieldsDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker) `
         -or $reviewTypeDiffer `
         -or (_PWD-NormalizeSheetIndexValue $pwAssignedTo) -ne (_PWD-NormalizeSheetIndexValue $dbAssignedTo) `
@@ -2115,10 +2174,16 @@ WHERE document_guid = @docGuid
         }
     }
 
-    if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($rawReviewType)) {
+    if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($pwReviewType)) {
         Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
-            -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $rawReviewType `
+            -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $pwReviewType `
             -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -DryRun:$false
+    } elseif ($isDocumentAttr -and $reviewTypeDiffer -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC_SKIPPED' `
+            -Message 'DOCUMENT_ATTR review type change detected but canonical QC_Review_Type could not be read from ProjectWise.' -Data @{
+            documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+            rawReviewType = $rawReviewType; dbReviewType = $dbReviewType; resolvedReviewType = $pwReviewType
+        }
     }
 
     if ($IsSheetsFolder -and $isDocumentAttr -and -not $SkipQcInitiatedFallback) {
@@ -2295,6 +2360,21 @@ function _PWD-InferPwEnvironmentFromFolderPath {
     return ''
 }
 
+function _PWD-NormalizePwEnvironmentForQcReviewType {
+    <#
+    .SYNOPSIS
+    Maps PW folder environment labels (e.g. AZDOT 2024) to config keys in qcReviewTypeAttributes.enabledEnvironments.
+    #>
+    param([AllowNull()][string]$EnvName)
+
+    $e = ([string]$EnvName).Trim()
+    if ([string]::IsNullOrWhiteSpace($e)) { return '' }
+    if ($e -match '(?i)^AZDOT') { return 'ADOT' }
+    if ($e -match '(?i)^ADOT') { return 'ADOT' }
+    if ($e -match '(?i)^Caltrans') { return 'Caltrans' }
+    return $e
+}
+
 function Get-PWFolderEnvironmentName {
     <#
     .SYNOPSIS
@@ -2347,11 +2427,12 @@ function Test-PWQcReviewTypeAttributesEnabled {
     $enabledEnvs = @(Get-PWQcReviewTypeEnabledEnvironments -Config $Config)
     if ($enabledEnvs.Count -eq 0) { return $false }
 
-    $envName = Get-PWFolderEnvironmentName -FolderPath $FolderPath
+    $envName = _PWD-NormalizePwEnvironmentForQcReviewType -EnvName (Get-PWFolderEnvironmentName -FolderPath $FolderPath)
     if ([string]::IsNullOrWhiteSpace($envName)) { return $false }
 
     foreach ($allowed in $enabledEnvs) {
-        if ([string]$allowed.Trim() -ieq $envName.Trim()) { return $true }
+        $normAllowed = _PWD-NormalizePwEnvironmentForQcReviewType -EnvName ([string]$allowed)
+        if (-not [string]::IsNullOrWhiteSpace($normAllowed) -and $normAllowed -ieq $envName) { return $true }
     }
     return $false
 }
