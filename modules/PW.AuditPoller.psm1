@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-03-trigger-action-v2'
+$script:AuditPollerLogicVersion = '2026-06-03-hashtable-row-v3'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -525,6 +525,15 @@ function _AuditPoller-GetRowValue {
             foreach ($col in $Row.Table.Columns) {
                 if ([string]::Equals([string]$col.ColumnName, $Name, [StringComparison]::OrdinalIgnoreCase)) {
                     $v = $Row[$col]
+                    if ($v -is [DBNull]) { return $null }
+                    return $v
+                }
+            }
+        }
+        if ($Row -is [hashtable] -or $Row -is [System.Collections.IDictionary]) {
+            foreach ($key in @($Row.Keys)) {
+                if ([string]::Equals([string]$key, $Name, [StringComparison]::OrdinalIgnoreCase)) {
+                    $v = $Row[$key]
                     if ($v -is [DBNull]) { return $null }
                     return $v
                 }
