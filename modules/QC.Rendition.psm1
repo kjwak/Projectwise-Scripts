@@ -679,6 +679,34 @@ function _QCR-DeriveSourceFromStateChange([string]$TriggerDocumentName) {
     return ($stem + '.dgn')
 }
 
+function _QCR-TryGetAssociatedSheetPdfInfo {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$TriggerDocumentName
+    )
+
+    $sheetPdfName = $null
+    $triggerFile = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
+    if ($triggerFile -match '(?i)\.pdf$' -and $triggerFile -notmatch '(?i)-qc\.pdf$') {
+        $sheetPdfName = $triggerFile
+    } elseif (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $stem = Get-PWSheetStemFromDocumentName -DocumentName $TriggerDocumentName
+        if (-not (_QCR-IsNullOrWhiteSpace $stem)) { $sheetPdfName = $stem + '.pdf' }
+    }
+    if (_QCR-IsNullOrWhiteSpace $sheetPdfName) { return $null }
+
+    $sheetState = ''
+    if (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            $sheetState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $sheetPdfName)
+        } catch { }
+    }
+    return @{
+        sheetPdfName = $sheetPdfName
+        sheetPdfState = $sheetState
+    }
+}
+
 function Get-QCRenditionSheetReadinessKey {
     <#
     .SYNOPSIS
@@ -777,7 +805,8 @@ function _QCR-WriteRenditionStateEnqueueLog {
 function Add-QCRenditionJobForReadyForQcStateChange {
     <#
     .SYNOPSIS
-    Enqueues QC_RENDITION when a non-automation actor sets state to QC Initiated (DGN).
+    Enqueues QC_RENDITION when a non-automation actor sets DGN state to QC Initiated.
+    Skips when the associated sheet PDF is already QC Initiated (prepend uses the existing PDF).
     #>
     [CmdletBinding()]
     param(
@@ -817,6 +846,31 @@ function Add-QCRenditionJobForReadyForQcStateChange {
     if (_QCR-IsNullOrWhiteSpace $sourceDoc) {
         return New-QCFailureResult -Code 'QC_RENDITION_SOURCE_NAME_MISSING' -Message 'Could not derive source DGN name from state-change document.' -Data @{
             triggerDocumentName = $TriggerDocumentName
+        }
+    }
+
+    $sheetPdfInfo = _QCR-TryGetAssociatedSheetPdfInfo -FolderPath $FolderPath -TriggerDocumentName $TriggerDocumentName
+    if ($sheetPdfInfo) {
+        $sheetStateTrim = ([string]$sheetPdfInfo.sheetPdfState).Trim()
+        if ($sheetStateTrim.Length -gt 0 -and $sheetStateTrim.ToLowerInvariant() -eq $initiatedName.ToLowerInvariant()) {
+        $sheetReadinessKeySkip = Get-QCRenditionSheetReadinessKey -FolderPath $FolderPath -SourceDgnFileName $sourceDoc
+        Set-QCReadinessFlag -Config $Config -ReadinessKey $sheetReadinessKeySkip -RenditionComplete `
+            -DocumentGuid $TriggerDocumentGuid -FolderPath $FolderPath -QcPdfName ([string]$sheetPdfInfo.sheetPdfName) | Out-Null
+        _QCR-WriteRenditionStateEnqueueLog -Level 'Information' -Code 'QC_RENDITION_SKIPPED_SHEET_PDF_QC_INITIATED' `
+            -Message 'QC_RENDITION skipped: associated sheet PDF is QC Initiated; prepend uses existing PDF.' -Data @{
+            folderPath = $FolderPath
+            sourceDocument = $sourceDoc
+            sheetPdfName = [string]$sheetPdfInfo.sheetPdfName
+            sheetPdfState = $sheetStateTrim
+            triggerDocumentGuid = $TriggerDocumentGuid
+            triggerDocumentName = $TriggerDocumentName
+            sheetReadinessKey = $sheetReadinessKeySkip
+        }
+        return New-QCSuccessResult -Code 'QC_RENDITION_SKIPPED_SHEET_PDF_QC_INITIATED' `
+            -Message 'Rendition skipped; sheet PDF is QC Initiated and QC_PREPEND handles intake.' -Data @{
+            sheetPdfName = [string]$sheetPdfInfo.sheetPdfName
+            sheetReadinessKey = $sheetReadinessKeySkip
+        }
         }
     }
 

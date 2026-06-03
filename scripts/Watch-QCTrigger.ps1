@@ -331,10 +331,52 @@ function _Watch-EnsureDiscoveryExports {
     return ($stillMissing.Count -eq 0)
 }
 
+function _Watch-EnsureStatusSetExports {
+    $required = @(
+        'Get-StatusSetPWFolderState'
+        'Get-StatusSetLocalFolderState'
+        'Test-StatusSetWatcherShouldEnqueue'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+
+    $statusSetPath = Join-Path $script:WatchModulesRoot 'QC.StatusSet.psm1'
+    if (-not (Test-Path -LiteralPath $statusSetPath)) { return $false }
+    Import-Module $statusSetPath -Force -WarningAction SilentlyContinue | Out-Null
+    [void](_Watch-EnsureJsonLog)
+
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
+function _Watch-EnsureStatusSetScanExports {
+    for ($i = 0; $i -lt 3; $i++) {
+        if (-not (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)) {
+            [void](_Watch-EnsureDiscoveryExports)
+        }
+        if (-not (Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue)) {
+            [void](_Watch-EnsureStatusSetExports)
+        }
+        if ((Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) -and
+            (Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function _Watch-EnsureAllModuleExports {
     [void](_Watch-EnsureJsonLog)
     [void](_Watch-EnsureDatabaseExports)
-    return (_Watch-EnsureDiscoveryExports)
+    for ($i = 0; $i -lt 3; $i++) {
+        [void](_Watch-EnsureDiscoveryExports)
+        [void](_Watch-EnsureStatusSetExports)
+        $discoveryOk = (Get-Command -Name 'Sync-PWAssociatedSheetWorkflowState' -ErrorAction SilentlyContinue) -and
+            (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)
+        $statusSetOk = Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue
+        if ($discoveryOk -and $statusSetOk) { return $true }
+    }
+    return $false
 }
 
 function _Watch-WriteJsonLog {
@@ -929,6 +971,9 @@ if ($statusSetRules.Count -ge 0) {
                                 try { if ($null -ne $ac.enableStatusSet) { $acEnableStatusSet = [bool]$ac.enableStatusSet } } catch { }
                                 if ([bool]$ac.isSheetsFolder -and $acEnableStatusSet -and $statusRuleObj -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
                                     $auditFoldersSeen[$fp.ToLowerInvariant()] = $true
+                                    if (-not (_Watch-EnsureAllModuleExports)) {
+                                        throw 'Required module exports unavailable before audit STATUS_SET_GEN scan.'
+                                    }
 
                                     $allowRes = Test-QCPathAllowed -CandidatePath $fp -Config $config
                                     if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
@@ -946,6 +991,9 @@ if ($statusSetRules.Count -ge 0) {
                                             queueState = [string]$acInFlightRes.Data.queueState
                                         }
                                     } else {
+                                    if (-not (_Watch-EnsureStatusSetScanExports)) {
+                                        throw 'Required module exports unavailable before audit STATUS_SET_GEN scan.'
+                                    }
                                     $acStatusSetScanSw = [System.Diagnostics.Stopwatch]::StartNew()
                                     $acState = Get-StatusSetPWFolderState -FolderPath (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp) -OneLevelDeep:$acOneLevelDeep
                                     $acStatusSetScanSw.Stop()
@@ -1606,6 +1654,9 @@ if ($statusSetRules.Count -ge 0) {
                                 queueState = [string]$ssInFlightRes.Data.queueState
                             }
                         } else {
+                        if (-not (_Watch-EnsureStatusSetScanExports)) {
+                            throw 'Required module exports unavailable before full-scan STATUS_SET_GEN.'
+                        }
                         _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep

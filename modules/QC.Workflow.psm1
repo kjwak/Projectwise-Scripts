@@ -161,6 +161,25 @@ function _QCW-InvokeStateChangeNotification {
             if (-not $notifJob.sourceFolder -and $job.sourceFolder) { $notifJob.sourceFolder = [string]$job.sourceFolder }
             if (-not $notifJob.sourceName -and $job.sourceName) { $notifJob.sourceName = [string]$job.sourceName }
         }
+        $roleAttrs = $null
+        if ($Context -and $Context.ContainsKey('attributes') -and $Context.attributes) {
+            $roleAttrs = _QCW-ToHashtable $Context.attributes
+        }
+        if (-not $roleAttrs -and $job -and $job.ContainsKey('metadata') -and $job.metadata) {
+            $jobMd = _QCW-ToHashtable $job.metadata
+            if ($jobMd -and $jobMd.attributes) { $roleAttrs = _QCW-ToHashtable $jobMd.attributes }
+        }
+        if ($roleAttrs) {
+            $attrsForNotif = @{}
+            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail')) {
+                if ($roleAttrs.ContainsKey($k) -and -not (_QCW-IsNullOrWhiteSpace $roleAttrs[$k])) {
+                    $attrsForNotif[$k] = [string]$roleAttrs[$k]
+                }
+            }
+            if ($attrsForNotif.Count -gt 0) {
+                $notifJob.metadata['attributes'] = $attrsForNotif
+            }
+        }
         $enq = Add-QCQueueJob -Job $notifJob -Config $Config
         if ($enq.IsSuccess) {
             return New-QCSuccessResult -Code 'QC_NOTIFICATION_ENQUEUED' -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{ jobId = [string]$notifJob.id }

@@ -1489,6 +1489,12 @@ function Invoke-QCNotificationProcessor {
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }
+    if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
+        $discPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
+        if (Test-Path -LiteralPath $discPath) {
+            Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
+        }
+    }
     $meta = @{}
     if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) { $meta = $Job.metadata }
     $prev = if ($meta.ContainsKey('previousState')) { [string]$meta.previousState } else { '' }
