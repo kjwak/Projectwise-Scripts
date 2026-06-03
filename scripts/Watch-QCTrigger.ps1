@@ -306,6 +306,15 @@ $script:WatchModuleLoadOrder = @(
     'PW.AuditPoller.psm1'
 )
 
+# Re-import after PW/QC modules; nested Import-Module -Force drops Core.Database/Core.Hashing session exports.
+$script:WatchModuleRestoreOrder = @(
+    'Core.Results.psm1'
+    'Core.Paths.psm1'
+    'Core.Runtime.psm1'
+    'Core.Hashing.psm1'
+    'Core.Database.psm1'
+)
+
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
 $script:WatchRequiredCommands = @(
     'Write-QCJsonLog'
@@ -370,6 +379,15 @@ function _Watch-GetMissingRequiredCommands {
     return @($script:WatchRequiredCommands | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
 }
 
+function _Watch-RestoreFoundationModules {
+    foreach ($modFile in $script:WatchModuleRestoreOrder) {
+        $modPath = Join-Path $script:WatchModulesRoot $modFile
+        if (Test-Path -LiteralPath $modPath) {
+            Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+        }
+    }
+}
+
 function _Watch-ReloadWatchModules {
     foreach ($modFile in $script:WatchModuleLoadOrder) {
         $modPath = Join-Path $script:WatchModulesRoot $modFile
@@ -380,6 +398,7 @@ function _Watch-ReloadWatchModules {
     if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
         [void](Ensure-PWDiscoveryModuleLoaded)
     }
+    _Watch-RestoreFoundationModules
     [void](_Watch-EnsureJsonLog)
 }
 
@@ -491,6 +510,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+_Watch-RestoreFoundationModules
 if (-not (_Watch-EnsureAllModuleExports)) {
     $missingAtStart = @(_Watch-GetMissingRequiredCommands)
     throw "Required module exports unavailable after imports ($($missingAtStart -join ', ')). Repo root: $repoRoot"

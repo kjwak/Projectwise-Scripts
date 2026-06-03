@@ -35,6 +35,7 @@ function Ensure-PWDiscoveryModuleLoaded {
     $restoreOrder = @(
         'Core.Results.psm1'
         'Core.Runtime.psm1'
+        'Core.Hashing.psm1'
         'Core.Database.psm1'
         'QC.StatusSet.psm1'
         'PW.AuditPoller.psm1'
