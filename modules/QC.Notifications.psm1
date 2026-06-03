@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'Core.Config.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
@@ -1018,8 +1019,13 @@ function Send-QCNotification {
         if ($eventCfg -and $eventCfg.emailTemplate) { $templatePath = [string]$eventCfg.emailTemplate }
         elseif ($emailCfg -and $emailCfg.templatePath) { $templatePath = [string]$emailCfg.templatePath }
 
+        $folderForEmail = ''
+        if ($Event.folderPath) { $folderForEmail = [string]$Event.folderPath }
+        elseif ($Event.documentPath -and ($Event.documentPath -match '\\')) {
+            $folderForEmail = [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+        }
         $templateData = New-QCNotificationEmailTemplateData -Event $Event -EventCfg $eventCfg -Settings $settings `
-            -Document $Event._document -Subject $Subject
+            -Config $Config -FolderPath $folderForEmail -Document $Event._document -Subject $Subject
         try {
             $htmlBody = ConvertTo-QCEmailHtml -TemplatePath $templatePath -Data $templateData
             $bodyContentType = 'HTML'
@@ -1213,11 +1219,6 @@ function Invoke-QCNotificationForStateChange {
         $DocumentPath = _QCN-GetProp -Object $Document -Names @('DocumentPath','FullPath','Path')
         if ($DocumentPath) { $DocumentPath = [string]$DocumentPath }
     }
-    if (_QCN-IsBlank $Project) {
-        $Project = _QCN-GetProp -Object $Document -Names @('ProjectName','Project')
-        if ($Project) { $Project = [string]$Project }
-    }
-
     $eventType = if ($eventCfg.eventType) { [string]$eventCfg.eventType } else { $curr.ToUpperInvariant().Replace(' ', '_') }
     $actionRequired = if ($eventCfg.actionRequired) { [string]$eventCfg.actionRequired } else { '' }
     $sourceJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
@@ -1254,6 +1255,18 @@ function Invoke-QCNotificationForStateChange {
     if ((_QCN-IsBlank $folderForRoles) -and (-not (_QCN-IsBlank $DocumentPath)) -and ($DocumentPath -match '\\')) {
         $folderForRoles = [System.IO.Path]::GetDirectoryName($DocumentPath)
     }
+    if (_QCN-IsBlank $Project) {
+        if ($Config -and -not (_QCN-IsBlank $folderForRoles) -and (Get-Command -Name 'Get-QCProjectNameFromFolderPath' -ErrorAction SilentlyContinue)) {
+            try {
+                $pn = Get-QCProjectNameFromFolderPath -Config $Config -FolderPath $folderForRoles
+                if ($pn) { $Project = [string]$pn }
+            } catch { }
+        }
+        if (_QCN-IsBlank $Project) {
+            $pwProj = _QCN-GetProp -Object $Document -Names @('ProjectName', 'Project')
+            if ($pwProj) { $Project = [string]$pwProj }
+        }
+    }
     if (_QCN-IsBlank $sourceForRoles) { $sourceForRoles = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
     if (-not (_QCN-IsBlank $sourceForRoles) -and $sourceForRoles -match '(?i)-qc\.pdf$') {
         $sourceForRoles = [string]([System.IO.Path]::GetFileNameWithoutExtension($sourceForRoles)) + '.pdf'
@@ -1265,6 +1278,7 @@ function Invoke-QCNotificationForStateChange {
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
+    if (-not (_QCN-IsBlank $folderForRoles)) { $event['folderPath'] = $folderForRoles }
 
     $folderForRt = ''
     $sourceForRt = $DocumentName

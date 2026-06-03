@@ -19,11 +19,13 @@ function Assert-Throws($ScriptBlock, $Message) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module "$repoRoot/modules/Core.Runtime.psm1" -Force
+Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
 Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Notifications.psm1" -Force
 # Re-import after Notifications so exports remain in the global session (nested import unloads globals).
 Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
 Import-Module "$repoRoot/modules/QC.NotificationTemplates.psm1" -Force
+Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
 
 $templatePath = Join-Path $repoRoot 'email\templates\qc_notification.html'
 $logoPath = Join-Path $repoRoot 'email\typsalogo.png.webp'
@@ -63,7 +65,6 @@ $escaped = ConvertTo-QCEmailHtml -TemplatePath $templatePath -Data (@{
     NotificationTitle = 'Test'
     NotificationMessage = 'Test'
     ProjectName = '<script>alert(1)</script>'
-    ProjectNumber = '1'
     DocumentName = 'doc.pdf'
     ReviewType = 'Peer'
     WorkflowState = 'QC Received'
@@ -92,6 +93,32 @@ $event = New-QCNotificationEvent -EventType 'QC_RECEIVED' -DocumentName 'D-101-q
 $settings = Get-QCNotificationSettings -Config @{ notifications = @{ email = @{ bodyFormat = 'Text' } } }
 $templateData = New-QCNotificationEmailTemplateData -Event $event -Settings $settings
 Assert-Eq $templateData.QCPdfUrl 'https://example.com/qc.pdf' 'Template data should carry qcPdfUrl from event'
+
+Import-Module "$repoRoot/modules/Core.Runtime.psm1" -Force
+$configPath = Join-Path $repoRoot 'appsettings.json'
+$configRaw = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
+$configObj = $configRaw | ConvertFrom-Json
+$configHt = ConvertTo-HashtableDeep -Value $configObj
+Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
+$azdotFolder = 'Documents\AZDOT 2024\Sample Highway\CADD\Sheets'
+$azdotProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $azdotFolder
+Assert-Eq $azdotProject 'Sample Highway' 'AZDOT 2024 project name should be folder segment before CADD\Sheets'
+
+$caltransFolder = 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\AreaA\AreaB\CADD\Sheets'
+$caltransProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $caltransFolder
+Assert-Eq $caltransProject 'AreaA\AreaB' 'Caltrans watch root should take projectDepth levels before CADD\Sheets'
+
+$pathEvent = @{
+    eventType = 'READY_FOR_QC'
+    documentName = 'D-101-qc.pdf'
+    documentPath = 'pw:\ds\Documents\AZDOT 2024\Bridge Rehab\CADD\Sheets\D-101-qc.pdf'
+    currentState = 'Ready for QC'
+    qcPdfUrl = 'https://example.com/qc.pdf'
+    reviewers = @('r@x.com')
+    designers = @('d@x.com')
+}
+$pathData = New-QCNotificationEmailTemplateData -Event $pathEvent -Settings $settings -Config $configHt
+Assert-Eq $pathData.ProjectName 'Bridge Rehab' 'Template data should derive project name from document path'
 
 $builtUrl = Resolve-QCNotificationQcPdfUrl -Event $event -Settings $settings
 Assert-Eq $builtUrl 'https://example.com/qc.pdf' 'Resolver should prefer event qcPdfUrl'

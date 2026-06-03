@@ -153,6 +153,87 @@ function Get-AppSetting {
     return New-QCSuccessResult -Code 'CONFIG_VALUE' -Message 'Setting resolved.' -Data @{ value = $cur; isDefault = $false }
 }
 
+function Get-QCProjectNameFromFolderPath {
+    <#
+    .SYNOPSIS
+    Extracts the project name from a ProjectWise folder path using watchList.roots configuration.
+    .DESCRIPTION
+    For paths like Documents\AZDOT 2024\<project>\CADD\Sheets\..., returns the segment(s) between
+    the configured watch root and sheetsPathFromProject (per projectDepth).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
+    if (-not $Config) { return $null }
+
+    $norm = ([string]$FolderPath).Trim() -replace '/', '\'
+    $norm = $norm.TrimEnd('\')
+    if ($norm -match '^(?i)pw:\\?') {
+        $norm = $norm -replace '^(?i)pw:\\?', ''
+    }
+    $docsIdx = $norm.IndexOf('Documents\', [StringComparison]::OrdinalIgnoreCase)
+    if ($docsIdx -gt 0) {
+        $norm = $norm.Substring($docsIdx)
+    }
+
+    $roots = $null
+    try {
+        if ($Config.ContainsKey('projectWise') -and $Config.projectWise -and
+            $Config.projectWise.ContainsKey('watchList') -and $Config.projectWise.watchList -and
+            $Config.projectWise.watchList.ContainsKey('roots') -and $Config.projectWise.watchList.roots) {
+            $roots = @($Config.projectWise.watchList.roots)
+        }
+    } catch { $roots = $null }
+    if (-not $roots) { return $null }
+
+    foreach ($r in $roots) {
+        $rootPath = $null
+        $sheetsRel = $null
+        $depth = 1
+        try { if ($r.path) { $rootPath = [string]$r.path } } catch { $rootPath = $null }
+        try { if ($r.sheetsPathFromProject) { $sheetsRel = [string]$r.sheetsPathFromProject } } catch { $sheetsRel = $null }
+        try { if ($r.projectDepth) { $depth = [int]$r.projectDepth } } catch { $depth = 1 }
+        if (-not $rootPath) { continue }
+        if ($depth -lt 1) { $depth = 1 }
+
+        $rootNorm = ([string]$rootPath).Trim() -replace '/', '\'
+        $rootNorm = $rootNorm.TrimEnd('\')
+        $prefix = $rootNorm + '\'
+        if (-not ($norm.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
+
+        $rel = $norm.Substring($prefix.Length)
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+
+        if ($sheetsRel) {
+            $suf = ([string]$sheetsRel).Trim() -replace '/', '\'
+            $suf = $suf.Trim('\')
+            if ($suf) {
+                $suffix = '\' + $suf
+                if ($rel.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) {
+                    $rel = $rel.Substring(0, $rel.Length - $suffix.Length)
+                }
+            }
+        }
+
+        $rel = $rel.Trim('\')
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+
+        $parts = @($rel -split '\\' | Where-Object { $_ -ne '' })
+        if ($parts.Count -le 0) { continue }
+        $take = [Math]::Min([int]$depth, $parts.Count)
+        $proj = ($parts | Select-Object -First $take) -join '\'
+        if (-not [string]::IsNullOrWhiteSpace($proj)) { return $proj }
+    }
+
+    return $null
+}
+
 function Test-AppSettingsCompatibility {
     <#
     .SYNOPSIS

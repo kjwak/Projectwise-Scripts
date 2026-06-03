@@ -2,6 +2,7 @@
 # Responsibility: Subject/body template expansion for QC workflow notifications.
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'Core.Config.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCNT-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -24,7 +25,7 @@ function _QCNT-ResolveRepoPath([string]$Path) {
 
 function _QCNT-GetRequiredEmailPlaceholders {
     return @(
-        'NotificationTitle', 'NotificationMessage', 'ProjectName', 'ProjectNumber',
+        'NotificationTitle', 'NotificationMessage', 'ProjectName',
         'DocumentName', 'ReviewType', 'WorkflowState', 'AssignedTo', 'SubmittedBy',
         'SubmittedDate', 'QCPdfUrl', 'GeneratedTimestamp'
     )
@@ -164,8 +165,7 @@ function ConvertTo-QCEmailHtml {
     }
 
     $optionalKeys = @(
-        'NotificationCategory', 'Environment', 'DatasourceName', 'ProjectWiseProject',
-        'DocumentGuid', 'DocumentState', 'ReviewDueDate', 'ReviewerComments'
+        'NotificationCategory', 'Environment', 'DocumentState', 'ReviewerComments'
     )
     foreach ($opt in $optionalKeys) {
         if (-not $data.ContainsKey($opt)) { $data[$opt] = '' }
@@ -174,11 +174,7 @@ function ConvertTo-QCEmailHtml {
     $data['NotificationCategoryBannerStyle'] = _QCNT-HideRowStyle -Value ([string]$data['NotificationCategory'])
     $data['EnvironmentBadgeStyle'] = if (_QCNT-IsBlank $data['Environment']) { 'display:none;' } else { '' }
     $data['ReviewTypeRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['ReviewType'])
-    $data['DatasourceNameRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['DatasourceName'])
-    $data['ProjectWiseProjectRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['ProjectWiseProject'])
-    $data['DocumentGuidRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['DocumentGuid'])
     $data['DocumentStateRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['DocumentState'])
-    $data['ReviewDueDateRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['ReviewDueDate'])
     $data['ReviewerCommentsRowStyle'] = _QCNT-HideRowStyle -Value ([string]$data['ReviewerComments'])
 
     $template = Get-Content -LiteralPath $resolvedPath -Raw -Encoding UTF8
@@ -215,6 +211,8 @@ function New-QCNotificationEmailTemplateData {
         [hashtable]$Event,
         [hashtable]$EventCfg = @{},
         [hashtable]$Settings = @{},
+        [hashtable]$Config = $null,
+        [string]$FolderPath = '',
         [object]$Document = $null,
         [string]$Subject = ''
     )
@@ -232,12 +230,6 @@ function New-QCNotificationEmailTemplateData {
     if ($Settings -and $Settings.email) {
         $e = $Settings.email
         if ($e -is [hashtable]) { $emailCfg = $e }
-    }
-
-    $projectNumber = ''
-    if ($attrs.ContainsKey('projectNumberField') -and -not (_QCNT-IsBlank $attrs['projectNumberField'])) {
-        $pn = _QCNT-GetDocumentAttribute -Document $Document -AttributeName ([string]$attrs['projectNumberField'])
-        if ($pn) { $projectNumber = [string]$pn }
     }
 
     $reviewType = ''
@@ -318,19 +310,30 @@ function New-QCNotificationEmailTemplateData {
         $environment = [string]$emailCfg.environment
     }
 
-    $datasourceName = ''
-    if ($Event.datasourceName) { $datasourceName = [string]$Event.datasourceName }
+    $folderForProject = [string]$FolderPath
+    if (_QCNT-IsBlank $folderForProject -and $Event.documentPath) {
+        $dp = [string]$Event.documentPath
+        if ($dp -match '\\') {
+            $folderForProject = [System.IO.Path]::GetDirectoryName($dp)
+        }
+    }
 
-    $projectWiseProject = ''
-    if ($Event.projectWiseProject) { $projectWiseProject = [string]$Event.projectWiseProject }
-    elseif ($Event.project) { $projectWiseProject = [string]$Event.project }
+    $projectName = ''
+    if ($Config -and -not (_QCNT-IsBlank $folderForProject) -and (Get-Command -Name 'Get-QCProjectNameFromFolderPath' -ErrorAction SilentlyContinue)) {
+        try {
+            $fromPath = Get-QCProjectNameFromFolderPath -Config $Config -FolderPath $folderForProject
+            if ($fromPath) { $projectName = [string]$fromPath }
+        } catch { }
+    }
+    if (_QCNT-IsBlank $projectName -and $Event.project) {
+        $projectName = [string]$Event.project
+    }
 
     return @{
         NotificationTitle = $title
         NotificationMessage = $message
         NotificationCategory = $category
-        ProjectName = if ($Event.project) { [string]$Event.project } else { '(unknown)' }
-        ProjectNumber = if ($projectNumber) { $projectNumber } else { '(not available)' }
+        ProjectName = if ($projectName) { $projectName } else { '(unknown)' }
         DocumentName = if ($Event.documentName) { [string]$Event.documentName } else { '(unknown)' }
         ReviewType = if ($reviewType) { $reviewType } else { '(not specified)' }
         WorkflowState = if ($Event.currentState) { [string]$Event.currentState } else { '(unknown)' }
@@ -340,11 +343,7 @@ function New-QCNotificationEmailTemplateData {
         QCPdfUrl = $qcPdfUrl
         Environment = $environment
         GeneratedTimestamp = $timestamp
-        DatasourceName = $datasourceName
-        ProjectWiseProject = $projectWiseProject
-        DocumentGuid = if ($Event.documentGuid) { [string]$Event.documentGuid } else { '' }
         DocumentState = if ($Event.currentState) { [string]$Event.currentState } else { '' }
-        ReviewDueDate = if ($Event.reviewDueDate) { [string]$Event.reviewDueDate } else { '' }
         ReviewerComments = if ($Event.reviewerComments) { [string]$Event.reviewerComments } else { '' }
     }
 }
