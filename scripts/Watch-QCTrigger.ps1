@@ -790,6 +790,10 @@ if ($statusSetRules.Count -ge 0) {
                                             -DryRun:$isDryRun `
                                             -ChangedByUser $acUserno
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
+                                        $acUsernoAttr = $null
+                                        try {
+                                            if ($null -ne $ac.userno) { $acUsernoAttr = [int]$ac.userno }
+                                        } catch { $acUsernoAttr = $null }
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName ([string]$ac.itemName) `
@@ -797,7 +801,8 @@ if ($statusSetRules.Count -ge 0) {
                                             -IsSheetsFolder ([bool]$ac.isSheetsFolder) `
                                             -WatchRoot $acWatchRoot `
                                             -LastAuditEventAt ([string]$ac.actTime) `
-                                            -AuditActionName $acAction
+                                            -AuditActionName $acAction `
+                                            -ChangedByUser $acUsernoAttr
                                     }
                                 }
 
@@ -917,13 +922,13 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                 }
 
-                                # QC_PREPEND: paired sheet PDFs — re-read description on selected audit actions (e.g. DOCUMENT_MODIFY).
+                                # QC_PREPEND: paired sheet PDFs — QC Initiated state and/or QC_Archivist description tag.
                                 $acEnableQcPrepend = $true
                                 try { if ($null -ne $ac.enableQcPrepend) { $acEnableQcPrepend = [bool]$ac.enableQcPrepend } } catch { }
                                 if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     if ($qcPrependAuditActions -notcontains $actionName) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_Archivist description check).' -Data @{
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_PREPEND).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName; allowedActions = @($qcPrependAuditActions)
                                         }
                                         continue
@@ -937,6 +942,54 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                     }
                                     try {
+                                        $pwStateForPrepend = ''
+                                        if (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue) {
+                                            try {
+                                                $pwStateForPrepend = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
+                                            } catch { }
+                                        }
+                                        if ((Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) `
+                                                -and (Test-QCWorkflowStateIsQcInitiated -StateName $pwStateForPrepend -Config $config)) {
+                                            if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
+                                                try {
+                                                    Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+                                                } catch { }
+                                            }
+                                            if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
+                                                $acUsernoPrepend = $null
+                                                try {
+                                                    if ($null -ne $ac.userno) { $acUsernoPrepend = [int]$ac.userno }
+                                                } catch { $acUsernoPrepend = $null }
+                                                $prependRes = Add-QCPrependJobForQcInitiatedStateChange -Config $config `
+                                                    -TriggerDocumentGuid ([string]$ac.objGuid) `
+                                                    -TriggerDocumentName $itemName `
+                                                    -FolderPath $fp `
+                                                    -CurrentStateName $pwStateForPrepend `
+                                                    -DryRun:$isDryRun `
+                                                    -ChangedByUser $acUsernoPrepend
+                                                if ($null -ne $prependRes) {
+                                                    $prependCode = [string]$prependRes.Code
+                                                    if ($prependRes.IsSuccess) {
+                                                        $accepted++
+                                                        $wouldDedupe = ($prependCode -eq 'QC_PREPEND_SKIPPED_DUPLICATE')
+                                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND from QC Initiated state.' -Data @{
+                                                            jobType         = 'QC_PREPEND'
+                                                            sourcePath      = ($fp + '\' + $itemName)
+                                                            triggerSource   = 'qc_initiated_state'
+                                                            auditActionName = $actionName
+                                                            pwStateName     = $pwStateForPrepend
+                                                            prependCode     = $prependCode
+                                                            dryRun          = $isDryRun
+                                                            wouldDedupe     = $wouldDedupe
+                                                        }
+                                                        if ($prependCode -eq 'QC_PREPEND_ENQUEUED' -and -not $isDryRun) { $enqueued++ }
+                                                        elseif ($wouldDedupe) { $duplicates++ }
+                                                    }
+                                                    continue
+                                                }
+                                            }
+                                        }
+
                                         $dd = ''
                                         $descKey = ''
                                         try {
@@ -954,32 +1007,21 @@ if ($statusSetRules.Count -ge 0) {
                                             if ($descKey) { $auditDescCache[$descKey] = [string]$dd }
                                         }
                                         if ($dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no QC_Archivist in description).' -Data @{
-                                                path = ($fp + '\' + $itemName); actionName = $actionName
+                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (not QC Initiated and no QC_Archivist in description).' -Data @{
+                                                path = ($fp + '\' + $itemName); actionName = $actionName; pwStateName = $pwStateForPrepend
                                             }
                                             continue
                                         }
-                                        $initiatedStateName = $null
-                                        try {
-                                            if ($config.ContainsKey('qcWorkflow') -and $config.qcWorkflow) {
-                                                $wf = $config.qcWorkflow
-                                                if ($wf -is [hashtable] -and $wf.ContainsKey('states') -and $wf.states) {
-                                                    $st = $wf.states
-                                                    if ($st -is [hashtable] -and $st.ContainsKey('qcInitiated') -and $st.qcInitiated) {
-                                                        $initiatedStateName = [string]$st.qcInitiated
-                                                    } elseif ($st.qcInitiated) {
-                                                        $initiatedStateName = [string]$st.qcInitiated
-                                                    }
-                                                }
-                                            }
-                                        } catch { }
+                                        $initiatedStateName = Get-QCInitiatedWorkflowStateName -Config $config
                                         if (-not [string]::IsNullOrWhiteSpace($initiatedStateName) -and (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) {
-                                            $pwState = ''
-                                            try {
-                                                $pwState = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
-                                            } catch { }
+                                            $pwState = $pwStateForPrepend
+                                            if ([string]::IsNullOrWhiteSpace($pwState)) {
+                                                try {
+                                                    $pwState = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
+                                                } catch { }
+                                            }
                                             if ([string]::IsNullOrWhiteSpace($pwState) -or ($pwState.Trim().ToLowerInvariant() -ne $initiatedStateName.Trim().ToLowerInvariant())) {
-                                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (workflow state is not QC Initiated).' -Data @{
+                                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_Archivist tag but workflow state is not QC Initiated).' -Data @{
                                                     path = ($fp + '\' + $itemName); actionName = $actionName
                                                     pwStateName = $pwState; requiredState = $initiatedStateName
                                                 }

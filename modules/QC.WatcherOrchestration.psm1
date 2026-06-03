@@ -110,10 +110,54 @@ function Get-QCReconciliationPlan {
     return @{ shouldRun = $false; reason = 'audit_only'; triggerSource = 'none'; downtimeSeconds = 0; auditGapDetected = $false; lastReconciliationUtc = $lastReconUtc }
 }
 
+function Get-QCInitiatedWorkflowStateName {
+    <#
+    .SYNOPSIS
+    Resolved display name for the QC Initiated workflow state from config (default: QC Initiated).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
+                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+            }
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) { return [string]$resolved }
+        } catch { }
+    }
+    try {
+        if ($Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) {
+            $wf = $Config.qcWorkflow
+            if ($wf -is [hashtable] -and $wf.ContainsKey('states') -and $wf.states) {
+                $st = $wf.states
+                if ($st -is [hashtable] -and $st.ContainsKey('qcInitiated') -and $st.qcInitiated) {
+                    return [string]$st.qcInitiated
+                }
+                if ($st.qcInitiated) { return [string]$st.qcInitiated }
+            }
+        }
+    } catch { }
+    return 'QC Initiated'
+}
+
+function Test-QCWorkflowStateIsQcInitiated {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ([string]::IsNullOrWhiteSpace($StateName)) { return $false }
+    $initiated = Get-QCInitiatedWorkflowStateName -Config $Config
+    return ($StateName.Trim().ToLowerInvariant() -eq $initiated.Trim().ToLowerInvariant())
+}
+
 function Get-QCPrependAuditActions {
     <#
     .SYNOPSIS
-    Audit action names that should trigger a QC_Archivist description re-read for paired sheet PDFs.
+    Audit action names that may enqueue QC_PREPEND for paired sheet PDFs (QC Initiated state and/or QC_Archivist tag).
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Config)
@@ -125,6 +169,7 @@ function Get-QCPrependAuditActions {
         'DOCUMENT_FILE_REP'
         'DOCUMENT_VERSION'
         'DOCUMENT_CREATE'
+        'DOCUMENT_STATE'
     )
     try {
         if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
@@ -514,4 +559,4 @@ function Get-QCFullFolderScanReconciliationPlan {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete

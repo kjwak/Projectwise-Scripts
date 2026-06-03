@@ -37,6 +37,11 @@ Assert-Eq $s2.recordFromProcessor $true 'defaults enable processor telemetry'
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force
 $prependActions = Get-QCPrependAuditActions -Config $cfgDefault
 Assert-True ($prependActions -contains 'DOCUMENT_ATTR') 'default prepend actions include DOCUMENT_ATTR'
+Assert-True ($prependActions -contains 'DOCUMENT_STATE') 'default prepend actions include DOCUMENT_STATE'
+
+Assert-Eq (Get-QCInitiatedWorkflowStateName -Config $cfgDefault) 'QC Initiated' 'default initiated state name'
+Assert-True (Test-QCWorkflowStateIsQcInitiated -StateName 'QC Initiated' -Config $cfgDefault) 'qc initiated match'
+Assert-True (-not (Test-QCWorkflowStateIsQcInitiated -StateName 'In Production' -Config $cfgDefault)) 'non-initiated state'
 
 $cfgDbOff = @{ database = @{ enabled = $false }; auditPoller = @{ workflowTriggers = @{ enabled = $true } } }
 Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfgDbOff -DocumentGuid 'g1' -DocumentName 'a-qc.pdf' `

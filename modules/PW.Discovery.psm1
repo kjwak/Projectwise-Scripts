@@ -1526,7 +1526,8 @@ function Sync-PWSheetIndexOwnership {
         [bool]$IsSheetsFolder = $false,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
-        [string]$AuditActionName = ''
+        [string]$AuditActionName = '',
+        [Nullable[int]]$ChangedByUser = $null
     )
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return }
@@ -1623,6 +1624,32 @@ WHERE document_guid = @docGuid
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
                 -DocumentName $DocumentName -FolderPath $FolderPath -PreviousState $dbState -CurrentState $pwState `
                 -PwAttributes $read.attributes -AuditActionName $AuditActionName | Out-Null
+        }
+    }
+
+    if ($stateDiffers) {
+        if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
+            try {
+                $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
+                Import-Module $procPath -Force -ErrorAction SilentlyContinue
+            } catch { }
+        }
+        if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
+            try {
+                Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
+                    -TriggerDocumentGuid $DocumentGuid `
+                    -TriggerDocumentName $DocumentName `
+                    -FolderPath $FolderPath `
+                    -CurrentStateName $pwState `
+                    -ChangedByUser $ChangedByUser | Out-Null
+            } catch {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_STATE_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
+                        documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+                        changedByUser = $ChangedByUser; currentState = $pwState; auditActionName = $AuditActionName
+                    } | Out-Null
+                }
+            }
         }
     }
     if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {

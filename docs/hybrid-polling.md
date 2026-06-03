@@ -93,7 +93,7 @@ Each tick:
 
 ### QC_PREPEND Trigger
 
-On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`), paired sheet PDFs in Sheets folders are re-read for `QC_Archivist` in the document description. When the tag is present, a `QC_PREPEND` job is enqueued. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips (manifest current, in-flight, etc.) do not block this check.
+On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`, `DOCUMENT_STATE`), paired sheet PDFs in Sheets folders may enqueue `QC_PREPEND` when workflow state is **QC Initiated** (non-automation actor), or when the description contains `QC_Archivist` and state is QC Initiated. `DOCUMENT_STATE` on DGN/PDF also enqueues via `Sync-PWAssociatedSheetWorkflowState`; `DOCUMENT_ATTR` may enqueue after `Sync-PWSheetIndexOwnership` detects a state change. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips do not block this check.
 
 ### STATUS_SET_GEN Trigger
 
@@ -142,7 +142,7 @@ When `auditPoller.workflowTriggers.enabled` is true (default):
 | Audit action | Runtime behavior |
 |--------------|------------------|
 | `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings; history/transitions recorded; `*-qc.pdf` notifications when enabled. Events whose `o_userno` matches `workflowTriggers.automationPwUsernames` skip notify and skip sibling-sync echoes (except the initial `*-qc.pdf` change, so prepend can still propagate Ready for QC once). |
-| `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; per-field diffs write `ATTR_CHANGE` rows to `document_state_history` and `transition_events` |
+| `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; per-field diffs write `ATTR_CHANGE` rows to `document_state_history` and `transition_events`; workflow state change to QC Initiated may enqueue `QC_PREPEND` |
 
 Configure under `auditPoller.workflowTriggers` in `appsettings.json`. Notifications still require `notifications.enabled` (separate master switch).
 
