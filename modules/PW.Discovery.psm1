@@ -17,6 +17,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Get-PWDocumentDescriptionForFolder'
         'Sync-PWAssociatedSheetWorkflowState'
         'Sync-PWAssociatedSheetMembersToWorkflowState'
+        'Sync-PWAssociatedSheetReviewTypeAttributes'
         'Sync-PWSheetIndexOwnership'
         'Get-PWDocumentsInFolder'
         'ConvertTo-PWCmdletFolderPath'
@@ -674,8 +675,10 @@ function Get-PWSheetIndexSyncColumnNames {
         if ($na) {
             if ($na['designerEmailField']) { [void]$set.Add([string]$na['designerEmailField']) }
             if ($na['reviewerEmailField']) { [void]$set.Add([string]$na['reviewerEmailField']) }
+            if ($na['checkerEmailField']) { [void]$set.Add([string]$na['checkerEmailField']) }
         }
     } catch { }
+    if (-not ($set | Where-Object { $_ -ieq 'EM_Checker_Email' })) { [void]$set.Add('EM_Checker_Email') }
     try {
         $am = $Config['qcWorkflow']['attributeMap']
         if ($am) {
@@ -719,11 +722,13 @@ function ConvertTo-SheetIndexFieldValues {
 
     $emDesignerCol = 'EM_Designer_Email'
     $emReviewerCol = 'EM_Reviewer_Email'
+    $emCheckerCol = 'EM_Checker_Email'
     try {
         $na = $Config['notifications']['attributes']
         if ($na) {
             if ($na['designerEmailField']) { $emDesignerCol = [string]$na['designerEmailField'] }
             if ($na['reviewerEmailField']) { $emReviewerCol = [string]$na['reviewerEmailField'] }
+            if ($na['checkerEmailField']) { $emCheckerCol = [string]$na['checkerEmailField'] }
         }
     } catch { }
 
@@ -736,16 +741,19 @@ function ConvertTo-SheetIndexFieldValues {
 
     $emDesigner = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $emDesignerCol
     $emReviewer = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $emReviewerCol
+    $emChecker = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $emCheckerCol
     $qcDesigner = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcDesignerCol
     $qcReviewer = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcReviewerCol
+    $qcChecker = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcCheckerCol
 
     $designer = if ($emDesigner) { $emDesigner } elseif ($qcDesigner) { $qcDesigner } else { '' }
     $reviewer = if ($emReviewer) { $emReviewer } elseif ($qcReviewer) { $qcReviewer } else { '' }
+    $checker = if ($emChecker) { $emChecker } elseif ($qcChecker) { $qcChecker } else { '' }
 
     return @{
         designerEmail  = $designer
         reviewerEmail  = $reviewer
-        checkerEmail   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcCheckerCol
+        checkerEmail   = $checker
         qcReviewType   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcReviewTypeCol
         qcAssignedTo   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcAssignedCol
         qcStatus       = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcStatusCol
@@ -1370,6 +1378,155 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     return $result
 }
 
+function _PWD-GetSheetIndexQcReviewType {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    try {
+        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_review_type FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+            $r = $siRes.Data.table.Rows[0]
+            if (-not ($r.qc_review_type -is [DBNull])) { return [string]$r.qc_review_type }
+        }
+    } catch { }
+    return ''
+}
+
+function Sync-PWAssociatedSheetReviewTypeAttributes {
+    <#
+    .SYNOPSIS
+    Propagates QC_Review_Type from a DOCUMENT_ATTR change to associated DGN, sheet PDF, and QC PDF siblings.
+    .DESCRIPTION
+    Updates ProjectWise environment attributes and sheet_index.qc_review_type for every associated member
+    when the canonical review type differs. Mirrors sibling workflow-state sync for user-owned QC attributes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CanonicalReviewType,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false
+    )
+
+    if (-not (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) { return }
+    if ([string]::IsNullOrWhiteSpace($CanonicalReviewType)) { return }
+
+    $canonical = ([string]$CanonicalReviewType).Trim()
+    if ([string]::IsNullOrWhiteSpace($canonical)) { return }
+
+    $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) { return }
+
+    $stateUpdates = @()
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        $doc = $member.document
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+
+        $prevDb = _PWD-GetSheetIndexQcReviewType -Config $Config -DocumentGuid $dg
+        $currentPw = ''
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($reviewCol)
+        if ($attrRead.found) {
+            $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewCol
+            if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
+        }
+        if (-not $doc) {
+            $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+        if (-not $doc) { continue }
+
+        $pwNeedsWrite = (_PWD-NormalizeSheetIndexValue $currentPw) -ne (_PWD-NormalizeSheetIndexValue $canonical)
+        $indexNeedsWrite = (_PWD-NormalizeSheetIndexValue $prevDb) -ne (_PWD-NormalizeSheetIndexValue $canonical)
+        if (-not $pwNeedsWrite -and -not $indexNeedsWrite) { continue }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromValue    = [string]$currentPw
+            toValue      = $canonical
+            applied      = $false
+            planned      = $false
+            indexUpdated = $false
+        }
+
+        if ($pwNeedsWrite) {
+            if ($DryRun) {
+                $change.planned = $true
+            } else {
+                try {
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes @{ $reviewCol = $canonical })
+                    $change.applied = $true
+                } catch {
+                    $change.error = [string]$_.Exception.Message
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC_FAILED' `
+                            -Message 'Failed to align associated sheet QC_Review_Type.' -Data @{
+                            documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                            fromValue = [string]$currentPw; toValue = $canonical; error = [string]$_.Exception.Message
+                        }
+                    }
+                    continue
+                }
+            }
+        }
+
+        if ($indexNeedsWrite -and (Get-Command -Name 'Write-QCSheetIndex' -ErrorAction SilentlyContinue)) {
+            if (-not $DryRun) {
+                try {
+                    $ext = [System.IO.Path]::GetExtension($dn)
+                    if ($ext) { $ext = $ext.ToLowerInvariant() }
+                    $sourceType = $null
+                    if ($ext -eq '.pdf') { $sourceType = 'pdf' }
+                    elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
+                    Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
+                        -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonical `
+                        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                    $change.indexUpdated = $true
+                } catch { }
+            }
+        }
+
+        if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {
+            if ($pwNeedsWrite -or $indexNeedsWrite) {
+                $prevAudit = if ($currentPw) { [string]$currentPw } else { [string]$prevDb }
+                Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
+                    -FolderPath $FolderPath -FieldChanges @{
+                    qc_review_type = @{ oldValue = $prevAudit; newValue = $canonical }
+                } | Out-Null
+            }
+        }
+
+        $stateUpdates += $change
+    }
+
+    if ($stateUpdates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC' `
+            -Message 'Associated sheet QC_Review_Type aligned from DOCUMENT_ATTR audit event.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath          = $FolderPath
+            canonicalReviewType = $canonical
+            reviewTypeColumn    = $reviewCol
+            memberCount         = $members.Count
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+        }
+    }
+}
+
 function _PWD-GetSheetIndexPwStateName {
     param(
         [hashtable]$Config,
@@ -1832,20 +1989,26 @@ WHERE document_guid = @docGuid
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
     if (-not $read.found) { return }
 
-    $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
-    $fields = _PWD-EnrichSheetIndexReviewType -Config $Config -Fields $fields -FolderPath $FolderPath -DocumentName $DocumentName
+    $fieldsRaw = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
+    $rawReviewType = [string]$fieldsRaw.qcReviewType
+    $fields = @{}
+    foreach ($k in @($fieldsRaw.Keys)) { $fields[$k] = $fieldsRaw[$k] }
+    if (-not $isDocumentAttr) {
+        $fields = _PWD-EnrichSheetIndexReviewType -Config $Config -Fields $fields -FolderPath $FolderPath -DocumentName $DocumentName
+    }
     $pwDesigner = [string]$fields.designerEmail
     $pwReviewer = [string]$fields.reviewerEmail
     $pwChecker = [string]$fields.checkerEmail
-    $pwReviewType = [string]$fields.qcReviewType
+    $pwReviewType = if (-not [string]::IsNullOrWhiteSpace($rawReviewType)) { $rawReviewType } else { [string]$fields.qcReviewType }
     $pwAssignedTo = [string]$fields.qcAssignedTo
     $pwQcStatus = [string]$fields.qcStatus
     $pwState = [string]$fields.pwStateName
 
     $emailsDiffer = (_PWD-NormalizeSheetIndexValue $pwDesigner) -ne (_PWD-NormalizeSheetIndexValue $dbDesigner) `
         -or (_PWD-NormalizeSheetIndexValue $pwReviewer) -ne (_PWD-NormalizeSheetIndexValue $dbReviewer)
+    $reviewTypeDiffer = (_PWD-NormalizeSheetIndexValue $rawReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType)
     $qcFieldsDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker) `
-        -or (_PWD-NormalizeSheetIndexValue $pwReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType) `
+        -or $reviewTypeDiffer `
         -or (_PWD-NormalizeSheetIndexValue $pwAssignedTo) -ne (_PWD-NormalizeSheetIndexValue $dbAssignedTo) `
         -or (_PWD-NormalizeSheetIndexValue $pwQcStatus) -ne (_PWD-NormalizeSheetIndexValue $dbQcStatus)
     $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
@@ -1939,15 +2102,23 @@ WHERE document_guid = @docGuid
             reviewerEmail   = $pwReviewer
             checkerEmail    = $pwChecker
             qcReviewType    = $pwReviewType
+            rawReviewType   = $rawReviewType
             qcAssignedTo    = $pwAssignedTo
             qcStatus        = $pwQcStatus
             pwStateName     = $pwState
             wasInsert       = (-not $rowExists)
             forceAttrSync   = $isDocumentAttr
             emailsChanged   = $emailsDiffer
+            reviewTypeChanged = $reviewTypeDiffer
             qcFieldsChanged = $qcFieldsDiffer
             stateChanged    = $stateDiffers
         }
+    }
+
+    if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($rawReviewType)) {
+        Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
+            -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $rawReviewType `
+            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -DryRun:$false
     }
 
     if ($IsSheetsFolder -and $isDocumentAttr -and -not $SkipQcInitiatedFallback) {

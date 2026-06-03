@@ -492,13 +492,67 @@ function _QCN-ApplyIndependentCheckReviewerEmail {
     return ''
 }
 
+function _QCN-GetQcDesignerEmailAttributeName {
+    param([hashtable]$Config)
+    $col = 'QC_Designer_Email'
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf) {
+            $attrMap = _QCN-ToHashtable $wf['attributeMap']
+            if ($attrMap -and $attrMap['designerEmail']) { $col = [string]$attrMap['designerEmail'] }
+        }
+    }
+    return $col
+}
+
+function _QCN-GetQcReviewerEmailAttributeName {
+    param([hashtable]$Config)
+    $col = 'QC_Reviewer_Email'
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf) {
+            $attrMap = _QCN-ToHashtable $wf['attributeMap']
+            if ($attrMap -and $attrMap['reviewerEmail']) { $col = [string]$attrMap['reviewerEmail'] }
+        }
+    }
+    return $col
+}
+
+function _QCN-GetRoleEmailsFromSheetIndex {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+
+    if (_QCN-IsBlank $DocumentGuid) { return $null }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $null }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if (-not $res.IsSuccess -or -not $res.Data.table -or $res.Data.table.Rows.Count -eq 0) { return $null }
+        $r = $res.Data.table.Rows[0]
+        return @{
+            designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
+            reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
+            checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+        }
+    } catch { return $null }
+}
+
 function _QCN-ResolveNotificationRoleEmails {
     param(
         [object]$Document,
         [hashtable]$Settings,
         [hashtable]$Config = $null,
         [hashtable]$Job = $null,
-        [hashtable]$RoleOverrides = $null
+        [hashtable]$RoleOverrides = $null,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = '',
+        [string]$DocumentGuid = ''
     )
 
     $attr = _QCN-ToHashtable $Settings.attributes
@@ -506,25 +560,30 @@ function _QCN-ResolveNotificationRoleEmails {
     $reviewerField = if ($attr.reviewerEmailField) { [string]$attr.reviewerEmailField } else { 'EM_Reviewer_Email' }
     $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
     $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
+    $qcDesignerField = _QCN-GetQcDesignerEmailAttributeName -Config $Config
+    $qcReviewerField = _QCN-GetQcReviewerEmailAttributeName -Config $Config
     $qcCheckerField = _QCN-GetQcCheckerEmailAttributeName -Config $Config
 
-    $folderPath = ''
-    $sourceName = ''
+    $folderPath = [string]$FolderPath
+    $sourceName = [string]$SourceDocumentName
     if ($Job) {
-        $folderPath = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder','folderPath','incomingFolderPath'))
-        $sourceName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName','sourceDocumentName','incomingDocName'))
+        if (_QCN-IsBlank $folderPath) {
+            $folderPath = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder','folderPath','incomingFolderPath'))
+        }
         if (_QCN-IsBlank $sourceName) {
-            $sp = [string](_QCN-GetJobValue -Job $Job -Keys @('sourcePath'))
-            if (-not (_QCN-IsBlank $sp) -and $sp -match '\\') { $sourceName = [System.IO.Path]::GetFileName($sp) }
+            $sourceName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName','sourceDocumentName','incomingDocName'))
+            if (_QCN-IsBlank $sourceName) {
+                $sp = [string](_QCN-GetJobValue -Job $Job -Keys @('sourcePath'))
+                if (-not (_QCN-IsBlank $sp) -and $sp -match '\\') { $sourceName = [System.IO.Path]::GetFileName($sp) }
+            }
         }
     }
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
     if (_QCN-IsBlank $sourceName) { $sourceName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')) }
+    if (_QCN-IsBlank $DocumentGuid) { $DocumentGuid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID','DocumentGuid','GUID','Id')) }
     if (-not (_QCN-IsBlank $sourceName) -and $sourceName -match '(?i)-qc\.pdf$') {
         $sourceName = [string]([System.IO.Path]::GetFileNameWithoutExtension($sourceName)) + '.pdf'
     }
-
-    $reviewType = ''
 
     $designer = ''
     $reviewer = ''
@@ -542,9 +601,9 @@ function _QCN-ResolveNotificationRoleEmails {
     if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
     if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
     if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $checkerField) }
-    if (_QCN-IsBlank $checker) {
-        $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcCheckerField)
-    }
+    if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcDesignerField) }
+    if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewerField) }
+    if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcCheckerField) }
 
     if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $sourceName)) {
         $needSource = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
@@ -556,6 +615,18 @@ function _QCN-ResolveNotificationRoleEmails {
                     if (_QCN-IsBlank $reviewer) { $reviewer = [string]$pw.reviewerEmail }
                     if (_QCN-IsBlank $checker) { $checker = [string]$pw.checkerEmail }
                 }
+            }
+        }
+    }
+
+    if ($Config -and (-not (_QCN-IsBlank $DocumentGuid))) {
+        $needIndex = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
+        if ($needIndex) {
+            $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid
+            if ($idx) {
+                if (_QCN-IsBlank $designer) { $designer = [string]$idx.designerEmail }
+                if (_QCN-IsBlank $reviewer) { $reviewer = [string]$idx.reviewerEmail }
+                if (_QCN-IsBlank $checker) { $checker = [string]$idx.checkerEmail }
             }
         }
     }
@@ -638,7 +709,10 @@ function Resolve-QCNotificationRecipients {
         [string[]]$ExplicitCc = @(),
         [hashtable]$Config = $null,
         [hashtable]$Job = $null,
-        [hashtable]$RoleOverrides = $null
+        [hashtable]$RoleOverrides = $null,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = '',
+        [string]$DocumentGuid = ''
     )
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
@@ -649,7 +723,8 @@ function Resolve-QCNotificationRecipients {
     $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
     $ccField = if ($attr.ccEmailField) { [string]$attr.ccEmailField } else { 'CcEmails' }
 
-    $roles = _QCN-ResolveNotificationRoleEmails -Document $Document -Settings $Settings -Config $Config -Job $Job -RoleOverrides $RoleOverrides
+    $roles = _QCN-ResolveNotificationRoleEmails -Document $Document -Settings $Settings -Config $Config -Job $Job `
+        -RoleOverrides $RoleOverrides -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -DocumentGuid $DocumentGuid
     $reviewers = _QCN-ParseEmailList $roles.reviewerEmail
     $designers = _QCN-ParseEmailList $roles.designerEmail
     $ccFromAttr = _QCN-ParseEmailList (_QCN-GetAttributeValue -Document $Document -AttributeName $ccField)
@@ -1161,8 +1236,24 @@ function Invoke-QCNotificationForStateChange {
     $DocumentGuid = [string]$qcTarget.documentGuid
     if (-not (_QCN-IsBlank $qcTarget.documentPath)) { $DocumentPath = [string]$qcTarget.documentPath }
 
+    $folderForRoles = ''
+    $sourceForRoles = $DocumentName
+    if ($Job) {
+        $folderForRoles = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder', 'folderPath', 'incomingFolderPath'))
+        $sourceForRoles = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+    }
+    if (_QCN-IsBlank $folderForRoles) { $folderForRoles = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
+    if ((_QCN-IsBlank $folderForRoles) -and (-not (_QCN-IsBlank $DocumentPath)) -and ($DocumentPath -match '\\')) {
+        $folderForRoles = [System.IO.Path]::GetDirectoryName($DocumentPath)
+    }
+    if (_QCN-IsBlank $sourceForRoles) { $sourceForRoles = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
+    if (-not (_QCN-IsBlank $sourceForRoles) -and $sourceForRoles -match '(?i)-qc\.pdf$') {
+        $sourceForRoles = [string]([System.IO.Path]::GetFileNameWithoutExtension($sourceForRoles)) + '.pdf'
+    }
+
     $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc) `
-        -Config $Config -Job $Job -RoleOverrides $roleOverrides
+        -Config $Config -Job $Job -RoleOverrides $roleOverrides -FolderPath $folderForRoles -SourceDocumentName $sourceForRoles `
+        -DocumentGuid $DocumentGuid
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId

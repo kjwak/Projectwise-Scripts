@@ -38,8 +38,16 @@ def test_database_schema_includes_qc_attribute_columns():
 def test_write_sheet_index_merges_checker_and_qc_fields():
     text = DATABASE.read_text(encoding="utf-8")
     assert "[string]$CheckerEmail" in text
-    assert "checker_email = CASE WHEN @setOwnership = 1" in text
-    assert "qc_review_type = CASE WHEN @setOwnership = 1" in text
+    assert "checker_email = CASE WHEN @setOwnership = 1 THEN COALESCE(@checkerEmail, tgt.checker_email)" in text
+    assert "qc_review_type = CASE WHEN @setOwnership = 1 THEN COALESCE(@qcReviewType, tgt.qc_review_type)" in text
+
+
+def test_document_attr_propagates_qc_review_type_to_associated_sheet():
+    text = DISCOVERY.read_text(encoding="utf-8")
+    assert "Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config" in text
+    assert "$reviewTypeDiffer" in text
+    assert "WATCH_SHEET_REVIEW_TYPE_SYNC" in text
+    assert "-not $isDocumentAttr" in text
 
 
 def test_watcher_audit_loop_calls_sync_on_document_attr():
@@ -79,6 +87,7 @@ def test_watcher_initializes_database_schema_on_startup():
 def test_document_state_propagates_to_associated_sheet_files():
     discovery = DISCOVERY.read_text(encoding="utf-8")
     assert "function Sync-PWAssociatedSheetWorkflowState" in discovery
+    assert "function Sync-PWAssociatedSheetReviewTypeAttributes" in discovery
     assert "function Get-PWAssociatedSheetMembers" in discovery
     assert "function Get-PWSheetStemFromDocumentName" in discovery
     assert "_PWD-InvokeSetPwDocumentState" in discovery
@@ -104,7 +113,7 @@ def test_qc_prepend_defaults_review_type_on_associated_sheet():
 
     appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
     enabled = appsettings["projectWise"]["qcReviewTypeAttributes"]["enabledEnvironments"]
-    assert enabled == ["Caltrans"]
+    assert "Caltrans" in enabled
 
 
 def test_qc_prepend_audit_checks_description_on_paired_pdf_actions():

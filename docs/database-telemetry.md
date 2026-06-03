@@ -223,6 +223,7 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
 | `Sync-PWAssociatedSheetWorkflowState` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_STATE`, set associated DGN, sheet PDF, and `*-qc.pdf` to the same workflow state as the changed document |
 | `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values) |
+| `Sync-PWAssociatedSheetReviewTypeAttributes` | `PW.Discovery.psm1` (from `Sync-PWSheetIndexOwnership`) | On `QC_Review_Type` change, align DGN / sheet PDF / `*-qc.pdf` in PW and `sheet_index` |
 | `Update-QCSheetQcPdf` | `Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1` | Link QC PDF to source document |
 
 ---

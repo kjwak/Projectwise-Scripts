@@ -165,6 +165,7 @@ function _QCAT-BuildNotificationDocument {
     }
     $reviewerField = if ($attrCfg.reviewerEmailField) { [string]$attrCfg.reviewerEmailField } else { 'EM_Reviewer_Email' }
     $designerField = if ($attrCfg.designerEmailField) { [string]$attrCfg.designerEmailField } else { 'EM_Designer_Email' }
+    $checkerField = if ($attrCfg.checkerEmailField) { [string]$attrCfg.checkerEmailField } else { 'EM_Checker_Email' }
 
     $doc = [ordered]@{
         Name         = $DocumentName
@@ -176,6 +177,7 @@ function _QCAT-BuildNotificationDocument {
         foreach ($k in $Attributes.Keys) { $doc[$k] = $Attributes[$k] }
         if ($Attributes.ContainsKey($reviewerField)) { $doc[$reviewerField] = $Attributes[$reviewerField] }
         if ($Attributes.ContainsKey($designerField)) { $doc[$designerField] = $Attributes[$designerField] }
+        if ($Attributes.ContainsKey($checkerField)) { $doc[$checkerField] = $Attributes[$checkerField] }
     }
     elseif ($Config -and -not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
         $srcName = [string]$DocumentName
@@ -187,6 +189,7 @@ function _QCAT-BuildNotificationDocument {
             if ($pw.found) {
                 if ($pw.designerEmail) { $doc[$designerField] = [string]$pw.designerEmail }
                 if ($pw.reviewerEmail) { $doc[$reviewerField] = [string]$pw.reviewerEmail }
+                if ($pw.checkerEmail) { $doc[$checkerField] = [string]$pw.checkerEmail }
             }
         }
     }
@@ -288,12 +291,10 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     if (-not $shouldNotify) { return }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return }
 
-    if (-not $Document) {
-        $attrs = @{}
-        if ($PwAttributes) { $attrs = $PwAttributes }
-        $Document = _QCAT-BuildNotificationDocument -Config $Config -FolderPath $FolderPath `
-            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -Attributes $attrs
-    }
+    $attrs = @{}
+    if ($PwAttributes) { $attrs = $PwAttributes }
+    $Document = _QCAT-BuildNotificationDocument -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -Attributes $attrs
 
     if ($DryRun) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

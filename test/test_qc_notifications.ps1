@@ -104,6 +104,49 @@ $icResolved = Resolve-QCNotificationRecipients -Document $icDoc -Settings $icSet
 Assert-Eq $icResolved.reviewers[0] 'checker@company.com' 'Independent Check should use checker for reviewers role'
 Assert-Eq $icResolved.reviewers.Count 1 'Independent Check should not include EM_Reviewer in reviewers list'
 
+# EM_* on document properties (audit rows without Attributes bag)
+$emCfg = New-NotifyConfig -Enabled $true
+$emCfg.notifications.events['Redlines Issued'] = @{
+    enabled = $true
+    eventType = 'REDLINES_ISSUED'
+    to = @('designers')
+    cc = @('reviewers')
+    subjectTemplate = 'Redlines - {documentName}'
+    actionRequired = 'Designer to begin corrections.'
+}
+$emDoc = [pscustomobject]@{
+    Name = '080J082001ab001-qc.pdf'
+    DocumentGUID = 'guid-em-roles'
+    FolderPath = 'Documents\AZDOT\TEST\CADD\Sheets'
+    EM_Designer_Email = 'jflint@aztec.us'
+    EM_Reviewer_Email = 'JFlint@aztec.us'
+    EM_Checker_Email = 'jflint@aztec.us'
+}
+$emSend = Invoke-QCNotificationForStateChange -Config $emCfg -PreviousState 'Ready for QC' -CurrentState 'Redlines Issued' `
+    -Document $emDoc -DocumentPath 'Documents\AZDOT\TEST\CADD\Sheets\080J082001ab001-qc.pdf'
+Assert-True $emSend.IsSuccess 'Notification with EM_* document properties should succeed'
+Assert-True $emSend.Data.success 'EM_* roles should resolve to To recipients'
+
+# QC_* workflow columns when EM_* absent
+$qcOnlyCfg = New-NotifyConfig -Enabled $true
+$qcOnlySettings = Get-QCNotificationSettings -Config $qcOnlyCfg
+$qcResolved = Resolve-QCNotificationRecipients -Document ([pscustomobject]@{
+    Name = 'sheet.pdf'
+    QC_Designer_Email = 'designer@company.com'
+    QC_Reviewer_Email = 'reviewer@company.com'
+    QC_Checker_Email = 'checker@company.com'
+}) -Settings $qcOnlySettings -Config @{
+    qcWorkflow = @{
+        attributeMap = @{
+            designerEmail = 'QC_Designer_Email'
+            reviewerEmail = 'QC_Reviewer_Email'
+            checkerEmail = 'QC_Checker_Email'
+        }
+    }
+} -ToRoles @('reviewers') -CcRoles @('designers')
+Assert-Eq $qcResolved.reviewers[0] 'reviewer@company.com' 'QC_Reviewer_Email fallback should resolve'
+Assert-Eq $qcResolved.designers[0] 'designer@company.com' 'QC_Designer_Email fallback should resolve'
+
 # Dedupe key consistency
 $event = New-QCNotificationEvent -EventType 'QC_RECEIVED' -DocumentName 'D-101-qc.pdf' -DocumentGuid 'guid-101' -CurrentState 'QC Received'
 $settings = Get-QCNotificationSettings -Config $enabledCfg
