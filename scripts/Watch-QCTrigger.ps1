@@ -304,6 +304,39 @@ function _Watch-EnsureDatabaseExports {
     return ($stillMissing.Count -eq 0)
 }
 
+function _Watch-EnsureDiscoveryExports {
+    $required = @(
+        'Sync-PWAssociatedSheetWorkflowState'
+        'Sync-PWSheetIndexOwnership'
+        'ConvertTo-PWCmdletFolderPath'
+        'Find-PWSheetsFoldersUnderRoot'
+        'Get-PWDocumentDescriptionForFolder'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+
+    $discPath = Join-Path $script:WatchModulesRoot 'PW.Discovery.psm1'
+    if (Test-Path -LiteralPath $discPath) {
+        Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+    [void](_Watch-EnsureDatabaseExports)
+    [void](_Watch-EnsureJsonLog)
+    if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
+        [void](Ensure-PWDiscoveryModuleLoaded)
+    } elseif (Test-Path -LiteralPath $discPath) {
+        Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
+function _Watch-EnsureAllModuleExports {
+    [void](_Watch-EnsureJsonLog)
+    [void](_Watch-EnsureDatabaseExports)
+    return (_Watch-EnsureDiscoveryExports)
+}
+
 function _Watch-WriteJsonLog {
     [CmdletBinding()]
     param(
@@ -363,15 +396,6 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -Warning
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Users.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
-if (-not (Ensure-PWDiscoveryModuleLoaded)) {
-    throw "PW.Discovery.psm1 did not load required exports (e.g. Find-PWSheetsFoldersUnderRoot). Repo: $repoRoot"
-}
-if (-not (_Watch-EnsureJsonLog)) {
-    throw "Write-QCJsonLog unavailable after PW.Discovery load. Repo root: $repoRoot"
-}
-if (-not (_Watch-EnsureDatabaseExports)) {
-    throw "Core.Database.psm1 exports unavailable after PW.Discovery load. Repo root: $repoRoot"
-}
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 # QC.AuditTriggers (via PW.Discovery) can reload Core.Database and drop session exports; restore before use.
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -380,12 +404,6 @@ if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContin
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
     throw "Core.Database.psm1 did not load; Test-QCDatabaseEnabled is unavailable. Repo: $repoRoot"
 }
-if (-not (_Watch-EnsureJsonLog)) {
-    throw "Write-QCJsonLog unavailable after Core.Database reload. Repo root: $repoRoot"
-}
-if (-not (_Watch-EnsureDatabaseExports)) {
-    throw "Core.Database.psm1 exports unavailable after Core.Database reload. Repo root: $repoRoot"
-}
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
@@ -393,11 +411,8 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-if (-not (_Watch-EnsureJsonLog)) {
-    throw "Write-QCJsonLog unavailable after module imports. Repo root: $repoRoot"
-}
-if (-not (_Watch-EnsureDatabaseExports)) {
-    throw "Core.Database.psm1 exports unavailable after module imports. Repo root: $repoRoot"
+if (-not (_Watch-EnsureAllModuleExports)) {
+    throw "Required module exports unavailable after imports (PW.Discovery/Core.Database/Core.Runtime). Repo root: $repoRoot"
 }
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -579,14 +594,8 @@ if ($statusSetRules.Count -ge 0) {
 
             # Re-import here to avoid any odd module/session state where exports are not visible.
             Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
-            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
-                throw 'PW.Discovery exports are unavailable at tick start (Find-PWSheetsFoldersUnderRoot missing).'
-            }
-            if (-not (_Watch-EnsureJsonLog)) {
-                throw 'Write-QCJsonLog unavailable after PW.Discovery reload at tick start.'
-            }
-            if (-not (_Watch-EnsureDatabaseExports)) {
-                throw 'Core.Database exports unavailable after PW.Discovery reload at tick start.'
+            if (-not (_Watch-EnsureAllModuleExports)) {
+                throw 'Required module exports unavailable at tick start (PW.Discovery/Core.Database/Core.Runtime).'
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
@@ -880,8 +889,9 @@ if ($statusSetRules.Count -ge 0) {
                                     $acWatchRoot = ''
                                     try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
                                     if ($isDocumentState) {
-                                        [void](_Watch-EnsureJsonLog)
-                                        [void](_Watch-EnsureDatabaseExports)
+                                        if (-not (_Watch-EnsureAllModuleExports)) {
+                                            throw 'Required module exports unavailable before DOCUMENT_STATE sync.'
+                                        }
                                         $acUserno = $null
                                         try {
                                             if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
@@ -895,8 +905,9 @@ if ($statusSetRules.Count -ge 0) {
                                             -DryRun:$isDryRun `
                                             -ChangedByUser $acUserno
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
-                                        [void](_Watch-EnsureJsonLog)
-                                        [void](_Watch-EnsureDatabaseExports)
+                                        if (-not (_Watch-EnsureAllModuleExports)) {
+                                            throw 'Required module exports unavailable before DOCUMENT_ATTR sync.'
+                                        }
                                         $acUsernoAttr = $null
                                         try {
                                             if ($null -ne $ac.userno) { $acUsernoAttr = [int]$ac.userno }
@@ -1119,7 +1130,7 @@ if ($statusSetRules.Count -ge 0) {
                                             $dd = [string]$auditDescCache[$descKey]
                                         } else {
                                             $pwDescriptionLookups++
-                                            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
+                                            if (-not (_Watch-EnsureDiscoveryExports)) {
                                                 throw "Get-PWDocumentDescriptionForFolder is unavailable (PW.Discovery failed to load). Repo: $repoRoot"
                                             }
                                             $dd = Get-PWDocumentDescriptionForFolder -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid)
@@ -1382,7 +1393,7 @@ if ($statusSetRules.Count -ge 0) {
             # --- FULL FOLDER SCAN (reconciliation or fallback) ---
             if ($runFullScan) {
 
-            if (-not (Ensure-PWDiscoveryModuleLoaded)) {
+            if (-not (_Watch-EnsureDiscoveryExports)) {
                 throw 'PW.Discovery exports are unavailable before full folder scan (Find-PWSheetsFoldersUnderRoot missing).'
             }
 
