@@ -381,7 +381,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.6.0'
+    $targetVersion = '1.7.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -390,7 +390,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -420,7 +420,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through sheet_index QC attribute columns")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through qc_workflow_events.qc_review_type column")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -947,6 +947,7 @@ CREATE TABLE qc_workflow_events (
     target_pw_state         NVARCHAR(100) NULL,
     decision_code           NVARCHAR(100) NULL,
     processor_version       NVARCHAR(50) NULL,
+    qc_review_type          NVARCHAR(100) NULL,
     payload_json            NVARCHAR(MAX) NULL,
     created_utc             DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET()
 );
@@ -1252,6 +1253,14 @@ IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.process
     ALTER TABLE processing_jobs ADD [checkpoint] NVARCHAR(100) NULL;
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'checkpoint_data') IS NULL
     ALTER TABLE processing_jobs ADD [checkpoint_data] NVARCHAR(MAX) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot7Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'qc_review_type') IS NULL
+    ALTER TABLE qc_workflow_events ADD qc_review_type NVARCHAR(100) NULL;
 '@
 }
 
@@ -1943,6 +1952,7 @@ function Write-QCWorkflowEventRow {
         [string]$TargetPwState = '',
         [string]$DecisionCode = '',
         [string]$ProcessorVersion = '',
+        [string]$QcReviewType = '',
         [string]$PayloadJson = '',
         [switch]$PlannedOnly
     )
@@ -1972,9 +1982,9 @@ function Write-QCWorkflowEventRow {
     try {
         $sql = @"
 INSERT INTO qc_workflow_events
-    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, payload_json)
+    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json)
 VALUES
-    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @payload)
+    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload)
 "@
         $params = @{
             runId = if ($null -ne $RunId -and $RunId -gt 0) { $RunId } else { [DBNull]::Value }
@@ -1985,6 +1995,7 @@ VALUES
             target = if ($TargetPwState) { $TargetPwState } else { [DBNull]::Value }
             decisionCode = if ($DecisionCode) { $DecisionCode } else { [DBNull]::Value }
             procVer = if ($ProcessorVersion) { $ProcessorVersion } else { [DBNull]::Value }
+            qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
             payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params

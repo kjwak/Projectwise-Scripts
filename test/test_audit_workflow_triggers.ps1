@@ -119,7 +119,8 @@ function Write-QCWorkflowEventRow {
         [string]$PreviousPwState = '',
         [string]$TargetPwState = '',
         [string]$DecisionCode = '',
-        [string]$PayloadJson = ''
+        [string]$PayloadJson = '',
+        [string]$QcReviewType = ''
     )
     $payload = $null
     try { if ($PayloadJson) { $payload = $PayloadJson | ConvertFrom-Json } } catch { }
@@ -129,6 +130,7 @@ function Write-QCWorkflowEventRow {
         previousPwState = $PreviousPwState
         targetPwState = $TargetPwState
         decisionCode = $DecisionCode
+        qcReviewType = $QcReviewType
         payload = $payload
     }) | Out-Null
     return [pscustomobject]@{
@@ -178,6 +180,6 @@ Assert-Eq $script:finalPrependTransitions[0].toValue 'QC Complete' 'transition t
 Assert-Eq $script:finalPrependTransitions[0].jobType 'QC_PREPEND' 'transition job type QC_PREPEND'
 Assert-Eq $script:finalPrependTransitions[0].documentGuid 'guid-final-prepend' 'transition uses trigger document guid'
 Assert-Eq $script:finalPrependWorkflowEvents.Count 1 'final prepend should mirror one workflow event'
-Assert-Eq $script:finalPrependWorkflowEvents[0].payload.qc_review_type 'Independent Check' 'workflow event payload includes qc_review_type'
+Assert-Eq $script:finalPrependWorkflowEvents[0].qcReviewType 'Independent Check' 'workflow event includes qc_review_type column value'
 
 Write-Host 'test_audit_workflow_triggers.ps1 passed'

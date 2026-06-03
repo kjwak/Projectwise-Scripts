@@ -359,11 +359,11 @@ function _QCAT-WriteWorkflowEventMirror {
         documentName = $DocumentName
         auditAction = $AuditActionName
     }
-    if (-not [string]::IsNullOrWhiteSpace($QcReviewType)) { $payload['qc_review_type'] = $QcReviewType }
     $payloadJson = ''
     try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
     Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
-        -PreviousPwState $FromValue -TargetPwState $ToValue -DecisionCode $JobType -PayloadJson $payloadJson | Out-Null
+        -PreviousPwState $FromValue -TargetPwState $ToValue -DecisionCode $JobType -PayloadJson $payloadJson `
+        -QcReviewType $QcReviewType | Out-Null
 }
 
 function Invoke-QCAuditWorkflowStateChangeTriggers {

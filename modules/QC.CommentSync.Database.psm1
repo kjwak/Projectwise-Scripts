@@ -40,6 +40,7 @@ function Write-QCWorkflowEvent {
         [string]$TargetPwState = '',
         [string]$DecisionCode = '',
         [string]$ProcessorVersion = '',
+        [string]$QcReviewType = '',
         [string]$PayloadJson = '',
         [switch]$PlannedOnly
     )
@@ -48,8 +49,8 @@ function Write-QCWorkflowEvent {
     if ($RunId -gt 0) { $runIdParam = $RunId }
     return Write-QCWorkflowEventRow -Config $Config -RunId $runIdParam -JobId $JobId -DocumentId $DocumentId `
         -EventType $EventType -PreviousPwState $PreviousPwState -TargetPwState $TargetPwState `
-        -DecisionCode $DecisionCode -ProcessorVersion $ProcessorVersion -PayloadJson $PayloadJson `
-        -PlannedOnly:$PlannedOnly
+        -DecisionCode $DecisionCode -ProcessorVersion $ProcessorVersion -QcReviewType $QcReviewType `
+        -PayloadJson $PayloadJson -PlannedOnly:$PlannedOnly
 }
 
 function Write-QCCommentSyncRun {
@@ -248,6 +249,7 @@ function Invoke-QCCommentSyncPersist {
     }
 
     $payloadJson = $null
+    $qcReviewType = ''
     try {
         $payloadObj = _QCDB-ToHashtable $Decision
         if (-not $payloadObj) { $payloadObj = @{} }
@@ -255,15 +257,14 @@ function Invoke-QCCommentSyncPersist {
             $qcReviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config `
                 -DocumentGuid ([string]$JobMetadata.documentId) -FolderPath ([string]$JobMetadata.folderPath) `
                 -DocumentName ([string]$JobMetadata.fileName) -Context @{ job = $Job }
-            if (-not [string]::IsNullOrWhiteSpace($qcReviewType)) { $payloadObj['qc_review_type'] = $qcReviewType }
         }
         $payloadJson = ($payloadObj | ConvertTo-Json -Depth 8 -Compress)
     } catch { }
 
     Write-QCWorkflowEvent -Config $Config -JobId ([string]$Job.id) -DocumentId ([string]$JobMetadata.documentId) `
         -EventType 'STATE_DECIDED' -PreviousPwState $PreviousPwState -TargetPwState ([string]$Decision.targetState) `
-        -DecisionCode ([string]$Decision.decisionCode) -ProcessorVersion $ProcessorVersion -PayloadJson $payloadJson `
-        -PlannedOnly:$planned | Out-Null
+        -DecisionCode ([string]$Decision.decisionCode) -ProcessorVersion $ProcessorVersion -QcReviewType $qcReviewType `
+        -PayloadJson $payloadJson -PlannedOnly:$planned | Out-Null
 
     $runRes = Write-QCCommentSyncRun -Config $Config -RunRecord $runRecord -PlannedOnly:$planned
     $runId = 0L
