@@ -649,10 +649,14 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        # Advance watermark to latest PW o_acttime ingested this tick (or poll end when no rows).
+                        # Advance watermark only when dms_audt rows were ingested this tick (latest o_acttime UTC).
                         $maxPwActTime = $null
                         $maxPwActTimeUtc = $null
+                        $totalEventsFetched = 0
                         try {
+                            if ($auditData.stats -and $null -ne $auditData.stats.totalEvents) {
+                                $totalEventsFetched = [int]$auditData.stats.totalEvents
+                            }
                             if ($auditData.stats -and $auditData.stats.maxPwActTime) {
                                 $maxPwActTime = [string]$auditData.stats.maxPwActTime
                             }
@@ -660,27 +664,32 @@ if ($statusSetRules.Count -ge 0) {
                                 $maxPwActTimeUtc = [string]$auditData.stats.maxPwActTimeUtc
                             }
                         } catch { }
-                        $watermarkAfterStr = if (-not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc)) {
-                            $maxPwActTimeUtc
-                        } elseif ($auditData.watermarkAfter) {
-                            [string]$auditData.watermarkAfter
-                        } else {
-                            $pollWindow.untilUtc
-                        }
-                        $capturedThrough = $until
-                        try {
-                            if (-not [string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
-                                $capturedThrough = [DateTime]::ParseExact(
-                                    $watermarkAfterStr.Trim().TrimEnd('Z'),
-                                    'yyyy-MM-dd HH:mm:ss',
-                                    $null,
-                                    [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
-                                )
+                        $watermarkAfterStr = $null
+                        $capturedThrough = $null
+                        if ($totalEventsFetched -gt 0) {
+                            $watermarkAfterStr = if (-not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc)) {
+                                $maxPwActTimeUtc
+                            } elseif ($auditData.watermarkAfter) {
+                                [string]$auditData.watermarkAfter
+                            } else {
+                                $null
                             }
-                        } catch {
-                            $capturedThrough = $until
+                            if (-not [string]::IsNullOrWhiteSpace($watermarkAfterStr)) {
+                                try {
+                                    $capturedThrough = [DateTime]::ParseExact(
+                                        $watermarkAfterStr.Trim().TrimEnd('Z'),
+                                        'yyyy-MM-dd HH:mm:ss',
+                                        $null,
+                                        [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                                    )
+                                } catch {
+                                    $capturedThrough = $null
+                                }
+                            }
+                            if ($capturedThrough) {
+                                [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough -Config $config)
+                            }
                         }
-                        [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $capturedThrough -Config $config)
 
                         $script:pollRunWatermarkBefore = $pollWindow.watermarkBefore
                         $script:pollRunWatermarkAfter = $watermarkAfterStr
@@ -719,7 +728,7 @@ if ($statusSetRules.Count -ge 0) {
                             durationMs     = [int]$auditData.durationMs
                             watermarkBefore = $pollWindow.watermarkBefore
                             watermarkAfter = $watermarkAfterStr
-                            capturedThrough = $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss')
+                            capturedThrough = if ($capturedThrough) { $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
                             maxPwActTime = $maxPwActTime
                         }
 
@@ -730,21 +739,18 @@ if ($statusSetRules.Count -ge 0) {
                         $auditDescCache = @{}
                         $auditSheetPairCache = @{}
                         $auditTriggerEventIds = [System.Collections.Generic.List[long]]::new()
-                        if ($auditData.events) {
-                            foreach ($evt in @($auditData.events)) {
-                                try {
-                                    $eid = 0
-                                    if ($evt.id) { $eid = [long]$evt.id }
-                                    elseif ($evt.PSObject.Properties['id']) { $eid = [long]$evt.id }
-                                    if ($eid -gt 0) { [void]$auditTriggerEventIds.Add($eid) }
-                                } catch { }
-                            }
-                        }
                         $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
                         foreach ($ac in $auditCandidates) {
                             try {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+
+                                try {
+                                    if ($null -ne $ac.auditEventId) {
+                                        $aeid = [long]$ac.auditEventId
+                                        if ($aeid -gt 0) { [void]$auditTriggerEventIds.Add($aeid) }
+                                    }
+                                } catch { }
 
                                 $itemName = [string]$ac.itemName
                                 $actionName = [string]$ac.actionName

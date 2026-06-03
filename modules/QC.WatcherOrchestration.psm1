@@ -286,8 +286,12 @@ function Invoke-QCWatcherStartupSequence {
             $telemetry.auditReconcile = $auditRec.Data
             if (-not $DryRun.IsPresent -and $auditRec.Data.scan) {
                 $scanData = $auditRec.Data.scan
-                $captured = [DateTime]::UtcNow
-                if ($scanData.watermarkAfter) {
+                $fetched = 0
+                try {
+                    if ($scanData.stats -and $null -ne $scanData.stats.totalEvents) { $fetched = [int]$scanData.stats.totalEvents }
+                } catch { }
+                if ($fetched -gt 0 -and $scanData.watermarkAfter) {
+                    $captured = $null
                     try {
                         $captured = [DateTime]::ParseExact(
                             ([string]$scanData.watermarkAfter).Trim().TrimEnd('Z'),
@@ -296,8 +300,10 @@ function Invoke-QCWatcherStartupSequence {
                             [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
                         )
                     } catch { }
+                    if ($captured) {
+                        [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $captured -Config $Config)
+                    }
                 }
-                [void](Set-AuditTrailCaptureWatermark -WatermarkPath $watermarkPath -CapturedThrough $captured -Config $Config)
             }
         } else {
             [void]$telemetry.errors.Add([string]$auditRec.Message)

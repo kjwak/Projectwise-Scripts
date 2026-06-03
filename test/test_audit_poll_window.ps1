@@ -52,6 +52,11 @@ try {
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
     _Assert ($read.ToUniversalTime() -eq $captured) 'read watermark should match written UTC value'
 
+    Set-Content -LiteralPath $wmPath -Value '2026-06-03 14:10:47' -Encoding UTF8 -NoNewline
+    $readNoZ = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
+    _Assert ($readNoZ) 'watermark file without Z suffix should parse'
+    _Assert ($readNoZ.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') -eq '2026-06-03 14:10:47') 'non-Z file watermark must stay UTC wall clock (not +7h local)'
+
     # Missing watermark file => no capture point (DB watermark ignored when file absent).
     Remove-Item -LiteralPath $wmPath -Force
     $readMissing = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath

@@ -171,13 +171,8 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
         [hashtable]$Config
     )
 
-    $watchRoots = @()
-    if ($WatchRootConfigs.Count -gt 0) {
-        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
-    } elseif ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
-        $WatchRootConfigs = @($Config.projectWise.watchList.roots)
-        $watchRoots = @($WatchRootConfigs | ForEach-Object { [string]$_.path })
-    }
+    $WatchRootConfigs = @(_AuditPoller-NormalizeWatchRootConfigs -WatchRootConfigs $WatchRootConfigs -Config $Config)
+    $watchRoots = @($WatchRootConfigs | ForEach-Object { _AuditPoller-GetWatchRootPathFromConfig -Cfg $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
     $candidates = @()
     $folderUpdates = [System.Collections.Generic.List[object]]::new()
@@ -280,12 +275,56 @@ function _AuditPoller-NormalizeFolderPath {
     return ('Documents\' + $t)
 }
 
+function _AuditPoller-GetWatchRootPathFromConfig {
+    param([object]$Cfg)
+    if ($null -eq $Cfg) { return '' }
+    if ($Cfg -is [hashtable]) {
+        if ($Cfg.ContainsKey('path') -and $Cfg['path']) { return ([string]$Cfg['path']).Trim() }
+        return ''
+    }
+    try {
+        if ($Cfg.PSObject.Properties['path'] -and $Cfg.path) { return ([string]$Cfg.path).Trim() }
+    } catch { }
+    return ''
+}
+
+function _AuditPoller-NormalizeWatchRootConfigs {
+    param(
+        [array]$WatchRootConfigs,
+        [hashtable]$Config
+    )
+    $out = [System.Collections.Generic.List[object]]::new()
+    if ($null -ne $WatchRootConfigs -and $WatchRootConfigs.Count -gt 0) {
+        if ($WatchRootConfigs -is [hashtable] -and $WatchRootConfigs.ContainsKey('path')) {
+            [void]$out.Add($WatchRootConfigs)
+            return @($out)
+        }
+        foreach ($item in @($WatchRootConfigs)) {
+            if ($null -eq $item) { continue }
+            if (-not [string]::IsNullOrWhiteSpace((_AuditPoller-GetWatchRootPathFromConfig -Cfg $item))) {
+                [void]$out.Add($item)
+            }
+        }
+        if ($out.Count -gt 0) { return @($out) }
+    }
+    if ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
+        foreach ($item in @($Config.projectWise.watchList.roots)) {
+            if ($null -eq $item) { continue }
+            if (-not [string]::IsNullOrWhiteSpace((_AuditPoller-GetWatchRootPathFromConfig -Cfg $item))) {
+                [void]$out.Add($item)
+            }
+        }
+    }
+    return @($out)
+}
+
 function _AuditPoller-BuildMatchRoots {
     param([string[]]$WatchRoots)
     $matchRoots = [System.Collections.Generic.List[string]]::new()
-    foreach ($root in $WatchRoots) {
+    foreach ($root in @($WatchRoots)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
         $matchRoots.Add($root)
-        if ($root -like 'Documents\*') {
+        if ($root.StartsWith('Documents\', [StringComparison]::OrdinalIgnoreCase)) {
             $matchRoots.Add($root.Substring('Documents\'.Length))
         } else {
             $matchRoots.Add("Documents\$root")
@@ -300,7 +339,7 @@ function _AuditPoller-MatchesWatchRoot {
     if (-not $fp) { return $false }
     foreach ($root in $MatchRoots) {
         $r = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$root)
-        if ($r -and $fp -like "$r*") { return $true }
+        if ($r -and $fp.StartsWith($r, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
 }
@@ -311,14 +350,17 @@ function _AuditPoller-GetWatchRootConfigForFolder {
     if (-not $fp) { return $null }
     foreach ($cfg in @($WatchRootConfigs)) {
         if (-not $cfg) { continue }
-        $rootPath = [string]$cfg.path
+        $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
         $testRoots = @($rootPath)
-        if ($rootPath -like 'Documents\*') { $testRoots += $rootPath.Substring('Documents\'.Length) }
-        else { $testRoots += "Documents\$rootPath" }
+        if ($rootPath.StartsWith('Documents\', [StringComparison]::OrdinalIgnoreCase)) {
+            $testRoots += $rootPath.Substring('Documents\'.Length)
+        } else {
+            $testRoots += "Documents\$rootPath"
+        }
         foreach ($tr in $testRoots) {
             $nr = _AuditPoller-NormalizeFolderPath -FolderPath $tr
-            if ($nr -and $fp -like "$nr*") { return $cfg }
+            if ($nr -and $fp.StartsWith($nr, [StringComparison]::OrdinalIgnoreCase)) { return $cfg }
         }
     }
     return $null
@@ -328,15 +370,26 @@ function _AuditPoller-GetSheetsSubpath {
     param([string]$FolderPath, [array]$WatchRootConfigs, [System.Collections.Generic.List[string]]$MatchRoots)
     $fp = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
     if (-not $fp) { return $false }
-    foreach ($cfg in $WatchRootConfigs) {
-        $rootPath = [string]$cfg.path
-        $suffix = if ($cfg.sheetsPathFromProject) { [string]$cfg.sheetsPathFromProject } else { 'CADD\Sheets' }
+    foreach ($cfg in @($WatchRootConfigs)) {
+        if (-not $cfg) { continue }
+        $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
+        if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+        $suffix = 'CADD\Sheets'
+        if ($cfg -is [hashtable] -and $cfg.ContainsKey('sheetsPathFromProject') -and $cfg['sheetsPathFromProject']) {
+            $suffix = [string]$cfg['sheetsPathFromProject']
+        } elseif ($cfg.PSObject -and $cfg.PSObject.Properties['sheetsPathFromProject'] -and $cfg.sheetsPathFromProject) {
+            $suffix = [string]$cfg.sheetsPathFromProject
+        }
         $testRoots = @($rootPath)
-        if ($rootPath -like 'Documents\*') { $testRoots += $rootPath.Substring('Documents\'.Length) }
-        else { $testRoots += "Documents\$rootPath" }
+        if ($rootPath.StartsWith('Documents\', [StringComparison]::OrdinalIgnoreCase)) {
+            $testRoots += $rootPath.Substring('Documents\'.Length)
+        } else {
+            $testRoots += "Documents\$rootPath"
+        }
         foreach ($tr in $testRoots) {
             $nr = _AuditPoller-NormalizeFolderPath -FolderPath $tr
-            if ($nr -and $fp -like "$nr*" -and $fp -like "*$suffix*") {
+            if ($nr -and $fp.StartsWith($nr, [StringComparison]::OrdinalIgnoreCase) -and
+                $fp.IndexOf($suffix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 return $true
             }
         }
@@ -365,21 +418,30 @@ function _AuditPoller-ParseWatermarkToUtc {
     param([string]$Raw)
     if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
     try {
-        $s = $Raw.Trim()
-        if ($s.EndsWith('Z', [StringComparison]::OrdinalIgnoreCase)) {
+        $s = $Raw.Trim().TrimEnd('Z')
+        return [DateTime]::ParseExact(
+            $s,
+            'yyyy-MM-dd HH:mm:ss',
+            $null,
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+        )
+    } catch {
+        try {
+            $s = $Raw.Trim()
+            if ($s.EndsWith('Z', [StringComparison]::OrdinalIgnoreCase)) {
+                return [DateTime]::Parse(
+                    $s,
+                    $null,
+                    [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                )
+            }
             return [DateTime]::Parse(
                 $s,
                 $null,
                 [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
             )
-        }
-        $dt = [DateTime]::Parse($s)
-        if ($dt.Kind -eq [DateTimeKind]::Unspecified) {
-            # Legacy watermark files used machine LocalDateTime before UTC poll bounds fix.
-            $dt = [DateTime]::SpecifyKind($dt, [DateTimeKind]::Local)
-        }
-        return $dt.ToUniversalTime()
-    } catch { return $null }
+        } catch { return $null }
+    }
 }
 
 function _AuditPoller-FormatSqlUtc {
@@ -552,7 +614,8 @@ function Get-AuditTrailCaptureWatermark {
     Returns the latest successful audit watermark (DB watcher_state is primary when enabled).
 
     .DESCRIPTION
-    Order: watcher_state.audit_watermark_utc, local watermark file, poll_runs.watermark_after.
+    Order: watcher_state.audit_watermark_utc, then local watermark file (both UTC with Z).
+    poll_runs.watermark_after is telemetry only and is excluded (often lacks Z and skews MAX).
     #>
     [CmdletBinding()]
     param(
@@ -574,8 +637,6 @@ function Get-AuditTrailCaptureWatermark {
             if ($parsed) { $found += $parsed }
         } catch { }
     }
-    $dbPoll = Get-AuditTrailHighWaterMarkFromDatabase -Config $Config
-    if ($dbPoll) { $found += $dbPoll }
     if ($found.Count -eq 0) { return $null }
     return ($found | Sort-Object -Descending | Select-Object -First 1)
 }
@@ -829,7 +890,7 @@ function Invoke-AuditTrailScan {
         $sw.Stop()
         return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No audit events in window.' -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
-            watermarkAfter = $queryUntilStr; durationMs = [int]$sw.ElapsedMilliseconds
+            watermarkAfter = $null; durationMs = [int]$sw.ElapsedMilliseconds
             pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
         }
     }
@@ -837,7 +898,7 @@ function Invoke-AuditTrailScan {
     # 2. Ingest every fetched row into audit_events (no QC/watch/action filtering).
     $maxPwActTime = $null
     $maxPwActTimeUtc = $null
-    $watermarkAfter = $queryUntilStr
+    $watermarkAfter = $null
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
@@ -917,8 +978,6 @@ function Invoke-AuditTrailScan {
     if ($maxPwActTimeUtc) {
         $stats.maxPwActTimeUtc = $maxPwActTimeUtc
         $watermarkAfter = $maxPwActTimeUtc
-    } elseif ($allEvents.Count -eq 0) {
-        $watermarkAfter = $queryUntilStr
     }
 
     # 3. QC trigger pipeline — database is source of truth for unprocessed rows.
@@ -995,18 +1054,15 @@ function Invoke-AuditTrailScan {
         }
     }
 
-    $built = _AuditPoller-BuildCandidatesFromTriggerRows -Rows $triggerRows -DocToFolder $docToFolder -FolderMap $folderMap -WatchRootConfigs $WatchRootConfigs -Config $Config
+    $normalizedWatchRoots = @(_AuditPoller-NormalizeWatchRootConfigs -WatchRootConfigs $WatchRootConfigs -Config $Config)
+    $built = _AuditPoller-BuildCandidatesFromTriggerRows -Rows $triggerRows -DocToFolder $docToFolder -FolderMap $folderMap -WatchRootConfigs $normalizedWatchRoots -Config $Config
     $candidates = @($built.candidates)
     $stats.watchMatches = @($candidates).Count
     $stats.sheetsMatches = @($candidates | Where-Object { [bool]$_.isSheetsFolder }).Count
 
     if ($stats.relevantEvents -gt 0 -and $stats.watchMatches -eq 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
         $watchRootPaths = @()
-        if ($WatchRootConfigs.Count -gt 0) {
-            $watchRootPaths = @($WatchRootConfigs | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        } elseif ($Config.projectWise -and $Config.projectWise.watchList -and $Config.projectWise.watchList.roots) {
-            $watchRootPaths = @($Config.projectWise.watchList.roots | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        }
+        $watchRootPaths = @($normalizedWatchRoots | ForEach-Object { _AuditPoller-GetWatchRootPathFromConfig -Cfg $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $resolvedSamples = [System.Collections.Generic.List[string]]::new()
         foreach ($row in $triggerRows) {
             if ($resolvedSamples.Count -ge 5) { break }
