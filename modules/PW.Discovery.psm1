@@ -40,6 +40,12 @@ function Ensure-PWDiscoveryModuleLoaded {
     } elseif (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
         Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
     }
+    if (-not (Get-Command -Name 'Write-QCPollRunTelemetry' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+        if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+            Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+        }
+    }
 
     $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
     return ($stillMissing.Count -eq 0)

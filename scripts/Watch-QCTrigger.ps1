@@ -286,6 +286,24 @@ function _Watch-EnsureJsonLog {
     return [bool](Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)
 }
 
+function _Watch-EnsureDatabaseExports {
+    $required = @(
+        'Test-QCDatabaseEnabled'
+        'Write-QCPollRunTelemetry'
+        'Mark-QCAuditEventsProcessed'
+        'Write-QCSheetIndex'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+    $dbPath = Join-Path $script:WatchModulesRoot 'Core.Database.psm1'
+    if (-not (Test-Path -LiteralPath $dbPath)) { return $false }
+    Import-Module (Join-Path $script:WatchModulesRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+    Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
+    [void](_Watch-EnsureJsonLog)
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
 function _Watch-WriteJsonLog {
     [CmdletBinding()]
     param(
@@ -351,6 +369,9 @@ if (-not (Ensure-PWDiscoveryModuleLoaded)) {
 if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after PW.Discovery load. Repo root: $repoRoot"
 }
+if (-not (_Watch-EnsureDatabaseExports)) {
+    throw "Core.Database.psm1 exports unavailable after PW.Discovery load. Repo root: $repoRoot"
+}
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 # QC.AuditTriggers (via PW.Discovery) can reload Core.Database and drop session exports; restore before use.
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -362,6 +383,9 @@ if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContin
 if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after Core.Database reload. Repo root: $repoRoot"
 }
+if (-not (_Watch-EnsureDatabaseExports)) {
+    throw "Core.Database.psm1 exports unavailable after Core.Database reload. Repo root: $repoRoot"
+}
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
@@ -371,6 +395,9 @@ Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningA
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after module imports. Repo root: $repoRoot"
+}
+if (-not (_Watch-EnsureDatabaseExports)) {
+    throw "Core.Database.psm1 exports unavailable after module imports. Repo root: $repoRoot"
 }
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -557,6 +584,9 @@ if ($statusSetRules.Count -ge 0) {
             }
             if (-not (_Watch-EnsureJsonLog)) {
                 throw 'Write-QCJsonLog unavailable after PW.Discovery reload at tick start.'
+            }
+            if (-not (_Watch-EnsureDatabaseExports)) {
+                throw 'Core.Database exports unavailable after PW.Discovery reload at tick start.'
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
@@ -850,6 +880,8 @@ if ($statusSetRules.Count -ge 0) {
                                     $acWatchRoot = ''
                                     try { if ($ac.watchRoot) { $acWatchRoot = [string]$ac.watchRoot } } catch { }
                                     if ($isDocumentState) {
+                                        [void](_Watch-EnsureJsonLog)
+                                        [void](_Watch-EnsureDatabaseExports)
                                         $acUserno = $null
                                         try {
                                             if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
@@ -863,6 +895,8 @@ if ($statusSetRules.Count -ge 0) {
                                             -DryRun:$isDryRun `
                                             -ChangedByUser $acUserno
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
+                                        [void](_Watch-EnsureJsonLog)
+                                        [void](_Watch-EnsureDatabaseExports)
                                         $acUsernoAttr = $null
                                         try {
                                             if ($null -ne $ac.userno) { $acUsernoAttr = [int]$ac.userno }
@@ -1272,6 +1306,18 @@ if ($statusSetRules.Count -ge 0) {
                                 }
                             } catch {
                                 $errors++
+                                $errDoc = ''
+                                $errAction = ''
+                                $errFolder = ''
+                                try { $errDoc = [string]$ac.itemName } catch { }
+                                try { $errAction = [string]$ac.actionName } catch { }
+                                try { $errFolder = [string]$ac.resolvedFolder } catch { }
+                                _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_CANDIDATE_ERROR' -Message $_.Exception.Message -Data @{
+                                    documentName = $errDoc
+                                    actionName   = $errAction
+                                    folderPath   = $errFolder
+                                    error        = [string]$_.Exception.Message
+                                }
                             }
                         }
                         if ($auditTriggerEventIds.Count -gt 0 -and (Get-Command -Name 'Mark-QCAuditEventsProcessed' -ErrorAction SilentlyContinue)) {
@@ -2357,6 +2403,10 @@ $dedupeSec = if ($phaseMs.ContainsKey('dedupeChecks')) { [math]::Round(([decimal
 $queueWriteSec = if ($phaseMs.ContainsKey('queueWrite')) { [math]::Round(([decimal]$phaseMs['queueWrite']/1000),3) } else { $null }
 $cleanupSec = if ($phaseMs.ContainsKey('localCacheWrite')) { [math]::Round(([decimal]$phaseMs['localCacheWrite']/1000),3) } else { $null }
 $sleepThrottleSec = if ($phaseMs.ContainsKey('sleepThrottle')) { [math]::Round(([decimal]$phaseMs['sleepThrottle']/1000),3) } else { 0 }
+if (-not (_Watch-EnsureDatabaseExports)) {
+    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_TELEMETRY_SKIPPED' -Message 'Write-QCPollRunTelemetry unavailable; poll telemetry skipped.' -Data @{ runId = $runId }
+    $telemetryRes = New-QCFailureResult -Code 'WATCH_TELEMETRY_SKIPPED' -Message 'Write-QCPollRunTelemetry unavailable.' -Data @{}
+} else {
 $telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -EventsFetched $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsFetched}else{$fileItems.Count}) `
     -EventsRelevant $(if($script:auditPollTelemetry){$script:auditPollTelemetry.eventsRelevant}else{$matched}) `
@@ -2391,6 +2441,7 @@ $telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -QueueDepthSnapshot $queueDepthSnapshot `
     -RunId $runId `
     -PassNumberSource $passNumberSource
+}
 $dbWriteSw.Stop()
 if (-not $telemetryRes.IsSuccess) {
     _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_TELEMETRY_WRITE_FAILED' -Message $telemetryRes.Message -Data @{ runId=$runId; passNumber=$watcherPassNumber; watcherName='qc_watcher' }
