@@ -730,6 +730,10 @@ if ($statusSetRules.Count -ge 0) {
                             watermarkAfter = $watermarkAfterStr
                             capturedThrough = if ($capturedThrough) { $capturedThrough.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
                             maxPwActTime = $maxPwActTime
+                            auditLogicVersion = if ($auditData.stats.auditLogicVersion) { [string]$auditData.stats.auditLogicVersion } else { $null }
+                            candidateSkippedActionCode = if ($null -ne $auditData.stats.candidateSkippedActionCode) { [int]$auditData.stats.candidateSkippedActionCode } else { $null }
+                            candidateSkippedNoFolder = if ($null -ne $auditData.stats.candidateSkippedNoFolder) { [int]$auditData.stats.candidateSkippedNoFolder } else { $null }
+                            candidateSkippedNoWatchMatch = if ($null -ne $auditData.stats.candidateSkippedNoWatchMatch) { [int]$auditData.stats.candidateSkippedNoWatchMatch } else { $null }
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.

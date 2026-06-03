@@ -7,6 +7,9 @@
 # caller before this module. Re-importing with -Force here would clobber their
 # global-scope exports.
 
+# Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
+$script:AuditPollerLogicVersion = '2026-06-03-trigger-action-v2'
+
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
     1002 = 'DOCUMENT_MODIFY'
@@ -176,28 +179,42 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
     $matchRoots = _AuditPoller-BuildMatchRoots -WatchRoots $watchRoots
     $candidates = @()
     $folderUpdates = [System.Collections.Generic.List[object]]::new()
+    $diagSkippedAction = 0
+    $diagSkippedNoFolder = 0
+    $diagSkippedNoWatch = 0
 
     foreach ($row in @($Rows)) {
         $auditId = $null
-        try { if ($row.id) { $auditId = [long]$row.id } } catch { }
+        try {
+            $idVal = _AuditPoller-GetRowValue -Row $row -Name 'id'
+            if ($null -ne $idVal) { $auditId = [long]$idVal }
+        } catch { }
         $actionCode = _AuditPoller-GetTriggerActionCode -Row $row
-        if (-not $script:QCRelevantActions.ContainsKey($actionCode)) { continue }
+        if (-not $script:QCRelevantActions.ContainsKey($actionCode)) {
+            $diagSkippedAction++
+            continue
+        }
         $actionName = $script:QCRelevantActions[$actionCode]
-        $objGuid = [string]$row.pw_objguid
+        $objGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_objguid')
         if ([string]::IsNullOrWhiteSpace($objGuid)) {
             $objGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid')
         }
-        $parentGuid = [string]$row.pw_parentguid
+        $parentGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_parentguid')
         if ([string]::IsNullOrWhiteSpace($parentGuid)) {
             $parentGuid = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_parentguid')
         }
 
         $resolvedFolder = $null
-        if (-not [string]::IsNullOrWhiteSpace([string]$row.resolved_folder)) {
-            $resolvedFolder = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$row.resolved_folder)
+        $resolvedFromDb = [string](_AuditPoller-GetRowValue -Row $row -Name 'resolved_folder')
+        if (-not [string]::IsNullOrWhiteSpace($resolvedFromDb)) {
+            $resolvedFolder = _AuditPoller-NormalizeFolderPath -FolderPath $resolvedFromDb
         }
-        if (-not $resolvedFolder -and $objGuid -and $DocToFolder.ContainsKey($objGuid)) { $resolvedFolder = $DocToFolder[$objGuid] }
-        elseif (-not $resolvedFolder -and $parentGuid -and $FolderMap.ContainsKey($parentGuid)) { $resolvedFolder = $FolderMap[$parentGuid] }
+        if (-not $resolvedFolder -and $objGuid -and $DocToFolder.ContainsKey($objGuid)) {
+            $resolvedFolder = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$DocToFolder[$objGuid])
+        }
+        elseif (-not $resolvedFolder -and $parentGuid -and $FolderMap.ContainsKey($parentGuid)) {
+            $resolvedFolder = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$FolderMap[$parentGuid])
+        }
 
         $isWatchMatch = $false
         $isSheetsFolder = $false
@@ -213,7 +230,14 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
             [void]$folderUpdates.Add(@{ id = $auditId; resolvedFolder = $resolvedFolder; candidateType = $candidateType })
         }
 
-        if (-not $isWatchMatch) { continue }
+        if (-not $resolvedFolder) {
+            $diagSkippedNoFolder++
+            continue
+        }
+        if (-not $isWatchMatch) {
+            $diagSkippedNoWatch++
+            continue
+        }
 
         $enableQcPrepend = $false
         $enableQcCommentSync = $false
@@ -233,13 +257,15 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
             $watchRootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $rootCfg
         }
 
-        $actTime = [string]$row.pw_acttime
+        $actTime = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_acttime')
         if ([string]::IsNullOrWhiteSpace($actTime)) { $actTime = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_acttime') }
         $userno = 0
-        try { $userno = [int]$row.pw_userno } catch {
-            try { $userno = [int](_AuditPoller-GetRowValue -Row $row -Name 'o_userno') } catch { $userno = 0 }
-        }
-        $itemName = [string]$row.pw_itemname
+        try {
+            $u = _AuditPoller-GetRowValue -Row $row -Name 'pw_userno'
+            if ($null -eq $u) { $u = _AuditPoller-GetRowValue -Row $row -Name 'o_userno' }
+            if ($null -ne $u) { $userno = [int]$u }
+        } catch { $userno = 0 }
+        $itemName = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_itemname')
         if ([string]::IsNullOrWhiteSpace($itemName)) { $itemName = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_itemname') }
 
         $candidates += @{
@@ -261,7 +287,13 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
         }
     }
 
-    return @{ candidates = $candidates; folderUpdates = @($folderUpdates) }
+    return @{
+        candidates          = $candidates
+        folderUpdates       = @($folderUpdates)
+        skippedActionCode   = $diagSkippedAction
+        skippedNoFolder     = $diagSkippedNoFolder
+        skippedNoWatchMatch = $diagSkippedNoWatch
+    }
 }
 
 function _AuditPoller-NormalizeFolderPath {
@@ -551,13 +583,10 @@ function _AuditPoller-GetActionCode {
 function _AuditPoller-GetTriggerActionCode {
     param($Row)
     $code = 0
-    try {
-        if ($Row -is [hashtable] -and $Row.ContainsKey('pw_action') -and $null -ne $Row['pw_action']) {
-            $code = [int]$Row['pw_action']
-        } elseif ($Row.PSObject -and $null -ne $Row.pw_action) {
-            $code = [int]$Row.pw_action
-        }
-    } catch { $code = 0 }
+    $pwAct = _AuditPoller-GetRowValue -Row $Row -Name 'pw_action'
+    if ($null -ne $pwAct) {
+        try { $code = [int]$pwAct } catch { $code = 0 }
+    }
     if ($code -eq 0) { $code = _AuditPoller-GetActionCode -Row $Row }
     return $code
 }
@@ -844,6 +873,7 @@ function Invoke-AuditTrailScan {
         guidResolveSkipped = 0
         failedGuidCacheHits = 0
         triggerSource      = 'pw_batch'
+        auditLogicVersion  = $script:AuditPollerLogicVersion
     }
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
@@ -1004,8 +1034,9 @@ function Invoke-AuditTrailScan {
         $maxUnprocessed = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxUnprocessedPerPoll' -Default 500
         if (Get-Command -Name 'Get-QCUnprocessedAuditEvents' -ErrorAction SilentlyContinue) {
             $unprocRes = Get-QCUnprocessedAuditEvents -Config $Config -MaxRows $maxUnprocessed
-            if ($unprocRes.IsSuccess -and $null -ne $unprocRes.Data -and $unprocRes.Data.rows) {
-                $dbRows = @($unprocRes.Data.rows)
+            if ($unprocRes.IsSuccess -and $null -ne $unprocRes.Data) {
+                $dbRows = @()
+                if ($unprocRes.Data.rows) { $dbRows = @($unprocRes.Data.rows) }
                 if ($dbRows.Count -gt 0) {
                     $triggerRows = $dbRows
                     $stats.dbUnprocessedLoaded = $triggerRows.Count
@@ -1055,7 +1086,8 @@ function Invoke-AuditTrailScan {
     foreach ($row in $triggerRows) {
         $ac = _AuditPoller-GetTriggerActionCode -Row $row
         if ($ac -eq 1003) {
-            $og = [string]$row.pw_objguid
+            $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_objguid')
+            if ([string]::IsNullOrWhiteSpace($og)) { $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid') }
             if (-not [string]::IsNullOrWhiteSpace($og)) { $invalidate[$og.Trim().ToLowerInvariant()] = $true }
         }
     }
@@ -1078,6 +1110,11 @@ function Invoke-AuditTrailScan {
     $candidates = @($built.candidates)
     $stats.watchMatches = @($candidates).Count
     $stats.sheetsMatches = @($candidates | Where-Object { [bool]$_.isSheetsFolder }).Count
+    try {
+        $stats.candidateSkippedActionCode = [int]$built.skippedActionCode
+        $stats.candidateSkippedNoFolder = [int]$built.skippedNoFolder
+        $stats.candidateSkippedNoWatchMatch = [int]$built.skippedNoWatchMatch
+    } catch { }
 
     if ($stats.relevantEvents -gt 0 -and $stats.watchMatches -eq 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
         $watchRootPaths = @($normalizedWatchRoots | ForEach-Object { _AuditPoller-GetWatchRootPathFromConfig -Cfg $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1090,24 +1127,32 @@ function Invoke-AuditTrailScan {
             if ([string]::IsNullOrWhiteSpace($og)) { $og = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_objguid') }
             $fp = $null
             if ($og -and $docToFolder.ContainsKey($og)) { $fp = [string]$docToFolder[$og] }
-            elseif (-not [string]::IsNullOrWhiteSpace([string]$row.resolved_folder)) { $fp = [string]$row.resolved_folder }
+            else {
+                $rf = [string](_AuditPoller-GetRowValue -Row $row -Name 'resolved_folder')
+                if (-not [string]::IsNullOrWhiteSpace($rf)) { $fp = $rf }
+            }
             if ($fp) {
                 [void]$resolvedSamples.Add($fp)
                 if ($sampleMatchChecks.Count -lt 3) {
                     $normFp = _AuditPoller-NormalizeFolderPath -FolderPath $fp
                     $matched = _AuditPoller-MatchesWatchRoot -FolderPath $fp -MatchRoots $diagMatchRoots
-                    [void]$sampleMatchChecks.Add("$normFp => $matched")
+                    $acDiag = _AuditPoller-GetTriggerActionCode -Row $row
+                    [void]$sampleMatchChecks.Add("action=$acDiag $normFp => $matched")
                 }
             }
         }
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_NO_WATCH_MATCH' -Message 'QC-relevant audit events did not match any projectWise.watchList.roots path.' -Data @{
             relevantEvents = $stats.relevantEvents
             triggerSource = [string]$stats.triggerSource
+            auditLogicVersion = [string]$stats.auditLogicVersion
             watchRootCount = $watchRootPaths.Count
             matchRootsCount = $diagMatchRoots.Count
             watchRoots = @($watchRootPaths | Select-Object -First 5)
             resolvedFolderSamples = @($resolvedSamples)
             sampleMatchChecks = @($sampleMatchChecks)
+            candidateSkippedActionCode = [int]$stats.candidateSkippedActionCode
+            candidateSkippedNoFolder = [int]$stats.candidateSkippedNoFolder
+            candidateSkippedNoWatchMatch = [int]$stats.candidateSkippedNoWatchMatch
             foldersResolved = [int]$stats.foldersResolved
             guidCacheMisses = [int]$stats.guidCacheMisses
             guidResolveSkipped = [int]$stats.guidResolveSkipped
@@ -1165,4 +1210,8 @@ function Reset-AuditPollCycleCounter {
     try { Set-Content -LiteralPath $CounterPath -Value '0' -Encoding UTF8 } catch { }
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter
+function Get-AuditPollerLogicVersion {
+    return $script:AuditPollerLogicVersion
+}
+
+Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion
