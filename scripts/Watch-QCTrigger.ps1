@@ -122,9 +122,7 @@ function _Read-LocalWatcherCache {
         }
         return @{ version = 1; entries = $entries }
     } catch {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_READ_FAILED' -Message 'Local watcher cache could not be read; rebuilding.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
-        }
+        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_READ_FAILED' -Message 'Local watcher cache could not be read; rebuilding.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
         return $empty
     }
 }
@@ -141,9 +139,7 @@ function _Write-LocalWatcherCache {
         Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
         return $true
     } catch {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_WRITE_FAILED' -Message 'Local watcher cache could not be written.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
-        }
+        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_WRITE_FAILED' -Message 'Local watcher cache could not be written.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
         return $false
     }
 }
@@ -275,9 +271,69 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 }
 
 $modulesRoot = Join-Path $repoRoot 'modules'
+$script:WatchModulesRoot = $modulesRoot
+
+function _Watch-EnsureJsonLog {
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) { return $true }
+    $resultsPath = Join-Path $script:WatchModulesRoot 'Core.Results.psm1'
+    $runtimePath = Join-Path $script:WatchModulesRoot 'Core.Runtime.psm1'
+    if (Test-Path -LiteralPath $resultsPath) {
+        Import-Module $resultsPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+    if (Test-Path -LiteralPath $runtimePath) {
+        Import-Module $runtimePath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+    return [bool](Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)
+}
+
+function _Watch-WriteJsonLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Level,
+        [Parameter(Mandatory)][string]$Code,
+        [Parameter(Mandatory)][string]$Message,
+        [hashtable]$Data,
+        [string]$WorkerLabel = '',
+        [switch]$IncludeWorkerPid,
+        [switch]$Flush
+    )
+
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        [void](_Watch-EnsureJsonLog)
+    }
+    $cmd = Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $invoke = @{
+            Level   = $Level
+            Code    = $Code
+            Message = $Message
+        }
+        if ($null -ne $Data) { $invoke['Data'] = $Data }
+        if ($WorkerLabel) { $invoke['WorkerLabel'] = $WorkerLabel }
+        if ($IncludeWorkerPid) { $invoke['IncludeWorkerPid'] = $true }
+        if ($Flush) { $invoke['Flush'] = $true }
+        & $cmd @invoke
+        return
+    }
+    if (-not $Data) { $Data = @{} }
+    $payload = @{
+        ts      = (Get-Date).ToString('o')
+        level   = $Level
+        code    = $Code
+        message = $Message
+        data    = $Data
+    } | ConvertTo-Json -Depth 20 -Compress
+    if ($Flush) {
+        [Console]::Out.WriteLine($payload)
+        [Console]::Out.Flush()
+    } else {
+        Write-Host $payload
+    }
+}
+
 Import-Module (Join-Path $modulesRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
-if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+if (-not (_Watch-EnsureJsonLog)) {
     throw "Core.Runtime.psm1 did not load (Write-QCJsonLog missing). Repo root: $repoRoot"
 }
 Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
@@ -292,7 +348,7 @@ Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningA
 if (-not (Ensure-PWDiscoveryModuleLoaded)) {
     throw "PW.Discovery.psm1 did not load required exports (e.g. Find-PWSheetsFoldersUnderRoot). Repo: $repoRoot"
 }
-if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after PW.Discovery load. Repo root: $repoRoot"
 }
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
@@ -303,7 +359,7 @@ if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContin
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
     throw "Core.Database.psm1 did not load; Test-QCDatabaseEnabled is unavailable. Repo: $repoRoot"
 }
-if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after Core.Database reload. Repo root: $repoRoot"
 }
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
@@ -313,7 +369,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+if (-not (_Watch-EnsureJsonLog)) {
     throw "Write-QCJsonLog unavailable after module imports. Repo root: $repoRoot"
 }
 
@@ -325,19 +381,19 @@ if (Test-QCDatabaseEnabled -Config $config) {
     try {
         $schemaRes = Initialize-QCDatabaseSchema -Config $config
         if (-not $schemaRes.IsSuccess) {
-            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message 'Database schema initialization failed; sheet_index writes may fail until schema is upgraded.' -Data @{
+            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message 'Database schema initialization failed; sheet_index writes may fail until schema is upgraded.' -Data @{
                 code = [string]$schemaRes.Code
                 message = [string]$schemaRes.Message
             }
         } elseif ($schemaRes.Code -in @('DB_SCHEMA_INITIALIZED', 'DB_SCHEMA_UPGRADED')) {
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DB_SCHEMA_READY' -Message ([string]$schemaRes.Message) -Data @{
+            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_DB_SCHEMA_READY' -Message ([string]$schemaRes.Message) -Data @{
                 code = [string]$schemaRes.Code
                 version = if ($schemaRes.Data.version) { [string]$schemaRes.Data.version } else { $null }
                 previousVersion = if ($schemaRes.Data.previousVersion) { [string]$schemaRes.Data.previousVersion } else { $null }
             }
         }
     } catch {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message ('Database schema initialization threw: ' + $_.Exception.Message) -Data @{}
+        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_DB_SCHEMA_INIT_FAILED' -Message ('Database schema initialization threw: ' + $_.Exception.Message) -Data @{}
     }
 }
 
@@ -365,7 +421,7 @@ $watchFolders = @($config.watchFolders | ForEach-Object { ($_ -as [string]).Trim
 $hasPwWatchList = ($config.ContainsKey('projectWise') -and $config.projectWise -and ($config.projectWise.ContainsKey('watchList') -and $config.projectWise.watchList))
 if ($watchFolders.Count -eq 0 -and -not $hasPwWatchList) { throw "watchFolders is empty and projectWise.watchList not configured." }
 
-Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch run started.' -Data @{
+_Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch run started.' -Data @{
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
     watchFolderCount = $watchFolders.Count
@@ -387,7 +443,7 @@ try {
         $wmPathStartup = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
         $wmAge = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $wmPathStartup
     } catch { }
-    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_STARTUP_SEQUENCE' -Message 'RecoverQueue completed (audit reconcile on first PW tick).' -Data @{
+    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_STARTUP_SEQUENCE' -Message 'RecoverQueue completed (audit reconcile on first PW tick).' -Data @{
         watermarkAgeSeconds = $wmAge
         queueRecovery = $startupData.recovery
     }
@@ -407,7 +463,7 @@ try {
         try { $sqFailedRec = [int]$sqRec.recoveredToFailed } catch { }
         try { $sqOrphans = [int]$sqRec.recoveredOrphan } catch { }
     }
-    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QUEUE_STARTUP' -Message 'Queue startup check completed.' -Data @{
+    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_QUEUE_STARTUP' -Message 'Queue startup check completed.' -Data @{
         queueRoot            = $queueRoot
         pending              = $sqPending
         running              = $sqRunning
@@ -419,7 +475,7 @@ try {
         startupErrors        = @($startupData.errors)
     }
 } catch {
-    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_QUEUE_STARTUP_FAILED' -Message 'Queue startup check threw.' -Data @{
+    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_QUEUE_STARTUP_FAILED' -Message 'Queue startup check threw.' -Data @{
         queueRoot = $queueRoot
         error     = [string]$_.Exception.Message
     }
@@ -475,7 +531,7 @@ do {
     $watcherTick++
     _Reset-WatcherPassState
     if ($watcherContinuous) {
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_START' -Message 'Watcher poll tick started.' -Data @{
+        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_START' -Message 'Watcher poll tick started.' -Data @{
             tick = $watcherTick
             pollSleepMs = $watcherPollSleepMs
             pwSessionOpen = $pwSessionOpen
@@ -499,13 +555,13 @@ if ($statusSetRules.Count -ge 0) {
             if (-not (Ensure-PWDiscoveryModuleLoaded)) {
                 throw 'PW.Discovery exports are unavailable at tick start (Find-PWSheetsFoldersUnderRoot missing).'
             }
-            if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+            if (-not (_Watch-EnsureJsonLog)) {
                 throw 'Write-QCJsonLog unavailable after PW.Discovery reload at tick start.'
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
             if (-not $pwSessionOpen) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
                     datasourceName = $ds
                     credentialPath = $credPath
                     continuous = $watcherContinuous
@@ -518,7 +574,7 @@ if ($statusSetRules.Count -ge 0) {
                 }
                 $pwSessionOpen = $true
                 $script:pwConnectFailureStreak = 0
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
                     datasourceName = $ds
                     userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
                     continuous = $watcherContinuous
@@ -533,13 +589,13 @@ if ($statusSetRules.Count -ge 0) {
                 ($watcherMode -in @('reconciliation','hybrid')) -or $ReconcileStatusSetsFirst.IsPresent
             )
             if ($runStatusSetReconcile) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_START' -Message 'Reconciling local status sets to ProjectWise.' -Data @{}
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_START' -Message 'Reconciling local status sets to ProjectWise.' -Data @{}
                 try {
                     $cb = {
                         param($evt)
                         $level = if ([bool]$evt.isSuccess) { 'Information' } else { 'Warning' }
                         $code  = "WATCH_RECONCILE_$([string]$evt.code -replace '^STATUS_SET_RECONCILE_','')"
-                        Write-QCJsonLog -Flush -Level $level -Code $code -Message ([string]$evt.message) -Data @{
+                        _Watch-WriteJsonLog -Flush -Level $level -Code $code -Message ([string]$evt.message) -Data @{
                             workspaceDir = [string]$evt.workspaceDir
                             pwFolder     = [string]$evt.pwFolder
                             sheetsFolder = [string]$evt.sheetsFolder
@@ -549,16 +605,16 @@ if ($statusSetRules.Count -ge 0) {
                     }
                     $rec = Invoke-StatusSetReconcile -Config $config -LogCallback $cb
                     if ($rec.IsSuccess) {
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_DONE' -Message 'Reconciliation completed.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_DONE' -Message 'Reconciliation completed.' -Data @{
                             counts   = $rec.Data.counts
                             failures = $rec.Data.failures
                             skipped  = $rec.Data.skipped
                         }
                     } else {
-                        Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ([string]$rec.Message) -Data @{ code = [string]$rec.Code }
+                        _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ([string]$rec.Message) -Data @{ code = [string]$rec.Code }
                     }
                 } catch {
-                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ('Reconciliation threw: ' + $_.Exception.Message) -Data @{}
+                    _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_RECONCILE_FAILED' -Message ('Reconciliation threw: ' + $_.Exception.Message) -Data @{}
                 }
             }
 
@@ -580,7 +636,7 @@ if ($statusSetRules.Count -ge 0) {
             } catch {
                 $watcherPassNumber = $null
                 $passNumberSource = 'error'
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath = $counterPath }
+                _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PASS_COUNTER_READ_FAILED' -Message ([string]$_.Exception.Message) -Data @{ counterPath = $counterPath }
             }
             $fullScanPlan = Get-QCFullFolderScanReconciliationPlan -Config $config -CycleNum $cycleNum -QueueRoot $queueRoot
             $isReconciliationCycle = [bool]$fullScanPlan.due
@@ -617,7 +673,7 @@ if ($statusSetRules.Count -ge 0) {
 
                     $watermarkAgeSeconds = $null
                     try { $watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { }
-                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
                         sinceUtc = $pollWindow.sinceUtc
                         untilUtc = $pollWindow.untilUtc
                         sinceDisplay = $pollWindow.sinceDisplay
@@ -635,7 +691,7 @@ if ($statusSetRules.Count -ge 0) {
                     $runMode = 'audit'
                     $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
-                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
                         $wmAfterFail = $pollWindow.watermarkBefore
                         if ([string]::IsNullOrWhiteSpace($wmAfterFail)) {
                             $wmAfterFail = $pollWindow.untilUtc
@@ -653,7 +709,7 @@ if ($statusSetRules.Count -ge 0) {
                             try { $fallback = [bool]$auditPollerCfg.fallbackToFullScan } catch { $fallback = $true }
                         }
                         if ($fallback) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_FALLBACK' -Message 'Falling back to full folder scan.' -Data @{}
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_FALLBACK' -Message 'Falling back to full folder scan.' -Data @{}
                             $runFullScan = $true
                         }
                     } else {
@@ -722,7 +778,7 @@ if ($statusSetRules.Count -ge 0) {
                             dbSkipped         = [int]$auditData.stats.dbSkipped
                         }
 
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
                             totalEvents    = $auditData.stats.totalEvents
                             relevantEvents = $auditData.stats.relevantEvents
                             watchMatches   = $auditData.stats.watchMatches
@@ -782,7 +838,7 @@ if ($statusSetRules.Count -ge 0) {
                                     $isDocumentState = $acAction -eq 'DOCUMENT_STATE'
                                     $syncAttributes = $acAction -eq 'DOCUMENT_ATTR'
                                     if ($isDocumentState -or $syncAttributes) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
                                             actionName     = $acAction
                                             documentName   = [string]$ac.itemName
                                             folderPath     = $fp
@@ -839,7 +895,7 @@ if ($statusSetRules.Count -ge 0) {
                                     try { if ($null -ne $ac.oneLevelDeep) { $acOneLevelDeep = [bool]$ac.oneLevelDeep } } catch { }
                                     $acInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
                                     if ($acInFlightRes.IsSuccess -and [bool]$acInFlightRes.Data.inFlight) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_IN_FLIGHT' -Message 'Audit STATUS_SET_GEN skipped: job already pending or running for folder.' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_IN_FLIGHT' -Message 'Audit STATUS_SET_GEN skipped: job already pending or running for folder.' -Data @{
                                             folder = $fp
                                             jobId = [string]$acInFlightRes.Data.jobId
                                             queueState = [string]$acInFlightRes.Data.queueState
@@ -854,7 +910,7 @@ if ($statusSetRules.Count -ge 0) {
                                     try { $acListingMethod = [string]$acState.docListingMethod } catch { }
                                     try { $acDocumentCount = [int]$acState.documentCount } catch { $acDocumentCount = 0 }
                                     try { if ($null -ne $acState.scanDurationMs) { $acDurationMs = [int]$acState.scanDurationMs } } catch { }
-                                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'Audit-sourced PW status-set folder query completed.' -Data @{
+                                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'Audit-sourced PW status-set folder query completed.' -Data @{
                                         folder = $fp
                                         folderPath = $fp
                                         scanReason = 'audit_status_set_candidate'
@@ -872,18 +928,18 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                     if ([int]$acState.pairedCount -le 0) {
                                         if ([int]$acState.pdfCount -gt 0 -or [int]$acState.dgnCount -gt 0) {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_PAIRS' -Message 'Audit STATUS_SET_GEN skipped: no PDF/DGN pairs.' -Data @{
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_PAIRS' -Message 'Audit STATUS_SET_GEN skipped: no PDF/DGN pairs.' -Data @{
                                                 folder = $fp; pdfCount = [int]$acState.pdfCount; dgnCount = [int]$acState.dgnCount; docListingMethod = $acListingMethod
                                             }
                                         } else {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_DOCS' -Message 'Audit STATUS_SET_GEN skipped: no sheet docs listed.' -Data @{
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_NO_DOCS' -Message 'Audit STATUS_SET_GEN skipped: no sheet docs listed.' -Data @{
                                                 folder = $fp; docListingMethod = $acListingMethod
                                             }
                                         }
                                     } else {
                                     $acGateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $fp -FolderState $acState
                                     if ($acGateRes.IsSuccess -and -not [bool]$acGateRes.Data.shouldEnqueue) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_CURRENT' -Message 'Audit STATUS_SET_GEN skipped: manifest current.' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_CURRENT' -Message 'Audit STATUS_SET_GEN skipped: manifest current.' -Data @{
                                             folder = $fp
                                             gateReason = [string]$acGateRes.Data.gateReason
                                             docListingMethod = $acListingMethod
@@ -922,7 +978,7 @@ if ($statusSetRules.Count -ge 0) {
                                     if ($dupRes.IsSuccess) {
                                     $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
-                                    Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
+                                    _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced STATUS_SET_GEN candidate accepted.' -Data @{
                                         jobId = [string]$job['id']; jobType = [string]$job['type']
                                         sourceFolder = $fp; triggerSource = 'audit_trail'
                                         dryRun = $isDryRun; wouldDedupe = $wouldDedupe
@@ -945,26 +1001,26 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     if ($qcPrependAuditActions -notcontains $actionName) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_PREPEND).' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_PREPEND).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName; allowedActions = @($qcPrependAuditActions)
                                         }
                                         continue
                                     }
                                     if (-not [bool]$ac.isSheetsFolder) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_PREPEND is limited to Sheets folders with PDF/DGN pairs).' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_PREPEND is limited to Sheets folders with PDF/DGN pairs).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName; isSheetsFolder = $false
                                         }
                                         continue
                                     }
                                     if (-not (Test-PWSheetPdfHasMatchingPair -FolderPath $fp -DocumentName $itemName -PairCache $auditSheetPairCache)) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName
                                         }
                                         continue
                                     }
                                     if ((Get-Command -Name 'Test-PWFolderResolvable' -ErrorAction SilentlyContinue) `
                                             -and -not (Test-PWFolderResolvable -FolderPath $fp)) {
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (ProjectWise folder path not resolvable).' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (ProjectWise folder path not resolvable).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
                                         }
                                         continue
@@ -1001,7 +1057,7 @@ if ($statusSetRules.Count -ge 0) {
                                                     if ($prependRes.IsSuccess) {
                                                         $accepted++
                                                         $wouldDedupe = ($prependCode -eq 'QC_PREPEND_SKIPPED_DUPLICATE')
-                                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND from QC Initiated state.' -Data @{
+                                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND from QC Initiated state.' -Data @{
                                                             jobType         = 'QC_PREPEND'
                                                             sourcePath      = ($fp + '\' + $itemName)
                                                             triggerSource   = 'qc_initiated_state'
@@ -1036,7 +1092,7 @@ if ($statusSetRules.Count -ge 0) {
                                             if ($descKey) { $auditDescCache[$descKey] = [string]$dd }
                                         }
                                         if ($dd.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (not QC Initiated and no QC_Archivist in description).' -Data @{
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (not QC Initiated and no QC_Archivist in description).' -Data @{
                                                 path = ($fp + '\' + $itemName); actionName = $actionName; pwStateName = $pwStateForPrepend
                                             }
                                             continue
@@ -1050,7 +1106,7 @@ if ($statusSetRules.Count -ge 0) {
                                                 } catch { }
                                             }
                                             if ([string]::IsNullOrWhiteSpace($pwState) -or ($pwState.Trim().ToLowerInvariant() -ne $initiatedStateName.Trim().ToLowerInvariant())) {
-                                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_Archivist tag but workflow state is not QC Initiated).' -Data @{
+                                                _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_Archivist tag but workflow state is not QC Initiated).' -Data @{
                                                     path = ($fp + '\' + $itemName); actionName = $actionName
                                                     pwStateName = $pwState; requiredState = $initiatedStateName
                                                 }
@@ -1075,7 +1131,7 @@ if ($statusSetRules.Count -ge 0) {
 
                                         $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
                                         if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
                                                 path = [string]$candidate.path; actionName = $actionName
                                             }
                                             $filtered++
@@ -1084,14 +1140,14 @@ if ($statusSetRules.Count -ge 0) {
 
                                         $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config -TriggerType 'pw'
                                         if (-not $matchRes.IsSuccess) {
-                                            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Trigger evaluation failed for audit PDF.' -Data @{
+                                            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Trigger evaluation failed for audit PDF.' -Data @{
                                                 path = [string]$candidate.path; actionName = $actionName; error = $matchRes.Message
                                             }
                                             continue
                                         }
                                         if (-not [bool]$matchRes.Data.matched) {
                                             $reason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { 'no_match' }
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any PW trigger rule.' -Data @{
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF did not match any PW trigger rule.' -Data @{
                                                 path = [string]$candidate.path
                                                 actionName = $actionName
                                                 descriptionPreview = if ($dd.Length -gt 120) { $dd.Substring(0, 120) } else { $dd }
@@ -1111,7 +1167,7 @@ if ($statusSetRules.Count -ge 0) {
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                         $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
 
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
                                             jobId          = [string]$job['id']
                                             jobType        = 'QC_PREPEND'
                                             sourcePath     = ($fp + '\' + $itemName)
@@ -1133,7 +1189,7 @@ if ($statusSetRules.Count -ge 0) {
                                             $logLevel = 'Information'
                                             $logMsg = 'Audit PDF skipped (ProjectWise state lookup failed on this path).'
                                         }
-                                        Write-QCJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_SKIPPED' -Message $logMsg -Data @{
+                                        _Watch-WriteJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_SKIPPED' -Message $logMsg -Data @{
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
                                             error = $errMsg
@@ -1192,7 +1248,7 @@ if ($statusSetRules.Count -ge 0) {
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
                                         $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
 
-                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
                                             jobId           = [string]$job['id']
                                             jobType         = 'QC_COMMENT_STATUS_SYNC'
                                             sourcePath      = ($fp + '\' + $itemName)
@@ -1207,7 +1263,7 @@ if ($statusSetRules.Count -ge 0) {
                                             if ($enqRes.IsSuccess) { $enqueued++ }
                                         } elseif ($wouldDedupe) { $duplicates++ }
                                     } catch {
-                                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_COMMENT_STATUS_SYNC evaluation threw.' -Data @{
+                                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_COMMENT_STATUS_SYNC evaluation threw.' -Data @{
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
                                             error = $_.Exception.Message
@@ -1222,7 +1278,7 @@ if ($statusSetRules.Count -ge 0) {
                             try {
                                 $markRes = Mark-QCAuditEventsProcessed -Config $config -EventIds @($auditTriggerEventIds)
                                 if ($markRes.IsSuccess -and $markRes.Data) {
-                                    Write-QCJsonLog -Level 'Information' -Code 'AUDIT_EVENTS_MARK_PROCESSED' -Message 'Marked audit_events rows processed after trigger evaluation.' -Data @{
+                                    _Watch-WriteJsonLog -Level 'Information' -Code 'AUDIT_EVENTS_MARK_PROCESSED' -Message 'Marked audit_events rows processed after trigger evaluation.' -Data @{
                                         requested = $auditTriggerEventIds.Count
                                         marked = [int]$markRes.Data.marked
                                     }
@@ -1234,13 +1290,13 @@ if ($statusSetRules.Count -ge 0) {
                             try {
                                 $outRec = Invoke-QCReconcileOutputs -Config $config
                                 if ($outRec.IsSuccess) {
-                                    Write-QCJsonLog -Level 'Information' -Code 'WATCH_RECONCILE_OUTPUTS' -Message 'Startup output reconcile snapshot.' -Data $outRec.Data
+                                    _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_RECONCILE_OUTPUTS' -Message 'Startup output reconcile snapshot.' -Data $outRec.Data
                                 }
                             } catch { }
                         }
                     }
                 } catch {
-                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_AUDIT_SCAN_ERROR' -Message "Audit scan threw: $($_.Exception.Message)" -Data @{ scriptStackTrace = [string]$_.ScriptStackTrace }
+                    _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_AUDIT_SCAN_ERROR' -Message "Audit scan threw: $($_.Exception.Message)" -Data @{ scriptStackTrace = [string]$_.ScriptStackTrace }
                     $errors++
                     $runFullScan = $true
                 } finally {
@@ -1263,7 +1319,7 @@ if ($statusSetRules.Count -ge 0) {
                 } else {
                     "Running full folder scan (reconciliation cycle $cycleNum, every $reconcileEvery)."
                 }
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message $scanMsg -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_RECONCILE_CYCLE' -Message $scanMsg -Data @{
                     cycleNum = $cycleNum
                     reconcileEvery = $reconcileEvery
                     fullScanMode = [string]$fullScanPlan.mode
@@ -1361,7 +1417,7 @@ if ($statusSetRules.Count -ge 0) {
                     if ($e.OneLevelDeep) {
                         $fp = [string]$e.FolderPath
                         $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Querying ProjectWise for discipline subfolders under Sheets.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Querying ProjectWise for discipline subfolders under Sheets.' -Data @{
                             folder = $fp
                             inProgress = $true
                         }
@@ -1369,18 +1425,18 @@ if ($statusSetRules.Count -ge 0) {
                         $entryForScan['OneLevelDeep'] = $false
                         $entryForScan['OneLevelDeepSuppressed'] = $true
                         $entryForScan['ExpandedChildFolderCount'] = [int]@($kids).Count
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS' -Message 'Discipline subfolder listing completed.' -Data @{
                             folder = $fp
                             inProgress = $false
                             childCount = [int]@($kids).Count
                         }
                         if (@($kids).Count -eq 0) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; parent will be scanned as an exact folder (normal for flat Sheets or empty areas).' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_NO_CHILDREN' -Message 'oneLevelDeep: no discipline subfolders under this Sheets path; parent will be scanned as an exact folder (normal for flat Sheets or empty areas).' -Data @{
                                 folder = $fp
                                 apiPath = $apiPath
                             }
                         } else {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_SUPPRESSED' -Message 'oneLevelDeep expansion completed; parent will be scanned as an exact folder to avoid duplicate child document enumeration.' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_ONELEVEL_SUPPRESSED' -Message 'oneLevelDeep expansion completed; parent will be scanned as an exact folder to avoid duplicate child document enumeration.' -Data @{
                                 folder = $fp
                                 childCount = [int]@($kids).Count
                             }
@@ -1404,7 +1460,7 @@ if ($statusSetRules.Count -ge 0) {
                         }
                     }
                 } catch {
-                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_ONELEVEL_EXPAND_FAILED' -Message ('oneLevelDeep expansion failed: ' + $_.Exception.Message) -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_ONELEVEL_EXPAND_FAILED' -Message ('oneLevelDeep expansion failed: ' + $_.Exception.Message) -Data @{
                         folder = [string]$e.FolderPath
                     }
                 }
@@ -1421,7 +1477,7 @@ if ($statusSetRules.Count -ge 0) {
                     try { $existing['EnableQcPrepend'] = ([bool]$existing.EnableQcPrepend -or [bool]$prepared.EnableQcPrepend) } catch { }
                     try { $existing['EnableQcCommentSync'] = ([bool]$existing.EnableQcCommentSync -or [bool]$prepared.EnableQcCommentSync) } catch { }
                     try { $existing['EnableStatusSet'] = ([bool]$existing.EnableStatusSet -or [bool]$prepared.EnableStatusSet) } catch { }
-                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DEDUPED' -Message 'Duplicate prepared folder suppressed before reconciliation scan.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DEDUPED' -Message 'Duplicate prepared folder suppressed before reconciliation scan.' -Data @{
                         folder = $preparedPath
                         FolderPath = $preparedPath
                         existingScanReason = [string]$existing.ScanReason
@@ -1433,7 +1489,7 @@ if ($statusSetRules.Count -ge 0) {
                 $dedupedFolders += $prepared
             }
             $pwFolders = $dedupedFolders
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
+            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
                 folderCount = [int]$pwFolders.Count
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
@@ -1459,7 +1515,7 @@ if ($statusSetRules.Count -ge 0) {
                     try { if ($entry.ParentFolderPath) { $parentFolderPath = [string]$entry.ParentFolderPath } } catch { }
 
                     # Emit a "scan start" event even if filters later skip the folder.
-                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
                         folder = $fp
                         folderPath = $fp
                         oneLevelDeep = $oneLevelDeep
@@ -1476,7 +1532,7 @@ if ($statusSetRules.Count -ge 0) {
                         if (-not $allowRes.IsSuccess) { throw $allowRes.Message }
                         if (-not [bool]$allowRes.Data.allowed) {
                             $filtered++
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
                                 folder = $fp
                                 reason = 'filtered'
                                 enableQcPrepend = $enableQcPrepend
@@ -1487,13 +1543,13 @@ if ($statusSetRules.Count -ge 0) {
 
                         $ssInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
                         if ($ssInFlightRes.IsSuccess -and [bool]$ssInFlightRes.Data.inFlight) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT' -Message 'STATUS_SET_GEN already pending or running for folder; skipping PW scan and sheet index.' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT' -Message 'STATUS_SET_GEN already pending or running for folder; skipping PW scan and sheet index.' -Data @{
                                 folder = $fp
                                 jobId = [string]$ssInFlightRes.Data.jobId
                                 queueState = [string]$ssInFlightRes.Data.queueState
                             }
                         } else {
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_START' -Message 'PW status-set folder query started.' -Data @{
                             folder = $fp
                             oneLevelDeep = $oneLevelDeep
                         }
@@ -1509,7 +1565,7 @@ if ($statusSetRules.Count -ge 0) {
                         try { $oneLevelRetry = [bool]$state.oneLevelDeepRetry } catch { }
                         try { $documentCount = [int]$state.documentCount } catch { $documentCount = 0 }
                         try { if ($null -ne $state.scanDurationMs) { $durationMs = [int]$state.scanDurationMs } } catch { }
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
                             folderPath = $fp
                             scanReason = $scanReason
@@ -1532,7 +1588,7 @@ if ($statusSetRules.Count -ge 0) {
                             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)
                             if ($skipUpToDate) {
                                 $skippedStatusSetCurrent++
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_CURRENT' -Message 'PW folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
+                                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SKIP_CURRENT' -Message 'PW folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
                                     gateReason = [string]$gateRes.Data.gateReason
@@ -1576,7 +1632,7 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                                 elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+                                _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']
@@ -1607,7 +1663,7 @@ if ($statusSetRules.Count -ge 0) {
                             if (-not $skipSheetIndex -and $state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
                                 $folderPhase = 'statusset_sheet_index'
                                 $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_START' -Message 'Indexing paired sheets for sheet_index with EM/QC attribute reconciliation.' -Data @{
+                                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_START' -Message 'Indexing paired sheets for sheet_index with EM/QC attribute reconciliation.' -Data @{
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
                                     reconciliationCycle = [bool]$isReconciliationCycle
@@ -1664,7 +1720,7 @@ if ($statusSetRules.Count -ge 0) {
                                         } catch { }
                                     }
                                 }
-                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_DONE' -Message 'Sheet index update completed.' -Data @{
+                                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_DONE' -Message 'Sheet index update completed.' -Data @{
                                     folder = $fp
                                     pairedCount = [int]$state.pairedCount
                                     indexRowCount = $indexRowCount
@@ -1672,7 +1728,7 @@ if ($statusSetRules.Count -ge 0) {
                                 }
                             }
                         } elseif ([int]$state.pdfCount -gt 0 -or [int]$state.dgnCount -gt 0) {
-                            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found (PDF-only or missing DGN).' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_NO_PAIRS' -Message 'PW folder scanned but no PDF/DGN pairs found (PDF-only or missing DGN).' -Data @{
                                 folder = $fp
                                 oneLevelDeep = $oneLevelDeep
                                 pdfCount = [int]$state.pdfCount
@@ -1680,7 +1736,7 @@ if ($statusSetRules.Count -ge 0) {
                                 docListingMethod = $listingMethod
                             }
                         } else {
-                            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_STATUSSET_NO_DOCS' -Message 'PW status-set listing found no PDF/DGN in folder; STATUS_SET_GEN not enqueued.' -Data @{
+                            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_STATUSSET_NO_DOCS' -Message 'PW status-set listing found no PDF/DGN in folder; STATUS_SET_GEN not enqueued.' -Data @{
                                 folder = $fp
                                 oneLevelDeep = $oneLevelDeep
                                 docListingMethod = $listingMethod
@@ -1693,7 +1749,7 @@ if ($statusSetRules.Count -ge 0) {
                     # QC_PREPEND (description tag)
                     if ([bool]$entry.EnableQcPrepend) {
                         $folderPhase = 'qc_prepend_doc_scan'
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN_START' -Message 'PW folder doc query started.' -Data @{
                             folder = $fp
                         }
                         $pwDocEnumerations++
@@ -1720,7 +1776,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ($sd -and $sd.Length -gt 160) { $sd = $sd.Substring(0, 160) }
                             $sample += (@{ name = $sn; description = $sd })
                         }
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN' -Message 'PW folder doc scan completed.' -Data @{
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DOC_SCAN' -Message 'PW folder doc scan completed.' -Data @{
                             folder = $fp
                             docCount = [int](@($docs).Count)
                             pdfCount = [int](@($pdfDocs).Count)
@@ -1737,7 +1793,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ([string]::IsNullOrWhiteSpace($desc)) { continue }
                             if ($desc.IndexOf('QC_Archivist', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
 
-                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
+                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_PW_TAGGED' -Message 'PW doc has QC_Archivist tag.' -Data @{
                                 folder = $fp
                                 fileName = $docName
                                 description = $desc
@@ -1774,7 +1830,7 @@ if ($statusSetRules.Count -ge 0) {
                             $matchRes = Test-QCTriggerCandidate -Candidate $candidate -Config $config -OrderedRules $orderedTriggerRules -TriggerType 'pw'
                             if (-not $matchRes.IsSuccess) { throw $matchRes.Message }
                             if (-not [bool]$matchRes.Data.matched) {
-                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any PW trigger rule.' -Data @{
+                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_PW_NO_MATCH' -Message 'PW doc had QC_Archivist but did not match any PW trigger rule.' -Data @{
                                     path = [string]$candidate.path
                                     fileName = [string]$candidate.fileName
                                     ruleReason = if ($matchRes.Data.ContainsKey('reason')) { [string]$matchRes.Data.reason } else { '' }
@@ -1799,7 +1855,7 @@ if ($statusSetRules.Count -ge 0) {
                             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
                             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
+                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_PREPEND via description tag).' -Data @{
                                 jobId = [string]$job['id']
                                 jobType = [string]$job['type']
                                 dedupeKey = [string]$job['dedupeKey']
@@ -1873,7 +1929,7 @@ if ($statusSetRules.Count -ge 0) {
                                 $wouldDedupe = [bool]$dupRes.Data.isDuplicate
                                 $enqueueSkippedReason = if ($wouldDedupe) { 'duplicate' } elseif ($isDryRun) { 'dryRun' } else { $null }
 
-                                Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
+                                _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']
@@ -1892,7 +1948,7 @@ if ($statusSetRules.Count -ge 0) {
                             }
                         }
                     }
-                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
                         folder = $fp
                         enableQcPrepend = $enableQcPrepend
                         enableStatusSet = $enableStatusSet
@@ -1900,7 +1956,7 @@ if ($statusSetRules.Count -ge 0) {
                 } catch {
                     $errors++
                     $ex = $_.Exception
-                    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW watch folder.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_FOLDER_ERROR' -Message 'Error processing PW watch folder.' -Data @{
                         folder = [string]$entry.FolderPath
                         phase = [string]$folderPhase
                         enableStatusSet = $enableStatusSet
@@ -1915,12 +1971,12 @@ if ($statusSetRules.Count -ge 0) {
             if ($script:fullScanScheduleInFlightSlotKey) {
                 try {
                     $slotDone = Set-QCFullScanScheduleSlotComplete -Config $config -SlotKey $script:fullScanScheduleInFlightSlotKey -QueueRoot $queueRoot
-                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
                         slotKey = $script:fullScanScheduleInFlightSlotKey
                         persisted = [bool]$slotDone
                     }
                 } catch {
-                    Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_FAILED' -Message 'Could not persist full-scan schedule slot completion.' -Data @{
+                    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_FAILED' -Message 'Could not persist full-scan schedule slot completion.' -Data @{
                         slotKey = $script:fullScanScheduleInFlightSlotKey
                         error = [string]$_.Exception.Message
                     }
@@ -1940,9 +1996,9 @@ if ($statusSetRules.Count -ge 0) {
                 if ($pwSessionOpen) {
                     try {
                         Disconnect-PW | Out-Null
-                        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after watch error (will reconnect).' -Data @{ tick = $watcherTick }
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after watch error (will reconnect).' -Data @{ tick = $watcherTick }
                     } catch {
-                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after watch error.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after watch error.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
                     }
                 }
                 $pwSessionOpen = $false
@@ -1950,7 +2006,7 @@ if ($statusSetRules.Count -ge 0) {
                     $script:pwConnectFailureStreak++
                 }
             }
-            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{
+            _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{
                 errorMessage = [string]$_.Exception.Message
                 scriptStackTrace = [string]$_.ScriptStackTrace
                 pwConnectFailureStreak = $script:pwConnectFailureStreak
@@ -1980,7 +2036,7 @@ if ($statusSetRules.Count -ge 0) {
             $jobType = 'STATUS_SET_GEN'
 
             if (-not $ruleObj) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FS_STATUSSET_RULE_MISSING' -Message 'STATUS_SET_GEN rule not found/enabled; skipping folder status-set enqueue.' -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_FS_STATUSSET_RULE_MISSING' -Message 'STATUS_SET_GEN rule not found/enabled; skipping folder status-set enqueue.' -Data @{
                     folder = $folder
                     normFolder = $normFolder
                     pairedCount = [int]$state.pairedCount
@@ -1992,7 +2048,7 @@ if ($statusSetRules.Count -ge 0) {
             $skipUpToDate = ($gateRes.IsSuccess -and -not [bool]$gateRes.Data.shouldEnqueue)
             if ($skipUpToDate) {
                 $skippedStatusSetCurrent++
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_FS_STATUSSET_SKIP_CURRENT' -Message 'Local folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FS_STATUSSET_SKIP_CURRENT' -Message 'Local folder status set already current; not enqueueing STATUS_SET_GEN.' -Data @{
                     folder = $folder
                     normFolder = $normFolder
                     pairedCount = [int]$state.pairedCount
@@ -2036,7 +2092,7 @@ if ($statusSetRules.Count -ge 0) {
             if ($wouldDedupe) { $enqueueSkippedReason = 'duplicate' }
             elseif ($isDryRun) { $enqueueSkippedReason = 'dryRun' }
 
-            Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
+            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Folder change candidate accepted (STATUS_SET_GEN).' -Data @{
                 jobId = [string]$job['id']
                 jobType = [string]$job['type']
                 dedupeKey = [string]$job['dedupeKey']
@@ -2064,7 +2120,7 @@ if ($statusSetRules.Count -ge 0) {
         } catch {
             $errors++
             $ex = $_.Exception
-            Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_FOLDER_ERROR' -Message 'Error processing folder for STATUS_SET_GEN.' -Data @{
+            _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_FOLDER_ERROR' -Message 'Error processing folder for STATUS_SET_GEN.' -Data @{
                 folder = $folder
                 errorMessage = [string]$_.Exception.Message
                 errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
@@ -2081,7 +2137,7 @@ $localDiscoverSw = [System.Diagnostics.Stopwatch]::StartNew()
 $fileItems = @()
 foreach ($folder in $watchFolders) {
     if (-not (Test-Path -LiteralPath $folder)) {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_FOLDER_MISSING' -Message 'Watch folder missing.' -Data @{ folder = $folder }
+        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_FOLDER_MISSING' -Message 'Watch folder missing.' -Data @{ folder = $folder }
         continue
     }
     $fileItems += Get-ChildItem -LiteralPath $folder -File -Recurse -ErrorAction SilentlyContinue
@@ -2143,7 +2199,7 @@ foreach ($fi in $fileItems) {
         if (-not [bool]$matchRes.Data.matched) {
             $ignored++
             if (($ignored % $ignoreSampleEvery) -eq 0) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no filesystem trigger match).' -Data @{
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_IGNORED_SAMPLE' -Message 'Ignored file (no filesystem trigger match).' -Data @{
                     path = $normPath
                     fileName = $candidate.fileName
                     ignoredCount = $ignored
@@ -2203,7 +2259,7 @@ foreach ($fi in $fileItems) {
             $enqueueSkippedReason = 'dryRun'
         }
 
-        Write-QCJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
+        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Trigger matched; job accepted.' -Data @{
             jobId = [string]$job['id']
             jobType = [string]$job['type']
             dedupeKey = [string]$job['dedupeKey']
@@ -2235,7 +2291,7 @@ foreach ($fi in $fileItems) {
     } catch {
         $errors++
         $ex = $_.Exception
-        Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_FILE_ERROR' -Message 'Error processing file.' -Data @{
+        _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_FILE_ERROR' -Message 'Error processing file.' -Data @{
             file = [string]$fi.FullName
             errorMessage = [string]$_.Exception.Message
             errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
@@ -2256,7 +2312,7 @@ if ($localWatcherCacheDirty) {
 $phaseCounts['localCacheEntries'] = [int]$localWatcherCache.entries.Count
 $watchRunSw.Stop()
 
-Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch run completed.' -Data @{
+_Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_DONE' -Message 'Watch run completed.' -Data @{
     dryRun = $isDryRun
     elapsedMs = [int64]$watchRunSw.ElapsedMilliseconds
     phaseMs = $phaseMs
@@ -2337,7 +2393,7 @@ $telemetryRes = Write-QCPollRunTelemetry -Config $config `
     -PassNumberSource $passNumberSource
 $dbWriteSw.Stop()
 if (-not $telemetryRes.IsSuccess) {
-    Write-QCJsonLog -Flush -Level 'Error' -Code 'WATCH_TELEMETRY_WRITE_FAILED' -Message $telemetryRes.Message -Data @{ runId=$runId; passNumber=$watcherPassNumber; watcherName='qc_watcher' }
+    _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_TELEMETRY_WRITE_FAILED' -Message $telemetryRes.Message -Data @{ runId=$runId; passNumber=$watcherPassNumber; watcherName='qc_watcher' }
     if ($telemetryFailOnWriteError) { throw ('Telemetry write failed: ' + $telemetryRes.Message) }
 }
 
@@ -2350,7 +2406,7 @@ if (-not $telemetryRes.IsSuccess) {
         $sleepSw = [System.Diagnostics.Stopwatch]::StartNew()
         Start-Sleep -Milliseconds $sleepMs
         $sleepSw.Stop()
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_SLEEP' -Message 'Watcher poll tick sleeping.' -Data @{
+        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_TICK_SLEEP' -Message 'Watcher poll tick sleeping.' -Data @{
             tick = $watcherTick
             pollSleepMs = $watcherPollSleepMs
             sleptMs = [int]$sleepSw.ElapsedMilliseconds
@@ -2364,9 +2420,9 @@ if (-not $telemetryRes.IsSuccess) {
 if ($pwSessionOpen) {
     try {
         Disconnect-PW | Out-Null
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT' -Message 'ProjectWise session closed.' -Data @{ continuous = $watcherContinuous; ticks = $watcherTick }
+        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT' -Message 'ProjectWise session closed.' -Data @{ continuous = $watcherContinuous; ticks = $watcherTick }
     } catch {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_FAILED' -Message 'ProjectWise disconnect failed on watcher exit.' -Data @{ error = [string]$_.Exception.Message }
+        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_FAILED' -Message 'ProjectWise disconnect failed on watcher exit.' -Data @{ error = [string]$_.Exception.Message }
     }
     $pwSessionOpen = $false
 }
