@@ -237,6 +237,15 @@ function Remove-ItemWithRetry([string]$path) {
   }
 }
 
+function Remove-PrependQcExportScratch([string]$Path) {
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+  try {
+    Invoke-RetryOnAccessDenied { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop }
+  } catch {
+    Write-Log "Could not remove export scratch dir: $Path" -Severity WARNING
+  }
+}
+
 function Invoke-PdfPrependMerge([string]$newPdf, [string]$historyPdf, [string]$outPdf) {
   if (-not (Test-Path $historyPdf)) {
     Copy-Item -Path $newPdf -Destination $outPdf -Force
@@ -326,10 +335,13 @@ if (-not $NoOverlayLayers -and $QcOverlayExe -and (Test-Path -LiteralPath $QcOve
   Write-Log "Overlay exe:     not used (NoOverlayLayers=$NoOverlayLayers or exe not found)"
 }
 
-# Local folders (exports); copies and merge use %TEMP% to avoid AV/lock on LocalRoot
-$exportDir   = Join-Path $LocalRoot "export_test"
+# Local folders; incoming PW export uses a per-run scratch dir so parallel workers do not race on the same folder.
+# Copies and merge use %TEMP% to avoid AV/lock on LocalRoot.
+$exportScratchRoot = Join-Path $LocalRoot "export_test"
+$exportDir = Join-Path $exportScratchRoot ("run_{0}_{1}" -f $PID, (Get-Date -Format "yyyyMMdd_HHmmss_fff"))
 $workDir     = Join-Path $LocalRoot "work"
 $tempWorkDir = Join-Path $env:TEMP "PW_QC"
+Initialize-Directory $exportScratchRoot
 Initialize-Directory $exportDir
 Initialize-Directory $workDir
 Initialize-Directory $tempWorkDir
@@ -577,6 +589,7 @@ if (-not $historyDoc) {
 
   Write-Log "Done."
   Close-PWConnection -ErrorAction SilentlyContinue
+  Remove-PrependQcExportScratch $exportDir
   exit 0
 }
 
@@ -735,3 +748,5 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
 
 Write-Log "Done."
 Close-PWConnection -ErrorAction SilentlyContinue
+Remove-PrependQcExportScratch $exportDir
+exit 0
