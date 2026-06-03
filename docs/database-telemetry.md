@@ -60,6 +60,8 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | `qc_comment_status_history` | Status transitions per annotation (analytics, recurring issues) |
 | `qc_workflow_events` | Workflow/audit events separate from comment snapshots (replay, debugging) |
 
+**Population:** `Write-QCWorkflowEventRow` from `Invoke-QCAuditWorkflowStateChangeTriggers` and processor workflow telemetry on every successful `transition_events` write; comment sync continues to use the same writer via `Write-QCWorkflowEvent`.
+
 Dry-run: set `database.allowWritesInDryRun: false` (default) so `dryRun: true` does not mutate production data.
 
 ---
@@ -122,7 +124,7 @@ Time-series of state and attribute changes per document. Used by `v_qc_cycle_agi
 ### `transition_events`
 Business-level events (QC stage changes, attribute changes). Links to notifications via `notification_log.transition_id`.
 
-**Population:** `Write-QCTransitionEvent` from audit workflow triggers; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on `*-qc.pdf`.
+**Population:** `Write-QCTransitionEvent` from audit workflow triggers and processor telemetry; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on `*-qc.pdf`. When PW already shows the new state before sibling sync runs, `_PWD-InvokeStaleSheetIndexAuditStateTriggers` compares `sheet_index.pw_state_name` to the canonical state and records the transition anyway.
 
 ### `poll_runs`
 Operational health of the audit poller. One row per watcher tick.
@@ -212,6 +214,7 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 | `Write-QCNotificationTelemetry` | `QC.Notifications.psm1` | Record sent notifications |
 | `Write-QCDocumentStateHistoryRow` | `QC.AuditTriggers.psm1` | State/attribute change time-series |
 | `Write-QCTransitionEvent` | `QC.AuditTriggers.psm1` | Business-level transition row |
+| `Write-QCWorkflowEventRow` | `QC.AuditTriggers.psm1`, `QC.CommentSync.Database.psm1` | Mirror row in `qc_workflow_events` |
 | `Update-QCTransitionEventNotification` | `QC.AuditTriggers.psm1` | Mark transition after email sent |
 | `Write-QCStateChangeJobTelemetry` | `QC.AuditTriggers`, `PW.Discovery` | `processing_jobs` row with `job_type = QC_STATE` for automation state applies |
 | `New-QCStateChangeJobId` | `Core.Database.psm1` | Stable `job_id` for state-only telemetry |

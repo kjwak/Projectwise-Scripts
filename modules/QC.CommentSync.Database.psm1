@@ -31,57 +31,12 @@ function Write-QCWorkflowEvent {
         [switch]$PlannedOnly
     )
 
-    $writePlannedToDb = $false
-    if ($Config.database -and $Config.database.logPlannedEventsInDryRun) {
-        try { $writePlannedToDb = [bool]$Config.database.logPlannedEventsInDryRun } catch { }
-    }
-
-    $dbWritesAllowed = Test-QCCommentSyncDatabaseWritesAllowed -Config $Config
-    $persistPlannedEvent = $PlannedOnly -and $writePlannedToDb
-    if ($PlannedOnly -and -not $persistPlannedEvent) {
-        return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_PLANNED' -Message 'Workflow event not written (dry-run or DB disabled).' -Data @{
-            planned = $true
-            eventType = $EventType
-            decisionCode = $DecisionCode
-        }
-    }
-    if (-not $PlannedOnly -and -not $dbWritesAllowed) {
-        return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_PLANNED' -Message 'Workflow event not written (dry-run or DB disabled).' -Data @{
-            planned = $true
-            eventType = $EventType
-            decisionCode = $DecisionCode
-        }
-    }
-    if ($persistPlannedEvent) {
-        $EventType = ($EventType + '_PLANNED')
-    }
-
-    $sql = @"
-INSERT INTO qc_workflow_events
-    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, payload_json)
-VALUES
-    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @payload)
-"@
-    $params = @{
-        runId = if ($RunId -gt 0) { $RunId } else { [DBNull]::Value }
-        jobId = if ($JobId) { $JobId } else { [DBNull]::Value }
-        documentId = if ($DocumentId) { $DocumentId } else { [DBNull]::Value }
-        eventType = $EventType
-        prev = if ($PreviousPwState) { $PreviousPwState } else { [DBNull]::Value }
-        target = if ($TargetPwState) { $TargetPwState } else { [DBNull]::Value }
-        decisionCode = if ($DecisionCode) { $DecisionCode } else { [DBNull]::Value }
-        procVer = if ($ProcessorVersion) { $ProcessorVersion } else { [DBNull]::Value }
-        payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
-    }
-    try {
-        $r = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
-        if ($r.IsSuccess) {
-            return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_WRITTEN' -Message 'Workflow event inserted.' -Data @{ eventType = $EventType }
-        }
-        return $r
-    } catch {
-        return New-QCFailureResult -Code 'QC_WORKFLOW_EVENT_FAILED' -Message $_.Exception.Message -Data @{}
-    }
+    $runIdParam = $null
+    if ($RunId -gt 0) { $runIdParam = $RunId }
+    return Write-QCWorkflowEventRow -Config $Config -RunId $runIdParam -JobId $JobId -DocumentId $DocumentId `
+        -EventType $EventType -PreviousPwState $PreviousPwState -TargetPwState $TargetPwState `
+        -DecisionCode $DecisionCode -ProcessorVersion $ProcessorVersion -PayloadJson $PayloadJson `
+        -PlannedOnly:$PlannedOnly
 }
 
 function Write-QCCommentSyncRun {

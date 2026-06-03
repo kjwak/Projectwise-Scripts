@@ -1370,16 +1370,35 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     return $result
 }
 
-function _PWD-InvokeQcPdfNotificationForAuditStateSync {
+function _PWD-GetSheetIndexPwStateName {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    try {
+        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+            $r = $siRes.Data.table.Rows[0]
+            if (-not ($r.pw_state_name -is [DBNull])) { return [string]$r.pw_state_name }
+        }
+    } catch { }
+    return ''
+}
+
+function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
     <#
     .SYNOPSIS
-    Sends QC PDF email when PW already shows the new state (member sync loop skips aligned rows).
+    Records transition_events / qc_workflow_events when PW already shows the new state (member loop skips aligned rows).
     .DESCRIPTION
-    Audit DOCUMENT_STATE means the trigger document is already at the target state in PW. Sibling sync
-    only calls notification hooks for members that still need Set-PWDocumentState. When the user moves
-    *-qc.pdf (or PW pre-aligns all members), the QC PDF row is skipped and qcPdfNotificationsOnly
-    suppresses email on DGN/PDF updates. Compare sheet_index pw_state_name to the canonical state and
-    notify once on the QC PDF when PW is already aligned but the index still shows the prior state.
+    Audit DOCUMENT_STATE means the trigger document is already at the target state in PW. Sibling sync only
+    invokes audit triggers for members that still need Set-PWDocumentState. When the user moves *-qc.pdf (or PW
+    pre-aligns all members), aligned rows are skipped and telemetry never runs. Compare sheet_index pw_state_name
+    to the canonical state and invoke audit triggers for every stale member before the sync loop updates the index.
     #>
     [CmdletBinding()]
     param(
@@ -1396,56 +1415,33 @@ function _PWD-InvokeQcPdfNotificationForAuditStateSync {
     if (-not (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue)) { return }
 
     $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
-    if (-not [bool]$wt.enabled -or -not [bool]$wt.notifyOnStateChange) { return }
+    if (-not [bool]$wt.enabled) { return }
+    if (-not [bool]$wt.recordStateHistory -and -not [bool]$wt.recordTransitions -and -not [bool]$wt.notifyOnStateChange) { return }
 
     $canonical = _PWD-NormalizeSheetIndexValue $CanonicalState
     if ([string]::IsNullOrWhiteSpace($canonical)) { return }
 
-    $qcMember = $null
-    foreach ($m in $Members) {
-        $dn = [string]$m.documentName
-        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
-        if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
-            if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { $qcMember = $m; break }
-        } elseif ($dn -match '(?i)-qc\.pdf$') {
-            $qcMember = $m; break
+    foreach ($member in $Members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dg) { continue }
+
+        $prevDb = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        if ((_PWD-NormalizeSheetIndexValue $prevDb) -eq $canonical) { continue }
+
+        $pwCurrent = ''
+        $key = $dg.ToLowerInvariant()
+        if ($StateByGuid.ContainsKey($key)) {
+            $pwCurrent = [string]$StateByGuid[$key]
+        } else {
+            $pwCurrent = _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
         }
+        if ((_PWD-NormalizeSheetIndexValue $pwCurrent) -ne $canonical) { continue }
+
+        Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
+            -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
+            -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser | Out-Null
     }
-    if (-not $qcMember) { return }
-
-    $qcGuid = [string]$qcMember.documentGuid
-    if (-not $qcGuid) { return }
-
-    $prevDb = ''
-    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
-        if (Test-QCDatabaseEnabled -Config $Config) {
-            try {
-                $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $qcGuid }
-                if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
-                    $r = $siRes.Data.table.Rows[0]
-                    if (-not ($r.pw_state_name -is [DBNull])) { $prevDb = [string]$r.pw_state_name }
-                }
-            } catch { }
-        }
-    }
-
-    if ((_PWD-NormalizeSheetIndexValue $prevDb) -eq $canonical) { return }
-
-    $qcPwCurrent = ''
-    $key = $qcGuid.ToLowerInvariant()
-    if ($StateByGuid.ContainsKey($key)) {
-        $qcPwCurrent = [string]$StateByGuid[$key]
-    } else {
-        $qcPwCurrent = _PWD-GetWorkflowStateFromDocumentRow -DocRow $qcMember.document
-    }
-    if ((_PWD-NormalizeSheetIndexValue $qcPwCurrent) -ne $canonical) { return }
-
-    Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $qcGuid `
-        -DocumentName ([string]$qcMember.documentName) -FolderPath $FolderPath `
-        -PreviousState $prevDb -CurrentState $CanonicalState -Document $qcMember.document `
-        -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser | Out-Null
 }
 
 function Sync-PWAssociatedSheetWorkflowState {
@@ -1564,7 +1560,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
 
-    _PWD-InvokeQcPdfNotificationForAuditStateSync -Config $Config -Members $members -StateByGuid $stateByGuid `
+    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
         -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser
 
     foreach ($member in $members) {

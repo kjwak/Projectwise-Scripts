@@ -1925,6 +1925,76 @@ VALUES
     }
 }
 
+function Write-QCWorkflowEventRow {
+    <#
+    .SYNOPSIS
+    Inserts one row into qc_workflow_events (audit, processor, and comment-sync state changes).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Nullable[long]]$RunId = $null,
+        [string]$JobId = '',
+        [string]$DocumentId = '',
+        [Parameter(Mandatory)][string]$EventType,
+        [string]$PreviousPwState = '',
+        [string]$TargetPwState = '',
+        [string]$DecisionCode = '',
+        [string]$ProcessorVersion = '',
+        [string]$PayloadJson = '',
+        [switch]$PlannedOnly
+    )
+
+    $writePlannedToDb = $false
+    try {
+        if ($Config.database -and $Config.database.logPlannedEventsInDryRun) {
+            $writePlannedToDb = [bool]$Config.database.logPlannedEventsInDryRun
+        }
+    } catch { }
+
+    $persistPlannedEvent = [bool]$PlannedOnly -and $writePlannedToDb
+    if ($PlannedOnly -and -not $persistPlannedEvent) {
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_PLANNED' -Message 'Workflow event not written (dry-run or DB disabled).' -Data @{
+            planned = $true; eventType = $EventType; decisionCode = $DecisionCode
+        }
+    }
+    if (-not $PlannedOnly -and -not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_PLANNED' -Message 'Workflow event not written (dry-run or DB disabled).' -Data @{
+            planned = $true; eventType = $EventType; decisionCode = $DecisionCode
+        }
+    }
+
+    $eventTypeValue = [string]$EventType
+    if ($persistPlannedEvent) { $eventTypeValue = ($eventTypeValue + '_PLANNED') }
+
+    try {
+        $sql = @"
+INSERT INTO qc_workflow_events
+    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, payload_json)
+VALUES
+    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @payload)
+"@
+        $params = @{
+            runId = if ($null -ne $RunId -and $RunId -gt 0) { $RunId } else { [DBNull]::Value }
+            jobId = if ($JobId) { $JobId } else { [DBNull]::Value }
+            documentId = if ($DocumentId) { $DocumentId } else { [DBNull]::Value }
+            eventType = $eventTypeValue
+            prev = if ($PreviousPwState) { $PreviousPwState } else { [DBNull]::Value }
+            target = if ($TargetPwState) { $TargetPwState } else { [DBNull]::Value }
+            decisionCode = if ($DecisionCode) { $DecisionCode } else { [DBNull]::Value }
+            procVer = if ($ProcessorVersion) { $ProcessorVersion } else { [DBNull]::Value }
+            payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'QC_WORKFLOW_EVENT_FAILED' -Message $dbRes.Message -Data @{ written = $false; eventType = $eventTypeValue }
+        }
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_EVENT_WRITTEN' -Message 'Workflow event inserted.' -Data @{ written = $true; eventType = $eventTypeValue }
+    } catch {
+        return New-QCErrorResult -Code 'QC_WORKFLOW_EVENT_EXCEPTION' -Message $_.Exception.Message -Data @{ written = $false; eventType = $eventTypeValue }
+    }
+}
+
 function Write-QCTransitionEvent {
     <#
     .SYNOPSIS
@@ -2714,4 +2784,4 @@ function Update-QCProcessingJobHeartbeat {
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

@@ -69,7 +69,7 @@ When `notifications.dedupe.enabled` is true, the same notification is not sent t
 | After prepend | All sheet members → **QC Received**; `QC.Workflow` calls `Invoke-QCNotificationForStateChange` for **QC Received** when `qcRendition.deferReadyForQcNotification` is **false** (current default). |
 | After rendition (optional defer) | Set `deferReadyForQcNotification: true` to hold **QC Received** email until prepend **and** rendition complete (`Invoke-QCReadyForQcNotificationIfReady`). |
 | Rest of review cycle | Each configured state (Review In Progress, Redlines Issued, Corrections In Progress, Verification In Progress, Error Needs Attention) via audit on user-driven transitions, or workflow writeback when automation changes state. |
-| QC PDF already at new state in PW | `Sync-PWAssociatedSheetWorkflowState` compares `sheet_index.pw_state_name` to the canonical state and notifies on `*-qc.pdf` when PW moved first (common when you change state on the QC PDF). |
+| QC PDF already at new state in PW | `Sync-PWAssociatedSheetWorkflowState` compares `sheet_index.pw_state_name` to the canonical state and records/notifies via `_PWD-InvokeStaleSheetIndexAuditStateTriggers` when PW moved first (common when you change state on the QC PDF). |
 
 **Gotcha:** Email is only sent for `*-qc.pdf` (`qcPdfNotificationsOnly`). Sibling sync updates to DGN/sheet PDF do not email. If PW already shows the new state on the QC PDF before sync runs, the member loop used to skip notification entirely; the sheet-index comparison above fixes that path.
 

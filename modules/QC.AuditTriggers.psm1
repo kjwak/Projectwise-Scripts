@@ -193,6 +193,30 @@ function _QCAT-BuildNotificationDocument {
     return [pscustomobject]$doc
 }
 
+function _QCAT-WriteWorkflowEventMirror {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$DocumentName = '',
+        [string]$FromValue = '',
+        [string]$ToValue = '',
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [string]$EventType = 'STATE_CHANGE',
+        [string]$AuditActionName = ''
+    )
+
+    if (-not (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue)) { return }
+    $payload = @{
+        documentName = $DocumentName
+        auditAction = $AuditActionName
+    }
+    $payloadJson = ''
+    try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
+    Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
+        -PreviousPwState $FromValue -TargetPwState $ToValue -DecisionCode $JobType -PayloadJson $payloadJson | Out-Null
+}
+
 function Invoke-QCAuditWorkflowStateChangeTriggers {
     <#
     .SYNOPSIS
@@ -242,6 +266,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     $transitionId = $null
+    $transitionWritten = $false
     if ([bool]$settings.recordTransitions) {
         $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
@@ -249,6 +274,15 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         if ($tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
             try { $transitionId = [int]$tr.Data.transitionId } catch { $transitionId = $null }
         }
+        try {
+            if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $transitionWritten = $true }
+        } catch { }
+    }
+
+    if ($transitionWritten) {
+        _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
+            -AuditActionName $AuditActionName
     }
 
     if (-not $shouldNotify) { return }
@@ -374,9 +408,17 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
             -FieldName 'pw_state_name' | Out-Null
     }
     if ([bool]$settings.recordTransitions) {
-        Write-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+        $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
             -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
-            -JobId $jobId -JobType $JobType | Out-Null
+            -JobId $jobId -JobType $JobType
+        $written = $false
+        try {
+            if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $written = $true }
+        } catch { }
+        if ($written) {
+            _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+                -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType -EventType 'STATE_CHANGE'
+        }
     }
 
     if ([bool]$settings.recordProcessingJobs -and (Get-Command -Name 'Write-QCStateChangeJobTelemetry' -ErrorAction SilentlyContinue)) {
