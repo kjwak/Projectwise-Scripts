@@ -55,10 +55,12 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
     }
 }
 
-function New-MockDocument([string]$Reviewer, [string]$Designer) {
+function New-MockDocument([string]$Reviewer, [string]$Designer, [string]$Checker = '', [string]$ReviewType = '') {
     $bag = [System.Collections.Specialized.OrderedDictionary]::new()
     if ($Reviewer) { [void]$bag.Add('EM_Reviewer_Email', $Reviewer) }
     if ($Designer) { [void]$bag.Add('EM_Designer_Email', $Designer) }
+    if ($Checker) { [void]$bag.Add('EM_Checker_Email', $Checker) }
+    if ($ReviewType) { [void]$bag.Add('QC_Review_Type', $ReviewType) }
     return [pscustomobject]@{
         Name = 'D-101-qc.pdf'
         DocumentGUID = 'guid-101'
@@ -90,6 +92,17 @@ $noRecipients = Invoke-QCNotificationForStateChange -Config $noRecipientCfg -Pre
     -Document (New-MockDocument '' '')
 Assert-True ($null -ne $noRecipients) 'Missing recipients should return a result object'
 Assert-True (-not $noRecipients.Data.success) 'Missing recipients should not report success'
+
+# Independent Check routes reviewers role to checker email
+$icCfg = New-NotifyConfig -Enabled $true
+$icSettings = Get-QCNotificationSettings -Config $icCfg
+$icDoc = New-MockDocument -Reviewer 'reviewer@company.com' -Designer 'designer@company.com' `
+    -Checker 'checker@company.com' -ReviewType 'Independent Check'
+$icResolved = Resolve-QCNotificationRecipients -Document $icDoc -Settings $icSettings -Config @{
+    qcWorkflow = @{ reviewTypes = @{ independentCheck = 'Independent Check' } }
+} -ToRoles @('reviewers')
+Assert-Eq $icResolved.reviewers[0] 'checker@company.com' 'Independent Check should use checker for reviewers role'
+Assert-Eq $icResolved.reviewers.Count 1 'Independent Check should not include EM_Reviewer in reviewers list'
 
 # Dedupe key consistency
 $event = New-QCNotificationEvent -EventType 'QC_RECEIVED' -DocumentName 'D-101-qc.pdf' -DocumentGuid 'guid-101' -CurrentState 'QC Received'

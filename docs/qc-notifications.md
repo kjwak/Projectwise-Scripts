@@ -33,8 +33,9 @@ Set `enabled: false` to suppress all sends (workers and tests remain safe).
 
 Recipients are resolved from the **QC PDF document** attribute bags (see `docs/pw-environment-email-attributes.md`). Default column names:
 
-- `EM_Reviewer_Email` → reviewers
+- `EM_Reviewer_Email` → reviewers (except **Independent Check**; see below)
 - `EM_Designer_Email` → designers
+- `EM_Checker_Email` → checker; also used as the **reviewers** audience when `QC_Review_Type` is **Independent Check**
 - Optional `CcEmails`
 
 Override field names under `notifications.attributes` without code changes.

@@ -150,6 +150,7 @@ function Get-QCNotificationSettings {
         attributes = @{
             reviewerEmailField = 'EM_Reviewer_Email'
             designerEmailField = 'EM_Designer_Email'
+            checkerEmailField = 'EM_Checker_Email'
             ccEmailField = 'CcEmails'
             qcPdfUrlField = ''
             projectNumberField = ''
@@ -375,6 +376,114 @@ function _QCN-UsesHtmlEmailBody([hashtable]$Settings, [hashtable]$EventCfg) {
     return ($format.Equals('Html', [StringComparison]::OrdinalIgnoreCase))
 }
 
+function _QCN-GetIndependentCheckReviewTypeLabel {
+    param([hashtable]$Config)
+
+    $label = 'Independent Check'
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf) {
+            $reviewTypes = _QCN-ToHashtable $wf['reviewTypes']
+            if ($reviewTypes -and $reviewTypes['independentCheck']) {
+                $label = [string]$reviewTypes['independentCheck']
+            }
+        }
+    }
+    return $label.Trim()
+}
+
+function _QCN-TestNotificationIndependentCheckReviewType {
+    param(
+        [string]$ReviewType,
+        [hashtable]$Config
+    )
+
+    if (_QCN-IsBlank $ReviewType) { return $false }
+    $expected = _QCN-GetIndependentCheckReviewTypeLabel -Config $Config
+    return ([string]$ReviewType).Trim() -eq $expected
+}
+
+function _QCN-GetQcReviewTypeAttributeName {
+    param([hashtable]$Config)
+
+    $col = 'QC_Review_Type'
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf) {
+            $attrMap = _QCN-ToHashtable $wf['attributeMap']
+            if ($attrMap -and $attrMap['reviewType']) { $col = [string]$attrMap['reviewType'] }
+        }
+    }
+    return $col
+}
+
+function _QCN-GetQcCheckerEmailAttributeName {
+    param([hashtable]$Config)
+
+    $col = 'QC_Checker_Email'
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf) {
+            $attrMap = _QCN-ToHashtable $wf['attributeMap']
+            if ($attrMap -and $attrMap['checkerEmail']) { $col = [string]$attrMap['checkerEmail'] }
+        }
+    }
+    return $col
+}
+
+function _QCN-ResolveNotificationReviewType {
+    param(
+        [object]$Document,
+        [hashtable]$Settings,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null,
+        [string]$FolderPath = '',
+        [string]$SourceName = ''
+    )
+
+    $attr = _QCN-ToHashtable $Settings.attributes
+    if (-not $attr) { $attr = @{} }
+
+    if ($attr.ContainsKey('reviewTypeField') -and -not (_QCN-IsBlank $attr['reviewTypeField'])) {
+        $fromNotify = _QCN-GetAttributeValue -Document $Document -AttributeName ([string]$attr['reviewTypeField'])
+        if (-not (_QCN-IsBlank $fromNotify)) { return ([string]$fromNotify).Trim() }
+    }
+
+    $qcReviewCol = _QCN-GetQcReviewTypeAttributeName -Config $Config
+    $fromDoc = _QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewCol
+    if (-not (_QCN-IsBlank $fromDoc)) { return ([string]$fromDoc).Trim() }
+
+    if ($Job) {
+        $fromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewType', 'qcReviewType'))
+        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
+    }
+
+    if ($Config -and -not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceName)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceName -Config $Config
+            if ($pw.found -and -not (_QCN-IsBlank $pw.qcReviewType)) { return ([string]$pw.qcReviewType).Trim() }
+        }
+    }
+
+    return ''
+}
+
+function _QCN-ApplyIndependentCheckReviewerEmail {
+    param(
+        [object]$Document,
+        [string]$CheckerEmail,
+        [string]$CheckerField,
+        [string]$QcCheckerField
+    )
+
+    if (-not (_QCN-IsBlank $CheckerEmail)) { return [string]$CheckerEmail }
+    $fromEm = _QCN-GetAttributeValue -Document $Document -AttributeName $CheckerField
+    if (-not (_QCN-IsBlank $fromEm)) { return ([string]$fromEm).Trim() }
+    $fromQc = _QCN-GetAttributeValue -Document $Document -AttributeName $QcCheckerField
+    if (-not (_QCN-IsBlank $fromQc)) { return ([string]$fromQc).Trim() }
+    return ''
+}
+
 function _QCN-ResolveNotificationRoleEmails {
     param(
         [object]$Document,
@@ -389,23 +498,7 @@ function _QCN-ResolveNotificationRoleEmails {
     $reviewerField = if ($attr.reviewerEmailField) { [string]$attr.reviewerEmailField } else { 'EM_Reviewer_Email' }
     $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
     $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
-
-    $designer = ''
-    $reviewer = ''
-    $checker = ''
-    if ($RoleOverrides) {
-        if ($RoleOverrides.ContainsKey('designerEmail')) { $designer = [string]$RoleOverrides.designerEmail }
-        if ($RoleOverrides.ContainsKey('reviewerEmail')) { $reviewer = [string]$RoleOverrides.reviewerEmail }
-        if ($RoleOverrides.ContainsKey('checkerEmail')) { $checker = [string]$RoleOverrides.checkerEmail }
-    }
-    if ($Job) {
-        if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetJobValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')) }
-        if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail')) }
-        if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetJobValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')) }
-    }
-    if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
-    if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
-    if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $checkerField) }
+    $qcCheckerField = _QCN-GetQcCheckerEmailAttributeName -Config $Config
 
     $folderPath = ''
     $sourceName = ''
@@ -423,8 +516,31 @@ function _QCN-ResolveNotificationRoleEmails {
         $sourceName = [string]([System.IO.Path]::GetFileNameWithoutExtension($sourceName)) + '.pdf'
     }
 
+    $reviewType = ''
+
+    $designer = ''
+    $reviewer = ''
+    $checker = ''
+    if ($RoleOverrides) {
+        if ($RoleOverrides.ContainsKey('designerEmail')) { $designer = [string]$RoleOverrides.designerEmail }
+        if ($RoleOverrides.ContainsKey('reviewerEmail')) { $reviewer = [string]$RoleOverrides.reviewerEmail }
+        if ($RoleOverrides.ContainsKey('checkerEmail')) { $checker = [string]$RoleOverrides.checkerEmail }
+    }
+    if ($Job) {
+        if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetJobValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')) }
+        if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail')) }
+        if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetJobValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')) }
+    }
+    if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
+    if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
+    if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $checkerField) }
+    if (_QCN-IsBlank $checker) {
+        $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcCheckerField)
+    }
+
     if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $sourceName)) {
-        if ((_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer)) {
+        $needSource = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
+        if ($needSource) {
             if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
                 $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folderPath -SourceDocumentName $sourceName -Config $Config
                 if ($pw.found) {
@@ -434,6 +550,14 @@ function _QCN-ResolveNotificationRoleEmails {
                 }
             }
         }
+    }
+
+    $reviewType = _QCN-ResolveNotificationReviewType -Document $Document -Settings $Settings -Config $Config -Job $Job `
+        -FolderPath $folderPath -SourceName $sourceName
+    if (_QCN-TestNotificationIndependentCheckReviewType -ReviewType $reviewType -Config $Config) {
+        $reviewer = _QCN-ApplyIndependentCheckReviewerEmail -Document $Document -CheckerEmail $checker `
+            -CheckerField $checkerField -QcCheckerField $qcCheckerField
+        if (-not (_QCN-IsBlank $reviewer) -and (_QCN-IsBlank $checker)) { $checker = $reviewer }
     }
 
     return @{ designerEmail = $designer; reviewerEmail = $reviewer; checkerEmail = $checker }

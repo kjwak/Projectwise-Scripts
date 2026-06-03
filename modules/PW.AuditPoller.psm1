@@ -21,17 +21,64 @@ $script:QCRelevantActions = @{
     1020 = 'DOCUMENT_DELETE'
 }
 
-# Full PW action map for audit_events ingestion (telemetry is unfiltered; triggers use QCRelevantActions only).
+# Full PW audit trail action map (dms_audt o_action / pw_action). Telemetry ingestion is unfiltered;
+# job triggers use QCRelevantActions only. Source: Bentley ProjectWise audit action constants.
 $script:AuditActionNames = @{
-    1    = 'FOLDER_CREATE';     2    = 'FOLDER_MODIFY';     3    = 'FOLDER_WFLOW'
-    4    = 'FOLDER_DELETE';     5    = 'FOLDER_STATE'
-    1001 = 'DOCUMENT_CREATE';   1002 = 'DOCUMENT_MODIFY';   1003 = 'DOCUMENT_ATTR'
-    1004 = 'DOCUMENT_FILE_ADD'; 1005 = 'DOCUMENT_FILE_REM'; 1006 = 'DOCUMENT_FILE_REP'
-    1007 = 'DOCUMENT_CIN';     1008 = 'DOCUMENT_VIEW';     1009 = 'DOCUMENT_CHOUT'
-    1010 = 'DOCUMENT_CPOUT';   1011 = 'DOCUMENT_GOUT';     1012 = 'DOCUMENT_STATE'
-    1013 = 'DOCUMENT_FINAL_S'; 1014 = 'DOCUMENT_FINAL_R'; 1015 = 'DOCUMENT_VERSION'
-    1016 = 'DOCUMENT_MOVE';    1020 = 'DOCUMENT_DELETE';    1022 = 'DOCUMENT_FREE'
-    1027 = 'DOCUMENT_IMPORT'; 3001 = 'USER_LOGIN';        3002 = 'USER_LOGOUT'
+    # Folders
+    1    = 'FOLDER_CREATE';           2    = 'FOLDER_MODIFY';           3    = 'FOLDER_WFLOW'
+    4    = 'FOLDER_DELETE';           5    = 'FOLDER_STATE';            6    = 'FOLDER_ACL_ASSIGN'
+    7    = 'FOLDER_ACL_MODIFY';       8    = 'FOLDER_ACL_REMOVE';       9    = 'FOLDER_CONNECT_ASSIGN'
+    10   = 'FOLDER_CONNECT_CHANGE';   11   = 'FOLDER_CONNECT_REMOVE';   12   = 'FOLDER_RESTORE'
+    100  = 'FOLDER_CUSTOM_FIRST';     999  = 'FOLDER_CUSTOM_LAST'
+    # Documents
+    1000 = 'DOCUMENT_UNKNOWN';        1001 = 'DOCUMENT_CREATE';        1002 = 'DOCUMENT_MODIFY'
+    1003 = 'DOCUMENT_ATTR';           1004 = 'DOCUMENT_FILE_ADD';      1005 = 'DOCUMENT_FILE_REM'
+    1006 = 'DOCUMENT_FILE_REP';       1007 = 'DOCUMENT_CIN';           1008 = 'DOCUMENT_VIEW'
+    1009 = 'DOCUMENT_CHOUT';          1010 = 'DOCUMENT_CPOUT';         1011 = 'DOCUMENT_GOUT'
+    1012 = 'DOCUMENT_STATE';          1013 = 'DOCUMENT_FINAL_S';       1014 = 'DOCUMENT_FINAL_R'
+    1015 = 'DOCUMENT_VERSION';        1016 = 'DOCUMENT_MOVE';          1017 = 'DOCUMENT_COPY'
+    1018 = 'DOCUMENT_SECUR';          1019 = 'DOCUMENT_REDLINE';       1020 = 'DOCUMENT_DELETE'
+    1021 = 'DOCUMENT_EXPORT';         1022 = 'DOCUMENT_FREE';          1023 = 'DOCUMENT_EXTRACT'
+    1024 = 'DOCUMENT_DISTRIBUTE';     1025 = 'DOCUMENT_SEND_TO';       1026 = 'DOCUMENT_COMMENT'
+    1027 = 'DOCUMENT_IMPORT';         1028 = 'DOCUMENT_ACL_ASSIGN';    1029 = 'DOCUMENT_ACL_MODIFY'
+    1030 = 'DOCUMENT_ACL_REMOVE';     1031 = 'DOCUMENT_REVIT';         1032 = 'DOCUMENT_PACK'
+    1033 = 'DOCUMENT_UNPACK';         1034 = 'DOCUMENT_WRE_START';     1035 = 'DOCUMENT_WRE_END'
+    1036 = 'DOCUMENT_WRE_FAILURE';    1037 = 'DOCUMENT_RESTORE'
+    1100 = 'DOCUMENT_CUSTOM_FIRST';   1999 = 'DOCUMENT_CUSTOM_LAST'
+    # Sets
+    2001 = 'SET_CREATE';              2002 = 'SET_ADD';                2003 = 'SET_REMOVE'
+    2100 = 'SET_CUSTOM_FIRST';        2999 = 'SET_CUSTOM_LAST'
+    # Users
+    3001 = 'USER_LOGIN';              3002 = 'USER_LOGOUT';            3003 = 'USER_CREATE'
+    3004 = 'USER_MODIFY';             3005 = 'USER_SETTINGS';          3006 = 'USER_RENAME'
+    3007 = 'USER_DELETE';             3008 = 'USER_DISABLE';           3009 = 'USER_ENABLE'
+    # Groups
+    4001 = 'GROUP_CREATE';            4002 = 'GROUP_MODIFY';           4003 = 'GROUP_ADD'
+    4004 = 'GROUP_REMOVE';            4005 = 'GROUP_RENAME';           4006 = 'GROUP_DELETE'
+    4007 = 'GROUP_ACL_ASSIGN';        4008 = 'GROUP_ACL_MODIFY';       4009 = 'GROUP_ACL_REMOVE'
+    # User lists
+    5001 = 'USER_LIST_CREATE';        5002 = 'USER_LIST_MODIFY';       5003 = 'USER_LIST_ADD'
+    5004 = 'USER_LIST_REMOVE';        5005 = 'USER_LIST_RENAME';       5006 = 'USER_LIST_DELETE'
+    5007 = 'USER_LIST_ACL_ASSIGN';    5008 = 'USER_LIST_ACL_MODIFY';   5009 = 'USER_LIST_ACL_REMOVE'
+    # States
+    6001 = 'STATE_CREATE';            6002 = 'STATE_RENAME';           6003 = 'STATE_DELETE'
+    # Workflows
+    7001 = 'WORKFLOW_CREATE';         7002 = 'WORKFLOW_ADD';           7003 = 'WORKFLOW_REMOVE'
+    7004 = 'WORKFLOW_RENAME';         7005 = 'WORKFLOW_DELETE';        7006 = 'WORKFLOW_MOVE'
+    # Interfaces / environments / views
+    8001 = 'INTERFACE_CREATE';        8002 = 'INTERFACE_RENAME';       8003 = 'INTERFACE_DELETE'
+    8101 = 'ENVIRONMENT_CREATE';      8102 = 'ENVIRONMENT_MODIFY';     8103 = 'ENVIRONMENT_RENAME'
+    8104 = 'ENVIRONMENT_DELETE';      8105 = 'ENVIRONMENT_VIEW_REMOVE'; 8106 = 'ENVIRONMENT_VIEW_CHANGE'
+    9001 = 'VIEW_CREATE';             9002 = 'VIEW_RENAME';            9003 = 'VIEW_DELETE'
+    9004 = 'VIEW_CHANGE'
+    # Applications / departments / environment attributes
+    9101 = 'APPLICATION_CREATE';      9102 = 'APPLICATION_RENAME';     9103 = 'APPLICATION_DELETE'
+    9104 = 'APPLICATION_VIEWER'
+    9201 = 'DEPARTMENT_CREATE';       9202 = 'DEPARTMENT_RENAME';      9203 = 'DEPARTMENT_DELETE'
+    9301 = 'ENVIRONMENT_ATTR_ADD';    9302 = 'ENVIRONMENT_ATTR_REMOVE'; 9303 = 'ENVIRONMENT_ATTR_MODIFY'
+    # Work areas
+    20001 = 'WORKAREA_CREATE';        20002 = 'WORKAREA_PROP_ADD';     20003 = 'WORKAREA_PROP_REMOVE'
+    20004 = 'WORKAREA_RENAME';        20005 = 'WORKAREA_DELETE'
 }
 
 # Session caches: avoid repeated Get-PWDocumentsByGUIDs for missing or known documents.
@@ -602,9 +649,21 @@ function _AuditPoller-GetTriggerActionCode {
 
 function _AuditPoller-GetActionName {
     param([int]$ActionCode)
-    if ($script:QCRelevantActions.ContainsKey($ActionCode)) { return $script:QCRelevantActions[$ActionCode] }
     if ($script:AuditActionNames.ContainsKey($ActionCode)) { return $script:AuditActionNames[$ActionCode] }
     return "UNKNOWN_$ActionCode"
+}
+
+function Get-PWAuditTrailActionName {
+    <#
+    .SYNOPSIS
+    Resolves a ProjectWise dms_audt o_action / pw_action integer to its audit trail constant name.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int]$ActionCode
+    )
+    return _AuditPoller-GetActionName -ActionCode $ActionCode
 }
 
 function _AuditPoller-NormalizeGuid {
@@ -1223,4 +1282,4 @@ function Get-AuditPollerLogicVersion {
     return $script:AuditPollerLogicVersion
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion
+Export-ModuleMember -Function Invoke-AuditTrailScan, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName
