@@ -73,6 +73,7 @@ $repoRoot = _Resolve-RepoRootFromSettings -SettingsPath $AppSettingsPath -Defaul
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 
@@ -280,65 +281,11 @@ function _Get-DocumentsAreaTwoSegments([string]$AnyPath) {
 }
 
 function _TryGet-ProjectNameFromFolder([hashtable]$Cfg, [string]$FolderPath) {
-    # Extract "project name" from paths like:
-    #   Documents\<AzDot root>\<project...>\CADD\Sheets
-    # using appsettings watchList.roots[*].path + .sheetsPathFromProject + .projectDepth.
-    # Works for any PW path under a configured watch root (status set or QC prepend).
     if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
     if (-not $Cfg) { return $null }
-
-    $norm = ([string]$FolderPath).Trim() -replace '/', '\'
-    $norm = $norm.TrimEnd('\')
-
-    $roots = $null
-    try {
-        if ($Cfg.ContainsKey('projectWise') -and $Cfg.projectWise -and
-            $Cfg.projectWise.ContainsKey('watchList') -and $Cfg.projectWise.watchList -and
-            $Cfg.projectWise.watchList.ContainsKey('roots') -and $Cfg.projectWise.watchList.roots) {
-            $roots = @($Cfg.projectWise.watchList.roots)
-        }
-    } catch { $roots = $null }
-    if (-not $roots) { return $null }
-
-    foreach ($r in $roots) {
-        $rootPath = $null
-        $sheetsRel = $null
-        $depth = 1
-        try { if ($r.path) { $rootPath = [string]$r.path } } catch { $rootPath = $null }
-        try { if ($r.sheetsPathFromProject) { $sheetsRel = [string]$r.sheetsPathFromProject } } catch { $sheetsRel = $null }
-        try { if ($r.projectDepth) { $depth = [int]$r.projectDepth } } catch { $depth = 1 }
-        if (-not $rootPath) { continue }
-        if ($depth -lt 1) { $depth = 1 }
-
-        $rootNorm = ([string]$rootPath).Trim() -replace '/', '\'
-        $rootNorm = $rootNorm.TrimEnd('\')
-        $prefix = $rootNorm + '\'
-        if (-not ($norm.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
-
-        $rel = $norm.Substring($prefix.Length)
-        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-
-        if ($sheetsRel) {
-            $suf = ([string]$sheetsRel).Trim() -replace '/', '\'
-            $suf = $suf.Trim('\')
-            if ($suf) {
-                $suffix = '\' + $suf
-                if ($rel.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) {
-                    $rel = $rel.Substring(0, $rel.Length - $suffix.Length)
-                }
-            }
-        }
-
-        $rel = $rel.Trim('\')
-        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-
-        $parts = @($rel -split '\\' | Where-Object { $_ -ne '' })
-        if ($parts.Count -le 0) { continue }
-        $take = [Math]::Min([int]$depth, $parts.Count)
-        $proj = ($parts | Select-Object -First $take) -join '\'
-        if (-not [string]::IsNullOrWhiteSpace($proj)) { return $proj }
+    if (Get-Command -Name 'Get-QCProjectNameFromFolderPath' -ErrorAction SilentlyContinue) {
+        return Get-QCProjectNameFromFolderPath -Config $Cfg -FolderPath $FolderPath
     }
-
     return $null
 }
 

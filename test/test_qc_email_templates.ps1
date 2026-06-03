@@ -104,9 +104,13 @@ $azdotFolder = 'Documents\AZDOT 2024\Sample Highway\CADD\Sheets'
 $azdotProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $azdotFolder
 Assert-Eq $azdotProject 'Sample Highway' 'AZDOT 2024 project name should be folder segment before CADD\Sheets'
 
-$caltransFolder = 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\AreaA\AreaB\CADD\Sheets'
+$caltransFolder = 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
 $caltransProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $caltransFolder
-Assert-Eq $caltransProject 'AreaA\AreaB' 'Caltrans watch root should take projectDepth levels before CADD\Sheets'
+Assert-Eq $caltransProject 'CAFWY2200-I-15_ELPSE' 'Caltrans project name should be between Documents\Caltrans and CADD\Sheets'
+
+$caltransDocPath = 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1\0818000063ea501-qc.pdf'
+$caltransFromDoc = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath ([System.IO.Path]::GetDirectoryName($caltransDocPath))
+Assert-Eq $caltransFromDoc 'CAFWY2200-I-15_ELPSE' 'Caltrans project name should not include CADD\Sheets or Seg_1'
 
 $pathEvent = @{
     eventType = 'READY_FOR_QC'

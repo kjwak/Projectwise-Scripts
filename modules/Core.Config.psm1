@@ -153,13 +153,25 @@ function Get-AppSetting {
     return New-QCSuccessResult -Code 'CONFIG_VALUE' -Message 'Setting resolved.' -Data @{ value = $cur; isDefault = $false }
 }
 
+function _CC-ResolveProjectNamingAnchor([string]$WatchRootPath) {
+    if ([string]::IsNullOrWhiteSpace($WatchRootPath)) { return '' }
+    $rootNorm = ([string]$WatchRootPath).Trim() -replace '/', '\'
+    $rootNorm = $rootNorm.TrimEnd('\')
+    $parts = @($rootNorm -split '\\' | Where-Object { $_ -ne '' })
+    if ($parts.Count -ge 2 -and $parts[1].Equals('Caltrans', [StringComparison]::OrdinalIgnoreCase)) {
+        return 'Documents\Caltrans'
+    }
+    return $rootNorm
+}
+
 function Get-QCProjectNameFromFolderPath {
     <#
     .SYNOPSIS
     Extracts the project name from a ProjectWise folder path using watchList.roots configuration.
     .DESCRIPTION
-    For paths like Documents\AZDOT 2024\<project>\CADD\Sheets\..., returns the segment(s) between
-    the configured watch root and sheetsPathFromProject (per projectDepth).
+    Returns the path segment(s) between the environment folder (Documents\Caltrans, Documents\AZDOT 2024,
+    Documents\AZDOT) and sheetsPathFromProject (typically CADD\Sheets), even when the document lives in
+    subfolders under Sheets (e.g. Seg_1).
     #>
     [CmdletBinding()]
     param(
@@ -192,43 +204,37 @@ function Get-QCProjectNameFromFolderPath {
     } catch { $roots = $null }
     if (-not $roots) { return $null }
 
+    $anchors = @{}
     foreach ($r in $roots) {
         $rootPath = $null
-        $sheetsRel = $null
-        $depth = 1
+        $sheetsRel = 'CADD\Sheets'
         try { if ($r.path) { $rootPath = [string]$r.path } } catch { $rootPath = $null }
-        try { if ($r.sheetsPathFromProject) { $sheetsRel = [string]$r.sheetsPathFromProject } } catch { $sheetsRel = $null }
-        try { if ($r.projectDepth) { $depth = [int]$r.projectDepth } } catch { $depth = 1 }
+        try { if ($r.sheetsPathFromProject) { $sheetsRel = [string]$r.sheetsPathFromProject } } catch { }
         if (-not $rootPath) { continue }
-        if ($depth -lt 1) { $depth = 1 }
 
-        $rootNorm = ([string]$rootPath).Trim() -replace '/', '\'
-        $rootNorm = $rootNorm.TrimEnd('\')
-        $prefix = $rootNorm + '\'
-        if (-not ($norm.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
-
-        $rel = $norm.Substring($prefix.Length)
-        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-
-        if ($sheetsRel) {
-            $suf = ([string]$sheetsRel).Trim() -replace '/', '\'
-            $suf = $suf.Trim('\')
-            if ($suf) {
-                $suffix = '\' + $suf
-                if ($rel.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) {
-                    $rel = $rel.Substring(0, $rel.Length - $suffix.Length)
-                }
-            }
+        $anchor = _CC-ResolveProjectNamingAnchor -WatchRootPath $rootPath
+        if ([string]::IsNullOrWhiteSpace($anchor)) { continue }
+        $suf = ([string]$sheetsRel).Trim() -replace '/', '\'
+        $suf = $suf.Trim('\')
+        if (-not $suf) { $suf = 'CADD\Sheets' }
+        if (-not $anchors.ContainsKey($anchor)) {
+            $anchors[$anchor] = $suf
         }
+    }
 
-        $rel = $rel.Trim('\')
-        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+    $anchorKeys = @($anchors.Keys | Sort-Object { $_.Length } -Descending)
+    foreach ($anchor in $anchorKeys) {
+        $suf = [string]$anchors[$anchor]
+        $anchorPrefix = $anchor.TrimEnd('\') + '\'
+        if (-not ($norm.StartsWith($anchorPrefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
 
-        $parts = @($rel -split '\\' | Where-Object { $_ -ne '' })
-        if ($parts.Count -le 0) { continue }
-        $take = [Math]::Min([int]$depth, $parts.Count)
-        $proj = ($parts | Select-Object -First $take) -join '\'
-        if (-not [string]::IsNullOrWhiteSpace($proj)) { return $proj }
+        $marker = '\' + $suf
+        $markerIdx = $norm.IndexOf($marker, $anchorPrefix.Length, [StringComparison]::OrdinalIgnoreCase)
+        if ($markerIdx -lt 0) { continue }
+
+        $project = $norm.Substring($anchorPrefix.Length, $markerIdx - $anchorPrefix.Length)
+        $project = $project.Trim('\')
+        if (-not [string]::IsNullOrWhiteSpace($project)) { return $project }
     }
 
     return $null
