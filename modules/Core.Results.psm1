@@ -58,4 +58,21 @@ function New-QCErrorResult {
     return New-QCFailureResult -Code $Code -Message $Message -Data $Data
 }
 
+function Ensure-QCJsonLogAvailable {
+    <#
+    .SYNOPSIS
+    Re-imports Core.Runtime when nested Import-Module -Force dropped Write-QCJsonLog from the session.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ModulesRoot
+    )
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) { return $true }
+    $runtimePath = Join-Path $ModulesRoot 'Core.Runtime.psm1'
+    if (-not (Test-Path -LiteralPath $runtimePath)) { return $false }
+    Import-Module $runtimePath -Force -WarningAction SilentlyContinue | Out-Null
+    return [bool](Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)
+}
+
 Export-ModuleMember -Function *

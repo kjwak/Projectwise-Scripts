@@ -25,14 +25,20 @@ function Ensure-PWDiscoveryModuleLoaded {
         'ConvertTo-PWCmdletFolderPath'
     )
     $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
-    if ($missing.Count -eq 0) { return $true }
+    if ($missing.Count -gt 0) {
+        $modPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
+        Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
 
-    $modPath = Join-Path $PSScriptRoot 'PW.Discovery.psm1'
-    Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+        $dbPath = Join-Path $PSScriptRoot 'Core.Database.psm1'
+        if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+            Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
+        }
+    }
 
-    $dbPath = Join-Path $PSScriptRoot 'Core.Database.psm1'
-    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-        Import-Module $dbPath -Force -WarningAction SilentlyContinue | Out-Null
+    if (Get-Command -Name 'Ensure-QCJsonLogAvailable' -ErrorAction SilentlyContinue) {
+        [void](Ensure-QCJsonLogAvailable -ModulesRoot $PSScriptRoot)
+    } elseif (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
     }
 
     $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })

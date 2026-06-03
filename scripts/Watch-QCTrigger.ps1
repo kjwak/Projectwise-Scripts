@@ -122,7 +122,9 @@ function _Read-LocalWatcherCache {
         }
         return @{ version = 1; entries = $entries }
     } catch {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_READ_FAILED' -Message 'Local watcher cache could not be read; rebuilding.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_READ_FAILED' -Message 'Local watcher cache could not be read; rebuilding.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        }
         return $empty
     }
 }
@@ -139,7 +141,9 @@ function _Write-LocalWatcherCache {
         Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
         return $true
     } catch {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_WRITE_FAILED' -Message 'Local watcher cache could not be written.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LOCAL_CACHE_WRITE_FAILED' -Message 'Local watcher cache could not be written.' -Data @{ path = $Path; errorMessage = [string]$_.Exception.Message }
+        }
         return $false
     }
 }
@@ -270,9 +274,10 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = (Join-Path $repoRoot 'appsettings.json')
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
-if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+$modulesRoot = Join-Path $repoRoot 'modules'
+Import-Module (Join-Path $modulesRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulesRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
     throw "Core.Runtime.psm1 did not load (Write-QCJsonLog missing). Repo root: $repoRoot"
 }
 Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
@@ -287,6 +292,9 @@ Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningA
 if (-not (Ensure-PWDiscoveryModuleLoaded)) {
     throw "PW.Discovery.psm1 did not load required exports (e.g. Find-PWSheetsFoldersUnderRoot). Repo: $repoRoot"
 }
+if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+    throw "Write-QCJsonLog unavailable after PW.Discovery load. Repo root: $repoRoot"
+}
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 # QC.AuditTriggers (via PW.Discovery) can reload Core.Database and drop session exports; restore before use.
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -295,6 +303,9 @@ if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContin
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
     throw "Core.Database.psm1 did not load; Test-QCDatabaseEnabled is unavailable. Repo: $repoRoot"
 }
+if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+    throw "Write-QCJsonLog unavailable after Core.Database reload. Repo root: $repoRoot"
+}
 $pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
@@ -302,6 +313,9 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+    throw "Write-QCJsonLog unavailable after module imports. Repo root: $repoRoot"
+}
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
@@ -484,6 +498,9 @@ if ($statusSetRules.Count -ge 0) {
             Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
             if (-not (Ensure-PWDiscoveryModuleLoaded)) {
                 throw 'PW.Discovery exports are unavailable at tick start (Find-PWSheetsFoldersUnderRoot missing).'
+            }
+            if (-not (Ensure-QCJsonLogAvailable -ModulesRoot $modulesRoot)) {
+                throw 'Write-QCJsonLog unavailable after PW.Discovery reload at tick start.'
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
