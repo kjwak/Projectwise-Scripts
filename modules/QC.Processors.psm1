@@ -9,6 +9,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force 
 Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -477,6 +478,29 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if ($document) { $ctx['document'] = $document }
     $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
     if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
+
+    $previousState = _QCP-GetJobMetadataValue -Job $Job -Keys @('pwStateName','stateName','workflowState','currentState')
+    if (-not (_QCP-IsNullOrWhiteSpace $previousState)) {
+        $ctx['previousState'] = [string]$previousState
+    } elseif (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($prependTrigger -eq 'finalQcComplete') {
+                $ctx['previousState'] = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing'
+            } elseif ($prependTrigger -eq 'initialQcPdf') {
+                $ctx['previousState'] = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
+            }
+        } catch { }
+    }
+    if ($ctx.ContainsKey('previousState') -and $ctx.previousState -and -not $ctx.ContainsKey('lifecycleState')) {
+        $ctx['lifecycleState'] = [string]$ctx.previousState
+    }
+
+    $triggerGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid','documentGuid')
+    if (-not (_QCP-IsNullOrWhiteSpace $triggerGuid)) { $ctx['documentGuid'] = [string]$triggerGuid }
+    $triggerName = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentName')
+    if (-not (_QCP-IsNullOrWhiteSpace $triggerName)) { $ctx['documentName'] = [string]$triggerName }
+
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
     $strict = $false

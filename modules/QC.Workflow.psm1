@@ -697,6 +697,19 @@ function Get-PWDocumentWorkflowInfo {
             if (-not (_QCW-IsNullOrWhiteSpace $resolvedState)) { $stateName = $resolvedState }
         } catch { }
     }
+    if (_QCW-IsNullOrWhiteSpace $stateName -and $Context) {
+        if ($Context.ContainsKey('lifecycleState') -and -not (_QCW-IsNullOrWhiteSpace $Context.lifecycleState)) {
+            $stateName = [string]$Context.lifecycleState
+        } elseif ($Context.ContainsKey('previousState') -and -not (_QCW-IsNullOrWhiteSpace $Context.previousState)) {
+            $stateName = [string]$Context.previousState
+        } elseif ($Context.ContainsKey('job') -and $Context.job) {
+            $job = _QCW-ToHashtable $Context.job
+            if ($job -and $job.ContainsKey('metadata') -and $job.metadata) {
+                $md = _QCW-ToHashtable $job.metadata
+                if ($md -and $md.ContainsKey('pwStateName') -and $md.pwStateName) { $stateName = [string]$md.pwStateName }
+            }
+        }
+    }
 
     $workflowNameValue = if (_QCW-IsNullOrWhiteSpace $workflowName) { $null } else { [string]$workflowName }
     $stateNameValue = if (_QCW-IsNullOrWhiteSpace $stateName) { $null } else { [string]$stateName }
@@ -992,8 +1005,16 @@ function Set-PWQCWorkflowState {
         }
 
         if ($cfg -and (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue)) {
+            $previousForTelemetry = [string]$info.Data.stateName
+            if (_QCW-IsNullOrWhiteSpace $previousForTelemetry -and $Context) {
+                if ($Context.ContainsKey('previousState') -and -not (_QCW-IsNullOrWhiteSpace $Context.previousState)) {
+                    $previousForTelemetry = [string]$Context.previousState
+                } elseif ($Context.ContainsKey('lifecycleState') -and -not (_QCW-IsNullOrWhiteSpace $Context.lifecycleState)) {
+                    $previousForTelemetry = [string]$Context.lifecycleState
+                }
+            }
             Invoke-QCProcessorWorkflowStateTelemetry -Config $cfg -Context $Context `
-                -PreviousState ([string]$info.Data.stateName) -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
+                -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
         }
         $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $info.Data.stateName -CurrentState $StateName -Document $document
         if ($notify) { $data.notification = $notify }

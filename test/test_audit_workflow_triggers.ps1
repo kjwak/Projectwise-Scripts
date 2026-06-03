@@ -69,4 +69,67 @@ Assert-True (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -Document
 $cfgAutoOff = @{ auditPoller = @{ workflowTriggers = @{ ignoreStateChangeFromAutomation = $false; automationPwUsernames = @('srv_typsa_archivist') } } }
 Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAutoOff -ChangedByUsername 'srv_typsa_archivist')) 'ignore flag off'
 
+# Final QC prepend success must record QC Finalizing -> QC Complete in transition_events.
+$script:finalPrependTransitions = [System.Collections.Generic.List[object]]::new()
+function Write-QCTransitionEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$TransitionType,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$FromValue = '',
+        [string]$ToValue = '',
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [Nullable[long]]$TriggerAuditId = $null
+    )
+    $script:finalPrependTransitions.Add(@{
+        documentGuid = $DocumentGuid
+        transitionType = $TransitionType
+        fromValue = $FromValue
+        toValue = $ToValue
+        jobId = $JobId
+        jobType = $JobType
+    }) | Out-Null
+    return New-QCSuccessResult -Code 'TRANSITION_EVENT_WRITTEN' -Message 'Captured for test.' -Data @{ written = $true; transitionId = 99 }
+}
+
+$cfgFinalPrepend = @{
+    database = @{ enabled = $true; allowWritesInDryRun = $true }
+    auditPoller = @{
+        workflowTriggers = @{
+            enabled = $true
+            recordFromProcessor = $true
+            recordTransitions = $true
+            recordStateHistory = $false
+            recordProcessingJobs = $false
+        }
+    }
+}
+$finalCtx = @{
+    job = @{
+        id = 'qc_prepend_final_test'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        metadata = @{
+            triggerDocumentGuid = 'guid-final-prepend'
+            triggerDocumentName = 'A101.pdf'
+            pwStateName = 'QC Finalizing'
+            prependTrigger = 'finalQcComplete'
+        }
+    }
+    previousState = 'QC Finalizing'
+    lifecycleState = 'QC Finalizing'
+    documentGuid = 'guid-final-prepend'
+    documentName = 'A101.pdf'
+}
+Invoke-QCProcessorWorkflowStateTelemetry -Config $cfgFinalPrepend -Context $finalCtx `
+    -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' -JobType 'QC_PREPEND'
+Assert-Eq $script:finalPrependTransitions.Count 1 'final prepend should write one transition event'
+Assert-Eq $script:finalPrependTransitions[0].fromValue 'QC Finalizing' 'transition from QC Finalizing'
+Assert-Eq $script:finalPrependTransitions[0].toValue 'QC Complete' 'transition to QC Complete'
+Assert-Eq $script:finalPrependTransitions[0].jobType 'QC_PREPEND' 'transition job type QC_PREPEND'
+Assert-Eq $script:finalPrependTransitions[0].documentGuid 'guid-final-prepend' 'transition uses trigger document guid'
+
 Write-Host 'test_audit_workflow_triggers.ps1 passed'

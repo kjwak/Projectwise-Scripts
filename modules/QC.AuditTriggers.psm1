@@ -369,6 +369,8 @@ function _QCAT-GetContextDocumentIdentity {
             $meta = _QCAT-ToHashtable $job.metadata
             if ($meta) {
                 if (-not $docGuid -and $meta.ContainsKey('documentId')) { $docGuid = [string]$meta.documentId }
+                if (-not $docGuid -and $meta.ContainsKey('triggerDocumentGuid')) { $docGuid = [string]$meta.triggerDocumentGuid }
+                if (-not $docName -and $meta.ContainsKey('triggerDocumentName')) { $docName = [string]$meta.triggerDocumentName }
                 if (-not $folderPath -and $meta.ContainsKey('folderPath')) { $folderPath = [string]$meta.folderPath }
             }
         }
