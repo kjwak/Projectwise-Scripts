@@ -326,6 +326,7 @@ function _Watch-EnsureDiscoveryExports {
     } elseif (Test-Path -LiteralPath $discPath) {
         Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
     }
+    [void](_Watch-EnsureResultsExports)
 
     $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
     return ($stillMissing.Count -eq 0)
@@ -349,6 +350,48 @@ function _Watch-EnsureStatusSetExports {
     return ($stillMissing.Count -eq 0)
 }
 
+function _Watch-EnsureResultsExports {
+    $required = @(
+        'New-QCSuccessResult'
+        'New-QCFailureResult'
+        'New-QCErrorResult'
+        'ConvertTo-HashtableDeep'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+
+    $resultsPath = Join-Path $script:WatchModulesRoot 'Core.Results.psm1'
+    if (Test-Path -LiteralPath $resultsPath) {
+        Import-Module $resultsPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+    $pathsPath = Join-Path $script:WatchModulesRoot 'Core.Paths.psm1'
+    if (-not (Get-Command -Name 'ConvertTo-HashtableDeep' -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $pathsPath)) {
+        Import-Module $pathsPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
+function _Watch-EnsureAuditPollerExports {
+    $required = @(
+        'Invoke-AuditTrailScan'
+        'Get-AuditTrailPollWindow'
+    )
+    $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count -eq 0) { return $true }
+
+    $auditPath = Join-Path $script:WatchModulesRoot 'PW.AuditPoller.psm1'
+    if (-not (Test-Path -LiteralPath $auditPath)) { return $false }
+    [void](_Watch-EnsureResultsExports)
+    [void](_Watch-EnsureDatabaseExports)
+    Import-Module $auditPath -Force -WarningAction SilentlyContinue | Out-Null
+    [void](_Watch-EnsureResultsExports)
+
+    $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    return ($stillMissing.Count -eq 0)
+}
+
 function _Watch-EnsureStatusSetScanExports {
     for ($i = 0; $i -lt 3; $i++) {
         if (-not (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)) {
@@ -367,14 +410,19 @@ function _Watch-EnsureStatusSetScanExports {
 
 function _Watch-EnsureAllModuleExports {
     [void](_Watch-EnsureJsonLog)
+    [void](_Watch-EnsureResultsExports)
     [void](_Watch-EnsureDatabaseExports)
     for ($i = 0; $i -lt 3; $i++) {
         [void](_Watch-EnsureDiscoveryExports)
         [void](_Watch-EnsureStatusSetExports)
+        [void](_Watch-EnsureAuditPollerExports)
+        [void](_Watch-EnsureResultsExports)
         $discoveryOk = (Get-Command -Name 'Sync-PWAssociatedSheetWorkflowState' -ErrorAction SilentlyContinue) -and
             (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue)
         $statusSetOk = Get-Command -Name 'Get-StatusSetPWFolderState' -ErrorAction SilentlyContinue
-        if ($discoveryOk -and $statusSetOk) { return $true }
+        $resultsOk = Get-Command -Name 'New-QCSuccessResult' -ErrorAction SilentlyContinue
+        $auditOk = Get-Command -Name 'Invoke-AuditTrailScan' -ErrorAction SilentlyContinue
+        if ($discoveryOk -and $statusSetOk -and $resultsOk -and $auditOk) { return $true }
     }
     return $false
 }
@@ -770,6 +818,12 @@ if ($statusSetRules.Count -ge 0) {
                     }
 
                     $runMode = 'audit'
+                    if (-not (_Watch-EnsureResultsExports)) {
+                        throw 'Core.Results exports unavailable before audit trail scan (New-QCSuccessResult missing).'
+                    }
+                    if (-not (_Watch-EnsureAuditPollerExports)) {
+                        throw 'PW.AuditPoller exports unavailable before audit trail scan (Invoke-AuditTrailScan missing).'
+                    }
                     $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
                     if (-not $auditRes.IsSuccess) {
                         _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
