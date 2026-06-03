@@ -24,6 +24,9 @@ function Test-QCPackageStateConflict { [CmdletBinding()] param([Parameter(Mandat
 function Set-QCPackageState {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][hashtable]$Package,[Parameter(Mandatory)][string]$StateName,[hashtable]$Config=@{},[string[]]$Roles=@('ProductionPdf','QcPdf'),[switch]$DryRun)
+    if ([string]::IsNullOrWhiteSpace($StateName)) {
+        return New-QCFailureResult -Code 'PACKAGE_STATE_EMPTY_TARGET' -Message 'Target workflow state is empty; package state sync was not performed.' -Data @{ packageId = $Package.PackageId }
+    }
     $roleToDoc=@{Dgn=$Package.DgnDocument;ProductionPdf=$Package.PdfDocument;QcPdf=$Package.QcPdfDocument}; $actions=[System.Collections.Generic.List[object]]::new()
     foreach($role in @($Roles)){ $doc=$roleToDoc[$role]; if(-not $doc){ continue }; $cur=_QCSP-State $doc; $guid=[string](_QCSP-Get $doc @('Guid','DocumentGuid','ObjectGuid','guid'))
         $planned = -not ($cur -ieq $StateName); $changed=$false

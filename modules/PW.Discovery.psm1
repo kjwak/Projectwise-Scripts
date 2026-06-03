@@ -171,21 +171,23 @@ function Get-PWDocumentDescriptionForFolder {
     $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
     if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
 
+    if (-not (Test-PWFolderResolvable -FolderPath $FolderPath)) { return '' }
+
     $cmd = Get-Command -Name 'Get-PWDocumentsBySearchWithReturnColumns' -ErrorAction SilentlyContinue
     if ($cmd) {
         try {
-            $params = @{
+            $descParams = @{
                 FolderPath     = $apiPath
                 JustThisFolder = $true
                 DocumentName   = $DocumentName
                 ErrorAction    = 'SilentlyContinue'
             }
             if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
-                $params['ColumnsToReturn'] = @('Description', 'Name', 'DocumentName')
+                $descParams['ColumnsToReturn'] = @('Description', 'Name', 'DocumentName')
             } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
-                $params['ReturnColumns'] = @('Description', 'Name', 'DocumentName')
+                $descParams['ReturnColumns'] = @('Description', 'Name', 'DocumentName')
             }
-            $row = & $cmd @params | Select-Object -First 1
+            $row = & $cmd @descParams | Select-Object -First 1
             if ($row) {
                 $dd = Get-PWDocDescription -Doc $row
                 if (-not [string]::IsNullOrWhiteSpace($dd)) { return $dd }
@@ -231,6 +233,28 @@ function ConvertTo-PWCmdletFolderPath {
     $s = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
     while ($s -match '^(?i)Documents\\') { $s = $s -replace '^(?i)Documents\\', '' }
     return $s
+}
+
+function Test-PWFolderResolvable {
+    <#
+    .SYNOPSIS
+    True when Get-PWFolders can resolve the folder (avoids spurious search/state cmdlet errors on bad paths).
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][string]$FolderPath)
+
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $false }
+    $folderCmd = Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue
+    if (-not $folderCmd) { return $true }
+
+    $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+    if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+    try {
+        $f = Get-PWFolders -FolderPath $apiPath -JustOne -ErrorAction SilentlyContinue
+        return ($null -ne $f)
+    } catch {
+        return $false
+    }
 }
 
 function ConvertTo-PWCanonicalDocumentsFolderPath {
@@ -538,19 +562,20 @@ function Get-PWDocumentWorkflowStateName {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
+        if (-not (Test-PWFolderResolvable -FolderPath $FolderPath)) { return '' }
         $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
         if ($searchCmd) {
             $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
             if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
             try {
-                $params = @{
+                $searchParams = @{
                     FolderPath     = $apiPath
                     JustThisFolder = $true
                     DocumentName   = $DocumentName
-                    ErrorAction    = 'Stop'
+                    ErrorAction    = 'SilentlyContinue'
                 }
-                if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
-                $doc = & $searchCmd @params | Select-Object -First 1
+                if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $searchParams['PopulatePath'] = $true }
+                $doc = & $searchCmd @searchParams | Select-Object -First 1
                 $state = _PWD-GetWorkflowStateFromDocumentRow -DocRow $doc
                 if ($state) { return $state }
             } catch { }
@@ -973,6 +998,9 @@ function _PWD-InvokeSetPwDocumentState {
         [Parameter(Mandatory)][object]$Document,
         [Parameter(Mandatory)][string]$StateName
     )
+    if ([string]::IsNullOrWhiteSpace($StateName)) {
+        throw 'Set-PWDocumentState skipped: target workflow state is empty.'
+    }
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
     if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
     $args = @{}

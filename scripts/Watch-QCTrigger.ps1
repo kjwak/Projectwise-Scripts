@@ -933,13 +933,24 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                         continue
                                     }
-                                    if ([bool]$ac.isSheetsFolder) {
-                                        if (-not (Test-PWSheetPdfHasMatchingPair -FolderPath $fp -DocumentName $itemName -PairCache $auditSheetPairCache)) {
-                                            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
-                                                path = ($fp + '\' + $itemName); actionName = $actionName
-                                            }
-                                            continue
+                                    if (-not [bool]$ac.isSheetsFolder) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_PREPEND is limited to Sheets folders with PDF/DGN pairs).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName; isSheetsFolder = $false
                                         }
+                                        continue
+                                    }
+                                    if (-not (Test-PWSheetPdfHasMatchingPair -FolderPath $fp -DocumentName $itemName -PairCache $auditSheetPairCache)) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName
+                                        }
+                                        continue
+                                    }
+                                    if ((Get-Command -Name 'Test-PWFolderResolvable' -ErrorAction SilentlyContinue) `
+                                            -and -not (Test-PWFolderResolvable -FolderPath $fp)) {
+                                        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (ProjectWise folder path not resolvable).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        }
+                                        continue
                                     }
                                     try {
                                         $pwStateForPrepend = ''
@@ -948,7 +959,8 @@ if ($statusSetRules.Count -ge 0) {
                                                 $pwStateForPrepend = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
                                             } catch { }
                                         }
-                                        if ((Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) `
+                                        if (-not [string]::IsNullOrWhiteSpace($pwStateForPrepend) `
+                                                -and (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) `
                                                 -and (Test-QCWorkflowStateIsQcInitiated -StateName $pwStateForPrepend -Config $config)) {
                                             if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
                                                 try {
@@ -1097,10 +1109,17 @@ if ($statusSetRules.Count -ge 0) {
                                             if ($enqRes.IsSuccess) { $enqueued++ }
                                         } elseif ($wouldDedupe) { $duplicates++ }
                                     } catch {
-                                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_PREPEND evaluation threw.' -Data @{
+                                        $errMsg = [string]$_.Exception.Message
+                                        $logLevel = 'Warning'
+                                        $logMsg = 'Audit QC_PREPEND evaluation threw.'
+                                        if ($errMsg -match '(?i)StateName.*empty string') {
+                                            $logLevel = 'Information'
+                                            $logMsg = 'Audit PDF skipped (ProjectWise state lookup failed on this path).'
+                                        }
+                                        Write-QCJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_SKIPPED' -Message $logMsg -Data @{
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
-                                            error = $_.Exception.Message
+                                            error = $errMsg
                                         }
                                     }
                                 }
