@@ -825,20 +825,15 @@ if ($statusSetRules.Count -ge 0) {
                                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'Audit-sourced PW status-set folder query completed.' -Data @{
                                         folder = $fp
                                         folderPath = $fp
-                                        FolderPath = $fp
                                         scanReason = 'audit_status_set_candidate'
-                                        ScanReason = 'audit_status_set_candidate'
                                         oneLevelDeep = $acOneLevelDeep
                                         pdfCount = [int]$acState.pdfCount
                                         dgnCount = [int]$acState.dgnCount
                                         pairedCount = [int]$acState.pairedCount
                                         documentCount = $acDocumentCount
-                                        DocumentCount = $acDocumentCount
                                         listingMethod = $acListingMethod
-                                        ListingMethod = $acListingMethod
                                         docListingMethod = $acListingMethod
                                         durationMs = $acDurationMs
-                                        DurationMs = $acDurationMs
                                         scannedFolders = @($acState.scannedFolders)
                                         expandedChildFolders = @($acState.expandedChildFolders)
                                         listingDetails = @($acState.listingDetails)
@@ -1378,12 +1373,11 @@ if ($statusSetRules.Count -ge 0) {
                     # Emit a "scan start" event even if filters later skip the folder.
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
                         folder = $fp
-                        FolderPath = $fp
+                        folderPath = $fp
                         oneLevelDeep = $oneLevelDeep
                         enableQcPrepend = $enableQcPrepend
                         enableStatusSet = $enableStatusSet
                         scanReason = $scanReason
-                        ScanReason = $scanReason
                         parentFolderPath = $parentFolderPath
                     }
 
@@ -1430,21 +1424,16 @@ if ($statusSetRules.Count -ge 0) {
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_SCAN_DONE' -Message 'PW status-set folder query completed.' -Data @{
                             folder = $fp
                             folderPath = $fp
-                            FolderPath = $fp
                             scanReason = $scanReason
-                            ScanReason = $scanReason
                             parentFolderPath = $parentFolderPath
                             oneLevelDeep = $oneLevelDeep
                             pdfCount = [int]$state.pdfCount
                             dgnCount = [int]$state.dgnCount
                             pairedCount = [int]$state.pairedCount
                             documentCount = $documentCount
-                            DocumentCount = $documentCount
                             listingMethod = $listingMethod
-                            ListingMethod = $listingMethod
                             docListingMethod = $listingMethod
                             durationMs = $durationMs
-                            DurationMs = $durationMs
                             scannedFolders = @($state.scannedFolders)
                             expandedChildFolders = @($state.expandedChildFolders)
                             listingDetails = @($state.listingDetails)
