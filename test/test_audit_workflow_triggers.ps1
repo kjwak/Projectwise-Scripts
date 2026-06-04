@@ -46,6 +46,17 @@ Assert-True ($prependActions -contains 'DOCUMENT_STATE') 'default prepend action
 
 Assert-Eq (Get-QCAuditStateTransitionKey -AuditEventId 99 -TriggerDocumentGuid 'g') 'audit:99' 'audit event id wins'
 Assert-Eq (Get-QCAuditStateTransitionKey -TransitionId 12 -TriggerDocumentGuid 'g') 'transition:12' 'transition id when no audit id'
+
+Assert-Eq (Get-QCPrependStateTransitionDedupeKey -AuditEventId 9001 -SheetStem '080J082001ab001' -PreviousSheetState 'In Production' -TargetStateName 'QC Initiated') `
+    'audit:9001' 'prepend dedupe prefers audit id (sibling echoes share one key)'
+Assert-Eq (Get-QCPrependStateTransitionDedupeKey -AuditEventId 9002 -SheetStem '080J082001ab001' -PreviousSheetState 'In Production' -TargetStateName 'QC Initiated') `
+    'audit:9002' 'new audit event allows another QC cycle prepend'
+Assert-Eq (Get-QCPrependStateTransitionDedupeKey -SheetStem '080J082001ab001' -PreviousSheetState 'Ready for QC' -TargetStateName 'QC Initiated' -PrependTrigger 'initialQcPdf') `
+    'sheet:080j082001ab001|trigger:initialqcpdf|from:ready for qc|to:qc initiated' 'prepend dedupe falls back to sheet transition without audit id (initiated)'
+Assert-Eq (Get-QCPrependStateTransitionDedupeKey -AuditEventId 9101 -SheetStem '080J082001ab001' -PreviousSheetState 'Corrections Received' -TargetStateName 'QC Finalizing' -PrependTrigger 'finalQcComplete') `
+    'audit:9101' 'QC Finalizing prepend dedupe prefers audit id (sibling echoes share one key)'
+Assert-Eq (Get-QCPrependStateTransitionDedupeKey -AuditEventId 9102 -SheetStem '080J082001ab001' -PreviousSheetState 'Corrections Received' -TargetStateName 'QC Finalizing' -PrependTrigger 'finalQcComplete') `
+    'audit:9102' 'another QC Finalizing transition gets a new prepend job'
 Assert-Eq (Get-QCInitiatedWorkflowStateName -Config $cfgDefault) 'QC Initiated' 'default initiated state name'
 Assert-True (Test-QCWorkflowStateIsQcInitiated -StateName 'QC Initiated' -Config $cfgDefault) 'qc initiated match'
 Assert-True (-not (Test-QCWorkflowStateIsQcInitiated -StateName 'In Production' -Config $cfgDefault)) 'non-initiated state'

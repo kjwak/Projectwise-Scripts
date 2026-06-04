@@ -1476,7 +1476,16 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     $stateTransitionKey = $null
     if (-not (_QCP-IsNullOrWhiteSpace $StateTransitionKey)) {
         $stateTransitionKey = [string]$StateTransitionKey
-    } else {
+    } elseif (Get-Command -Name 'Get-QCPrependStateTransitionDedupeKey' -ErrorAction SilentlyContinue) {
+        $sheetStem = ''
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $sheetPdf
+        }
+        $stateTransitionKey = Get-QCPrependStateTransitionDedupeKey -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+            -SheetStem $sheetStem -PreviousSheetState '' -TargetStateName $curr
+    }
+    if (_QCP-IsNullOrWhiteSpace $stateTransitionKey) {
         $stateTransitionKey = _QCP-GetQcInitiatedStateTransitionKey -AuditEventId $AuditEventId `
             -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
     }
@@ -1599,7 +1608,16 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     $stateTransitionKey = $null
     if (-not (_QCP-IsNullOrWhiteSpace $StateTransitionKey)) {
         $stateTransitionKey = [string]$StateTransitionKey
-    } else {
+    } elseif (Get-Command -Name 'Get-QCPrependStateTransitionDedupeKey' -ErrorAction SilentlyContinue) {
+        $sheetStem = ''
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $sheetPdf
+        }
+        $stateTransitionKey = Get-QCPrependStateTransitionDedupeKey -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+            -SheetStem $sheetStem -PreviousSheetState '' -TargetStateName $curr
+    }
+    if (_QCP-IsNullOrWhiteSpace $stateTransitionKey) {
         $stateTransitionKey = _QCP-GetQcInitiatedStateTransitionKey -AuditEventId $AuditEventId `
             -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
     }

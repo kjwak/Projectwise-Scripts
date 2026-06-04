@@ -54,6 +54,43 @@ function Get-QCAuditStateTransitionKey {
     return ($userPart + 'at:' + $at + '|doc:' + $guid)
 }
 
+function Get-QCPrependStateTransitionDedupeKey {
+    <#
+    .SYNOPSIS
+    Dedupe key fragment for QC_PREPEND jobs tied to a workflow state transition.
+    .DESCRIPTION
+    Prefers the audit event id so one human DOCUMENT_STATE produces one prepend job (sibling echo
+    syncs reuse the same audit id in dedupe). A new audit event on a later QC cycle gets a new key
+    even when sheet|from|to matches a prior succeeded job. Falls back to sheet|from|to when no audit id.
+    #>
+    [CmdletBinding()]
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$TriggerDocumentGuid = '',
+        [string]$SheetStem = '',
+        [string]$PreviousSheetState = '',
+        [string]$TargetStateName = '',
+        [string]$PrependTrigger = ''
+    )
+
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
+        $auditKey = Get-QCAuditStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+            -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
+        if (-not [string]::IsNullOrWhiteSpace($auditKey)) { return [string]$auditKey }
+    }
+
+    $stem = ([string]$SheetStem).Trim().ToLowerInvariant()
+    $from = ([string]$PreviousSheetState).Trim().ToLowerInvariant()
+    $to = ([string]$TargetStateName).Trim().ToLowerInvariant()
+    if ($stem.Length -eq 0 -or $to.Length -eq 0) { return $null }
+    $triggerPart = ''
+    $pt = ([string]$PrependTrigger).Trim().ToLowerInvariant()
+    if ($pt.Length -gt 0) { $triggerPart = ('trigger:' + $pt + '|') }
+    return ('sheet:' + $stem + '|' + $triggerPart + 'from:' + $from + '|to:' + $to)
+}
+
 function Test-QCIsQcPdfDocumentName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentName)
@@ -691,7 +728,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     }
 }
 
-Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCAuditStateTransitionKey, Test-QCIsQcPdfDocumentName, `
+Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

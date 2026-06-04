@@ -1660,14 +1660,38 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
     }
 }
 
+function _PWD-GetPrependEnqueueStateTransitionKey {
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$TriggerDocumentGuid = '',
+        [string]$SheetStem = '',
+        [string]$PreviousSheetState = '',
+        [string]$TargetStateName = '',
+        [string]$PrependTrigger = ''
+    )
+    if (Get-Command -Name 'Get-QCPrependStateTransitionDedupeKey' -ErrorAction SilentlyContinue) {
+        return Get-QCPrependStateTransitionDedupeKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+            -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+            -SheetStem $SheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $TargetStateName `
+            -PrependTrigger $PrependTrigger
+    }
+    if (Get-Command -Name '_QCP-GetSheetPrependStateTransitionKey' -ErrorAction SilentlyContinue) {
+        return _QCP-GetSheetPrependStateTransitionKey -SheetStem $SheetStem -FromState $PreviousSheetState -ToState $TargetStateName
+    }
+    return $null
+}
+
 function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     <#
     .SYNOPSIS
     Enqueues QC_PREPEND once per sheet workflow transition after sibling state sync.
     .DESCRIPTION
     QC Initiated uses the canonical synced workflow state (first prepend often runs before *-qc.pdf exists).
-    QC Finalizing prefers *-qc.pdf workflow state when that file exists. Sheet-level dedupe avoids duplicate
-    jobs from separate PDF/DGN audit events for the same user action.
+    QC Finalizing prefers *-qc.pdf workflow state when that file exists. Dedupe uses the audit event id when
+    available (see Get-QCPrependStateTransitionDedupeKey). Sync-PWAssociatedSheetWorkflowState only calls this
+    when at least one sibling state was applied (echo audits with empty updates are skipped).
     #>
     [CmdletBinding()]
     param(
@@ -1731,13 +1755,12 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     $prependGuid = if (-not [string]::IsNullOrWhiteSpace($qcPdfGuid)) { $qcPdfGuid } else { $TriggerDocumentGuid }
     if ([string]::IsNullOrWhiteSpace($prependGuid)) { $prependGuid = $sheetPdfGuid }
 
-    $stKey = $null
-    if (Get-Command -Name '_QCP-GetSheetPrependStateTransitionKey' -ErrorAction SilentlyContinue) {
-        $stKey = _QCP-GetSheetPrependStateTransitionKey -SheetStem $sheetStem -FromState $PreviousSheetState -ToState $canonical
-    }
-
     if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
         if (Test-QCWorkflowStateIsQcInitiated -StateName $canonical -Config $Config) {
+            $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+                -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+                -SheetStem $sheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $canonical `
+                -PrependTrigger 'initialQcPdf'
             if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
                 try {
                     Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
@@ -1760,18 +1783,22 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
 
     if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
         if (Test-QCWorkflowStateIsQcFinalizing -StateName $finalizingState -Config $Config) {
+            $stKeyFinal = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+                -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+                -SheetStem $sheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $finalizingState `
+                -PrependTrigger 'finalQcComplete'
             if (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue) {
                 try {
                     Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
                         -TriggerDocumentGuid $prependGuid -TriggerDocumentName $sheetPdfName -FolderPath $FolderPath `
                         -CurrentStateName $finalizingState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
                         -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
-                        -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
+                        -AuditEventId $AuditEventId -StateTransitionKey $stKeyFinal | Out-Null
                 } catch {
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_FINAL_ENQUEUE_ERROR' -Message $_.Exception.Message -Data @{
                             folderPath = $FolderPath; sheetPdf = $sheetPdfName; qcPdf = $qcPdfName
-                            finalizingState = $finalizingState; hasQcPdf = $hasQcPdf; stateTransitionKey = $stKey
+                            finalizingState = $finalizingState; hasQcPdf = $hasQcPdf; stateTransitionKey = $stKeyFinal
                         } | Out-Null
                     }
                 }
@@ -2032,6 +2059,22 @@ WHERE document_guid = @docGuid
                 foreach ($k in @($refreshed.Keys)) { $stateByGuid[$k] = $refreshed[$k] }
             }
         } catch { }
+    }
+
+    $appliedStateUpdates = @($stateUpdates | Where-Object { $_ -and $_.applied -eq $true })
+    if ($appliedStateUpdates.Count -eq 0) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
+                -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
+                triggerDocumentGuid = $DocumentGuid
+                triggerDocumentName = $DocumentName
+                folderPath          = $FolderPath
+                canonicalState      = $canonicalState
+                memberCount         = $members.Count
+                auditEventId        = $AuditEventId
+            } | Out-Null
+        }
+        return
     }
 
     _PWD-EnqueuePrependJobsFromAssociatedQcPdfState -Config $Config -FolderPath $FolderPath -Members $members `
