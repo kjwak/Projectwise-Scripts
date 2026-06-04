@@ -232,7 +232,28 @@ function Get-QCNotificationSettings {
     if ($settings.dedupe) {
         try { $settings.dedupe.enabled = [bool]$settings.dedupe.enabled } catch { }
     }
+    _QCN-NormalizeNotificationSubjectTemplates -Settings $settings
     return $settings
+}
+
+function _QCN-NormalizeNotificationSubjectTemplates {
+    param([hashtable]$Settings)
+
+    if (-not $Settings) { return }
+    $emailCfg = _QCN-ToHashtable $Settings.email
+    $globalTemplate = ''
+    if ($emailCfg -and $emailCfg.subjectTemplate) {
+        $globalTemplate = [string]$emailCfg.subjectTemplate
+    }
+    if (_QCN-IsBlank $globalTemplate) { return }
+
+    if (-not $Settings.events) { return }
+    foreach ($stateKey in @($Settings.events.Keys)) {
+        $ev = _QCN-ToHashtable $Settings.events[$stateKey]
+        if (-not $ev -or -not $ev.ContainsKey('subjectTemplate')) { continue }
+        $ev.Remove('subjectTemplate')
+        $Settings.events[$stateKey] = $ev
+    }
 }
 
 function _QCN-GetDefaultNotificationSubjectTemplate {
@@ -278,14 +299,14 @@ function _QCN-ResolveNotificationSubjectTemplate {
     )
 
     $template = ''
-    if ($EventCfg -and $EventCfg.subjectTemplate) {
-        $template = [string]$EventCfg.subjectTemplate
-    }
-    if (_QCN-IsBlank $template -and $Settings -and $Settings.email) {
+    if ($Settings -and $Settings.email) {
         $emailCfg = _QCN-ToHashtable $Settings.email
         if ($emailCfg -and $emailCfg.subjectTemplate) {
             $template = [string]$emailCfg.subjectTemplate
         }
+    }
+    if (_QCN-IsBlank $template -and $EventCfg -and $EventCfg.subjectTemplate) {
+        $template = [string]$EventCfg.subjectTemplate
     }
     if (_QCN-IsBlank $template) {
         $template = _QCN-GetDefaultNotificationSubjectTemplate

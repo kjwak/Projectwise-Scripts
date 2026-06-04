@@ -211,6 +211,42 @@ Assert-True $graphDry.IsSuccess 'Graph dry run with client secret should succeed
 Assert-True $graphDry.Data.dryRun 'Graph dry run should set dryRun flag'
 Assert-Eq $graphDry.Code 'QC_NOTIFICATION_GRAPH_DRY_RUN' 'Graph dry run code'
 
+# Global email subjectTemplate wins over legacy per-event subjectTemplate
+$legacySubjectCfg = @{
+    notifications = @{
+        enabled = $true
+        email = @{
+            subjectTemplate = '[{ReviewType}] {ProjectName} | {DocumentName} | {WorkflowState}'
+        }
+        events = @{
+            'Corrections Received' = @{
+                enabled = $true
+                eventType = 'CORRECTIONS_RECEIVED'
+                subjectTemplate = 'Corrections Received - {documentName}'
+                to = @('reviewers')
+            }
+        }
+    }
+}
+$legacySettings = Get-QCNotificationSettings -Config $legacySubjectCfg
+$legacyEventCfg = $legacySettings.events['Corrections Received']
+Assert-True (-not ($legacyEventCfg -is [hashtable] -and $legacyEventCfg.ContainsKey('subjectTemplate'))) `
+    'legacy per-event subjectTemplate should be stripped when email.subjectTemplate is set'
+$legacyTemplate = [string]$legacySettings.email.subjectTemplate
+$legacyTokens = @{
+    documentName = '0818000063ea501-qc.pdf'
+    project = 'cafwy2200'
+    currentState = 'Corrections Received'
+    reviewType = 'Production QC'
+}
+$legacyTokens['DocumentName'] = $legacyTokens['documentName']
+$legacyTokens['ProjectName'] = $legacyTokens['project']
+$legacyTokens['WorkflowState'] = $legacyTokens['currentState']
+$legacyTokens['ReviewType'] = $legacyTokens['reviewType']
+$legacySubject = Expand-QCNotificationTemplate -Template $legacyTemplate -Tokens $legacyTokens
+Assert-Eq $legacySubject '[Production QC] cafwy2200 | 0818000063ea501-qc.pdf | Corrections Received' `
+    'subject should use global template format'
+
 # SubmittedBy resolves state-change actor, not designer email
 $actorCfg = @{
     auditPoller = @{
