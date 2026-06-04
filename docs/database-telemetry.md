@@ -238,6 +238,26 @@ Connect Power BI to `QC_Pipeline` via SQL Server connector:
 
 ---
 
+## Retention / cleanup scripts
+
+High-volume telemetry tables (`audit_events`, `qc_workflow_events`) are safe to trim periodically. Execution state lives in the JSON queue and operational tables (`sheet_index`, `processing_jobs`); these scripts do not touch those.
+
+Optional defaults in `appsettings.json` under `database.retention` are used by `Invoke-QCDatabaseRetention.ps1`. CLI parameters override config.
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/Remove-QCAuditEvents.ps1` | Delete aged `audit_events` by `captured_at` (default: processed rows only, 90+ days) |
+| `scripts/Remove-QCWorkflowEvents.ps1` | Delete aged `qc_workflow_events` by `created_utc`; optional comment-sync tables |
+| `scripts/Invoke-QCDatabaseRetention.ps1` | Runs both cleanups with config/CLI retention days |
+
+Preview by default; pass `-ConfirmDeletes` to apply. Example scheduled task:
+
+```powershell
+.\scripts\Invoke-QCDatabaseRetention.ps1 -ConfirmDeletes
+```
+
+---
+
 ## Validation Scripts
 
 | Script | Purpose |

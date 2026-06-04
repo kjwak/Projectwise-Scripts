@@ -18,6 +18,9 @@ The PowerShell files in this directory are intended to stay thin: they parse com
 | `PW-SmokeTest.ps1` | End-to-end local environment check for ProjectWise connection, document search, history lookup, and optional export assumptions. |
 | `PW-TestWatchRoots.ps1` | Diagnostic that expands configured ProjectWise watch-list roots and shows discovered sheets folders/candidates. |
 | `Purge-QCPendingByFilters.ps1` | Queue maintenance utility that re-evaluates pending jobs against current filters and moves disallowed jobs to failed. |
+| `Remove-QCAuditEvents.ps1` | Database maintenance: preview/delete aged `audit_events` rows (batched, processed-only by default). |
+| `Remove-QCWorkflowEvents.ps1` | Database maintenance: preview/delete aged `qc_workflow_events` (and optional comment-sync telemetry). |
+| `Invoke-QCDatabaseRetention.ps1` | Scheduled retention runner; uses `database.retention` in appsettings and calls the two remove scripts. |
 | `Reconcile-QCStatusSets.ps1` | Startup/catch-up utility that scans local status-set manifests and reconciles generated `_StatusSet.pdf` files back to ProjectWise. |
 | `Requeue-QCJobs.ps1` | Queue maintenance utility that moves matching succeeded or failed jobs back to pending for reprocessing. |
 | `Run-CombineStatusSet.ps1` | Convenience launcher that reads `statusSet.localRoot` from `appsettings.json` and forwards to `Combine-StatusSet.ps1`. |
