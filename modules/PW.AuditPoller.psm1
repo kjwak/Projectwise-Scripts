@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v5'
+$script:AuditPollerLogicVersion = '2026-06-04-ingest-exclude-checkout-v6'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -21,7 +21,14 @@ $script:QCRelevantActions = @{
     1020 = 'DOCUMENT_DELETE'
 }
 
-# Full PW audit trail action map (dms_audt o_action / pw_action). Telemetry ingestion is unfiltered;
+# Never written to audit_events (high-volume checkout noise). Watermark still advances on fetch.
+$script:AuditIngestExcludedActions = @{
+    1009 = 'DOCUMENT_CHOUT'
+    1010 = 'DOCUMENT_CPOUT'
+    1011 = 'DOCUMENT_GOUT'
+}
+
+# Full PW audit trail action map (dms_audt o_action / pw_action). Ingest skips AuditIngestExcludedActions;
 # job triggers use QCRelevantActions only. Source: Bentley ProjectWise audit action constants.
 $script:AuditActionNames = @{
     # Folders
@@ -1215,6 +1222,36 @@ function _AuditPoller-GetActionCode {
     try { return [int]$v } catch { return 0 }
 }
 
+function _AuditPoller-TestAuditIngestExcludedActionCode {
+    param([int]$ActionCode)
+    return $script:AuditIngestExcludedActions.ContainsKey($ActionCode)
+}
+
+function _AuditPoller-TryAdvanceWatermarkFromAuditRow {
+    param(
+        $Row,
+        [hashtable]$Config,
+        [ref]$MaxPwActTime,
+        [ref]$MaxPwActTimeUtc
+    )
+    $rawAct = _AuditPoller-GetRowValue -Row $Row -Name 'o_acttime'
+    $actTime = _AuditPoller-FormatActTime -Value $rawAct -Config $Config
+    if ($actTime) {
+        $MaxPwActTime.Value = _AuditPoller-TryAdvanceWatermarkAfter -Current $MaxPwActTime.Value -Candidate $actTime
+    }
+    if ($null -ne $rawAct -and -not ($rawAct -is [DBNull])) {
+        $utcStr = if ($rawAct -is [DateTime]) {
+            _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $rawAct)
+        } else {
+            $parsed = _AuditPoller-ParseActTime -ActTime ([string]$rawAct)
+            if ($parsed) { _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $parsed) } else { $null }
+        }
+        if ($utcStr) {
+            $MaxPwActTimeUtc.Value = _AuditPoller-TryAdvanceWatermarkAfter -Current $MaxPwActTimeUtc.Value -Candidate $utcStr
+        }
+    }
+}
+
 function _AuditPoller-GetTriggerActionCode {
     param($Row)
     $code = 0
@@ -1526,7 +1563,12 @@ function Invoke-AuditTrailScan {
         failedFolderGuidCacheHits = 0
         triggerSource      = 'pw_batch'
         auditLogicVersion  = $script:AuditPollerLogicVersion
+        ingestExcluded     = 0
+        totalFetchedRaw    = 0
     }
+
+    $maxPwActTime = $null
+    $maxPwActTimeUtc = $null
 
     # 1. Query dms_audt — paginated ASC so busy servers are not stuck on the oldest TOP 500 only.
     # SQL bounds in UTC to match PW o_acttime (Unspecified DateTime with UTC wall-clock components).
@@ -1558,7 +1600,16 @@ function Invoke-AuditTrailScan {
             $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
             $batch = @(_AuditPoller-GetSqlResultRows -Result $result)
             if ($batch.Count -eq 0) { break }
-            foreach ($row in $batch) { [void]$allEvents.Add($row) }
+            foreach ($row in $batch) {
+                $stats.totalFetchedRaw++
+                _AuditPoller-TryAdvanceWatermarkFromAuditRow -Row $row -Config $Config -MaxPwActTime ([ref]$maxPwActTime) -MaxPwActTimeUtc ([ref]$maxPwActTimeUtc)
+                $actionCode = _AuditPoller-GetActionCode -Row $row
+                if (_AuditPoller-TestAuditIngestExcludedActionCode -ActionCode $actionCode) {
+                    $stats.ingestExcluded++
+                    continue
+                }
+                [void]$allEvents.Add($row)
+            }
             $last = $batch[$batch.Count - 1]
             $lastAct = _AuditPoller-GetRowValue -Row $last -Name 'o_acttime'
             $cursorSince = if ($lastAct -is [DateTime]) {
@@ -1587,32 +1638,31 @@ function Invoke-AuditTrailScan {
 
     if ($allEvents.Count -eq 0) {
         $sw.Stop()
+        $watermarkAfterEmpty = $null
+        if ($maxPwActTimeUtc) {
+            $watermarkAfterEmpty = $maxPwActTimeUtc
+            $stats.maxPwActTime = $maxPwActTime
+            $stats.maxPwActTimeUtc = $maxPwActTimeUtc
+        }
+        if ($stats.ingestExcluded -gt 0 -and $watermarkAfterEmpty) {
+            return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "No ingestable audit events ($($stats.ingestExcluded) checkout rows excluded)." -Data @{
+                events = @(); candidates = @(); docToFolder = @{}; stats = $stats
+                watermarkAfter = $watermarkAfterEmpty; durationMs = [int]$sw.ElapsedMilliseconds
+                pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
+            }
+        }
         return New-QCSuccessResult -Code 'AUDIT_NO_EVENTS' -Message 'No audit events in window.' -Data @{
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
-            watermarkAfter = $null; durationMs = [int]$sw.ElapsedMilliseconds
+            watermarkAfter = $watermarkAfterEmpty; durationMs = [int]$sw.ElapsedMilliseconds
             pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
         }
     }
 
-    # 2. Ingest every fetched row into audit_events (no QC/watch/action filtering).
-    $maxPwActTime = $null
-    $maxPwActTimeUtc = $null
+    # 2. Ingest fetched rows into audit_events (checkout GOUT/CPOUT/CHOUT already excluded).
     $watermarkAfter = $null
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
         foreach ($evt in $allEvents) {
-            $rawAct = _AuditPoller-GetRowValue -Row $evt -Name 'o_acttime'
-            $actTime = _AuditPoller-FormatActTime -Value $rawAct -Config $Config
-            if ($actTime) { $maxPwActTime = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTime -Candidate $actTime }
-            if ($null -ne $rawAct -and -not ($rawAct -is [DBNull])) {
-                $utcStr = if ($rawAct -is [DateTime]) {
-                    _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $rawAct)
-                } else {
-                    $parsed = _AuditPoller-ParseActTime -ActTime ([string]$rawAct)
-                    if ($parsed) { _AuditPoller-FormatSqlUtc -Utc (_AuditPoller-AssumeUtcFromPw -DateTime $parsed) } else { $null }
-                }
-                if ($utcStr) { $maxPwActTimeUtc = _AuditPoller-TryAdvanceWatermarkAfter -Current $maxPwActTimeUtc -Candidate $utcStr }
-            }
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt -Config $Config)
         }
     } else {
@@ -1658,6 +1708,8 @@ function Invoke-AuditTrailScan {
             $ingestLevel = if ($stats.dbLastError) { 'Warning' } else { 'Information' }
             Write-QCJsonLog -Flush -Level $ingestLevel -Code 'AUDIT_EVENTS_INGEST' -Message "audit_events ingest: $($stats.dbWrites) written, $($stats.dbSkipped) skipped/duplicate." -Data @{
                 eventsFetched = $stats.totalEvents
+                totalFetchedRaw = [int]$stats.totalFetchedRaw
+                ingestExcluded = [int]$stats.ingestExcluded
                 rowsPrepared  = $stats.dbRowsPrepared
                 rowsNullGuid  = $stats.dbRowsNullGuid
                 written       = $stats.dbWrites
@@ -1885,4 +1937,9 @@ function Get-AuditPollerLogicVersion {
     return $script:AuditPollerLogicVersion
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName
+function Test-QCAuditIngestExcludedActionCode {
+    param([Parameter(Mandatory)][int]$ActionCode)
+    return _AuditPoller-TestAuditIngestExcludedActionCode -ActionCode $ActionCode
+}
+
+Export-ModuleMember -Function Invoke-AuditTrailScan, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestExcludedActionCode

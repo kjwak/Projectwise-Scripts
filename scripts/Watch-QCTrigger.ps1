@@ -872,13 +872,17 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        # Advance watermark only when dms_audt rows were ingested this tick (latest o_acttime UTC).
+                        # Advance watermark when dms_audt returned rows this tick (including ingest-excluded checkout).
                         $maxPwActTime = $null
                         $maxPwActTimeUtc = $null
                         $totalEventsFetched = 0
+                        $totalFetchedRaw = 0
                         try {
                             if ($auditData.stats -and $null -ne $auditData.stats.totalEvents) {
                                 $totalEventsFetched = [int]$auditData.stats.totalEvents
+                            }
+                            if ($auditData.stats -and $null -ne $auditData.stats.totalFetchedRaw) {
+                                $totalFetchedRaw = [int]$auditData.stats.totalFetchedRaw
                             }
                             if ($auditData.stats -and $auditData.stats.maxPwActTime) {
                                 $maxPwActTime = [string]$auditData.stats.maxPwActTime
@@ -889,7 +893,7 @@ if ($statusSetRules.Count -ge 0) {
                         } catch { }
                         $watermarkAfterStr = $null
                         $capturedThrough = $null
-                        if ($totalEventsFetched -gt 0) {
+                        if ($totalFetchedRaw -gt 0 -or $totalEventsFetched -gt 0) {
                             $watermarkAfterStr = if (-not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc)) {
                                 $maxPwActTimeUtc
                             } elseif ($auditData.watermarkAfter) {
@@ -930,6 +934,8 @@ if ($statusSetRules.Count -ge 0) {
 
                         _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
                             totalEvents    = $auditData.stats.totalEvents
+                            totalFetchedRaw = if ($null -ne $auditData.stats.totalFetchedRaw) { [int]$auditData.stats.totalFetchedRaw } else { $null }
+                            ingestExcluded = if ($null -ne $auditData.stats.ingestExcluded) { [int]$auditData.stats.ingestExcluded } else { $null }
                             relevantEvents = $auditData.stats.relevantEvents
                             watchMatches   = $auditData.stats.watchMatches
                             sheetsMatches  = $auditData.stats.sheetsMatches
