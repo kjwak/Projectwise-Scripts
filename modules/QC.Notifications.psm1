@@ -1613,6 +1613,56 @@ function Test-QCPrependBlockedByMissingEmailAttributes {
     }
 }
 
+function _QCN-GetProductionWorkflowStateName {
+    param([hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'production'
+            if (-not (_QCN-IsBlank $resolved)) { return [string]$resolved }
+        } catch { }
+    }
+    return 'In Production'
+}
+
+function Resolve-QCWorkflowRollbackPreviousState {
+    <#
+    .SYNOPSIS
+    Resolves the workflow state to restore when a blocked transition is rolled back.
+    Prefers sheet PDF sheet_index; falls back to configured production when index is missing or already advanced.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [array]$Members = @(),
+        [string]$SheetPdfGuid = ''
+    )
+
+    $targetNorm = ([string]$TargetStateName).Trim().ToLowerInvariant()
+    $previous = ''
+
+    foreach ($member in @($Members)) {
+        if (-not $member) { continue }
+        $dn = [string]$member.documentName
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+            $dg = [string]$member.documentGuid
+            if ($dg) { $previous = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg }
+            break
+        }
+    }
+    if (_QCN-IsBlank $previous -and -not (_QCN-IsBlank $SheetPdfGuid)) {
+        $previous = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $SheetPdfGuid
+    }
+
+    $prevNorm = ([string]$previous).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($prevNorm) -or $prevNorm -eq $targetNorm) {
+        $previous = _QCN-GetProductionWorkflowStateName -Config $Config
+    }
+    return [string]$previous
+}
+
 function _QCN-GetStateChangeBlockedDedupeKey {
     param(
         [string]$SheetStem,
@@ -1789,22 +1839,21 @@ function Invoke-QCWorkflowStateEmailAttributeGate {
     $result.blocked = $true
     $result.missingFields = @($missing)
 
-    $previousState = ''
-    foreach ($member in $Members) {
-        $dn = [string]$member.documentName
-        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
-            $dg = [string]$member.documentGuid
-            if ($dg) { $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg }
-            break
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($previousState) -and $notifyDocGuid) {
-        $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $notifyDocGuid
+    $previousState = Resolve-QCWorkflowRollbackPreviousState -Config $Config -TargetStateName $TargetStateName `
+        -Members $Members -SheetPdfGuid $notifyDocGuid
+
+    $statesToRevert = [System.Collections.Generic.List[string]]::new()
+    $statesToRevert.Add([string]$TargetStateName) | Out-Null
+    if (_QCN-TestWorkflowStateNameIsQcInitiated -StateName $TargetStateName -Config $Config) {
+        $postState = _QCN-GetInitialPrependPostStateName -Config $Config
+        if (-not (_QCN-IsBlank $postState)) { $statesToRevert.Add([string]$postState) | Out-Null }
     }
 
     if (Get-Command -Name 'Revert-PWAssociatedSheetWorkflowStates' -ErrorAction SilentlyContinue) {
         $result.rollback = Revert-PWAssociatedSheetWorkflowStates -Config $Config -Members $Members `
-            -StateByGuid $StateByGuid -FolderPath $FolderPath -TargetStateName $TargetStateName -DryRun:$DryRun
+            -StateByGuid $StateByGuid -FolderPath $FolderPath -TargetStateName $TargetStateName `
+            -FallbackPreviousState $previousState -AdditionalStatesToRevert @($statesToRevert | Select-Object -Unique) `
+            -DryRun:$DryRun
     }
 
     $docPath = if ($FolderPath -and $notifyDocName) { ($FolderPath.TrimEnd('\') + '\' + $notifyDocName) } else { '' }
@@ -2098,5 +2147,5 @@ function Invoke-QCNotificationForStateChange {
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
     Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
-    Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
+    Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

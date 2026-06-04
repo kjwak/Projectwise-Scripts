@@ -124,6 +124,13 @@ $prependOk = Test-QCPrependBlockedByMissingEmailAttributes -Config $missingCfg -
     -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com')
 Assert-True (-not $prependOk.blocked) 'Prepend should proceed when notification emails are present'
 
+# Rollback previous state falls back to production when sheet_index would match the blocked target
+$rollbackCfg = New-NotifyConfig -Enabled $true
+$rollbackCfg.qcWorkflow = @{ states = @{ production = 'In Production'; qcInitiated = 'QC Initiated'; readyForQc = 'Ready for QC' } }
+$rollbackPrevious = Resolve-QCWorkflowRollbackPreviousState -Config $rollbackCfg -TargetStateName 'QC Initiated' `
+    -Members @(@{ documentName = 'sheet001.pdf'; documentGuid = 'guid-sheet' }) -SheetPdfGuid 'guid-sheet'
+Assert-Eq $rollbackPrevious 'In Production' 'Rollback should fall back to production when index has no prior state'
+
 # Independent Check routes reviewers role to checker email
 $icCfg = New-NotifyConfig -Enabled $true
 $icSettings = Get-QCNotificationSettings -Config $icCfg

@@ -1894,6 +1894,8 @@ function Revert-PWAssociatedSheetWorkflowStates {
         [hashtable]$StateByGuid = @{},
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$TargetStateName,
+        [string]$FallbackPreviousState = '',
+        [string[]]$AdditionalStatesToRevert = @(),
         [bool]$DryRun = $false
     )
 
@@ -1904,14 +1906,32 @@ function Revert-PWAssociatedSheetWorkflowStates {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
 
+    $statesToRevert = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (-not [string]::IsNullOrWhiteSpace($target)) { [void]$statesToRevert.Add($target) }
+    foreach ($extra in @($AdditionalStatesToRevert)) {
+        if (-not [string]::IsNullOrWhiteSpace($extra)) { [void]$statesToRevert.Add([string]$extra.Trim()) }
+    }
+
+    $fallbackPrevious = ([string]$FallbackPreviousState).Trim()
+    if ([string]::IsNullOrWhiteSpace($fallbackPrevious) -and (Get-Command -Name 'Resolve-QCWorkflowRollbackPreviousState' -ErrorAction SilentlyContinue)) {
+        try {
+            $fallbackPrevious = [string](Resolve-QCWorkflowRollbackPreviousState -Config $Config -TargetStateName $target -Members $Members)
+        } catch { }
+    }
+
     foreach ($member in $Members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
         if (-not $dg) { continue }
 
         $previous = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
-        if ([string]::IsNullOrWhiteSpace($previous)) { continue }
-        if ((_PWD-NormalizeSheetIndexValue $previous) -eq (_PWD-NormalizeSheetIndexValue $target)) { continue }
+        $previousNorm = _PWD-NormalizeSheetIndexValue $previous
+        $fallbackNorm = _PWD-NormalizeSheetIndexValue $fallbackPrevious
+        if ([string]::IsNullOrWhiteSpace($previousNorm) -or $statesToRevert.Contains($previous)) {
+            $previous = $fallbackPrevious
+            $previousNorm = $fallbackNorm
+        }
+        if ([string]::IsNullOrWhiteSpace($previousNorm)) { continue }
 
         $current = if ($StateByGuid.ContainsKey($dg.ToLowerInvariant())) {
             [string]$StateByGuid[$dg.ToLowerInvariant()]
@@ -1921,7 +1941,31 @@ function Revert-PWAssociatedSheetWorkflowStates {
         if ([string]::IsNullOrWhiteSpace($current)) {
             $current = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
         }
-        if ((_PWD-NormalizeSheetIndexValue $current) -ne (_PWD-NormalizeSheetIndexValue $target)) { continue }
+        $currentNorm = _PWD-NormalizeSheetIndexValue $current
+        if ([string]::IsNullOrWhiteSpace($currentNorm)) { continue }
+
+        $shouldRevert = $false
+        foreach ($revertState in @($statesToRevert)) {
+            if (_PWD-NormalizeSheetIndexValue $revertState -eq $currentNorm) {
+                $shouldRevert = $true
+                break
+            }
+        }
+        if (-not $shouldRevert) { continue }
+        if ($currentNorm -eq $previousNorm) { continue }
+
+        $doc = $member.document
+        if (-not $doc) {
+            try {
+                $loaded = _PWD-LoadPwDocumentsByGuid -DocumentGuids @($dg)
+                if ($loaded -and $loaded.ContainsKey($dg.ToLowerInvariant())) {
+                    $doc = $loaded[$dg.ToLowerInvariant()]
+                }
+            } catch { }
+        }
+        if (-not $doc) {
+            try { $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg } catch { }
+        }
 
         $change = @{
             documentGuid = $dg
@@ -1934,9 +1978,11 @@ function Revert-PWAssociatedSheetWorkflowStates {
 
         if ($DryRun) {
             $change.planned = $true
+        } elseif (-not $doc) {
+            $change.error = 'ProjectWise document object unavailable for state rollback.'
         } else {
             try {
-                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $previous
+                _PWD-InvokeSetPwDocumentState -Document $doc -StateName $previous
                 $change.applied = $true
                 if ($dbEnabled) {
                     try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $previous) } catch { }
@@ -1950,6 +1996,8 @@ function Revert-PWAssociatedSheetWorkflowStates {
 
     return @{
         targetState = $target
+        fallbackPreviousState = $fallbackPrevious
+        statesToRevert = @($statesToRevert)
         reverts     = @($reverts)
         dryRun      = [bool]$DryRun
     }
