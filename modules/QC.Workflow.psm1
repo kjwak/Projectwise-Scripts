@@ -287,7 +287,7 @@ function _QCW-InvokeStateChangeNotification {
                 }
             }
         }
-        if ($null -eq $wfChangedByUser -and _QCW-IsNullOrWhiteSpace $wfChangedByUsername -and $Config) {
+        if (($null -eq $wfChangedByUser) -and (_QCW-IsNullOrWhiteSpace $wfChangedByUsername) -and $Config) {
             $ap = _QCW-ToHashtable $Config.auditPoller
             if ($ap) {
                 $wt = _QCW-ToHashtable $ap.workflowTriggers
