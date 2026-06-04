@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v2'
+$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v3'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -232,6 +232,54 @@ function _AuditPoller-TryApplyFolderLookup {
     return ($reqKey -and $FoundByGuid.ContainsKey($reqKey))
 }
 
+function _AuditPoller-TestPwDatasourceLoggedIn {
+    if (-not (Get-Command -Name 'Select-PWSQL' -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $r = Select-PWSQL -SQLSelectStatement 'SELECT 1 AS ok' -ErrorAction Stop
+        return ($null -ne $r)
+    } catch {
+        return $false
+    }
+}
+
+function _AuditPoller-FetchPwFolderObjectsViaSqlProjectNo {
+    param([string[]]$ChunkGuids)
+
+    $byKey = @{}
+    if (-not (Get-Command -Name 'Select-PWSQL' -ErrorAction SilentlyContinue)) { return $byKey }
+    if (-not (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue)) { return $byKey }
+
+    $keys = [System.Collections.Generic.List[string]]::new()
+    foreach ($g in @($ChunkGuids)) {
+        $k = _AuditPoller-NormalizeFolderGuidKey -Guid $g
+        if ($k) { [void]$keys.Add($k) }
+    }
+    $unique = @($keys | Sort-Object -Unique)
+    if ($unique.Count -eq 0) { return $byKey }
+
+    $inList = ($unique | ForEach-Object { "'$_'" }) -join ','
+    $sql = "SELECT o_projguid, o_projectno FROM dms_proj WHERE LOWER(RTRIM(o_projguid)) IN ($inList)"
+    try {
+        $dt = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
+    } catch {
+        return $byKey
+    }
+    if (-not $dt -or -not $dt.Rows) { return $byKey }
+
+    foreach ($row in $dt.Rows) {
+        $g = _AuditPoller-NormalizeFolderGuidKey -Guid ([string]$row.o_projguid)
+        if (-not $g) { continue }
+        try {
+            $projNo = [int]$row.o_projectno
+            $f = Get-PWFolders -FolderID $projNo -JustOne -ErrorAction Stop
+            if (-not $f) { continue }
+            try { if ($f.GetType().GetMethod('GetFullPath')) { $null = $f.GetFullPath() } } catch { }
+            $byKey[$g] = $f
+        } catch { }
+    }
+    return $byKey
+}
+
 function _AuditPoller-FetchPwFoldersForGuidChunk {
     param([string[]]$ChunkGuids)
 
@@ -243,29 +291,13 @@ function _AuditPoller-FetchPwFoldersForGuidChunk {
             if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$guidArgs.Add($v) }
         }
     }
-    $uniqueArgs = @($guidArgs | Select-Object -Unique)
+    $uniqueArgs = @($guidArgs | Sort-Object -Unique)
     if ($uniqueArgs.Count -eq 0) { return $byKey }
 
     if (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) {
         try {
-            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction SilentlyContinue)
+            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction Stop)
             foreach ($f in $folders) { if ($f) { [void]$list.Add($f) } }
-        } catch { }
-    }
-
-    if ($list.Count -eq 0 -and (Get-Command -Name 'Get-PWFoldersHashTableByGuid' -ErrorAction SilentlyContinue)) {
-        try {
-            $ht = Get-PWFoldersHashTableByGuid -FolderGUIDs $uniqueArgs -ErrorAction SilentlyContinue
-            if ($ht) {
-                foreach ($k in @($ht.Keys)) {
-                    $val = $ht[$k]
-                    if ($val) {
-                        [void]$list.Add($val)
-                        $nk = _AuditPoller-NormalizeFolderGuidKey -Guid ([string]$k)
-                        if ($nk) { $byKey[$nk] = $val }
-                    }
-                }
-            }
         } catch { }
     }
 
@@ -285,6 +317,17 @@ function _AuditPoller-FetchPwFoldersForGuidChunk {
                 $byKey[$rk] = $byKey[$vk]
                 break
             }
+        }
+    }
+
+    $stillNeed = @($ChunkGuids | Where-Object {
+        $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $_
+        $rk -and -not $byKey.ContainsKey($rk)
+    })
+    if ($stillNeed.Count -gt 0) {
+        $sqlByKey = _AuditPoller-FetchPwFolderObjectsViaSqlProjectNo -ChunkGuids $stillNeed
+        foreach ($k in @($sqlByKey.Keys)) {
+            if (-not $byKey.ContainsKey($k)) { $byKey[$k] = $sqlByKey[$k] }
         }
     }
 
@@ -385,8 +428,19 @@ function _AuditPoller-ResolveParentFoldersBatched {
     }
 
     $canResolveFolders = (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) -or
-        (Get-Command -Name 'Get-PWFoldersHashTableByGuid' -ErrorAction SilentlyContinue)
+        ((Get-Command -Name 'Select-PWSQL' -ErrorAction SilentlyContinue) -and (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue))
     if (-not $canResolveFolders) { return }
+
+    if (-not (_AuditPoller-TestPwDatasourceLoggedIn)) {
+        if ($StatsRef.Value) { $StatsRef.Value.parentFolderResolveSkippedNotLoggedIn++ }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_FOLDER_GUID_SKIP_NOT_LOGGED_IN' -Message 'Skipping parent folder GUID resolution: not logged into ProjectWise datasource.' -Data @{
+                parentGuidCount = @($ParentGuids).Count
+                logicVersion = $script:AuditPollerLogicVersion
+            }
+        }
+        return
+    }
 
     $batchSize = 200
     for ($i = 0; $i -lt $needPw.Count; $i += $batchSize) {
