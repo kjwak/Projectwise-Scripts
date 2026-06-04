@@ -2,6 +2,8 @@
 
 Modules own the reusable pipeline logic. Scripts should call these functions instead of duplicating credential parsing, ProjectWise compatibility handling, queue transitions, status-set generation, trigger evaluation, or processor dispatch.
 
+**Inventory sync:** every `modules/*.psm1` must appear in the table below. Run `test/test_module_inventory.ps1` after adding or removing modules.
+
 ## Refactoring assessment completed
 
 - ProjectWise command-line diagnostics now reuse `PW.Connection.psm1` for key/value credential parsing, ProjectWise module loading, connection cleanup, folder-view compatibility, child splitting, and document enumeration.
@@ -10,27 +12,72 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 
 ## File purposes
 
+### Core
+
 | File | Purpose |
 | --- | --- |
 | `Core.Config.psm1` | General appsettings loading, setting access, and compatibility validation helpers. |
+| `Core.Database.psm1` | SQL Server connectivity, schema management, and telemetry writers for QC pipeline data. |
 | `Core.Hashing.psm1` | Shared SHA-256 helpers for file and text hashing. |
 | `Core.Logging.psm1` | Structured application/audit logging primitives. |
 | `Core.Metrics.psm1` | Queue and processing metrics initialization, updates, reset, and flush helpers. |
 | `Core.Paths.psm1` | Path normalization, root-containment checks, and path splitting for local and ProjectWise-style paths. |
-| `Core.Results.psm1` | Standard QC result constructors used by modules to return consistent success/failure objects. |
+| `Core.Results.psm1` | Standard QC result constructors (`IsSuccess`, `Code`, `Message`, `Data`) used across modules. |
 | `Core.Runtime.psm1` | Runtime helpers for deep hashtable conversion, appsettings loading, merged config construction, and JSON log output. |
-| `Orchestrator.Pipeline.psm1` | Testable orchestration functions that compose discovery, trigger evaluation, enqueueing, worker selection, processing, and queue transitions. |
-| `PW.Connection.psm1` | ProjectWise session boundary: module loading, credential loading, connect/disconnect, discovery-cmdlet checks, child-folder helpers, and CLI diagnostics for browsing/listing folders. |
-| `PW.Discovery.psm1` | Read-only ProjectWise/local discovery: watch path resolution, trigger candidate construction, metadata extraction, folder/document listing, and sheets-folder expansion. |
+
+### QC pipeline
+
+| File | Purpose |
+| --- | --- |
+| `QC.AttributePolicy.psm1` | Package attribute policy evaluation helpers. |
+| `QC.AuditTriggers.psm1` | Audit-trail-driven trigger helpers and workflow event hooks. |
+| `QC.CommentExtract.psm1` | Invokes `overlay/qc_pdf_comments.py`; normalized PDF comment annotations. |
+| `QC.CommentStatusDecision.psm1` | Pure `Resolve-QCCommentWorkflowState` decision logic (no side effects). |
+| `QC.CommentStatusProcessor.psm1` | Orchestrator for `QC_COMMENT_STATUS_SYNC` jobs. |
+| `QC.CommentSync.Database.psm1` | `qc_comment_*` and related workflow event database writers. |
+| `QC.CommentSync.Job.psm1` | Comment-sync job metadata and PW document resolution. |
+| `QC.CommentSync.Notifications.psm1` | State-based notification routing for comment sync. |
+| `QC.CommentSync.State.psm1` | Thin `Set-PWQCWorkflowState` wrapper for comment sync. |
 | `QC.Filters.psm1` | Whitelist/blacklist filter evaluation for candidate paths before jobs are created. |
 | `QC.JobFactory.psm1` | Queue job ID/dedupe generation, payload construction, required-field validation, and dedupe-key generation. |
-| `QC.Notifications.psm1` | Notification dispatch placeholder for workflow events. |
-| `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend and status-set generation jobs, including readiness checks and external tool invocation. |
+| `QC.NotificationGraph.psm1` | Microsoft Graph email message construction for notifications. |
+| `QC.NotificationMock.psm1` | Mock notification transport for testing. |
+| `QC.NotificationTemplates.psm1` | HTML email template rendering (`ConvertTo-QCEmailHtml`). |
+| `QC.Notifications.psm1` | Configurable QC workflow email notifications (Mock + Graph). |
+| `QC.Package.Database.psm1` | Package-related database persistence helpers. |
+| `QC.PackageResolver.psm1` | Package resolution and validation logic. |
+| `QC.PackageSync.psm1` | Package synchronization orchestration. |
+| `QC.PdfExport.psm1` | `Export-QCPdfToStaging` — ProjectWise PDF download to staging. |
+| `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend, status-set, comment sync, reporting, and related job types. |
 | `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, and recent-job reporting. |
-| `QC.Reporting.psm1` | Read-only QC reporting aggregation over ProjectWise QC attributes, optional workflow states, and JSON snapshot generation for QC_REPORTING_SCAN jobs. |
-| `QC.StatusSet.psm1` | Native status-set implementation: manifest/cache management, ProjectWise export/writeback, PDF merging, workspace reconciliation, and related helpers. |
+| `QC.Rendition.psm1` | ProjectWise PDF rendition request helpers. |
+| `QC.Reporting.psm1` | Read-only QC reporting aggregation and JSON snapshot generation for `QC_REPORTING_SCAN` jobs. |
+| `QC.ReviewStamp.psm1` | QC review stamp processor integration. |
+| `QC.StatePolicy.psm1` | Workflow state policy evaluation for package workflows. |
+| `QC.StatusSet.psm1` | Native status-set implementation: manifest/cache, PW export/writeback, PDF merging, workspace reconciliation. |
 | `QC.Triggers.psm1` | Trigger rule ordering, matching, and job-type classification. |
-| `QC.Workflow.psm1` | Optional QC workflow/state/attribute writeback framework for ProjectWise, with validation, dry-run planning, and isolated ProjectWise write wrappers. |
+| `QC.WatcherOrchestration.psm1` | Watcher tick orchestration shared by trigger scan entrypoints. |
 | `QC.Worker.psm1` | Shared worker retry/state-transition policy for moving locked jobs between queue states. |
-| `README.md` | Existing architectural notes for module responsibilities and contracts. |
-| `FILES.md` | This file; quick purpose index and refactoring assessment for the modules directory. |
+| `QC.Workflow.psm1` | Optional QC workflow/state/attribute writeback framework for ProjectWise. |
+
+### ProjectWise
+
+| File | Purpose |
+| --- | --- |
+| `PW.AuditPoller.psm1` | ProjectWise audit trail polling, ingestion, and sheet-index telemetry. |
+| `PW.Connection.psm1` | ProjectWise session boundary: module loading, credentials, connect/disconnect, folder helpers, CLI diagnostics. |
+| `PW.Discovery.psm1` | Read-only PW/local discovery: watch paths, trigger candidates, metadata, folder/document listing, sheets expansion. |
+| `PW.Users.psm1` | ProjectWise user lookup helpers for notifications and workflow. |
+
+### Orchestration
+
+| File | Purpose |
+| --- | --- |
+| `Orchestrator.Pipeline.psm1` | Composable pipeline/worker ticks that compose discovery, enqueue, processing, and queue transitions. |
+
+### Documentation
+
+| File | Purpose |
+| --- | --- |
+| `README.md` | Architectural notes for module responsibilities, exports, and contracts. |
+| `FILES.md` | This file; quick purpose index (must list every `.psm1`). |

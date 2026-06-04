@@ -1,0 +1,103 @@
+---
+description: How to import QC repo modules, load order, and PS 5.1 export pitfalls
+globs: "**/*.{ps1,psm1}"
+alwaysApply: false
+---
+
+# Module imports (Prepend PDF QC)
+
+## Canonical inventory (keep this current)
+
+- **Quick index**: `modules/FILES.md` — one row per `*.psm1`; must match disk (`test/test_module_inventory.ps1`).
+- **Architecture / exports**: `modules/README.md` — update when behavior or public API changes.
+
+When adding or removing a module, update **both** docs and any load-order lists below that need the new module.
+
+## When to use modules vs scripts
+
+| Layer | Role |
+| --- | --- |
+| `modules/*.psm1` | Reusable logic, PW/queue/processor behavior, shared result shape |
+| `scripts/*.ps1` | Thin launchers: params, repo root, import modules, delegate |
+| `test/*.ps1` | Import only the modules under test (+ their Core deps) |
+
+Move logic into a module before duplicating credential parsing, queue transitions, trigger evaluation, or PW compatibility shims in scripts.
+
+## How to load modules
+
+### 1. Standard script entry (most scripts/tests)
+
+```powershell
+$repoRoot = Split-Path -Parent $PSScriptRoot   # from scripts/ or test/
+$mod = { param($name) Join-Path $repoRoot "modules\$name" }
+Import-Module (& $mod 'Core.Results.psm1') -Force
+Import-Module (& $mod 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+# …then feature modules you call directly
+```
+
+- Resolve paths from **repo root** (`appsettings.json` + `modules\`), not `$PSScriptRoot\..\modules` alone.
+- Always `-Force` when reloading in the same session.
+- Use `-WarningAction SilentlyContinue` on optional or re-imported modules.
+
+### 2. DB maintenance scripts (global scope on PS 5.1)
+
+Dot-source the shared loader — do **not** hand-roll Core imports:
+
+```powershell
+. (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot
+# Optional extra modules:
+. (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot -AdditionalModules @('PW.AuditPoller.psm1')
+```
+
+`Import-QCScriptModules.ps1` loads `Core.Results` → `Core.Database` → `Core.Runtime` (re-imports Results), uses `-Scope Global`, and adds session proxies if exports are hidden.
+
+### 3. Inside `.psm1` files
+
+Use `$PSScriptRoot` (same folder as the importing module):
+
+```powershell
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+```
+
+Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAction SilentlyContinue` for optional feature modules (see `QC.Processors.psm1`).
+
+## Load order (Windows PowerShell 5.1)
+
+**Foundation (load first, re-import after nested `-Force`):**
+
+`Core.Results` → `Core.Paths` → `Core.Runtime` → `Core.Hashing` → `Core.Database`
+
+**Why:** `Core.Database` nested-imports Runtime/Results into module scope and can hide session exports. `Import-Module -Force` on PW/QC modules (especially `PW.Discovery` / `QC.AuditTriggers`) can drop `Test-QCDatabaseEnabled`, `Write-QCJsonLog`, hashing helpers, etc.
+
+**After importing feature modules**, restore foundation or call existing helpers:
+
+- Watcher: `_Watch-RestoreFoundationModules` / `_Watch-EnsureAllModuleExports` in `Watch-QCTrigger.ps1`
+- Discovery: `Ensure-PWDiscoveryModuleLoaded` in `PW.Discovery.psm1`
+
+**Reference load orders (update when adding modules to these paths):**
+
+| Entry point | Module sequence |
+| --- | --- |
+| `Import-QCScriptModules.ps1` | Results, Database, Runtime (+ `-AdditionalModules`) |
+| `Run-QCProcessor.ps1` | Results, Runtime, Queue.Json, Processors, Rendition, Worker, Database |
+| `Watch-QCTrigger.ps1` | See `$script:WatchModuleLoadOrder` and `$script:WatchModuleRestoreOrder` |
+| `test/test_watcher_module_bootstrap.ps1` | Minimal watcher chain smoke test |
+
+Import **feature** modules before a final foundation restore when they nested-reload Core.
+
+## Verification checklist
+
+After changing imports, confirm required commands exist:
+
+```powershell
+Get-Command Read-QCAppSettings, Write-QCJsonLog, Test-QCDatabaseEnabled -ErrorAction SilentlyContinue
+```
+
+Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`.
+
+## Common mistakes
+
+- Importing `Core.Database` without re-importing `Core.Results` / `Core.Runtime` in the **session** → `Read-QCAppSettings` or DB helpers missing.
+- Calling nested module functions without importing the **top-level** module the script uses (e.g. worker needs `QC.Processors`, not only `QC.Queue.Json`).
+- Using `Import-Module` without `-Force` in long-lived watcher/worker sessions after file edits.
+- Duplicating load-order arrays in new scripts instead of matching an existing entry point or extending `Import-QCScriptModules.ps1`.
