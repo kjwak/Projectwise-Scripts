@@ -1,27 +1,28 @@
 <#
 .SYNOPSIS
-Removes rows from dbo.qc_workflow_events (workflow transition telemetry).
+Removes rows from dbo.qc_workflow_events (and optional comment-sync tables) by folder scope.
 
 .DESCRIPTION
-qc_workflow_events is debug/replay telemetry, not execution state. Safe to trim by age,
-document, or job. Default is preview; pass -ConfirmDeletes to apply.
+Targets bad telemetry for specific ProjectWise paths. Matches workflow rows via
+sheet_index.folder_path on document_id, and comment runs via qc_comment_runs.pw_path.
+Path matching is case-insensitive; backslashes and forward slashes are equivalent.
 
-Optional -IncludeCommentTelemetry also removes qc_comment_runs and dependent rows
-(qc_comments, qc_comment_status_history) using the same age/filter rules on created_utc.
+Optional -OlderThanDays / -BeforeUtc narrow further. Default is preview; pass -ConfirmDeletes to apply.
 
 .EXAMPLE
-.\scripts\Remove-QCWorkflowEvents.ps1 -OlderThanDays 180
-.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -OlderThanDays 90 -DocumentId '{guid}'
-.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -TruncateAll
+.\scripts\Remove-QCWorkflowEvents.ps1 -FolderPathLike 'AZFWY2302-018'
+.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -FolderPathLike 'BADPROJ', 'HOLD'
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$AppSettingsPath = '',
     [switch]$ConfirmDeletes,
     [switch]$DryRun,
-    [int]$OlderThanDays = 0,
+    [string[]]$FolderPathLike = @(),
+    [string]$FolderPathFilter = '',
     [string]$DocumentId = '',
     [string]$JobId = '',
+    [int]$OlderThanDays = 0,
     [datetime]$BeforeUtc,
     [int]$BatchSize = 5000,
     [switch]$IncludeCommentTelemetry,
@@ -48,10 +49,20 @@ if (-not $DryRun.IsPresent -and -not $ConfirmDeletes.IsPresent) {
     $DryRun = $true
 }
 
-if (-not $TruncateAll.IsPresent) {
-    if ($OlderThanDays -le 0 -and -not $BeforeUtc) {
-        throw 'Specify -OlderThanDays (>0), -BeforeUtc, or -TruncateAll.'
-    }
+$pathPatterns = [System.Collections.Generic.List[string]]::new()
+foreach ($p in @($FolderPathLike)) {
+    if (-not [string]::IsNullOrWhiteSpace($p)) { $pathPatterns.Add($p.Trim()) | Out-Null }
+}
+if (-not [string]::IsNullOrWhiteSpace($FolderPathFilter)) {
+    $pathPatterns.Add($FolderPathFilter.Trim()) | Out-Null
+}
+
+$hasFolderScope = $pathPatterns.Count -gt 0
+$hasAgeScope = $TruncateAll.IsPresent -or $OlderThanDays -gt 0 -or $BeforeUtc
+$hasIdScope = -not [string]::IsNullOrWhiteSpace($DocumentId) -or -not [string]::IsNullOrWhiteSpace($JobId)
+
+if (-not $TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $hasAgeScope) {
+    throw 'Specify -FolderPathLike (path fragment(s)), -DocumentId, -JobId, optional age filters, or -TruncateAll.'
 }
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -63,68 +74,121 @@ if (-not (Test-QCDatabaseEnabled -Config $config)) {
 Initialize-QCDatabaseSchema -Config $config | Out-Null
 
 $cutoff = $null
+$useCutoff = $false
 if ($TruncateAll.IsPresent) {
-    $cutoff = $null
+    $useCutoff = $false
 } elseif ($BeforeUtc) {
     $cutoff = [datetimeoffset]$BeforeUtc.ToUniversalTime()
-} else {
+    $useCutoff = $true
+} elseif ($OlderThanDays -gt 0) {
     $cutoff = [datetimeoffset]::UtcNow.AddDays(-1 * $OlderThanDays)
+    $useCutoff = $true
 }
 
-function _QWE-BuildWhereClause {
+function _QWE-NormalizePathPattern {
+    param([string]$Pattern)
+    $norm = ($Pattern -replace '\\', '/').ToLowerInvariant()
+    if ($norm -notmatch '[%_\[]') { return "%$norm%" }
+    return $norm
+}
+
+function _QWE-PathLikeClauses {
     param(
-        [string]$DateColumn,
-        [bool]$UseCutoff,
-        [hashtable]$Params
+        [string]$ColumnSql,
+        [System.Collections.Generic.List[string]]$Patterns,
+        [hashtable]$Params,
+        [string]$Prefix
     )
+    $clauses = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Patterns.Count; $i++) {
+        $key = '{0}{1}' -f $Prefix, $i
+        $Params[$key] = _QWE-NormalizePathPattern -Pattern $Patterns[$i]
+        $clauses.Add(
+            "REPLACE(LOWER(LTRIM(RTRIM(ISNULL($ColumnSql, '')))), '\', '/') LIKE @$key"
+        ) | Out-Null
+    }
+    return $clauses
+}
+
+function _QWE-SheetIndexGuidSubquery {
+    param([hashtable]$Params, [string]$Prefix)
+    $clauses = _QWE-PathLikeClauses -ColumnSql 'si.folder_path' -Patterns $pathPatterns -Params $Params -Prefix $Prefix
+    return @"
+SELECT LTRIM(RTRIM(si.document_guid))
+FROM sheet_index si
+WHERE si.document_guid IS NOT NULL AND (($($clauses -join ' OR ')))
+"@
+}
+
+function _QWE-BuildWorkflowWhere {
+    param([hashtable]$Params)
     $parts = [System.Collections.Generic.List[string]]::new()
-    if ($UseCutoff) {
+    if ($useCutoff) {
         $Params['cutoff'] = $cutoff
-        $parts.Add("$DateColumn < @cutoff") | Out-Null
+        $parts.Add('w.created_utc < @cutoff') | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace($DocumentId)) {
         $Params['documentId'] = $DocumentId.Trim()
-        $parts.Add('document_id = @documentId') | Out-Null
+        $parts.Add('w.document_id = @documentId') | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace($JobId)) {
         $Params['jobId'] = $JobId.Trim()
-        $parts.Add('job_id = @jobId') | Out-Null
+        $parts.Add('w.job_id = @jobId') | Out-Null
+    }
+    if ($hasFolderScope) {
+        $parts.Add('w.document_id IN (' + (_QWE-SheetIndexGuidSubquery -Params $Params -Prefix 'wf') + ')') | Out-Null
     }
     if ($parts.Count -eq 0) { return '' }
     return ' WHERE ' + ($parts -join ' AND ')
 }
 
-function _QWE-GetCount {
-    param(
-        [hashtable]$Config,
-        [string]$Table,
-        [string]$DateColumn,
-        [bool]$UseCutoff
-    )
-    $params = @{ batchSize = $BatchSize }
-    $where = _QWE-BuildWhereClause -DateColumn $DateColumn -UseCutoff $UseCutoff -Params $params
-    $sql = "SELECT COUNT_BIG(1) AS cnt FROM $Table$where"
-    $res = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
+function _QWE-BuildCommentRunWhere {
+    param([hashtable]$Params)
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($useCutoff) {
+        $Params['cutoff'] = $cutoff
+        $parts.Add('r.created_utc < @cutoff') | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DocumentId)) {
+        $Params['documentId'] = $DocumentId.Trim()
+        $parts.Add('r.document_id = @documentId') | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($JobId)) {
+        $Params['jobId'] = $JobId.Trim()
+        $parts.Add('r.job_id = @jobId') | Out-Null
+    }
+    if ($hasFolderScope) {
+        $pathClauses = _QWE-PathLikeClauses -ColumnSql 'r.pw_path' -Patterns $pathPatterns -Params $Params -Prefix 'cr'
+        $parts.Add(@"
+(
+    (($($pathClauses -join ' OR ')))
+    OR r.document_id IN ($(_QWE-SheetIndexGuidSubquery -Params $Params -Prefix 'crs'))
+)
+"@) | Out-Null
+    }
+    if ($parts.Count -eq 0) { return '' }
+    return ' WHERE ' + ($parts -join ' AND ')
+}
+
+function _QWE-GetScalar {
+    param([hashtable]$Config, [string]$Sql, [hashtable]$Params)
+    $res = Invoke-QCDatabaseScalar -Config $Config -Sql $Sql -Parameters $Params
     if (-not $res.IsSuccess) { throw $res.Message }
     return [long]$res.Data.value
 }
 
-function _QWE-DeleteBatched {
+function _QWE-RunDeleteLoop {
     param(
         [hashtable]$Config,
-        [string]$Table,
-        [string]$DateColumn,
-        [bool]$UseCutoff,
+        [string]$Sql,
+        [hashtable]$Params,
         [string]$Label
     )
-    $params = @{ batchSize = $BatchSize }
-    $where = _QWE-BuildWhereClause -DateColumn $DateColumn -UseCutoff $UseCutoff -Params $params
-    $deleteSql = "DELETE TOP (@batchSize) FROM $Table$where"
     $total = 0L
     do {
         $batch = 0
         if ($PSCmdlet.ShouldProcess($Label, 'DELETE batch')) {
-            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $deleteSql -Parameters $params
+            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $Sql -Parameters $Params
             if (-not $res.IsSuccess) { throw $res.Message }
             $batch = [int]$res.Data.rowsAffected
             $total += $batch
@@ -138,51 +202,81 @@ function _QWE-DeleteBatched {
     return $total
 }
 
+$params = @{ batchSize = $BatchSize }
+$wfWhere = _QWE-BuildWorkflowWhere -Params $params
+$runWhere = _QWE-BuildCommentRunWhere -Params $params
+$runSub = "SELECT r.run_id FROM qc_comment_runs r$runWhere"
+
+$histWhereParts = [System.Collections.Generic.List[string]]::new()
+$histWhereParts.Add("h.detected_run_id IN ($runSub)") | Out-Null
+if ($hasFolderScope) {
+    $histWhereParts.Add("h.document_id IN ($(_QWE-SheetIndexGuidSubquery -Params $params -Prefix 'hs'))") | Out-Null
+}
+$histWhere = ' WHERE ' + ($histWhereParts -join ' OR ')
+
 $summary = [ordered]@{
-    dryRun                   = $DryRun.IsPresent
-    truncateAll              = $TruncateAll.IsPresent
-    cutoffUtc                = if ($cutoff) { $cutoff.UtcDateTime.ToString('o') } else { $null }
-    olderThanDays            = if ($OlderThanDays -gt 0) { $OlderThanDays } else { $null }
-    documentId               = $DocumentId
-    jobId                    = $JobId
-    includeCommentTelemetry  = $IncludeCommentTelemetry.IsPresent
-    qc_workflow_events       = $null
-    qc_comment_status_history = $null
-    qc_comments              = $null
-    qc_comment_runs          = $null
-    totalDeleted             = 0
+    dryRun                  = $DryRun.IsPresent
+    truncateAll             = $TruncateAll.IsPresent
+    folderPathLike          = @($pathPatterns)
+    documentId              = $DocumentId
+    jobId                   = $JobId
+    includeCommentTelemetry = $IncludeCommentTelemetry.IsPresent
+    qc_workflow_events      = $null
+    commentTelemetry        = $null
+    totalDeleted            = 0
 }
 
-$useCutoff = -not $TruncateAll.IsPresent
-
 Write-Host '[qc_workflow_events] Counting matching rows...' -ForegroundColor Cyan
-$wfCount = _QWE-GetCount -Config $config -Table 'qc_workflow_events' -DateColumn 'created_utc' -UseCutoff $useCutoff
+if ($TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $useCutoff) {
+    $wfCount = _QWE-GetScalar -Config $config -Sql 'SELECT COUNT_BIG(1) FROM qc_workflow_events' -Params $params
+} else {
+    $wfCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_workflow_events w$wfWhere" -Params $params
+}
 $summary.qc_workflow_events = @{ rowsMatched = $wfCount; deleted = 0 }
 Write-Host ("  Matched {0} row(s)." -f $wfCount) -ForegroundColor $(if ($wfCount -eq 0) { 'Green' } else { 'Yellow' })
+if ($pathPatterns.Count -gt 0) {
+    Write-Host ("  Folder patterns: {0}" -f ($pathPatterns -join ', ')) -ForegroundColor Gray
+}
 
 if ($IncludeCommentTelemetry.IsPresent) {
     Write-Host '[comment telemetry] Counting matching rows...' -ForegroundColor Cyan
-    $histCount = _QWE-GetCount -Config $config -Table 'qc_comment_status_history' -DateColumn 'detected_utc' -UseCutoff $useCutoff
-    $commentCount = _QWE-GetCount -Config $config -Table 'qc_comments' -DateColumn 'inserted_utc' -UseCutoff $useCutoff
-    $runCount = _QWE-GetCount -Config $config -Table 'qc_comment_runs' -DateColumn 'created_utc' -UseCutoff $useCutoff
-    $summary.qc_comment_status_history = @{ rowsMatched = $histCount; deleted = 0 }
-    $summary.qc_comments = @{ rowsMatched = $commentCount; deleted = 0 }
-    $summary.qc_comment_runs = @{ rowsMatched = $runCount; deleted = 0 }
-    Write-Host ("  qc_comment_status_history: {0}" -f $histCount) -ForegroundColor Gray
-    Write-Host ("  qc_comments: {0}" -f $commentCount) -ForegroundColor Gray
+    $runCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_runs r$runWhere" -Params $params
+    $commentCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($runSub)" -Params $params
+    $histCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_status_history h$histWhere" -Params $params
+    $summary.commentTelemetry = @{
+        rowsMatched = @{ runs = $runCount; comments = $commentCount; history = $histCount }
+        deleted     = $null
+    }
     Write-Host ("  qc_comment_runs: {0}" -f $runCount) -ForegroundColor Gray
+    Write-Host ("  qc_comments: {0}" -f $commentCount) -ForegroundColor Gray
+    Write-Host ("  qc_comment_status_history: {0}" -f $histCount) -ForegroundColor Gray
 }
 
 if ($doDelete) {
     if ($IncludeCommentTelemetry.IsPresent) {
-        $summary.qc_comment_status_history.deleted = _QWE-DeleteBatched -Config $config -Table 'qc_comment_status_history' -DateColumn 'detected_utc' -UseCutoff $useCutoff -Label 'qc_comment_status_history'
-        $summary.qc_comments.deleted = _QWE-DeleteBatched -Config $config -Table 'qc_comments' -DateColumn 'inserted_utc' -UseCutoff $useCutoff -Label 'qc_comments'
-        $summary.qc_comment_runs.deleted = _QWE-DeleteBatched -Config $config -Table 'qc_comment_runs' -DateColumn 'created_utc' -UseCutoff $useCutoff -Label 'qc_comment_runs'
-        $summary.totalDeleted += [long]$summary.qc_comment_status_history.deleted
-        $summary.totalDeleted += [long]$summary.qc_comments.deleted
-        $summary.totalDeleted += [long]$summary.qc_comment_runs.deleted
+        $summary.commentTelemetry.deleted = [ordered]@{}
+        $summary.commentTelemetry.deleted.qc_comment_status_history = _QWE-RunDeleteLoop -Config $config `
+            -Sql "DELETE TOP (@batchSize) FROM qc_comment_status_history WHERE history_id IN (SELECT h.history_id FROM qc_comment_status_history h$histWhere)" `
+            -Params $params -Label 'qc_comment_status_history'
+        $summary.commentTelemetry.deleted.qc_comments = _QWE-RunDeleteLoop -Config $config `
+            -Sql "DELETE TOP (@batchSize) FROM qc_comments WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE c.run_id IN ($runSub))" `
+            -Params $params -Label 'qc_comments'
+        $summary.commentTelemetry.deleted.qc_comment_runs = _QWE-RunDeleteLoop -Config $config `
+            -Sql "DELETE TOP (@batchSize) FROM qc_comment_runs WHERE run_id IN (SELECT r.run_id FROM qc_comment_runs r$runWhere)" `
+            -Params $params -Label 'qc_comment_runs'
+        $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comment_status_history
+        $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comments
+        $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comment_runs
     }
-    $summary.qc_workflow_events.deleted = _QWE-DeleteBatched -Config $config -Table 'qc_workflow_events' -DateColumn 'created_utc' -UseCutoff $useCutoff -Label 'qc_workflow_events'
+
+    if ($TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $useCutoff) {
+        $summary.qc_workflow_events.deleted = _QWE-RunDeleteLoop -Config $config `
+            -Sql 'DELETE TOP (@batchSize) FROM qc_workflow_events' -Params $params -Label 'qc_workflow_events'
+    } else {
+        $summary.qc_workflow_events.deleted = _QWE-RunDeleteLoop -Config $config `
+            -Sql "DELETE TOP (@batchSize) FROM qc_workflow_events WHERE event_id IN (SELECT w.event_id FROM qc_workflow_events w$wfWhere)" `
+            -Params $params -Label 'qc_workflow_events'
+    }
     $summary.totalDeleted += [long]$summary.qc_workflow_events.deleted
     Write-Host ("Done. Total deleted: {0}" -f $summary.totalDeleted) -ForegroundColor Green
 } else {

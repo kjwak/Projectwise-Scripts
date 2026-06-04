@@ -240,20 +240,27 @@ Connect Power BI to `QC_Pipeline` via SQL Server connector:
 
 ## Retention / cleanup scripts
 
-High-volume telemetry tables (`audit_events`, `qc_workflow_events`) are safe to trim periodically. Execution state lives in the JSON queue and operational tables (`sheet_index`, `processing_jobs`); these scripts do not touch those.
+Execution state lives in the JSON queue and operational tables (`sheet_index`, `processing_jobs`); these scripts do not touch those.
 
-Optional defaults in `appsettings.json` under `database.retention` are used by `Invoke-QCDatabaseRetention.ps1`. CLI parameters override config.
+**Audit events** — periodic retention via `Invoke-QCDatabaseRetention.ps1` and `database.retention` in appsettings (default: processed rows older than 90 days).
+
+**Workflow events** — no automatic retention. Use `Remove-QCWorkflowEvents.ps1` with `-FolderPathLike` to delete bad telemetry for specific folder path fragments (matches `sheet_index.folder_path` and `qc_comment_runs.pw_path`).
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/Remove-QCAuditEvents.ps1` | Delete aged `audit_events` by `captured_at` (default: processed rows only, 90+ days) |
-| `scripts/Remove-QCWorkflowEvents.ps1` | Delete aged `qc_workflow_events` by `created_utc`; optional comment-sync tables |
-| `scripts/Invoke-QCDatabaseRetention.ps1` | Runs both cleanups with config/CLI retention days |
+| `scripts/Remove-QCAuditEvents.ps1` | Delete aged `audit_events` by `captured_at` (default: processed rows only) |
+| `scripts/Remove-QCWorkflowEvents.ps1` | Delete `qc_workflow_events` (and optional comment tables) by folder path / document / job |
+| `scripts/Invoke-QCDatabaseRetention.ps1` | Scheduled `audit_events` cleanup only |
 
-Preview by default; pass `-ConfirmDeletes` to apply. Example scheduled task:
+Preview by default; pass `-ConfirmDeletes` to apply.
 
 ```powershell
+# Scheduled audit retention
 .\scripts\Invoke-QCDatabaseRetention.ps1 -ConfirmDeletes
+
+# One-off bad workflow telemetry under specific projects
+.\scripts\Remove-QCWorkflowEvents.ps1 -FolderPathLike 'AZFWY2302-018', 'SomeOtherProject'
+.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -FolderPathLike 'AZFWY2302-018'
 ```
 
 ---
