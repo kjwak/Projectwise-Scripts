@@ -217,8 +217,20 @@ function _QCW-InvokeStateChangeNotification {
         } elseif ($job -and $job.id) {
             $stKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
         }
+        $automationActor = ''
+        if ($Config) {
+            $ap = _QCW-ToHashtable $Config.auditPoller
+            if ($ap) {
+                $wt = _QCW-ToHashtable $ap.workflowTriggers
+                if ($wt -and $wt.automationPwUsernames) {
+                    foreach ($name in @($wt.automationPwUsernames)) {
+                        if (-not (_QCW-IsNullOrWhiteSpace $name)) { $automationActor = [string]$name; break }
+                    }
+                }
+            }
+        }
         return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
-            -Document $Document -Job $notifJob -StateTransitionKey $stKey
+            -Document $Document -Job $notifJob -StateTransitionKey $stKey -ChangedByUsername $automationActor
     } catch {
         if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
             Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `

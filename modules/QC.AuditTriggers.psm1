@@ -347,7 +347,9 @@ function _QCAT-WriteWorkflowEventMirror {
         [string]$QcReviewType = '',
         [hashtable]$Context = $null,
         [hashtable]$PwAttributes = $null,
-        [object]$Document = $null
+        [object]$Document = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
     )
 
     if (-not (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue)) { return }
@@ -359,6 +361,8 @@ function _QCAT-WriteWorkflowEventMirror {
         documentName = $DocumentName
         auditAction = $AuditActionName
     }
+    if ($null -ne $ChangedByUser) { $payload['changedByUser'] = $ChangedByUser }
+    if (-not [string]::IsNullOrWhiteSpace($ChangedByUsername)) { $payload['changedByUsername'] = [string]$ChangedByUsername }
     $payloadJson = ''
     try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
     Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
@@ -384,6 +388,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         [bool]$DryRun = $false,
         [string]$AuditActionName = 'DOCUMENT_STATE',
         [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
         [string]$LastAuditEventAt = '',
         [Nullable[long]]$AuditEventId = $null
     )
@@ -413,7 +418,8 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     if ([bool]$settings.recordStateHistory) {
         Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
-            -FieldName 'pw_state_name' -ChangedByUser $ChangedByUser | Out-Null
+            -FieldName 'pw_state_name' -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -SourceAuditId $AuditEventId | Out-Null
     }
 
     $transitionId = $null
@@ -421,7 +427,8 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     if ([bool]$settings.recordTransitions) {
         $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
-            -JobType 'audit_trigger'
+            -JobType 'audit_trigger' -TriggerAuditId $AuditEventId -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername
         if ($tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
             try { $transitionId = [int]$tr.Data.transitionId } catch { $transitionId = $null }
         }
@@ -435,7 +442,8 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         if ($PwAttributes) { $attrs = $PwAttributes }
         _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
-            -AuditActionName $AuditActionName -PwAttributes $attrs -Document $Document
+            -AuditActionName $AuditActionName -PwAttributes $attrs -Document $Document `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
     }
 
     if (-not $shouldNotify) { return }
@@ -461,10 +469,19 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
             -ChangedByUser $ChangedByUser -TriggerDocumentGuid $DocumentGuid -TransitionId $transitionId
     }
 
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
+        try { Sync-PWUserDirectory -Config $Config -UserNumbers @([int]$ChangedByUser) -MaxUsers 1 | Out-Null } catch { }
+    }
+    $notifyUsername = ''
+    if (-not [string]::IsNullOrWhiteSpace($ChangedByUsername)) {
+        $notifyUsername = [string]$ChangedByUsername.Trim()
+    }
+
     try {
         $notif = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr `
             -Document $Document -DocumentName $DocumentName -DocumentGuid $DocumentGuid `
-            -DocumentPath ($FolderPath + '\' + $DocumentName) -StateTransitionKey $stateTransitionKey
+            -DocumentPath ($FolderPath + '\' + $DocumentName) -StateTransitionKey $stateTransitionKey `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $notifyUsername
         if ($notif -is [System.Array]) { $notif = $notif[-1] }
         $notifData = if ($notif -and $notif.Data -is [hashtable]) { $notif.Data } elseif ($notif -and $notif.Data) { _QCAT-ToHashtable $notif.Data } else { $null }
         if ($transitionId -and $notif -and $notif.IsSuccess -and $notifData) {

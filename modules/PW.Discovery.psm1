@@ -1621,6 +1621,7 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         [Parameter(Mandatory)][string]$CanonicalState,
         [bool]$DryRun = $false,
         [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
         [string]$LastAuditEventAt = '',
         [Nullable[long]]$AuditEventId = $null
     )
@@ -1655,7 +1656,7 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
             -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
             -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
-            -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
     }
 }
 
@@ -1895,7 +1896,7 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
         -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
-        -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
+        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
 
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
@@ -1926,7 +1927,8 @@ WHERE document_guid = @docGuid
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
                 -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
                 -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
-                -ChangedByUser $ChangedByUser -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
         }
 
         $change = @{
@@ -2243,7 +2245,7 @@ WHERE document_guid = @docGuid
             Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
                 -DocumentName $DocumentName -FolderPath $FolderPath -PreviousState $dbState -CurrentState $pwState `
                 -PwAttributes $read.attributes -AuditActionName $AuditActionName -ChangedByUser $ChangedByUser `
-                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+                -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
         }
     }
 

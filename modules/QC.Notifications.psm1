@@ -263,6 +263,11 @@ function _QCN-NewNotificationSubjectTokens {
     $tokens['ProjectName'] = $Project
     $tokens['WorkflowState'] = $CurrentState
     $tokens['ReviewType'] = $ReviewType
+    # Common config aliases (case-sensitive Expand-QCNotificationTemplate)
+    $tokens['qc_review_type'] = $ReviewType
+    $tokens['qcReviewType'] = $ReviewType
+    $tokens['DocumentID'] = $DocumentName
+    $tokens['documentId'] = $DocumentName
     return $tokens
 }
 
@@ -288,6 +293,146 @@ function _QCN-ResolveNotificationSubjectTemplate {
     return $template
 }
 
+function _QCN-GetAutomationActorLabel {
+    param([hashtable]$Config)
+    if (-not $Config) { return 'QC Automation' }
+    $ap = _QCN-ToHashtable $Config.auditPoller
+    if (-not $ap) { return 'QC Automation' }
+    $wt = _QCN-ToHashtable $ap.workflowTriggers
+    if (-not $wt) { return 'QC Automation' }
+    if ($wt.automationPwUsernames) {
+        foreach ($name in @($wt.automationPwUsernames)) {
+            if (-not (_QCN-IsBlank $name)) { return [string]$name }
+        }
+    }
+    return 'QC Automation'
+}
+
+function _QCN-FormatPwUserIdentityDisplay {
+    param([hashtable]$Identity)
+    if (-not $Identity) { return '' }
+    foreach ($key in @('pw_user_email', 'display_name', 'pw_username')) {
+        if ($Identity.ContainsKey($key) -and -not (_QCN-IsBlank $Identity[$key])) {
+            return [string]$Identity[$key]
+        }
+    }
+    if ($Identity.ContainsKey('pw_userno')) {
+        try {
+            $n = [int]$Identity.pw_userno
+            if ($n -gt 0) { return ('PW User ' + [string]$n) }
+        } catch { }
+    }
+    return ''
+}
+
+function _QCN-TrySyncPwUserIdentity {
+    param(
+        [hashtable]$Config,
+        [int]$UserNumber
+    )
+    if ($UserNumber -le 0) { return $null }
+    if (-not (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        Sync-PWUserDirectory -Config $Config -UserNumbers @($UserNumber) -MaxUsers 1 | Out-Null
+    } catch { }
+    if (-not (Get-Command -Name 'Get-QCPWUserIdentity' -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $res = Get-QCPWUserIdentity -Config $Config -UserNumber $UserNumber
+        if ($res -and $res.IsSuccess -and $res.Data -and $res.Data.identity) {
+            return _QCN-ToHashtable $res.Data.identity
+        }
+    } catch { }
+    return $null
+}
+
+function Resolve-QCNotificationSubmittedBy {
+    <#
+    .SYNOPSIS
+    Resolves the display label for the user who triggered a workflow state change.
+    Prefers email, then display name, then PW username.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [string]$SubmittedBy = ''
+    )
+
+    if (-not (_QCN-IsBlank $SubmittedBy)) { return [string]$SubmittedBy.Trim() }
+
+    $username = if ($ChangedByUsername) { [string]$ChangedByUsername.Trim() } else { '' }
+    $userno = $null
+    if ($null -ne $ChangedByUser) {
+        try {
+            $n = [int]$ChangedByUser
+            if ($n -gt 0) { $userno = $n }
+        } catch { }
+    }
+
+    $isAutomation = $false
+    if ($Config -and (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue)) {
+        try {
+            $isAutomation = [bool](Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $userno -ChangedByUsername $username)
+        } catch { }
+    }
+    if ($isAutomation) {
+        if (-not (_QCN-IsBlank $username)) { return $username }
+        return _QCN-GetAutomationActorLabel -Config $Config
+    }
+
+    $identity = $null
+    if ($userno -and $Config -and (Get-Command -Name 'Get-QCPWUserIdentity' -ErrorAction SilentlyContinue)) {
+        try {
+            $res = Get-QCPWUserIdentity -Config $Config -UserNumber $userno
+            if ($res -and $res.IsSuccess -and $res.Data -and $res.Data.identity) {
+                $identity = _QCN-ToHashtable $res.Data.identity
+            }
+        } catch { }
+        if (-not $identity) {
+            $identity = _QCN-TrySyncPwUserIdentity -Config $Config -UserNumber $userno
+        }
+    }
+    $fromIdentity = _QCN-FormatPwUserIdentityDisplay -Identity $identity
+    if (-not (_QCN-IsBlank $fromIdentity)) { return $fromIdentity }
+    if (-not (_QCN-IsBlank $username)) { return $username }
+    if ($userno) { return ('PW User ' + [string]$userno) }
+    return '(unknown)'
+}
+
+function _QCN-ResolveStateChangeActorFromJob {
+    param([hashtable]$Job)
+
+    $changedByUser = $null
+    $changedByUsername = ''
+    $submittedBy = ''
+    if (-not $Job) {
+        return @{ changedByUser = $null; changedByUsername = ''; submittedBy = '' }
+    }
+    $md = $null
+    if ($Job.ContainsKey('metadata') -and $Job.metadata) {
+        $md = _QCN-ToHashtable $Job.metadata
+    }
+    if ($md) {
+        if ($md.ContainsKey('changedByUser') -and $null -ne $md.changedByUser) {
+            try { $changedByUser = [int]$md.changedByUser } catch { }
+        }
+        foreach ($key in @('changedByUsername', 'lastActionBy', 'userName', 'triggeredBy')) {
+            if (_QCN-IsBlank $changedByUsername -and $md.ContainsKey($key) -and -not (_QCN-IsBlank $md[$key])) {
+                $changedByUsername = [string]$md[$key]
+            }
+        }
+        if ($md.ContainsKey('submittedBy') -and -not (_QCN-IsBlank $md.submittedBy)) {
+            $submittedBy = [string]$md.submittedBy
+        }
+    }
+    return @{
+        changedByUser = $changedByUser
+        changedByUsername = $changedByUsername
+        submittedBy = $submittedBy
+    }
+}
+
 function New-QCNotificationEvent {
     <#
     .SYNOPSIS
@@ -310,7 +455,10 @@ function New-QCNotificationEvent {
         [string[]]$Cc = @(),
         [string]$ActionRequired = '',
         [string]$SourceJobId = '',
-        [string]$QcPdfUrl = ''
+        [string]$QcPdfUrl = '',
+        [string]$SubmittedBy = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
     )
 
     return @{
@@ -327,6 +475,9 @@ function New-QCNotificationEvent {
         actionRequired = $ActionRequired
         sourceJobId = $SourceJobId
         qcPdfUrl = $QcPdfUrl
+        submittedBy = $SubmittedBy
+        changedByUser = $ChangedByUser
+        changedByUsername = $ChangedByUsername
     }
 }
 
@@ -1201,6 +1352,9 @@ function Invoke-QCNotificationForStateChange {
         [string]$Project = '',
         [hashtable]$Job,
         [string]$StateTransitionKey = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [string]$SubmittedBy = '',
         [switch]$Force
     )
 
@@ -1293,6 +1447,15 @@ function Invoke-QCNotificationForStateChange {
     $actionRequired = if ($eventCfg.actionRequired) { [string]$eventCfg.actionRequired } else { '' }
     $sourceJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
 
+    $actorFromJob = _QCN-ResolveStateChangeActorFromJob -Job $Job
+    if ($null -eq $ChangedByUser -and $null -ne $actorFromJob.changedByUser) { $ChangedByUser = $actorFromJob.changedByUser }
+    if (_QCN-IsBlank $ChangedByUsername -and -not (_QCN-IsBlank $actorFromJob.changedByUsername)) {
+        $ChangedByUsername = [string]$actorFromJob.changedByUsername
+    }
+    if (_QCN-IsBlank $SubmittedBy -and -not (_QCN-IsBlank $actorFromJob.submittedBy)) {
+        $SubmittedBy = [string]$actorFromJob.submittedBy
+    }
+
     $roleOverrides = $null
     if ($Job -and $Job.ContainsKey('metadata') -and $Job.metadata) {
         $md = _QCN-ToHashtable $Job.metadata
@@ -1369,6 +1532,12 @@ function Invoke-QCNotificationForStateChange {
         $event['qcReviewType'] = $resolvedReviewType
     }
 
+    $resolvedSubmittedBy = Resolve-QCNotificationSubmittedBy -Config $Config -ChangedByUser $ChangedByUser `
+        -ChangedByUsername $ChangedByUsername -SubmittedBy $SubmittedBy
+    $event['submittedBy'] = $resolvedSubmittedBy
+    if ($null -ne $ChangedByUser) { $event['changedByUser'] = $ChangedByUser }
+    if (-not (_QCN-IsBlank $ChangedByUsername)) { $event['changedByUsername'] = [string]$ChangedByUsername }
+
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings
     if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings)) {
         $skipped = @{
@@ -1414,5 +1583,5 @@ function Invoke-QCNotificationForStateChange {
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Resolve-QCNotificationQcPdfUrl, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

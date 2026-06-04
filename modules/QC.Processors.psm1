@@ -1516,6 +1516,8 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     $md['triggerDocumentGuid'] = $TriggerDocumentGuid
     $md['triggerDocumentName'] = $TriggerDocumentName
     if (-not (_QCP-IsNullOrWhiteSpace $stateTransitionKey)) { $md['stateTransitionKey'] = [string]$stateTransitionKey }
+    if ($null -ne $ChangedByUser) { $md['changedByUser'] = $ChangedByUser }
+    if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
 
     if ($DryRun) {
@@ -1638,6 +1640,8 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     $md['triggerDocumentGuid'] = $TriggerDocumentGuid
     $md['triggerDocumentName'] = $TriggerDocumentName
     if (-not (_QCP-IsNullOrWhiteSpace $stateTransitionKey)) { $md['stateTransitionKey'] = [string]$stateTransitionKey }
+    if ($null -ne $ChangedByUser) { $md['changedByUser'] = $ChangedByUser }
+    if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
 
     if ($DryRun) {
@@ -1723,7 +1727,13 @@ function Invoke-QCNotificationProcessor {
     } elseif ($Job.id) {
         $stKey = 'workflow:job:' + [string]$Job.id + '|state:' + $curr
     }
-    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc -Job $Job -StateTransitionKey $stKey
+    $changedByUser = $null
+    if ($meta.ContainsKey('changedByUser') -and $null -ne $meta.changedByUser) {
+        try { $changedByUser = [int]$meta.changedByUser } catch { }
+    }
+    $changedByUsername = if ($meta.ContainsKey('changedByUsername')) { [string]$meta.changedByUsername } else { '' }
+    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc `
+        -Job $Job -StateTransitionKey $stKey -ChangedByUser $changedByUser -ChangedByUsername $changedByUsername
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         $cp = if ($res -and $res.IsSuccess) { 'notification_complete' } else { 'notification_failed' }
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $cp | Out-Null

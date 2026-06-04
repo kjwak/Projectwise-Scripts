@@ -381,7 +381,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.7.0'
+    $targetVersion = '1.8.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -390,7 +390,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -420,7 +420,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through qc_workflow_events.qc_review_type column")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through transition_events.changed_by columns")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -1264,6 +1264,18 @@ IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_w
 '@
 }
 
+function _QDB-GetSchemaV1dot8Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'changed_by_user') IS NULL
+    ALTER TABLE transition_events ADD changed_by_user INT NULL;
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'changed_by_username') IS NULL
+    ALTER TABLE transition_events ADD changed_by_username NVARCHAR(128) NULL;
+IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'changed_by_username') IS NULL
+    ALTER TABLE document_state_history ADD changed_by_username NVARCHAR(128) NULL;
+'@
+}
+
 function _QDB-GetSchemaV1dot4Additive {
     return @'
 GO
@@ -1322,6 +1334,43 @@ ORDER BY ae.pw_userno;
         }
     }
     return New-QCSuccessResult -Code 'PW_USER_NUMBERS_OK' -Message "Found $($numbers.Count) unresolved user number(s)." -Data @{ numbers = $numbers }
+}
+
+function Get-QCPWUserIdentity {
+    <#
+    .SYNOPSIS
+    Returns pw_users identity for a ProjectWise user number (email preferred for display).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][int]$UserNumber
+    )
+    if ($UserNumber -le 0) {
+        return New-QCSuccessResult -Code 'PW_USER_IDENTITY_INVALID' -Message 'User number must be positive.' -Data @{ identity = $null }
+    }
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'PW_USER_IDENTITY_SKIPPED' -Message 'Database is disabled.' -Data @{ identity = $null }
+    }
+    $sql = @"
+SELECT pw_userno, pw_username, pw_user_email, display_name
+FROM pw_users
+WHERE pw_userno = @userno
+"@
+    $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters @{ userno = $UserNumber }
+    if (-not $res.IsSuccess) { return $res }
+    $table = $res.Data.table
+    if (-not $table -or $table.Rows.Count -eq 0) {
+        return New-QCSuccessResult -Code 'PW_USER_IDENTITY_NOT_FOUND' -Message 'User not in pw_users.' -Data @{ identity = $null; pwUserno = $UserNumber }
+    }
+    $row = $table.Rows[0]
+    $identity = @{
+        pw_userno = $UserNumber
+        pw_username = if ($row.IsNull('pw_username')) { '' } else { [string]$row['pw_username'] }
+        pw_user_email = if ($row.IsNull('pw_user_email')) { '' } else { [string]$row['pw_user_email'] }
+        display_name = if ($row.IsNull('display_name')) { '' } else { [string]$row['display_name'] }
+    }
+    return New-QCSuccessResult -Code 'PW_USER_IDENTITY_OK' -Message 'User identity resolved from pw_users.' -Data @{ identity = $identity; pwUserno = $UserNumber }
 }
 
 function Write-QCPWUserDirectory {
@@ -1900,6 +1949,7 @@ function Write-QCDocumentStateHistoryRow {
         [string]$NewValue = '',
         [string]$FieldName = '',
         [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
         [Nullable[long]]$SourceAuditId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
@@ -1911,9 +1961,9 @@ function Write-QCDocumentStateHistoryRow {
     try {
         $sql = @"
 INSERT INTO document_state_history
-    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user)
+    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user, changed_by_username)
 VALUES
-    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser)
+    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser, @changedByUsername)
 "@
         $params = @{
             documentGuid  = $DocumentGuid
@@ -1925,6 +1975,7 @@ VALUES
             newValue      = if ($NewValue) { $NewValue } else { $null }
             fieldName     = if ($FieldName) { $FieldName } else { $null }
             changedByUser = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
+            changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2024,7 +2075,9 @@ function Write-QCTransitionEvent {
         [string]$ToValue = '',
         [string]$JobId = '',
         [string]$JobType = '',
-        [Nullable[long]]$TriggerAuditId = $null
+        [Nullable[long]]$TriggerAuditId = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'TRANSITION_EVENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; transitionId = $null }
@@ -2035,10 +2088,10 @@ function Write-QCTransitionEvent {
     try {
         $sql = @"
 INSERT INTO transition_events
-    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type)
+    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type, changed_by_user, changed_by_username)
 OUTPUT INSERTED.id
 VALUES
-    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType)
+    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType, @changedByUser, @changedByUsername)
 "@
         $params = @{
             documentGuid   = $DocumentGuid
@@ -2050,6 +2103,8 @@ VALUES
             triggerAuditId = if ($null -ne $TriggerAuditId) { $TriggerAuditId } else { $null }
             jobId          = if ($JobId) { $JobId } else { $null }
             jobType        = if ($JobType) { $JobType } else { $null }
+            changedByUser  = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
+            changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
         }
         $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
         $transitionId = $null
@@ -2797,4 +2852,4 @@ function Update-QCProcessingJobHeartbeat {
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

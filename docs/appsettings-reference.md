@@ -368,7 +368,7 @@ Tables: `poll_runs`, `sheet_index`, `audit_events`, etc. — `docs/database-tele
 | Key | Default | Description |
 |-----|---------|-------------|
 | `bodyFormat` | `Html` | `Text` = plain body only; `Html` uses `email/templates/qc_notification.html`. |
-| `subjectTemplate` | `[{ReviewType}] {ProjectName} \| {DocumentName} \| {WorkflowState}` | Default email subject for all workflow states. Per-event `subjectTemplate` overrides this. |
+| `subjectTemplate` | `[{ReviewType}] {ProjectName} \| {DocumentName} \| {WorkflowState}` | Default email subject for all workflow states. Per-event `subjectTemplate` overrides this. Placeholders are case-sensitive; supported tokens: `{ReviewType}` / `{reviewType}`, `{ProjectName}` / `{project}`, `{DocumentName}` / `{documentName}`, `{WorkflowState}` / `{currentState}`, `{previousState}`, `{eventType}`, `{documentPath}`. |
 | `templatePath` | `email/templates/qc_notification.html` | Repo-relative HTML template. |
 | `logoPath` | `email/typsalogo.png.webp` | Inline attachment for Graph HTML sends. |
 | `environment` | `Production` | Shown in email footer when set. |

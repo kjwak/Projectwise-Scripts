@@ -259,9 +259,17 @@ function New-QCNotificationEmailTemplateData {
     if (_QCNT-IsBlank $assignedTo) { $assignedTo = '(not assigned)' }
 
     $submittedBy = ''
-    if ($Event.designers -and @($Event.designers).Count -gt 0) {
-        $submittedBy = (@($Event.designers) | Where-Object { -not (_QCNT-IsBlank $_) } | Select-Object -First 1)
-        if ($submittedBy) { $submittedBy = [string]$submittedBy }
+    if ($Event.submittedBy -and -not (_QCNT-IsBlank $Event.submittedBy)) {
+        $submittedBy = [string]$Event.submittedBy
+    }
+    elseif ($Config -and (Get-Command -Name 'Resolve-QCNotificationSubmittedBy' -ErrorAction SilentlyContinue)) {
+        $changedByUser = $null
+        if ($Event.ContainsKey('changedByUser') -and $null -ne $Event.changedByUser) {
+            try { $changedByUser = [int]$Event.changedByUser } catch { }
+        }
+        $changedByUsername = if ($Event.changedByUsername) { [string]$Event.changedByUsername } else { '' }
+        $submittedBy = Resolve-QCNotificationSubmittedBy -Config $Config -ChangedByUser $changedByUser `
+            -ChangedByUsername $changedByUsername
     }
     if (_QCNT-IsBlank $submittedBy) { $submittedBy = '(unknown)' }
 

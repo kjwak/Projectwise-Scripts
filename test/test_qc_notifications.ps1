@@ -11,6 +11,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Notifications.psm1" -Force
 Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
+Import-Module "$repoRoot/modules/QC.AuditTriggers.psm1" -Force
 
 $testRoot = Join-Path $env:TEMP ("qc-notify-test-" + [guid]::NewGuid().ToString('N'))
 $mockRoot = Join-Path $testRoot 'notifications'
@@ -209,5 +210,20 @@ $graphDry = Send-QCNotification -Event $event -Config $graphDryCfg -Subject 'Tes
 Assert-True $graphDry.IsSuccess 'Graph dry run with client secret should succeed'
 Assert-True $graphDry.Data.dryRun 'Graph dry run should set dryRun flag'
 Assert-Eq $graphDry.Code 'QC_NOTIFICATION_GRAPH_DRY_RUN' 'Graph dry run code'
+
+# SubmittedBy resolves state-change actor, not designer email
+$actorCfg = @{
+    auditPoller = @{
+        workflowTriggers = @{
+            automationPwUsernames = @('SVC_TYPSA_ARCHIVIST')
+            automationPwUserNumbers = @(42)
+        }
+    }
+}
+Assert-Eq (Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUsername 'jflint@typsa.com') `
+    'jflint@typsa.com' 'explicit username should win'
+Assert-Eq (Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser 42 -ChangedByUsername 'SVC_TYPSA_ARCHIVIST') `
+    'SVC_TYPSA_ARCHIVIST' 'automation actor should use service username'
+Assert-Eq (Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser 99) 'PW User 99' 'unknown user falls back to PW User n'
 
 Write-Host 'All QC notification tests passed.'
