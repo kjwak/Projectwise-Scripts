@@ -1222,6 +1222,18 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                         continue
                                     }
+                                    if (-not (_Watch-EnsureDiscoveryExports)) {
+                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (PW.Discovery exports unavailable).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        }
+                                        continue
+                                    }
+                                    if (-not (Get-Command -Name 'Test-PWSheetPdfHasMatchingPair' -ErrorAction SilentlyContinue)) {
+                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (Test-PWSheetPdfHasMatchingPair unavailable).' -Data @{
+                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        }
+                                        continue
+                                    }
                                     if (-not (Test-PWSheetPdfHasMatchingPair -FolderPath $fp -DocumentName $itemName -PairCache $auditSheetPairCache)) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (no matching DGN pair for sheet stem).' -Data @{
                                             path = ($fp + '\' + $itemName); actionName = $actionName
