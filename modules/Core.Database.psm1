@@ -2967,7 +2967,7 @@ function Set-QCPwFolderCacheEntry {
         [switch]$ResolveFailed
     )
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
-    $g = ([string]$FolderGuid).Trim()
+    $g = ([string]$FolderGuid).Trim().Trim('{}').ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($g)) { return }
     if ($TtlSeconds -lt 60) { $TtlSeconds = 60 }
     try {

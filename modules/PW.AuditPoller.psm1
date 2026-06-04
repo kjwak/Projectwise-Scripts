@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-parent-folder-guid-v1'
+$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v2'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -133,28 +133,162 @@ function _AuditPoller-GetPwObjectProperty {
     return $null
 }
 
+function _AuditPoller-NormalizeFolderGuidKey {
+    param([AllowNull()][string]$Guid)
+    $g = ([string]$Guid).Trim().Trim('{}').Trim()
+    if ([string]::IsNullOrWhiteSpace($g)) { return $null }
+    return $g.ToLowerInvariant()
+}
+
+function _AuditPoller-GetFolderGuidLookupVariants {
+    param([AllowNull()][string]$Guid)
+    $key = _AuditPoller-NormalizeFolderGuidKey -Guid $Guid
+    if (-not $key) { return @() }
+    $variants = [System.Collections.Generic.List[string]]::new()
+    $raw = ([string]$Guid).Trim()
+    [void]$variants.Add($raw)
+    [void]$variants.Add($key)
+    [void]$variants.Add('{' + $key + '}')
+    [void]$variants.Add($key.ToUpperInvariant())
+    [void]$variants.Add('{' + $key.ToUpperInvariant() + '}')
+    return @($variants | Select-Object -Unique)
+}
+
 function _AuditPoller-ExtractFolderPathFromPwFolder {
     param([object]$Folder)
     if ($null -eq $Folder) { return $null }
-    foreach ($prop in @('FolderPath', 'Path', 'FullPath')) {
+    if ($Folder -is [string]) {
+        $s = ([string]$Folder).Trim()
+        if ($s -match '\\') { return _AuditPoller-NormalizeFolderPath -FolderPath $s }
+        return $null
+    }
+    foreach ($prop in @(
+        'FolderPath', 'Path', 'FullPath', 'folderPath', 'CanonicalPath', 'PWPath',
+        'FullName', 'Name', 'FolderName', 'ParentPath', 'DocumentPath'
+    )) {
         $v = _AuditPoller-GetPwObjectProperty -Object $Folder -Name $prop
         if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
-            return _AuditPoller-NormalizeFolderPath -FolderPath ([string]$v)
+            $s = [string]$v
+            if ($prop -in @('Name', 'FolderName') -and $s -notmatch '\\') { continue }
+            $norm = _AuditPoller-NormalizeFolderPath -FolderPath $s
+            if ($norm) { return $norm }
         }
     }
+    try {
+        if ($Folder.PSObject) {
+            foreach ($p in $Folder.PSObject.Properties) {
+                $n = [string]$p.Name
+                if ($n -match '(?i)path|folder') {
+                    $v = $p.Value
+                    if ($null -ne $v -and "$v" -match '\\') {
+                        $norm = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$v)
+                        if ($norm) { return $norm }
+                    }
+                }
+            }
+        }
+    } catch { }
     return $null
 }
 
 function _AuditPoller-ExtractFolderGuidFromPwFolder {
     param([object]$Folder)
     if ($null -eq $Folder) { return $null }
-    foreach ($prop in @('FolderGUID', 'GUID', 'ObjectGUID', 'o_objguid')) {
+    if ($Folder -is [string]) { return $null }
+    foreach ($prop in @('FolderGUID', 'GUID', 'ObjectGUID', 'o_objguid', 'folderGUID', 'FolderGuid')) {
         $v = _AuditPoller-GetPwObjectProperty -Object $Folder -Name $prop
         if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
-            return ([string]$v).Trim()
+            return ([string]$v).Trim().Trim('{}')
         }
     }
     return $null
+}
+
+function _AuditPoller-TryApplyFolderLookup {
+    param(
+        [hashtable]$Config,
+        [string]$RequestedGuid,
+        [object]$FolderObject,
+        [hashtable]$ParentToFolder,
+        [hashtable]$FoundByGuid,
+        [ref]$StatsRef
+    )
+    $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $FolderObject
+    if (-not $fp) { return $false }
+    $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $FolderObject
+    $reqKey = _AuditPoller-NormalizeFolderGuidKey -Guid $RequestedGuid
+    $keys = [System.Collections.Generic.List[string]]::new()
+    if ($reqKey) { [void]$keys.Add($reqKey) }
+    if ($fg) { [void]$keys.Add((_AuditPoller-NormalizeFolderGuidKey -Guid $fg)) }
+    foreach ($k in @($keys | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($k)) { continue }
+        $FoundByGuid[$k] = $fp
+        _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $k -FolderPath $fp -StatsRef $StatsRef
+        if ($RequestedGuid) { $ParentToFolder[$RequestedGuid] = $fp }
+        foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $RequestedGuid)) {
+            if (-not [string]::IsNullOrWhiteSpace($v)) { $ParentToFolder[$v] = $fp }
+        }
+    }
+    return ($reqKey -and $FoundByGuid.ContainsKey($reqKey))
+}
+
+function _AuditPoller-FetchPwFoldersForGuidChunk {
+    param([string[]]$ChunkGuids)
+
+    $byKey = @{}
+    $list = [System.Collections.Generic.List[object]]::new()
+    $guidArgs = [System.Collections.Generic.List[string]]::new()
+    foreach ($g in @($ChunkGuids)) {
+        foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $g)) {
+            if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$guidArgs.Add($v) }
+        }
+    }
+    $uniqueArgs = @($guidArgs | Select-Object -Unique)
+    if ($uniqueArgs.Count -eq 0) { return $byKey }
+
+    if (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) {
+        try {
+            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction SilentlyContinue)
+            foreach ($f in $folders) { if ($f) { [void]$list.Add($f) } }
+        } catch { }
+    }
+
+    if ($list.Count -eq 0 -and (Get-Command -Name 'Get-PWFoldersHashTableByGuid' -ErrorAction SilentlyContinue)) {
+        try {
+            $ht = Get-PWFoldersHashTableByGuid -FolderGUIDs $uniqueArgs -ErrorAction SilentlyContinue
+            if ($ht) {
+                foreach ($k in @($ht.Keys)) {
+                    $val = $ht[$k]
+                    if ($val) {
+                        [void]$list.Add($val)
+                        $nk = _AuditPoller-NormalizeFolderGuidKey -Guid ([string]$k)
+                        if ($nk) { $byKey[$nk] = $val }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    foreach ($f in $list) {
+        $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
+        $nk = _AuditPoller-NormalizeFolderGuidKey -Guid $fg
+        if ($nk) { $byKey[$nk] = $f }
+    }
+
+    foreach ($req in @($ChunkGuids)) {
+        $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $req
+        if (-not $rk) { continue }
+        if ($byKey.ContainsKey($rk)) { continue }
+        foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $req)) {
+            $vk = _AuditPoller-NormalizeFolderGuidKey -Guid $v
+            if ($vk -and $byKey.ContainsKey($vk)) {
+                $byKey[$rk] = $byKey[$vk]
+                break
+            }
+        }
+    }
+
+    return $byKey
 }
 
 function _AuditPoller-RegisterFolderGuidPath {
@@ -166,7 +300,8 @@ function _AuditPoller-RegisterFolderGuidPath {
         [ref]$StatsRef = $null
     )
     if ([string]::IsNullOrWhiteSpace($FolderGuid) -or [string]::IsNullOrWhiteSpace($FolderPath)) { return }
-    $key = $FolderGuid.Trim().ToLowerInvariant()
+    $key = _AuditPoller-NormalizeFolderGuidKey -Guid $FolderGuid
+    if (-not $key) { return }
     $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
     if (-not $canonical) { return }
     $script:AuditPoller_FolderGuidCache[$key] = $canonical
@@ -221,7 +356,7 @@ function _AuditPoller-ResolveParentFoldersBatched {
                         if ($canonical) {
                             $script:AuditPoller_FolderGuidCache[$k] = $canonical
                             foreach ($pg in @($ParentGuids)) {
-                                if ($pg.Trim().ToLowerInvariant() -eq $k) { $ParentToFolder[$pg] = $canonical; break }
+                                if ((_AuditPoller-NormalizeFolderGuidKey -Guid $pg) -eq $k) { $ParentToFolder[$pg] = $canonical; break }
                             }
                             if ($StatsRef.Value) { $StatsRef.Value.parentFolderGuidCacheHits++ }
                         }
@@ -249,45 +384,53 @@ function _AuditPoller-ResolveParentFoldersBatched {
         if ($StatsRef.Value) { $StatsRef.Value.parentFolderGuidCacheMisses++ }
     }
 
-    if (-not (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue)) {
-        return
-    }
+    $canResolveFolders = (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) -or
+        (Get-Command -Name 'Get-PWFoldersHashTableByGuid' -ErrorAction SilentlyContinue)
+    if (-not $canResolveFolders) { return }
 
     $batchSize = 200
     for ($i = 0; $i -lt $needPw.Count; $i += $batchSize) {
         $chunk = @($needPw[$i..[Math]::Min($i + $batchSize - 1, $needPw.Count - 1)])
         try {
-            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $chunk -ErrorAction SilentlyContinue)
-            $found = @{}
-            foreach ($folder in $folders) {
-                $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $folder
-                $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $folder
-                if ($fg -and $fp) {
-                    $found[$fg] = $fp
-                    _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $fg -FolderPath $fp -StatsRef $StatsRef
-                    foreach ($pg in $chunk) {
-                        if ($pg.Trim().ToLowerInvariant() -eq $fg.Trim().ToLowerInvariant()) {
-                            $ParentToFolder[$pg] = $fp
-                        }
-                    }
-                }
+            $folderByKey = _AuditPoller-FetchPwFoldersForGuidChunk -ChunkGuids $chunk
+            $foundByGuid = @{}
+            foreach ($pg in $chunk) {
+                $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $pg
+                if (-not $rk) { continue }
+                $folderObj = $null
+                if ($folderByKey.ContainsKey($rk)) { $folderObj = $folderByKey[$rk] }
+                if (-not $folderObj) { continue }
+                [void](_AuditPoller-TryApplyFolderLookup -Config $Config -RequestedGuid $pg -FolderObject $folderObj `
+                    -ParentToFolder $ParentToFolder -FoundByGuid $foundByGuid -StatsRef $StatsRef)
             }
             foreach ($pg in $chunk) {
-                $key = $pg.Trim().ToLowerInvariant()
-                $matched = $false
-                foreach ($fk in $found.Keys) {
-                    if ($fk.Trim().ToLowerInvariant() -eq $key) { $matched = $true; break }
+                if ($ParentToFolder.ContainsKey($pg)) { continue }
+                $key = _AuditPoller-NormalizeFolderGuidKey -Guid $pg
+                if (-not $key) { continue }
+                $hadPwObject = $folderByKey.ContainsKey($key)
+                $script:AuditPoller_UnresolvedFolderGuids[$key] = $true
+                if (Get-Command -Name 'Set-QCPwFolderCacheEntry' -ErrorAction SilentlyContinue) {
+                    Set-QCPwFolderCacheEntry -Config $Config -FolderGuid $pg -ResolveFailed -TtlSeconds $negTtlSeconds | Out-Null
                 }
-                if (-not $matched -and -not $ParentToFolder.ContainsKey($pg)) {
-                    $script:AuditPoller_UnresolvedFolderGuids[$key] = $true
-                    if (Get-Command -Name 'Set-QCPwFolderCacheEntry' -ErrorAction SilentlyContinue) {
-                        Set-QCPwFolderCacheEntry -Config $Config -FolderGuid $pg -ResolveFailed -TtlSeconds $negTtlSeconds | Out-Null
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    $logCode = if ($hadPwObject) { 'AUDIT_FOLDER_GUID_NO_PATH' } else { 'AUDIT_FOLDER_GUID_NOT_FOUND' }
+                    Write-QCJsonLog -Flush -Level 'Warning' -Code $logCode -Message "Could not resolve folder path for parent GUID $pg." -Data @{
+                        folderGuid = $pg
+                        hadPwObject = $hadPwObject
+                        logicVersion = $script:AuditPollerLogicVersion
                     }
                 }
             }
         } catch {
             foreach ($pg in $chunk) {
-                $script:AuditPoller_UnresolvedFolderGuids[$pg.Trim().ToLowerInvariant()] = $true
+                $nk = _AuditPoller-NormalizeFolderGuidKey -Guid $pg
+                if ($nk) { $script:AuditPoller_UnresolvedFolderGuids[$nk] = $true }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_FOLDER_GUID_RESOLVE_ERROR' -Message $_.Exception.Message -Data @{
+                    folderGuids = @($chunk)
+                    logicVersion = $script:AuditPollerLogicVersion
+                }
             }
         }
     }
