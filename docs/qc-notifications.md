@@ -53,7 +53,14 @@ Configured under `notifications.events` keyed by **current workflow state name**
 
 ## Deduplication
 
-When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key. Default fields: `documentGuid`, `eventType`, `currentState`. When an audit or workflow path supplies `stateTransitionKey` (audit event id, `transition_events` row id, or user+timestamp+document), that value is **always appended** to the dedupe key so a **new** human transition to the same state (e.g. Redlines Received on a second QC cycle) can send email again. Duplicate notify attempts on the **same** audit event still dedupe. Keys are stored in `notifications/dedupe/sent-keys.jsonl`.
+When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key.
+
+- If `transitionId` is supplied (from `transition_events`), the dedupe key is `transition:{id}` — **one email per transition row**.
+- Otherwise the key uses `stateTransitionKey` (e.g. `audit:38268`), then `sheetStem`, `eventType`, `previousState`, `currentState` so a **later QC cycle** to the same target state can email again.
+- `transition_events.notification_sent` is set to `1` only after a **successful** send. `notification_sent = 0` means no successful email yet (not “deduped forever”).
+- Pending transitions (`notification_sent = 0`) are not blocked by older `sent-keys.jsonl` entries that used sheet-only keys.
+
+Keys are stored in `notifications/dedupe/sent-keys.jsonl` and `notification_log`.
 
 ## Missing email attributes on state change
 

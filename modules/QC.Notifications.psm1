@@ -1085,7 +1085,8 @@ function Get-QCNotificationDedupeKey {
     }
 
     $dedupe = _QCN-ToHashtable $Settings.dedupe
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('sheetStem', 'eventType', 'previousState', 'currentState') }
+    # stateTransitionKey (audit:/transition:) allows a new email each QC cycle; transitionId scopes one row.
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('stateTransitionKey', 'sheetStem', 'eventType', 'previousState', 'currentState') }
 
     if (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
         $stem = ''
@@ -1147,13 +1148,14 @@ function Test-QCNotificationDedupe {
     $dedupe = _QCN-ToHashtable $Settings.dedupe
     if (-not $dedupe -or -not [bool]$dedupe.enabled) { return $false }
 
+    $transitionAlreadySent = $false
     if ($null -ne $TransitionId -and $TransitionId -gt 0) {
         if ($Config -and (Get-Command -Name 'Test-QCTransitionEventNotificationSent' -ErrorAction SilentlyContinue)) {
             try {
-                if (Test-QCTransitionEventNotificationSent -Config $Config -TransitionId $TransitionId) { return $true }
+                if (Test-QCTransitionEventNotificationSent -Config $Config -TransitionId $TransitionId) { $transitionAlreadySent = $true }
             } catch { }
         }
-        if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+        if (-not $transitionAlreadySent -and $Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
             try {
                 if (Test-QCDatabaseEnabled -Config $Config) {
                     $tidRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
@@ -1162,11 +1164,13 @@ FROM notification_log
 WHERE transition_id = @transitionId AND success = 1
 "@ -Parameters @{ transitionId = $TransitionId }
                     if ($tidRes.IsSuccess -and $tidRes.Data.table -and $tidRes.Data.table.Rows.Count -gt 0) {
-                        return $true
+                        $transitionAlreadySent = $true
                     }
                 }
             } catch { }
         }
+        if ($transitionAlreadySent) { return $true }
+        # Pending transition (notification_sent=0): do not block on legacy jsonl keys from sheet-only dedupe.
     }
 
     if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {

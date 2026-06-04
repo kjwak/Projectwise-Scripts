@@ -157,6 +157,13 @@ function _QCW-InvokeStateChangeNotification {
                         if ($ctxTid -gt 0) { $eventForDedupe['transitionId'] = $ctxTid }
                     } catch { }
                 }
+                $stKeyForDedupe = $null
+                if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
+                    $stKeyForDedupe = [string]$Context.stateTransitionKey
+                } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.ContainsKey('stateTransitionKey') -and $job.metadata.stateTransitionKey) {
+                    $stKeyForDedupe = [string]$job.metadata.stateTransitionKey
+                }
+                if (-not (_QCW-IsNullOrWhiteSpace $stKeyForDedupe)) { $eventForDedupe['stateTransitionKey'] = $stKeyForDedupe }
                 $dedupeKey = Get-QCNotificationDedupeKey -Event $eventForDedupe -Settings $notifSettings -Config $Config
             } catch { }
         }
@@ -169,6 +176,8 @@ function _QCW-InvokeStateChangeNotification {
         $wfTransitionKey = $null
         if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
             $wfTransitionKey = [string]$Context.stateTransitionKey
+        } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.ContainsKey('stateTransitionKey') -and $job.metadata.stateTransitionKey) {
+            $wfTransitionKey = [string]$job.metadata.stateTransitionKey
         } elseif ($job -and $job.id) {
             $wfTransitionKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
         }
@@ -268,6 +277,8 @@ function _QCW-InvokeStateChangeNotification {
         $stKey = $null
         if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
             $stKey = [string]$Context.stateTransitionKey
+        } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.ContainsKey('stateTransitionKey') -and $job.metadata.stateTransitionKey) {
+            $stKey = [string]$job.metadata.stateTransitionKey
         } elseif ($job -and $job.id) {
             $stKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
         }

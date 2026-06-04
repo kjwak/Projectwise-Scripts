@@ -516,6 +516,8 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if (-not (_QCP-IsNullOrWhiteSpace $triggerGuid)) { $ctx['documentGuid'] = [string]$triggerGuid }
     $triggerName = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentName')
     if (-not (_QCP-IsNullOrWhiteSpace $triggerName)) { $ctx['documentName'] = [string]$triggerName }
+    $stKey = _QCP-GetJobMetadataValue -Job $Job -Keys @('stateTransitionKey')
+    if (-not (_QCP-IsNullOrWhiteSpace $stKey)) { $ctx['stateTransitionKey'] = [string]$stKey }
 
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
