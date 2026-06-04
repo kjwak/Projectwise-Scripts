@@ -1988,6 +1988,7 @@ function Write-QCDocumentStateHistoryRow {
     if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
         return New-QCSuccessResult -Code 'STATE_HISTORY_PLANNED' -Message 'Dry-run: state history not written.' -Data @{ written = $false; planned = $true }
     }
+    $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
     try {
         $sql = @"
 INSERT INTO document_state_history
@@ -2115,6 +2116,7 @@ function Write-QCTransitionEvent {
     if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
         return New-QCSuccessResult -Code 'TRANSITION_EVENT_PLANNED' -Message 'Dry-run: transition event not written.' -Data @{ written = $false; planned = $true; transitionId = $null }
     }
+    $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
     try {
         $sql = @"
 INSERT INTO transition_events
@@ -2197,6 +2199,7 @@ function Write-QCNotificationTelemetry {
         [Nullable[int]]$TransitionId
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'NOTIFICATION_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
+    $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
     try {
         $sql = @"
 INSERT INTO notification_log
@@ -2263,6 +2266,7 @@ function Write-QCSheetIndex {
     if ([string]::IsNullOrWhiteSpace($DocumentGuid) -or $DocumentGuid.Trim().Length -lt 5) {
         return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'document_guid is missing or too short for a ProjectWise GUID.' -Data @{ written = $false; documentGuid = $DocumentGuid }
     }
+    $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
     if (-not (Test-QCSheetIndexFolderPath -FolderPath $FolderPath)) {
         return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'folder_path is outside CADD/Sheets; sheet_index tracks Sheets folders only.' -Data @{ written = $false; folderPath = $FolderPath }
     }
@@ -2427,7 +2431,12 @@ function Write-QCSheetIndexBatch {
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'POLL_RUN_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     if (-not $Rows -or $Rows.Count -eq 0) { return }
-    $Rows = @($Rows | Where-Object {
+    $Rows = @($Rows | ForEach-Object {
+        $row = $_
+        $fp = if ($row.folderPath) { _QDB-NormalizeTelemetryPath -Path ([string]$row.folderPath) } else { $null }
+        if ($fp) { $row.folderPath = $fp }
+        $row
+    } | Where-Object {
         $g = if ($_.documentGuid) { [string]$_.documentGuid } else { '' }
         $fp = if ($_.folderPath) { [string]$_.folderPath } else { '' }
         -not [string]::IsNullOrWhiteSpace($g) -and $g.Trim().Length -ge 5 -and (Test-QCSheetIndexFolderPath -FolderPath $fp)
@@ -2613,6 +2622,8 @@ function Update-QCAuditEventsResolvedFolders {
         $folder = [string]$u.resolvedFolder
         $ctype = if ($u.candidateType) { [string]$u.candidateType } else { $null }
         if ([string]::IsNullOrWhiteSpace($folder)) { continue }
+        $folder = _QDB-NormalizeTelemetryPath -Path $folder
+        if ([string]::IsNullOrWhiteSpace($folder)) { continue }
         try {
             $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE audit_events
@@ -2670,7 +2681,7 @@ function Upsert-QCDocumentActivityFolder {
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
     $g = ([string]$DocumentGuid).Trim()
     if ([string]::IsNullOrWhiteSpace($g)) { return }
-    $fp = ([string]$FolderPath).Trim()
+    $fp = _QDB-NormalizeTelemetryPath -Path $FolderPath
     if ([string]::IsNullOrWhiteSpace($fp)) { return }
     try {
         [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"

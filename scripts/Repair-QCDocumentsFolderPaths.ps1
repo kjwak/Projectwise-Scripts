@@ -3,23 +3,31 @@
 Normalize folder paths in QC_Pipeline tables to canonical documents\... form.
 
 .DESCRIPTION
-Uses Normalize-QCDocumentsFolderPath (same rules as new jobs and processing_jobs telemetry).
-Safer than raw SQL when paths include pw: URIs or unusual casing.
-
-.PARAMETER AppSettingsPath
-Path to appsettings.json (for connection string).
+Uses Normalize-QCDocumentsFolderPath (same rules as queue jobs and DB writers).
+Repairs base tables; views v_qc_cycle_aging and v_folder_activity update automatically.
 
 .PARAMETER Table
-processing_jobs (default), sheet_index, audit_events, or all.
+Which tables to repair. "telemetry" = state/transition/notification/audit views sources.
+"all" includes processing_jobs, sheet_index, document_activity.
 
 .PARAMETER WhatIf
-Report row counts only; do not update.
+Report changes only; do not update.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$AppSettingsPath = '',
-    [ValidateSet('processing_jobs', 'sheet_index', 'audit_events', 'all')]
-    [string]$Table = 'processing_jobs',
+    [ValidateSet(
+        'processing_jobs',
+        'sheet_index',
+        'audit_events',
+        'document_state_history',
+        'notification_log',
+        'transition_events',
+        'document_activity',
+        'telemetry',
+        'all'
+    )]
+    [string]$Table = 'telemetry',
     [switch]$WhatIf
 )
 
@@ -72,18 +80,43 @@ function _Repair-Column {
     Write-Host "$TableName.$PathColumn : $($dt.Rows.Count) rows scanned, $changed to update" -ForegroundColor Cyan
 }
 
-$targets = @()
+$targets = [System.Collections.Generic.List[hashtable]]::new()
+
+function _AddTarget($t, $k, $p) {
+    [void]$targets.Add(@{ t = $t; k = $k; p = $p })
+}
+
 switch ($Table) {
-    'processing_jobs' { $targets += @{ t = 'processing_jobs'; k = 'job_id'; p = 'source_folder' }; $targets += @{ t = 'processing_jobs'; k = 'job_id'; p = 'source_path' } }
-    'sheet_index'     { $targets += @{ t = 'sheet_index'; k = 'document_guid'; p = 'folder_path' } }
-    'audit_events'    { $targets += @{ t = 'audit_events'; k = 'id'; p = 'resolved_folder' } }
+    'processing_jobs' {
+        _AddTarget 'processing_jobs' 'job_id' 'source_folder'
+        _AddTarget 'processing_jobs' 'job_id' 'source_path'
+    }
+    'sheet_index'         { _AddTarget 'sheet_index' 'document_guid' 'folder_path' }
+    'audit_events'        { _AddTarget 'audit_events' 'id' 'resolved_folder' }
+    'document_state_history' { _AddTarget 'document_state_history' 'id' 'folder_path' }
+    'notification_log'    { _AddTarget 'notification_log' 'id' 'folder_path' }
+    'transition_events'   { _AddTarget 'transition_events' 'id' 'folder_path' }
+    'document_activity'   { _AddTarget 'document_activity' 'document_guid' 'folder_path' }
+    'telemetry' {
+        _AddTarget 'document_state_history' 'id' 'folder_path'
+        _AddTarget 'notification_log' 'id' 'folder_path'
+        _AddTarget 'transition_events' 'id' 'folder_path'
+        _AddTarget 'audit_events' 'id' 'resolved_folder'
+    }
     'all' {
-        $targets += @{ t = 'processing_jobs'; k = 'job_id'; p = 'source_folder' }
-        $targets += @{ t = 'processing_jobs'; k = 'job_id'; p = 'source_path' }
-        $targets += @{ t = 'sheet_index'; k = 'document_guid'; p = 'folder_path' }
-        $targets += @{ t = 'audit_events'; k = 'id'; p = 'resolved_folder' }
+        _AddTarget 'processing_jobs' 'job_id' 'source_folder'
+        _AddTarget 'processing_jobs' 'job_id' 'source_path'
+        _AddTarget 'sheet_index' 'document_guid' 'folder_path'
+        _AddTarget 'audit_events' 'id' 'resolved_folder'
+        _AddTarget 'document_state_history' 'id' 'folder_path'
+        _AddTarget 'notification_log' 'id' 'folder_path'
+        _AddTarget 'transition_events' 'id' 'folder_path'
+        _AddTarget 'document_activity' 'document_guid' 'folder_path'
     }
 }
+
+Write-Host "Repair table scope: $Table ($($targets.Count) column targets)" -ForegroundColor Green
+Write-Host "Views v_qc_cycle_aging / v_folder_activity are not updated directly (derived from base tables)." -ForegroundColor Yellow
 
 foreach ($tgt in $targets) {
     _Repair-Column -Config $config -TableName $tgt.t -KeyColumn $tgt.k -PathColumn $tgt.p

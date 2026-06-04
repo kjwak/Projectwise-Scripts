@@ -117,12 +117,12 @@ Maps ProjectWise `pw_userno` to login and email (resolved via `Select-PWSQL` on 
 Enriched per-document summary, upserted on each event. Keyed by `document_guid` (unique constraint).
 
 ### `document_state_history`
-Time-series of state and attribute changes per document. Used by `v_qc_cycle_aging` for QC duration tracking.
+Time-series of state and attribute changes per document. Used by `v_qc_cycle_aging` for QC duration tracking. `folder_path` is stored in canonical `documents\...` form via `Normalize-QCDocumentsFolderPath` on insert.
 
 **Population:** `Write-QCDocumentStateHistoryRow` from `QC.AuditTriggers.psm1` when audit `DOCUMENT_STATE` or `DOCUMENT_ATTR` events produce real diffs (see `auditPoller.workflowTriggers`).
 
 ### `transition_events`
-Business-level events (QC stage changes, attribute changes). Links to notifications via `notification_log.transition_id`.
+Business-level events (QC stage changes, attribute changes). Links to notifications via `notification_log.transition_id`. `folder_path` uses the same canonical normalization as `document_state_history`.
 
 **Population:** `Write-QCTransitionEvent` from audit workflow triggers and processor telemetry; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on `*-qc.pdf`. When PW already shows the new state before sibling sync runs, `_PWD-InvokeStaleSheetIndexAuditStateTriggers` compares `sheet_index.pw_state_name` to the canonical state and records the transition anyway.
 
@@ -154,7 +154,9 @@ Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (m
 | `result_data` | NVARCHAR(MAX) | JSON result payload |
 
 ### `notification_log`
-Tracks sent notifications with dedupe keys.
+Tracks sent notifications with dedupe keys. `folder_path` is normalized on insert.
+
+**Folder path canonical form:** lowercase `documents\<project>\...` (see `Normalize-QCDocumentsFolderPath` in `Core.Paths.psm1`). Repair existing rows: `scripts/sql/normalize-documents-folder-paths.sql` or `scripts/Repair-QCDocumentsFolderPaths.ps1 -Table all`.
 
 ### `sheet_index`
 Indexes all documents in watched `CADD\Sheets` folders. Supports project status reporting, QC PDF pairing, and ownership tracking.
@@ -183,8 +185,10 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 
 | View | Purpose |
 |------|---------|
-| `v_qc_cycle_aging` | Documents in QC with duration since `QC Received` state |
-| `v_folder_activity` | Folder event counts and last activity (7-day window) |
+| `v_qc_cycle_aging` | Documents in QC with duration since `QC Received` state (reads `document_state_history.folder_path`) |
+| `v_folder_activity` | Folder event counts and last activity, 7-day window (reads `audit_events.resolved_folder`) |
+
+Fix path inconsistencies in the **base tables**; views reflect those columns automatically.
 | `v_poller_health` | Last 100 poll runs with status and watermark |
 | `v_job_summary` | Job counts by type and status with average duration |
 | `v_sheet_status` | Project status overview of all indexed sheets |
