@@ -1,284 +1,185 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{NotificationTitle}</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{NotificationTitle}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <![endif]-->
 </head>
-
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:'Segoe UI',Arial,sans-serif;">
-
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-<tr>
-<td align="center" style="padding:30px 15px;">
-
-<table role="presentation" width="650" cellpadding="0" cellspacing="0" border="0"
-       style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
-
-    <!-- Header -->
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Segoe UI,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;color:#1f2328;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f4f5f7;margin:0;padding:0;">
     <tr>
-        <td style="background:#bf1425;padding:20px 30px;">
-            <table width="100%">
+      <td align="center" style="padding:32px 12px;">
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px;width:100%;background-color:#ffffff;border:1px solid #dde1e6;border-radius:8px;overflow:hidden;">
+
+          <!-- Header: understated logo treatment -->
+          <tr>
+            <td style="padding:28px 32px 20px 32px;background-color:#ffffff;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                 <tr>
-                    <td align="left">
-                        <img src="cid:typsa-logo"
-                             alt="TYPSA"
-                             width="120"
-                             style="display:block;">
-                    </td>
-
-                    <td align="right"
-                        style="color:#ffffff;
-                               font-size:18px;
-                               font-weight:600;
-                               letter-spacing:.5px;">
-                        ProjectWise QC Workflow
-                    </td>
+                  <td align="left" style="vertical-align:middle;">
+                    <img src="cid:typsa-logo" alt="TYPSA" width="120" style="display:block;border:0;outline:none;text-decoration:none;max-width:120px;height:auto;" />
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-size:13px;line-height:1.4;color:#6b7280;font-weight:600;letter-spacing:.4px;text-transform:uppercase;">
+                    ProjectWise QC Workflow
+                  </td>
                 </tr>
-            </table>
-        </td>
-    </tr>
+              </table>
+            </td>
+          </tr>
 
-    <!-- Status Banner -->
-    <tr>
-        <td style="padding:30px 30px 10px 30px;">
+          <!-- Thin divider -->
+          <tr>
+            <td style="padding:0 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="height:1px;background-color:#e5e7eb;font-size:1px;line-height:1px;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
 
-            <div style="
-                display:inline-block;
-                background:#f8e6e8;
-                color:#bf1425;
-                padding:6px 14px;
-                border-radius:20px;
-                font-size:12px;
-                font-weight:700;
-                text-transform:uppercase;
-                letter-spacing:.75px;">
-
+          <!-- Title / message -->
+          <tr>
+            <td style="padding:28px 32px 14px 32px;">
+              <div style="display:inline-block;background-color:#f7f7f8;border:1px solid #e5e7eb;color:#374151;font-size:12px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;padding:6px 12px;border-radius:999px;">
                 {WorkflowState}
+              </div>
 
-            </div>
-
-            <h1 style="
-                margin:18px 0 10px 0;
-                color:#222;
-                font-size:28px;
-                font-weight:600;
-                line-height:1.2;">
-
+              <h1 style="margin:18px 0 10px 0;font-size:26px;line-height:1.25;color:#111827;font-weight:650;">
                 {NotificationTitle}
+              </h1>
 
-            </h1>
-
-            <p style="
-                margin:0;
-                font-size:16px;
-                line-height:1.6;
-                color:#555;">
-
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#4b5563;">
                 {NotificationMessage}
+              </p>
+            </td>
+          </tr>
 
-            </p>
-
-        </td>
-    </tr>
-
-    <!-- Summary Cards -->
-    <tr>
-        <td style="padding:25px 30px;">
-
-            <table width="100%">
+          <!-- Summary cards -->
+          <tr>
+            <td style="padding:18px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                 <tr>
-
-                    <td width="33%"
-                        style="
-                        background:#fafafa;
-                        border:1px solid #ececec;
-                        padding:18px;
-                        vertical-align:top;">
-
-                        <div style="font-size:11px;
-                                    font-weight:700;
-                                    color:#888;
-                                    letter-spacing:1px;">
-                            PROJECT
-                        </div>
-
-                        <div style="margin-top:8px;
-                                    font-size:15px;
-                                    color:#222;
-                                    font-weight:600;">
-                            {ProjectName}
-                        </div>
-
-                    </td>
-
-                    <td width="2%"></td>
-
-                    <td width="33%"
-                        style="
-                        background:#fafafa;
-                        border:1px solid #ececec;
-                        padding:18px;
-                        vertical-align:top;">
-
-                        <div style="font-size:11px;
-                                    font-weight:700;
-                                    color:#888;
-                                    letter-spacing:1px;">
-                            DOCUMENT
-                        </div>
-
-                        <div style="margin-top:8px;
-                                    font-size:15px;
-                                    color:#222;
-                                    font-weight:600;">
-                            {DocumentName}
-                        </div>
-
-                    </td>
-
-                    <td width="2%"></td>
-
-                    <td width="30%"
-                        style="
-                        background:#fafafa;
-                        border:1px solid #ececec;
-                        padding:18px;
-                        vertical-align:top;">
-
-                        <div style="font-size:11px;
-                                    font-weight:700;
-                                    color:#888;
-                                    letter-spacing:1px;">
-                            REVIEW TYPE
-                        </div>
-
-                        <div style="margin-top:8px;
-                                    font-size:15px;
-                                    color:#222;
-                                    font-weight:600;">
-                            {ReviewType}
-                        </div>
-
-                    </td>
-
+                  <td width="32%" style="vertical-align:top;background-color:#fafafa;border:1px solid #e5e7eb;border-radius:6px;padding:16px 14px;">
+                    <div style="font-size:11px;line-height:1.3;color:#6b7280;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">Project</div>
+                    <div style="margin-top:8px;font-size:14px;line-height:1.4;color:#111827;font-weight:600;word-break:break-word;">{ProjectName}</div>
+                  </td>
+                  <td width="2%" style="font-size:1px;line-height:1px;">&nbsp;</td>
+                  <td width="32%" style="vertical-align:top;background-color:#fafafa;border:1px solid #e5e7eb;border-radius:6px;padding:16px 14px;">
+                    <div style="font-size:11px;line-height:1.3;color:#6b7280;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">Document</div>
+                    <div style="margin-top:8px;font-size:14px;line-height:1.4;color:#111827;font-weight:600;word-break:break-word;">{DocumentName}</div>
+                  </td>
+                  <td width="2%" style="font-size:1px;line-height:1px;">&nbsp;</td>
+                  <td width="32%" style="vertical-align:top;background-color:#fafafa;border:1px solid #e5e7eb;border-radius:6px;padding:16px 14px;">
+                    <div style="font-size:11px;line-height:1.3;color:#6b7280;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">Review Type</div>
+                    <div style="margin-top:8px;font-size:14px;line-height:1.4;color:#111827;font-weight:600;word-break:break-word;">{ReviewType}</div>
+                  </td>
                 </tr>
-            </table>
+              </table>
+            </td>
+          </tr>
 
-        </td>
-    </tr>
-
-    <!-- Action Required -->
-    <tr>
-        <td style="padding:0 30px 25px 30px;">
-
-            <div style="
-                border-left:4px solid #bf1425;
-                background:#fafafa;
-                padding:18px 20px;">
-
-                <div style="
-                    font-size:12px;
-                    font-weight:700;
-                    color:#888;
-                    letter-spacing:1px;">
-
-                    ACTION REQUIRED
-
-                </div>
-
-                <div style="
-                    margin-top:8px;
-                    font-size:16px;
-                    color:#222;">
-
-                    Assigned to <strong>{AssignedTo}</strong>
-
-                </div>
-
-            </div>
-
-        </td>
-    </tr>
-
-    <!-- Button -->
-    <tr>
-        <td align="center" style="padding:10px 30px 35px 30px;">
-
-            <a href="{QCPdfUrl}"
-               style="
-               display:inline-block;
-               background:#bf1425;
-               color:#ffffff;
-               text-decoration:none;
-               padding:18px 42px;
-               border-radius:4px;
-               font-size:17px;
-               font-weight:700;">
-
-               Open Review Package
-
-            </a>
-
-        </td>
-    </tr>
-
-    <!-- Details -->
-    <tr>
-        <td style="padding:0 30px 30px 30px;">
-
-            <table width="100%"
-                   style="
-                   border-top:1px solid #ececec;
-                   padding-top:20px;
-                   font-size:14px;">
-
+          <!-- Action required: option 5 watermark/accent style -->
+          <tr>
+            <td style="padding:20px 32px 10px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#fafafa;border:1px solid #e5e7eb;border-left:4px solid #bf1425;border-radius:6px;">
                 <tr>
-                    <td style="padding:6px 0;color:#666;">Submitted By</td>
-                    <td align="right">{SubmittedBy}</td>
+                  <td style="padding:18px 20px;">
+                    <div style="font-size:11px;line-height:1.3;color:#6b7280;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">Action Required</div>
+                    <div style="margin-top:8px;font-size:16px;line-height:1.5;color:#111827;">
+                      Current owner: <strong>{AssignedTo}</strong>
+                    </div>
+                    <div style="margin-top:4px;font-size:14px;line-height:1.5;color:#4b5563;">
+                      Open the review package and complete the next QC workflow action.
+                    </div>
+                  </td>
                 </tr>
+              </table>
+            </td>
+          </tr>
 
+          <!-- Primary CTA -->
+          <tr>
+            <td align="center" style="padding:24px 32px 24px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
                 <tr>
-                    <td style="padding:6px 0;color:#666;">Submitted Date</td>
-                    <td align="right">{SubmittedDate}</td>
+                  <td align="center" bgcolor="#bf1425" style="background-color:#bf1425;border-radius:5px;">
+                    <a href="{QCPdfUrl}" target="_blank" style="display:inline-block;padding:16px 36px;font-size:16px;line-height:1.2;font-weight:700;color:#ffffff;text-decoration:none;border-radius:5px;">
+                      Open Review Package
+                    </a>
+                  </td>
                 </tr>
+              </table>
+            </td>
+          </tr>
 
+          <!-- Workflow details -->
+          <tr>
+            <td style="padding:0 32px 26px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-top:1px solid #e5e7eb;font-size:14px;line-height:1.5;color:#1f2328;">
                 <tr>
-                    <td style="padding:6px 0;color:#666;">Current State</td>
-                    <td align="right">{WorkflowState}</td>
+                  <td style="padding:16px 12px 8px 0;color:#6b7280;font-weight:600;vertical-align:top;">Submitted By</td>
+                  <td align="right" style="padding:16px 0 8px 12px;color:#111827;vertical-align:top;">{SubmittedBy}</td>
                 </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;color:#6b7280;font-weight:600;vertical-align:top;">Submitted Date</td>
+                  <td align="right" style="padding:8px 0 8px 12px;color:#111827;vertical-align:top;">{SubmittedDate}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 12px 8px 0;color:#6b7280;font-weight:600;vertical-align:top;">Workflow State</td>
+                  <td align="right" style="padding:8px 0 8px 12px;color:#111827;vertical-align:top;">{WorkflowState}</td>
+                </tr>
+                <tr style="{DocumentStateRowStyle}">
+                  <td style="padding:8px 12px 8px 0;color:#6b7280;font-weight:600;vertical-align:top;">Document State</td>
+                  <td align="right" style="padding:8px 0 8px 12px;color:#111827;vertical-align:top;">{DocumentState}</td>
+                </tr>
+                <tr style="{ReviewerCommentsRowStyle}">
+                  <td style="padding:8px 12px 8px 0;color:#6b7280;font-weight:600;vertical-align:top;">Reviewer Comments</td>
+                  <td align="right" style="padding:8px 0 8px 12px;color:#111827;vertical-align:top;">{ReviewerComments}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
 
-            </table>
+          <!-- Fallback link -->
+          <tr>
+            <td style="padding:0 32px 28px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#fafafa;border:1px solid #e5e7eb;border-radius:6px;">
+                <tr>
+                  <td style="padding:14px 16px;">
+                    <div style="font-size:12px;line-height:1.5;color:#6b7280;margin-bottom:4px;">If the button does not work, copy this link:</div>
+                    <a href="{QCPdfUrl}" target="_blank" style="font-size:12px;line-height:1.5;color:#bf1425;text-decoration:underline;word-break:break-all;">{QCPdfUrl}</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
 
-        </td>
+          <!-- Footer -->
+          <tr>
+            <td style="padding:20px 32px;background-color:#fafafa;border-top:1px solid #e5e7eb;">
+              <p style="margin:0 0 8px 0;font-size:12px;line-height:1.5;color:#6b7280;">
+                This notification was generated automatically by the TYPSA ProjectWise QC Workflow system.
+              </p>
+              <p style="margin:0;font-size:11px;line-height:1.5;color:#6b7280;">
+                Generated: {GeneratedTimestamp}<span style="{EnvironmentBadgeStyle}"> &nbsp;|&nbsp; {Environment}</span>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
     </tr>
-
-    <!-- Footer -->
-    <tr>
-        <td style="
-            background:#fafafa;
-            border-top:1px solid #ececec;
-            padding:20px 30px;">
-
-            <div style="font-size:12px;color:#666;line-height:1.6;">
-
-                This notification was generated automatically by the
-                TYPSA ProjectWise QC Workflow System.
-
-                <br><br>
-
-                Generated: {GeneratedTimestamp}
-
-            </div>
-
-        </td>
-    </tr>
-
-</table>
-
-</td>
-</tr>
-</table>
-
+  </table>
 </body>
 </html>
