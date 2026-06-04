@@ -123,6 +123,84 @@ function Get-QCTimestampShort {
     return (Get-QCWallClockNow).ToString('yyyyMMdd_HHmmss')
 }
 
+function Get-QCLogHourStamp {
+    <#
+    .SYNOPSIS
+    Returns current display-zone time as an hour bucket for log rotation (yyyy-MM-dd_HH).
+    #>
+    return (Get-QCWallClockNow).ToString('yyyy-MM-dd_HH')
+}
+
+function Get-QCJsonLogFilePath {
+    <#
+    .SYNOPSIS
+    Resolves the hourly JSON log path when QC_JSON_LOG_DIR is set (QC_JSON_LOG_TAG optional).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$HourStamp = '',
+        [string]$Tag = ''
+    )
+    $dir = $env:QC_JSON_LOG_DIR
+    if ([string]::IsNullOrWhiteSpace($dir)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($HourStamp)) { $HourStamp = Get-QCLogHourStamp }
+    $tag = $Tag
+    if ([string]::IsNullOrWhiteSpace($tag)) {
+        $tag = if ($env:QC_JSON_LOG_TAG) { [string]$env:QC_JSON_LOG_TAG } else { 'qc' }
+    }
+    return (Join-Path $dir ("${tag}_${HourStamp}.jsonl"))
+}
+
+$script:_QCJsonLogWriter = $null
+$script:_QCJsonLogWriterHour = $null
+$script:_QCJsonLogWriterPath = $null
+$script:_QCJsonLogFileLock = [object]::new()
+
+function Close-QCJsonLogWriter {
+    if ($script:_QCJsonLogWriter) {
+        try {
+            $script:_QCJsonLogWriter.Flush()
+            $script:_QCJsonLogWriter.Dispose()
+        } catch { }
+        $script:_QCJsonLogWriter = $null
+        $script:_QCJsonLogWriterHour = $null
+        $script:_QCJsonLogWriterPath = $null
+    }
+}
+
+function Write-QCJsonLogFileLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Line
+    )
+    if ([string]::IsNullOrWhiteSpace($env:QC_JSON_LOG_DIR)) { return $false }
+    $hour = Get-QCLogHourStamp
+    $path = Get-QCJsonLogFilePath -HourStamp $hour
+    if (-not $path) { return $false }
+    [System.Threading.Monitor]::Enter($script:_QCJsonLogFileLock)
+    try {
+        if ($script:_QCJsonLogWriterHour -ne $hour) {
+            Close-QCJsonLogWriter
+            $parent = Split-Path -Parent $path
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+            $script:_QCJsonLogWriter = New-Object System.IO.StreamWriter($path, $true, [System.Text.UTF8Encoding]::new($false))
+            $script:_QCJsonLogWriter.AutoFlush = $true
+            $script:_QCJsonLogWriterHour = $hour
+            $script:_QCJsonLogWriterPath = $path
+        }
+        $script:_QCJsonLogWriter.WriteLine($Line)
+    } catch {
+        Close-QCJsonLogWriter
+        return $false
+    } finally {
+        [System.Threading.Monitor]::Exit($script:_QCJsonLogFileLock)
+    }
+    return $true
+}
+
 function ConvertTo-HashtableDeep {
     <#
     .SYNOPSIS
@@ -391,7 +469,7 @@ function Get-QCAppSettingsConfig {
 function Write-QCJsonLog {
     <#
     .SYNOPSIS
-    Writes one structured JSON log event to stdout.
+    Writes one structured JSON log event to stdout, or to hourly files when QC_JSON_LOG_DIR is set.
     #>
     [CmdletBinding()]
     param(
@@ -420,6 +498,9 @@ function Write-QCJsonLog {
         message = $Message
         data    = $Data
     } | ConvertTo-Json -Depth 20 -Compress
+
+    $fileSink = [bool](Write-QCJsonLogFileLine -Line $payload)
+    if ($fileSink) { return }
 
     if ($Flush.IsPresent) {
         [Console]::Out.WriteLine($payload)

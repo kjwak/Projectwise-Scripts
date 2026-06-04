@@ -983,15 +983,48 @@ function _Append-CmdLineArg([System.Text.StringBuilder]$Sb, [string]$Value) {
     }
 }
 
+function _Get-ChildJsonLogPath([hashtable]$Child, [string]$HourStamp) {
+    if (-not $Child.jsonLogDir -or -not $Child.jsonLogTag) { return $null }
+    if ([string]::IsNullOrWhiteSpace($HourStamp)) { $HourStamp = Get-QCLogHourStamp }
+    return (Join-Path $Child.jsonLogDir ("$($Child.jsonLogTag)_${HourStamp}.jsonl"))
+}
+
+function _Read-LogFileFromPosition([string]$Path, [int64]$StartPos) {
+    $text = ''
+    $newPos = [int64]$StartPos
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return @{ Text = ''; NewPos = 0 }
+    }
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            if ($StartPos -gt $fs.Length) { $StartPos = 0 }
+            $fs.Position = $StartPos
+            $sr = New-Object System.IO.StreamReader($fs, [System.Text.UTF8Encoding]::new($false))
+            $text = $sr.ReadToEnd()
+            $newPos = $fs.Position
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {
+        return @{ Text = ''; NewPos = 0 }
+    }
+    return @{ Text = [string]$text; NewPos = $newPos }
+}
+
 function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) {
-    # Persist child stdout/stderr under queue\_logs\ so we can read what a killed
-    # process did/said even after the dashboard reaps it. Files are named with a
-    # timestamp + script tag + PID-placeholder; PID is rewritten after spawn.
+    # JSON events go to hourly queue\_logs\{tag}_{yyyy-MM-dd_HH}.jsonl (QC_JSON_LOG_DIR).
+    # Stderr and non-JSON stdout still land in small companion .err/.discard files.
     $logDir = _Get-ChildLogDir
     $tag = [System.IO.Path]::GetFileNameWithoutExtension($ScriptPath)
+    $hour = Get-QCLogHourStamp
     $stamp = Get-QCTimestampShort
-    $stdoutPath = Join-Path $logDir ("${stamp}_${tag}.out.log")
+    $stdoutPath = Join-Path $logDir ("${stamp}_${tag}.discard.out")
     $stderrPath = Join-Path $logDir ("${stamp}_${tag}.err.log")
+    $savedLogDir = $env:QC_JSON_LOG_DIR
+    $savedLogTag = $env:QC_JSON_LOG_TAG
+    $env:QC_JSON_LOG_DIR = $logDir
+    $env:QC_JSON_LOG_TAG = $tag
     # Windows: Start-Process -ArgumentList @(...) joins arguments in a way that breaks paths
     # containing spaces (e.g. OneDrive - TYPSA). Pass one ArgumentList string with cmd-style quoting.
     $sb = New-Object System.Text.StringBuilder
@@ -1003,13 +1036,21 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         [void]$sb.Append(' ')
         _Append-CmdLineArg -Sb $sb -Value ([string]$a)
     }
-    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $sb.ToString() -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    try {
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $sb.ToString() -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    } finally {
+        if ($null -ne $savedLogDir) { $env:QC_JSON_LOG_DIR = $savedLogDir } else { Remove-Item -Path 'Env:QC_JSON_LOG_DIR' -ErrorAction SilentlyContinue }
+        if ($null -ne $savedLogTag) { $env:QC_JSON_LOG_TAG = $savedLogTag } else { Remove-Item -Path 'Env:QC_JSON_LOG_TAG' -ErrorAction SilentlyContinue }
+    }
     return @{
         process = $p
         stdoutPath = $stdoutPath
         stderrPath = $stderrPath
+        jsonLogDir = $logDir
+        jsonLogTag = $tag
+        lastLogHour = $hour
         lastStdoutLen = 0
-        # Incomplete tail of stdout (JSON split across reads) — kept until a full line arrives.
+        # Incomplete tail of log (JSON split across reads) — kept until a full line arrives.
         stdoutTail = ''
         lastHeartbeatAt = (Get-Date)
         scriptPath = $ScriptPath
@@ -1026,16 +1067,29 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
     $p = $Child.process
     try { $p.Refresh() } catch { }
 
-    $cur = ''
-    try { $cur = [string](Get-Content -LiteralPath $Child.stdoutPath -Raw -ErrorAction SilentlyContinue) } catch { $cur = '' }
-    if ($null -eq $Child.stdoutTail) { $Child.stdoutTail = '' }
-    if ($cur.Length -lt $Child.lastStdoutLen) {
+    $hour = Get-QCLogHourStamp
+    if ($Child.jsonLogDir -and $Child.lastLogHour -and [string]$Child.lastLogHour -ne $hour) {
         $Child.lastStdoutLen = 0
         $Child.stdoutTail = ''
     }
-    if ($cur.Length -gt $Child.lastStdoutLen) {
-        $delta = $cur.Substring($Child.lastStdoutLen)
-        $Child.lastStdoutLen = $cur.Length
+    $Child.lastLogHour = $hour
+
+    $logPath = $Child.stdoutPath
+    if ($Child.jsonLogDir) {
+        $jsonPath = _Get-ChildJsonLogPath -Child $Child -HourStamp $hour
+        if ($jsonPath) { $logPath = $jsonPath }
+    }
+
+    $read = _Read-LogFileFromPosition -Path $logPath -StartPos ([int64]$Child.lastStdoutLen)
+    if ($null -eq $Child.stdoutTail) { $Child.stdoutTail = '' }
+    if ($read.NewPos -lt $Child.lastStdoutLen) {
+        $Child.lastStdoutLen = 0
+        $Child.stdoutTail = ''
+        $read = _Read-LogFileFromPosition -Path $logPath -StartPos 0
+    }
+    if ($read.Text.Length -gt 0) {
+        $delta = [string]$read.Text
+        $Child.lastStdoutLen = [int64]$read.NewPos
         $buffer = ([string]$Child.stdoutTail) + $delta
 
         $lines = New-Object System.Collections.Generic.List[string]
@@ -1055,7 +1109,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
             $Child.stdoutTail = ''
         }
 
-        foreach ($line in $lines) {
+        foreach ($line in @($lines)) {
             $t = ($line -as [string]).Trim()
             if (-not $t) { continue }
             if ($t.StartsWith('{')) {
