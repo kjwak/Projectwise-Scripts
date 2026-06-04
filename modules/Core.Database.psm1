@@ -374,6 +374,37 @@ function _QDB-InvokeSchemaSqlBatches {
     return $executed
 }
 
+function _QDB-AcquireSchemaInitLock {
+    param([Parameter(Mandatory)][System.Data.SqlClient.SqlConnection]$Connection)
+    $cmd = $Connection.CreateCommand()
+    $cmd.CommandText = @"
+DECLARE @rc INT;
+EXEC @rc = sp_getapplock
+    @Resource = 'QC_DatabaseSchemaInit',
+    @LockMode = 'Exclusive',
+    @LockOwner = 'Session',
+    @LockTimeout = 60000;
+SELECT @rc;
+"@
+    $cmd.CommandTimeout = 120
+    $rc = $cmd.ExecuteScalar()
+    if ($null -eq $rc -or [int]$rc -lt 0) {
+        throw "Could not acquire schema initialization lock (sp_getapplock returned $rc)."
+    }
+}
+
+function _QDB-ReleaseSchemaInitLock {
+    param([Parameter(Mandatory)][System.Data.SqlClient.SqlConnection]$Connection)
+    try {
+        $cmd = $Connection.CreateCommand()
+        $cmd.CommandText = "EXEC sp_releaseapplock @Resource = 'QC_DatabaseSchemaInit', @LockOwner = 'Session';"
+        $cmd.CommandTimeout = 30
+        [void]$cmd.ExecuteNonQuery()
+    } catch {
+        # Best-effort; connection close also releases session-owned locks.
+    }
+}
+
 function Initialize-QCDatabaseSchema {
     <#
     .SYNOPSIS
@@ -404,8 +435,12 @@ function Initialize-QCDatabaseSchema {
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
     $conn = $connRes.Data.connection
+    $lockHeld = $false
 
     try {
+        _QDB-AcquireSchemaInitLock -Connection $conn
+        $lockHeld = $true
+
         $cmd = $conn.CreateCommand()
         $cmd.CommandText = "IF OBJECT_ID('dbo.schema_version', 'U') IS NOT NULL SELECT MAX(version) FROM schema_version ELSE SELECT NULL"
         $currentVersion = $cmd.ExecuteScalar()
@@ -440,6 +475,9 @@ INSERT INTO schema_version (version, description) VALUES (@version, @desc)
     } catch {
         return New-QCFailureResult -Code 'DB_SCHEMA_FAILED' -Message "Schema initialization failed: $($_.Exception.Message)" -Data @{ error = $_.Exception.Message }
     } finally {
+        if ($lockHeld -and $conn -and $conn.State -eq 'Open') {
+            _QDB-ReleaseSchemaInitLock -Connection $conn
+        }
         if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
         if ($conn) { $conn.Dispose() }
     }
@@ -1154,10 +1192,9 @@ IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index
     ALTER TABLE sheet_index ADD qc_assigned_to NVARCHAR(200) NULL;
 GO
 IF OBJECT_ID('dbo.v_sheet_status', 'V') IS NOT NULL
-    DROP VIEW v_sheet_status;
-GO
+    DROP VIEW dbo.v_sheet_status;
 IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
-EXEC('CREATE VIEW v_sheet_status AS
+EXEC('CREATE VIEW dbo.v_sheet_status AS
 SELECT
     s.document_name,
     s.folder_path,
