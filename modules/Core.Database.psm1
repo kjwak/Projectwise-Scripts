@@ -381,7 +381,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.8.0'
+    $targetVersion = '1.9.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -390,7 +390,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1273,6 +1273,25 @@ IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.trans
     ALTER TABLE transition_events ADD changed_by_username NVARCHAR(128) NULL;
 IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'changed_by_username') IS NULL
     ALTER TABLE document_state_history ADD changed_by_username NVARCHAR(128) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot9Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.pw_folder_cache', 'U') IS NULL
+CREATE TABLE pw_folder_cache (
+    folder_guid       NVARCHAR(50) NOT NULL PRIMARY KEY,
+    folder_path       NVARCHAR(1000) NULL,
+    watch_root        NVARCHAR(1000) NULL,
+    resolve_failed    BIT NOT NULL DEFAULT 0,
+    cached_at         DATETIMEOFFSET(3) NOT NULL DEFAULT SYSDATETIMEOFFSET(),
+    expires_at        DATETIMEOFFSET(3) NOT NULL
+);
+IF OBJECT_ID('dbo.pw_folder_cache', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_folder_cache_expires')
+    CREATE INDEX IX_pw_folder_cache_expires ON pw_folder_cache(expires_at);
+IF OBJECT_ID('dbo.pw_folder_cache', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_pw_folder_cache_path')
+    CREATE INDEX IX_pw_folder_cache_path ON pw_folder_cache(folder_path) WHERE folder_path IS NOT NULL;
 '@
 }
 
@@ -2852,4 +2871,124 @@ function Update-QCProcessingJobHeartbeat {
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+function Get-QCPwFolderGuidCache {
+    <#
+    .SYNOPSIS
+    Loads folder_guid -> folder_path from pw_folder_cache (non-expired, resolved).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $cache = @{}
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'PW_FOLDER_CACHE_SKIPPED' -Message 'Database disabled.' -Data @{ cache = $cache; count = 0 }
+    }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT folder_guid, folder_path
+FROM pw_folder_cache
+WHERE resolve_failed = 0
+  AND NULLIF(LTRIM(RTRIM(folder_path)), '') IS NOT NULL
+  AND expires_at > SYSDATETIMEOFFSET()
+"@
+        if ($res.IsSuccess -and $res.Data -and $res.Data.table) {
+            foreach ($row in @(_QDB-ConvertDataTableToRowHashtables -Table $res.Data.table)) {
+                $g = [string]$row.folder_guid
+                $fp = [string]$row.folder_path
+                if ($g -and $fp) { $cache[$g.Trim().ToLowerInvariant()] = $fp }
+            }
+        }
+    } catch { }
+    return New-QCSuccessResult -Code 'PW_FOLDER_CACHE_OK' -Message "Loaded $($cache.Count) cached folder GUID paths." -Data @{ cache = $cache; count = $cache.Count }
+}
+
+function Get-QCPwFolderCacheBatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string[]]$FolderGuids
+    )
+
+    $cache = @{}
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'PW_FOLDER_CACHE_BATCH_SKIPPED' -Message 'Database disabled.' -Data @{ cache = $cache; hits = 0; failedHits = 0 }
+    }
+    $guids = @($FolderGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($guids.Count -eq 0) {
+        return New-QCSuccessResult -Code 'PW_FOLDER_CACHE_BATCH_NONE' -Message 'No folder GUIDs.' -Data @{ cache = $cache; hits = 0; failedHits = 0 }
+    }
+    $hits = 0; $failedHits = 0
+    $chunkSize = 100
+    for ($i = 0; $i -lt $guids.Count; $i += $chunkSize) {
+        $chunk = @($guids[$i..[Math]::Min($i + $chunkSize - 1, $guids.Count - 1)])
+        $paramNames = @(); $params = @{}
+        for ($j = 0; $j -lt $chunk.Count; $j++) {
+            $paramNames += "@g$j"
+            $params["g$j"] = $chunk[$j]
+        }
+        $inList = $paramNames -join ','
+        $sql = @"
+SELECT folder_guid, folder_path, watch_root, resolve_failed
+FROM pw_folder_cache
+WHERE folder_guid IN ($inList)
+  AND expires_at > SYSDATETIMEOFFSET()
+"@
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+            if ($res.IsSuccess -and $res.Data.table) {
+                foreach ($row in @(_QDB-ConvertDataTableToRowHashtables -Table $res.Data.table)) {
+                    $g = ([string]$row.folder_guid).Trim().ToLowerInvariant()
+                    if ([bool]$row.resolve_failed) {
+                        $cache[$g] = @{ resolveFailed = $true }
+                        $failedHits++
+                    } else {
+                        $cache[$g] = @{
+                            folderPath = [string]$row.folder_path
+                            watchRoot = [string]$row.watch_root
+                            resolveFailed = $false
+                        }
+                        $hits++
+                    }
+                }
+            }
+        } catch { }
+    }
+    return New-QCSuccessResult -Code 'PW_FOLDER_CACHE_BATCH_OK' -Message "Folder cache: $hits hits, $failedHits negative." -Data @{ cache = $cache; hits = $hits; failedHits = $failedHits }
+}
+
+function Set-QCPwFolderCacheEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderGuid,
+        [string]$FolderPath = '',
+        [string]$WatchRoot = '',
+        [int]$TtlSeconds = 86400,
+        [switch]$ResolveFailed
+    )
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return }
+    $g = ([string]$FolderGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($g)) { return }
+    if ($TtlSeconds -lt 60) { $TtlSeconds = 60 }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+MERGE pw_folder_cache AS tgt
+USING (SELECT @guid AS folder_guid) AS src
+ON tgt.folder_guid = src.folder_guid
+WHEN MATCHED THEN UPDATE SET
+    folder_path = CASE WHEN @failed = 1 THEN tgt.folder_path ELSE COALESCE(NULLIF(@folder,''), tgt.folder_path) END,
+    watch_root = CASE WHEN @failed = 1 THEN tgt.watch_root ELSE COALESCE(NULLIF(@watchRoot,''), tgt.watch_root) END,
+    resolve_failed = @failed,
+    cached_at = SYSDATETIMEOFFSET(),
+    expires_at = DATEADD(SECOND, @ttl, SYSDATETIMEOFFSET())
+WHEN NOT MATCHED THEN INSERT
+    (folder_guid, folder_path, watch_root, resolve_failed, expires_at)
+VALUES
+    (@guid, @folder, @watchRoot, @failed, DATEADD(SECOND, @ttl, SYSDATETIMEOFFSET()));
+"@ -Parameters @{
+            guid = $g; folder = $FolderPath; watchRoot = $WatchRoot; ttl = $TtlSeconds; failed = [bool]$ResolveFailed.IsPresent
+        })
+    } catch { }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

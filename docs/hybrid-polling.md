@@ -129,6 +129,8 @@ Audit-trail scanning typically processes 2000+ events in 70–90 seconds, compar
 
 GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to minimize PW API round-trips.
 
+**Folder resolution (Jun 2026):** `pw_parentguid` on document audit rows is the containing folder GUID. The poller resolves it via `Get-PWFoldersByGUIDs` (batched), with `pw_folder_cache` and a startup warm-up of `projectWise.watchList.roots` / Sheets subfolders (`Sync-AuditPollerWatchFolderGuidCache`). Configure under `auditPoller.folderGuidCache` in `appsettings.json`.
+
 ---
 
 ## Sheet Index Population

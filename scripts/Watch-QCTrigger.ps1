@@ -371,6 +371,7 @@ $script:WatchRequiredCommands = @(
     'Get-PWDocumentWorkflowStateMapByGuid'
     'Ensure-PWDiscoveryModuleLoaded'
     'Invoke-AuditTrailScan'
+    'Sync-AuditPollerWatchFolderGuidCache'
     'Get-AuditTrailPollWindow'
     'Get-AuditTrailCaptureWatermark'
     'Set-AuditTrailCaptureWatermark'
