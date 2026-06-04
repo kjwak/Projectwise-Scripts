@@ -27,6 +27,20 @@ Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
 Import-Module "$repoRoot/modules/QC.NotificationTemplates.psm1" -Force
 Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
 
+$pascalSubjectTokens = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+$pascalSubjectTokens['DocumentName'] = '0818000063ea501-qc.pdf'
+$pascalSubjectTokens['documentName'] = '0818000063ea501-qc.pdf'
+$pascalSubjectTokens['ProjectName'] = 'CAFWY2200-I-15_ELPSE'
+$pascalSubjectTokens['project'] = 'CAFWY2200-I-15_ELPSE'
+$pascalSubjectTokens['ReviewType'] = 'Production QC'
+$pascalSubjectTokens['reviewType'] = 'Production QC'
+$pascalSubjectTokens['WorkflowState'] = 'Corrections Received'
+$pascalSubjectTokens['currentState'] = 'Corrections Received'
+$pascalTmpl = '[{ReviewType}] {ProjectName} | {DocumentName} | {WorkflowState}'
+$pascalSubject = Expand-QCNotificationTemplate -Template $pascalTmpl -Tokens $pascalSubjectTokens
+Assert-Eq $pascalSubject '[Production QC] CAFWY2200-I-15_ELPSE | 0818000063ea501-qc.pdf | Corrections Received' `
+    'PascalCase and camelCase subject placeholders must both expand'
+
 $templatePath = Join-Path $repoRoot 'email\templates\qc_notification.html'
 $logoPath = Join-Path $repoRoot 'email\typsalogo.png.webp'
 $samplePath = Join-Path $repoRoot 'email\sample_notification_data.json'

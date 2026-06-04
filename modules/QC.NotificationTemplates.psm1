@@ -102,20 +102,37 @@ function Expand-QCNotificationTemplate {
     <#
     .SYNOPSIS
     Replaces {token} placeholders in a notification template string.
+    Token keys are matched case-sensitively ({DocumentName} vs {documentName}).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$Template,
         [Parameter(Mandatory)]
-        [hashtable]$Tokens
+        [object]$Tokens
     )
 
     if (_QCNT-IsBlank $Template) { return '' }
     $result = [string]$Template
-    foreach ($key in @($Tokens.Keys)) {
+    if ($null -eq $Tokens) { return $result }
+
+    $map = $null
+    if ($Tokens -is [System.Collections.Generic.IDictionary[string, string]]) {
+        $map = $Tokens
+    }
+    else {
+        $map = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+        foreach ($key in @($Tokens.Keys)) {
+            $k = [string]$key
+            if (-not $map.ContainsKey($k)) {
+                $map[$k] = if ($null -eq $Tokens[$key]) { '' } else { [string]$Tokens[$key] }
+            }
+        }
+    }
+
+    foreach ($key in @($map.Keys)) {
         $placeholder = '{' + [string]$key + '}'
-        $value = if ($null -eq $Tokens[$key]) { '' } else { [string]$Tokens[$key] }
+        $value = if ($null -eq $map[$key]) { '' } else { [string]$map[$key] }
         $result = $result.Replace($placeholder, $value)
     }
     return $result

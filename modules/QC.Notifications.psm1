@@ -271,24 +271,22 @@ function _QCN-NewNotificationSubjectTokens {
         [string]$ReviewType = ''
     )
 
-    $tokens = @{
-        documentName = $DocumentName
-        documentPath = $DocumentPath
-        project = $Project
-        previousState = $PreviousState
-        currentState = $CurrentState
-        eventType = $EventType
-        reviewType = $ReviewType
-    }
-    $tokens['DocumentName'] = $DocumentName
-    $tokens['ProjectName'] = $Project
-    $tokens['WorkflowState'] = $CurrentState
-    $tokens['ReviewType'] = $ReviewType
-    # Common config aliases (case-sensitive Expand-QCNotificationTemplate)
-    $tokens['qc_review_type'] = $ReviewType
-    $tokens['qcReviewType'] = $ReviewType
-    $tokens['DocumentID'] = $DocumentName
-    $tokens['documentId'] = $DocumentName
+    $tokens = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    $tokens['documentName'] = [string]$DocumentName
+    $tokens['DocumentName'] = [string]$DocumentName
+    $tokens['DocumentID'] = [string]$DocumentName
+    $tokens['documentId'] = [string]$DocumentName
+    $tokens['documentPath'] = [string]$DocumentPath
+    $tokens['project'] = [string]$Project
+    $tokens['ProjectName'] = [string]$Project
+    $tokens['previousState'] = [string]$PreviousState
+    $tokens['currentState'] = [string]$CurrentState
+    $tokens['WorkflowState'] = [string]$CurrentState
+    $tokens['eventType'] = [string]$EventType
+    $tokens['reviewType'] = [string]$ReviewType
+    $tokens['ReviewType'] = [string]$ReviewType
+    $tokens['qc_review_type'] = [string]$ReviewType
+    $tokens['qcReviewType'] = [string]$ReviewType
     return $tokens
 }
 
