@@ -36,6 +36,17 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 
+function _SqlCastGuidList([string[]]$Guids) {
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($g in @($Guids)) {
+        $k = ($g -as [string]).Trim().Trim('{}').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($k)) { continue }
+        $escaped = $k -replace '''', ''''''
+        [void]$parts.Add("CAST('$escaped' AS UNIQUEIDENTIFIER)")
+    }
+    return ($parts -join ',')
+}
+
 function _Prop([object]$o, [string]$n) {
     if ($null -eq $o) { return $null }
     try {
@@ -44,16 +55,45 @@ function _Prop([object]$o, [string]$n) {
     return $null
 }
 
+function _PrepareFolder([object]$folder) {
+    if ($null -eq $folder) { return $null }
+    try {
+        $m = $folder.GetType().GetMethod('GetFullPath')
+        if ($m) { $null = $m.Invoke($folder, @()) }
+    } catch { }
+    return $folder
+}
+
 function _FolderPathFromObject([object]$folder) {
     if ($null -eq $folder) { return $null }
-    if ($folder -is [string]) { return $folder }
-    foreach ($p in @('FolderPath', 'Path', 'FullPath', 'folderPath', 'Name')) {
+    $folder = _PrepareFolder $folder
+    if ($folder -is [string]) {
+        $s = ([string]$folder).Trim()
+        if ($s -match '\\') { return $s }
+        return $null
+    }
+    foreach ($p in @('FolderPath', 'Path', 'FullPath', 'folderPath', 'CanonicalPath', 'PWPath')) {
         $v = _Prop $folder $p
         if ($v -and "$v" -match '\\') { return [string]$v }
     }
     $names = @()
     try { $names = @($folder.PSObject.Properties.Name) } catch { }
-    return @{ path = $null; propertyNames = $names }
+    return @{ path = $null; propertyNames = $names; typeName = $folder.GetType().FullName }
+}
+
+function _RunPwSql([string]$Sql, [string]$Label) {
+    $warnBefore = @($WarningPreference)
+    $WarningPreference = 'Continue'
+    $errs = $null
+    $dt = Select-PWSQL -SQLSelectStatement $Sql -ErrorVariable errs -ErrorAction SilentlyContinue
+    foreach ($w in @($errs)) {
+        if ($w) { Write-Host "  SQL warning ($Label): $w" -ForegroundColor Yellow }
+    }
+    if (-not $dt) {
+        Write-Host "  SQL ($Label): no result table" -ForegroundColor Yellow
+        return $null
+    }
+    return $dt
 }
 
 $configRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -86,112 +126,98 @@ try {
 
 Write-Host "Connected: $ds" -ForegroundColor Green
 Write-Host "Get-PWFoldersByGUIDs: $(Get-Command Get-PWFoldersByGUIDs -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)"
-Write-Host "Get-PWFoldersHashTableByGuid params: FolderPath, FolderID (NOT -FolderGUIDs)" -ForegroundColor Yellow
 Write-Host ''
 
-$results = [System.Collections.Generic.List[object]]::new()
-
-# --- SQL: dms_proj by o_projguid ---
-$guidList = ($FolderGuids | ForEach-Object { "'$($_ -replace '''', '''''')'" }) -join ','
-$sqlProj = @"
-SELECT o_projguid, o_projectno, o_itemname, o_itemdesc
-FROM dms_proj
-WHERE o_projguid IN ($guidList)
-"@
-try {
-    $sqlRows = Select-PWSQL -SQLSelectStatement $sqlProj -ErrorAction Stop
+$inCast = _SqlCastGuidList -Guids $FolderGuids
+$sqlProj = "SELECT o_projguid, o_projectno, o_itemname, o_itemdesc FROM dms_proj WHERE o_projguid IN ($inCast)"
+$sqlRows = _RunPwSql -Sql $sqlProj -Label 'dms_proj'
+if ($sqlRows) {
     Write-Host "SQL dms_proj hits: $($sqlRows.Rows.Count) / $($FolderGuids.Count)" -ForegroundColor Cyan
     foreach ($row in $sqlRows.Rows) {
         Write-Host ("  proj {0} no={1} name={2}" -f $row.o_projguid, $row.o_projectno, $row.o_itemname)
     }
-} catch {
-    Write-Host "SQL dms_proj failed: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-# --- SQL: dms_doc parent (in case GUID is document not folder) ---
-$sqlDoc = @"
-SELECT o_docguid, o_parentguid, o_itemname, o_projectno
-FROM dms_doc
-WHERE o_docguid IN ($guidList) OR o_parentguid IN ($guidList)
-"@
-try {
-    $docRows = Select-PWSQL -SQLSelectStatement $sqlDoc -ErrorAction Stop
-    Write-Host "SQL dms_doc rows (guid as doc or parent): $($docRows.Rows.Count)" -ForegroundColor Cyan
-    foreach ($row in @($docRows.Rows | Select-Object -First 10)) {
-        Write-Host ("  doc={0} parent={1} name={2} projno={3}" -f $row.o_docguid, $row.o_parentguid, $row.o_itemname, $row.o_projectno)
+$sqlDoc = "SELECT o_docguid, o_projectno, o_itemname FROM dms_doc WHERE o_docguid IN ($inCast)"
+$docRows = _RunPwSql -Sql $sqlDoc -Label 'dms_doc by docguid'
+if ($docRows) {
+    Write-Host "SQL dms_doc by o_docguid: $($docRows.Rows.Count)" -ForegroundColor Cyan
+    foreach ($row in @($docRows.Rows | Select-Object -First 5)) {
+        Write-Host ("  doc={0} projno={1} name={2}" -f $row.o_docguid, $row.o_projectno, $row.o_itemname)
     }
-} catch {
-    Write-Host "SQL dms_doc failed: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 Write-Host ''
-
-# --- Get-PWFoldersByGUIDs: single array (blog / help example) ---
 try {
-    $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs @($FolderGuids) -ErrorAction Stop)
-    Write-Host "Get-PWFoldersByGUIDs (batch): returned $($folders.Count) object(s)" -ForegroundColor Cyan
+    $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs @($FolderGuids) -ErrorAction Stop) | Where-Object { $null -ne $_ }
+    Write-Host "Get-PWFoldersByGUIDs (batch): $($folders.Count) non-null object(s)" -ForegroundColor Cyan
     foreach ($f in $folders) {
         $fp = _FolderPathFromObject $f
         $fg = _Prop $f 'FolderGUID'
         if (-not $fg) { $fg = _Prop $f 'GUID' }
         if ($fp -is [hashtable]) {
-            Write-Host "  guid=$fg path=<none> props=$($fp.propertyNames -join ', ')" -ForegroundColor Yellow
+            Write-Host "  guid=$fg type=$($fp.typeName) path=<none> props=$($fp.propertyNames -join ', ')" -ForegroundColor Yellow
         } else {
             Write-Host "  guid=$fg path=$fp"
         }
-        [void]$results.Add(@{ guid = $fg; path = if ($fp -is [string]) { $fp } else { $null }; source = 'Get-PWFoldersByGUIDs-batch' })
     }
 } catch {
     Write-Host "Get-PWFoldersByGUIDs (batch) error: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-# --- Per-GUID with brace variants (do not pipe strings to Select-Object; it splits into chars) ---
+Write-Host ''
+Write-Host 'Per-GUID cmdlet + document fallback:' -ForegroundColor Cyan
 foreach ($g in $FolderGuids) {
-    $variants = @($g, $g.ToUpperInvariant(), ('{' + $g + '}'), ('{' + $g.ToUpperInvariant() + '}'))
-    $seen = @{}
-    foreach ($v in $variants) {
-        if ($seen.ContainsKey($v)) { continue }
-        $seen[$v] = $true
+    $resolved = $false
+    foreach ($v in @($g, ('{' + $g + '}'))) {
         try {
-            $one = @(Get-PWFoldersByGUIDs -FolderGUIDs $v -ErrorAction Stop)
+            $one = @(Get-PWFoldersByGUIDs -FolderGUIDs $v -ErrorAction Stop) | Where-Object { $null -ne $_ }
             if ($one.Count -gt 0) {
                 $fp = _FolderPathFromObject $one[0]
-                $pathStr = if ($fp -is [string]) { $fp } else { '<no path>' }
-                Write-Host "  OK variant '$v' -> $pathStr"
+                $pathStr = if ($fp -is [string]) { $fp } else { '<no path after GetFullPath>' }
+                Write-Host "  folder $g variant '$v' -> $pathStr"
+                $resolved = $true
                 break
             }
-        } catch {
-            Write-Host "  FAIL variant '$v': $($_.Exception.Message)"
-        }
+        } catch { }
     }
+    if (-not $resolved) {
+        try {
+            $doc = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $g -ErrorAction Stop) | Where-Object { $null -ne $_ } | Select-Object -First 1
+            if ($doc) {
+                $fp = $null
+                if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
+                elseif ($doc.FullPath) { $fp = [System.IO.Path]::GetDirectoryName([string]$doc.FullPath) -replace '/', '\' }
+                Write-Host "  document $g -> $(if ($fp) { $fp } else { '<no FolderPath>' })"
+                $resolved = $true
+            }
+        } catch { }
+    }
+    if (-not $resolved) { Write-Host "  $g -> not found as folder or document" -ForegroundColor Yellow }
 }
 
-# --- SQL + Get-PWFolders -FolderID (poller v3 fallback) ---
 Write-Host ''
 Write-Host 'SQL dms_proj + Get-PWFolders -FolderID:' -ForegroundColor Cyan
 foreach ($g in $FolderGuids) {
-    $gk = $g.Trim().Trim('{}').ToLowerInvariant()
-    $sqlOne = "SELECT o_projguid, o_projectno, o_itemname FROM dms_proj WHERE LOWER(RTRIM(o_projguid)) = '$gk'"
+    $cast = _SqlCastGuidList -Guids @($g)
+    $sqlOne = "SELECT o_projguid, o_projectno, o_itemname FROM dms_proj WHERE o_projguid = $cast"
+    $r = _RunPwSql -Sql $sqlOne -Label "proj $g"
+    if (-not $r -or $r.Rows.Count -eq 0) {
+        Write-Host "  $g -> no dms_proj row"
+        continue
+    }
+    $row = $r.Rows[0]
     try {
-        $r = Select-PWSQL -SQLSelectStatement $sqlOne -ErrorAction Stop
-        if ($r.Rows.Count -eq 0) {
-            Write-Host "  $g -> no dms_proj row"
-            continue
-        }
-        $row = $r.Rows[0]
         $projNo = [int]$row.o_projectno
         $f = Get-PWFolders -FolderID $projNo -JustOne -ErrorAction Stop
-        try { $null = $f.GetFullPath() } catch { }
         $fp = _FolderPathFromObject $f
         $pathOut = if ($fp -is [string]) { $fp } else { '<no path on folder object>' }
         Write-Host "  $g -> projectno=$projNo path=$pathOut"
     } catch {
-        Write-Host "  $g -> $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  $g -> Get-PWFolders failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
 Write-Host ''
 Write-Host 'Done. Disconnecting.'
 Disconnect-PW | Out-Null
-
-$results | ConvertTo-Json -Depth 4

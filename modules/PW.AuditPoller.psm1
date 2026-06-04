@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v3'
+$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v4'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -154,9 +154,32 @@ function _AuditPoller-GetFolderGuidLookupVariants {
     return @($variants | Select-Object -Unique)
 }
 
+function _AuditPoller-SqlCastGuidList {
+    param([string[]]$Guids)
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($g in @($Guids)) {
+        $k = _AuditPoller-NormalizeFolderGuidKey -Guid $g
+        if (-not $k) { continue }
+        $escaped = $k -replace '''', ''''''
+        [void]$parts.Add("CAST('$escaped' AS UNIQUEIDENTIFIER)")
+    }
+    return ($parts -join ',')
+}
+
+function _AuditPoller-PreparePwFolderObject {
+    param([object]$Folder)
+    if ($null -eq $Folder) { return $null }
+    try {
+        $m = $Folder.GetType().GetMethod('GetFullPath')
+        if ($m) { $null = $m.Invoke($Folder, @()) }
+    } catch { }
+    return $Folder
+}
+
 function _AuditPoller-ExtractFolderPathFromPwFolder {
     param([object]$Folder)
     if ($null -eq $Folder) { return $null }
+    $Folder = _AuditPoller-PreparePwFolderObject -Folder $Folder
     if ($Folder -is [string]) {
         $s = ([string]$Folder).Trim()
         if ($s -match '\\') { return _AuditPoller-NormalizeFolderPath -FolderPath $s }
@@ -214,6 +237,9 @@ function _AuditPoller-TryApplyFolderLookup {
         [ref]$StatsRef
     )
     $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $FolderObject
+    if (-not $fp -and $FolderObject -is [string]) {
+        $fp = _AuditPoller-NormalizeFolderPath -FolderPath ([string]$FolderObject)
+    }
     if (-not $fp) { return $false }
     $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $FolderObject
     $reqKey = _AuditPoller-NormalizeFolderGuidKey -Guid $RequestedGuid
@@ -257,8 +283,9 @@ function _AuditPoller-FetchPwFolderObjectsViaSqlProjectNo {
     $unique = @($keys | Sort-Object -Unique)
     if ($unique.Count -eq 0) { return $byKey }
 
-    $inList = ($unique | ForEach-Object { "'$_'" }) -join ','
-    $sql = "SELECT o_projguid, o_projectno FROM dms_proj WHERE LOWER(RTRIM(o_projguid)) IN ($inList)"
+    $inList = _AuditPoller-SqlCastGuidList -Guids $unique
+    if (-not $inList) { return $byKey }
+    $sql = "SELECT o_projguid, o_projectno FROM dms_proj WHERE o_projguid IN ($inList)"
     try {
         $dt = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
     } catch {
@@ -273,8 +300,7 @@ function _AuditPoller-FetchPwFolderObjectsViaSqlProjectNo {
             $projNo = [int]$row.o_projectno
             $f = Get-PWFolders -FolderID $projNo -JustOne -ErrorAction Stop
             if (-not $f) { continue }
-            try { if ($f.GetType().GetMethod('GetFullPath')) { $null = $f.GetFullPath() } } catch { }
-            $byKey[$g] = $f
+            $byKey[$g] = _AuditPoller-PreparePwFolderObject -Folder $f
         } catch { }
     }
     return $byKey
@@ -296,8 +322,8 @@ function _AuditPoller-FetchPwFoldersForGuidChunk {
 
     if (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) {
         try {
-            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction Stop)
-            foreach ($f in $folders) { if ($f) { [void]$list.Add($f) } }
+            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction Stop) | Where-Object { $null -ne $_ }
+            foreach ($f in $folders) { [void]$list.Add((_AuditPoller-PreparePwFolderObject -Folder $f)) }
         } catch { }
     }
 
@@ -329,6 +355,29 @@ function _AuditPoller-FetchPwFoldersForGuidChunk {
         foreach ($k in @($sqlByKey.Keys)) {
             if (-not $byKey.ContainsKey($k)) { $byKey[$k] = $sqlByKey[$k] }
         }
+    }
+
+    $stillNeed2 = @($ChunkGuids | Where-Object {
+        $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $_
+        $rk -and -not $byKey.ContainsKey($rk)
+    })
+    if ($stillNeed2.Count -gt 0 -and (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) {
+        try {
+            $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs $stillNeed2 -ErrorAction Stop) | Where-Object { $null -ne $_ }
+            foreach ($doc in $docs) {
+                $dg = [string]$doc.DocumentGUID
+                if (-not $dg) { continue }
+                $fp = $null
+                if ($doc.FolderPath) { $fp = [string]$doc.FolderPath }
+                elseif ($doc.FullPath) {
+                    $full = [string]$doc.FullPath
+                    $fp = [System.IO.Path]::GetDirectoryName($full) -replace '/', '\'
+                }
+                if (-not $fp) { continue }
+                $nk = _AuditPoller-NormalizeFolderGuidKey -Guid $dg
+                if ($nk) { $byKey[$nk] = $fp }
+            }
+        } catch { }
     }
 
     return $byKey
