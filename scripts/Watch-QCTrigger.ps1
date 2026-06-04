@@ -366,6 +366,7 @@ $script:WatchRequiredCommands = @(
     'Get-PWDocumentWorkflowStateName'
     'Get-PWDocumentsInFolder'
     'Get-PWDocName'
+    'Resolve-PWAuditDocumentName'
     'Get-PWDocDescription'
     'Get-PWDocLastModifiedUtc'
     'Get-PWDocumentWorkflowStateMapByGuid'
@@ -975,14 +976,30 @@ if ($statusSetRules.Count -ge 0) {
                                 $fp = [string]$ac.resolvedFolder
                                 if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
+                                $candidateAuditEventId = $null
                                 try {
                                     if ($null -ne $ac.auditEventId) {
                                         $aeid = [long]$ac.auditEventId
-                                        if ($aeid -gt 0) { [void]$auditTriggerEventIds.Add($aeid) }
+                                        if ($aeid -gt 0) { $candidateAuditEventId = $aeid }
                                     }
                                 } catch { }
 
                                 $itemName = [string]$ac.itemName
+                                if ([string]::IsNullOrWhiteSpace($itemName) -and $ac.objGuid `
+                                    -and (Get-Command -Name 'Resolve-PWAuditDocumentName' -ErrorAction SilentlyContinue)) {
+                                    $resolvedName = Resolve-PWAuditDocumentName -DocumentGuid ([string]$ac.objGuid) `
+                                        -FolderPath $fp -Config $config
+                                    if (-not [string]::IsNullOrWhiteSpace($resolvedName)) {
+                                        $itemName = [string]$resolvedName
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NAME_RESOLVED' `
+                                            -Message 'Resolved audit document name from sheet_index or PW GUID lookup.' -Data @{
+                                            documentGuid = [string]$ac.objGuid
+                                            documentName = $itemName
+                                            folderPath   = $fp
+                                            actionName   = [string]$ac.actionName
+                                        }
+                                    }
+                                }
                                 $actionName = [string]$ac.actionName
                                 # sheet_index: DOCUMENT_ATTR re-reads EM_* and QC_* from PW.
                                 # DOCUMENT_STATE: propagate workflow state to associated DGN / PDF / QC PDF siblings.
@@ -993,7 +1010,7 @@ if ($statusSetRules.Count -ge 0) {
                                     if ($isDocumentState -or $syncAttributes) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
                                             actionName     = $acAction
-                                            documentName   = [string]$ac.itemName
+                                            documentName   = $itemName
                                             folderPath     = $fp
                                             documentGuid   = [string]$ac.objGuid
                                             isSheetsFolder = [bool]$ac.isSheetsFolder
@@ -1006,6 +1023,9 @@ if ($statusSetRules.Count -ge 0) {
                                         if (-not (_Watch-EnsureAllModuleExports)) {
                                             throw 'Required module exports unavailable before DOCUMENT_STATE sync.'
                                         }
+                                        if ([string]::IsNullOrWhiteSpace($itemName)) {
+                                            throw ('Document name could not be resolved for DOCUMENT_STATE (documentGuid=' + [string]$ac.objGuid + ').')
+                                        }
                                         $acUserno = $null
                                         try {
                                             if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
@@ -1016,7 +1036,7 @@ if ($statusSetRules.Count -ge 0) {
                                         } catch { $acAuditIdSync = $null }
                                         Sync-PWAssociatedSheetWorkflowState -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
-                                            -DocumentName ([string]$ac.itemName) `
+                                            -DocumentName $itemName `
                                             -FolderPath $fp `
                                             -WatchRoot $acWatchRoot `
                                             -LastAuditEventAt ([string]$ac.actTime) `
@@ -1037,7 +1057,7 @@ if ($statusSetRules.Count -ge 0) {
                                         } catch { $acAuditIdAttr = $null }
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
-                                            -DocumentName ([string]$ac.itemName) `
+                                            -DocumentName $itemName `
                                             -FolderPath $fp `
                                             -IsSheetsFolder ([bool]$ac.isSheetsFolder) `
                                             -WatchRoot $acWatchRoot `
@@ -1402,16 +1422,24 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                     }
                                 }
+
+                                if ($null -ne $candidateAuditEventId -and $candidateAuditEventId -gt 0) {
+                                    [void]$auditTriggerEventIds.Add([long]$candidateAuditEventId)
+                                }
                             } catch {
                                 $errors++
                                 $errDoc = ''
                                 $errAction = ''
                                 $errFolder = ''
-                                try { $errDoc = [string]$ac.itemName } catch { }
+                                try { $errDoc = [string]$itemName } catch { }
+                                if ([string]::IsNullOrWhiteSpace($errDoc)) {
+                                    try { $errDoc = [string]$ac.itemName } catch { }
+                                }
                                 try { $errAction = [string]$ac.actionName } catch { }
                                 try { $errFolder = [string]$ac.resolvedFolder } catch { }
                                 $errData = @{
                                     documentName = $errDoc
+                                    documentGuid = [string]$ac.objGuid
                                     actionName   = $errAction
                                     folderPath   = $errFolder
                                     error        = [string]$_.Exception.Message

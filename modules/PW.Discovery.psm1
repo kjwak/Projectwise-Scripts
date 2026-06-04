@@ -162,6 +162,56 @@ function Get-PWDocName {
     return ''
 }
 
+function Resolve-PWAuditDocumentName {
+    <#
+    .SYNOPSIS
+    Resolves a ProjectWise document file name for audit trigger processing when pw_itemname is empty.
+    .DESCRIPTION
+    Bulk workflow attach often leaves o_itemname blank on DOCUMENT_STATE rows. Prefer sheet_index
+    (populated by status-set / reconciliation scans), then Get-PWDocumentsByGUIDs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$DocumentName = '',
+        [hashtable]$Config = @{},
+        [string]$FolderPath = ''
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($DocumentName)) { return [string]$DocumentName.Trim() }
+    $guid = ([string]$DocumentGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($guid)) { return '' }
+
+    if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+        if (Test-QCDatabaseEnabled -Config $Config) {
+            try {
+                $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name, folder_path
+FROM sheet_index
+WHERE document_guid = @docGuid OR qc_pdf_guid = @docGuid
+ORDER BY CASE WHEN document_guid = @docGuid THEN 0 ELSE 1 END
+"@ -Parameters @{ docGuid = $guid }
+                if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+                    $r = $siRes.Data.table.Rows[0]
+                    if (-not ($r.document_name -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.document_name)) {
+                        return [string]$r.document_name
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    try {
+        $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($guid) -ErrorAction SilentlyContinue)
+        if ($docs.Count -gt 0) {
+            $fromPw = Get-PWDocName -Doc $docs[0]
+            if (-not [string]::IsNullOrWhiteSpace($fromPw)) { return [string]$fromPw }
+        }
+    } catch { }
+
+    return ''
+}
+
 function Get-PWDocDescription {
     [CmdletBinding()]
     param([AllowNull()][object]$Doc)
