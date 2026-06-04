@@ -16,6 +16,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Find-PWSheetsFoldersUnderRoot'
         'Get-PWDocumentDescriptionForFolder'
         'Sync-PWAssociatedSheetWorkflowState'
+        'Revert-PWAssociatedSheetWorkflowStates'
         'Sync-PWAssociatedSheetMembersToWorkflowState'
         'Sync-PWAssociatedSheetReviewTypeAttributes'
         'Sync-PWSheetIndexOwnership'
@@ -1807,6 +1808,79 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     }
 }
 
+function Revert-PWAssociatedSheetWorkflowStates {
+    <#
+    .SYNOPSIS
+    Restores prior workflow states for sheet members that were advanced to a blocked target state.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][array]$Members,
+        [hashtable]$StateByGuid = @{},
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [bool]$DryRun = $false
+    )
+
+    $target = ([string]$TargetStateName).Trim()
+    $reverts = [System.Collections.Generic.List[object]]::new()
+    $dbEnabled = $false
+    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+        $dbEnabled = Test-QCDatabaseEnabled -Config $Config
+    }
+
+    foreach ($member in $Members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dg) { continue }
+
+        $previous = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        if ([string]::IsNullOrWhiteSpace($previous)) { continue }
+        if ((_PWD-NormalizeSheetIndexValue $previous) -eq (_PWD-NormalizeSheetIndexValue $target)) { continue }
+
+        $current = if ($StateByGuid.ContainsKey($dg.ToLowerInvariant())) {
+            [string]$StateByGuid[$dg.ToLowerInvariant()]
+        } else {
+            _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+        }
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            $current = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+        if ((_PWD-NormalizeSheetIndexValue $current) -ne (_PWD-NormalizeSheetIndexValue $target)) { continue }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromState    = [string]$current
+            toState      = [string]$previous
+            applied      = $false
+            planned      = $false
+        }
+
+        if ($DryRun) {
+            $change.planned = $true
+        } else {
+            try {
+                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $previous
+                $change.applied = $true
+                if ($dbEnabled) {
+                    try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $previous) } catch { }
+                }
+            } catch {
+                $change.error = [string]$_.Exception.Message
+            }
+        }
+        $reverts.Add($change) | Out-Null
+    }
+
+    return @{
+        targetState = $target
+        reverts     = @($reverts)
+        dryRun      = [bool]$DryRun
+    }
+}
+
 function Sync-PWAssociatedSheetWorkflowState {
     <#
     .SYNOPSIS
@@ -1913,6 +1987,36 @@ function Sync-PWAssociatedSheetWorkflowState {
     $stateByGuid = @{}
     if ($guids.Count -gt 0) {
         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
+    }
+
+    if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
+        try {
+            $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+            Import-Module $notifPath -ErrorAction SilentlyContinue
+            if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
+                Import-Module $notifPath -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    if (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue) {
+        $gate = Invoke-QCWorkflowStateEmailAttributeGate -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TargetStateName $canonicalState `
+            -Members $members -StateByGuid $stateByGuid -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername -DryRun:$DryRun
+        if ($gate -and $gate.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_SYNC_BLOCKED' `
+                    -Message 'Sheet state sync stopped: required email attributes missing; states reverted.' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    canonicalState      = $canonicalState
+                    missingFields       = @($gate.missingFields)
+                    rollback            = $gate.rollback
+                } | Out-Null
+            }
+            return
+        }
     }
 
     $stateUpdates = @()

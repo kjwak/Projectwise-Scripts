@@ -55,6 +55,16 @@ Configured under `notifications.events` keyed by **current workflow state name**
 
 When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key. Default fields: `documentGuid`, `eventType`, `currentState`. When an audit or workflow path supplies `stateTransitionKey` (audit event id, `transition_events` row id, or user+timestamp+document), that value is **always appended** to the dedupe key so a **new** human transition to the same state (e.g. Redlines Received on a second QC cycle) can send email again. Duplicate notify attempts on the **same** audit event still dedupe. Keys are stored in `notifications/dedupe/sent-keys.jsonl`.
 
+## Missing email attributes on state change
+
+When `notifications.rollbackWhenEmailAttributesMissing` is **true** (default), a human `DOCUMENT_STATE` change to a state with an **enabled** `notifications.events` entry is validated before sibling sync runs. If required role emails (`EM_Designer_Email`, `EM_Reviewer_Email`, or `EM_Checker_Email` for Independent Check) cannot be resolved on the sheet:
+
+1. **DGN, sheet PDF, and `*-qc.pdf`** are reverted to their prior workflow states (`sheet_index.pw_state_name`).
+2. The user who changed state (`pw_users.pw_user_email` for audit `o_userno`) receives a plain email listing the missing attribute column names.
+3. Normal workflow notifications, prepend enqueue, and sibling alignment for that transition are skipped.
+
+Automation accounts (`auditPoller.workflowTriggers.automationPwUsernames`) are not gated. States without a configured notification event (for example **QC Initiated**) are not gated.
+
 ## Integration points
 
 1. **`Invoke-QCNotificationForStateChange`** — Call when a QC PDF transition is detected (previous state ≠ current state).

@@ -96,6 +96,24 @@ $noRecipients = Invoke-QCNotificationForStateChange -Config $noRecipientCfg -Pre
 Assert-True ($null -ne $noRecipients) 'Missing recipients should return a result object'
 Assert-True (-not $noRecipients.Data.success) 'Missing recipients should not report success'
 
+# Missing email attributes for configured state -> field list
+$missingCfg = New-NotifyConfig -Enabled $true
+$missingCfg.notifications.rollbackWhenEmailAttributesMissing = $true
+$missingCfg.notifications.events['Ready for QC'] = @{
+    enabled = $true
+    eventType = 'READY_FOR_QC'
+    to = @('reviewers')
+    cc = @('designers')
+}
+$missingFields = @(Get-QCStateChangeMissingEmailFields -Config $missingCfg -TargetStateName 'Ready for QC' `
+    -Document (New-MockDocument '' ''))
+Assert-True ($missingFields.Count -ge 2) 'Should report missing designer and reviewer fields'
+Assert-True ($missingFields -contains 'EM_Designer_Email') 'Should include EM_Designer_Email'
+Assert-True ($missingFields -contains 'EM_Reviewer_Email') 'Should include EM_Reviewer_Email'
+$okFields = @(Get-QCStateChangeMissingEmailFields -Config $missingCfg -TargetStateName 'Ready for QC' `
+    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com'))
+Assert-Eq $okFields.Count 0 'Populated emails should yield no missing fields'
+
 # Independent Check routes reviewers role to checker email
 $icCfg = New-NotifyConfig -Enabled $true
 $icSettings = Get-QCNotificationSettings -Config $icCfg

@@ -133,6 +133,7 @@ function Get-QCNotificationSettings {
         enabled = $false
         provider = 'Mock'
         dryRun = $true
+        rollbackWhenEmailAttributesMissing = $true
         outputRoot = (Join-Path (_QCN-GetRepoRoot) 'notifications')
         dedupe = @{
             enabled = $true
@@ -226,7 +227,7 @@ function Get-QCNotificationSettings {
             $settings[$k] = $raw[$k]
         }
     }
-    foreach ($boolKey in @('enabled','dryRun')) {
+    foreach ($boolKey in @('enabled','dryRun','rollbackWhenEmailAttributesMissing')) {
         try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { $settings[$boolKey] = [bool]$defaults[$boolKey] }
     }
     if ($settings.dedupe) {
@@ -1352,6 +1353,304 @@ function Send-QCNotification {
     return New-QCFailureResult -Code $code -Message $sendResult.Message -Data $result
 }
 
+function _QCN-GetSheetIndexPwStateName {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+    if (_QCN-IsBlank $DocumentGuid) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    try {
+        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+            $r = $siRes.Data.table.Rows[0]
+            if (-not ($r.pw_state_name -is [DBNull])) { return [string]$r.pw_state_name }
+        }
+    } catch { }
+    return ''
+}
+
+function _QCN-GetRequiredEmailRolesForStateEvent {
+    param(
+        [hashtable]$EventCfg,
+        [hashtable]$Config
+    )
+
+    $roles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (-not $EventCfg) { return @() }
+    foreach ($role in @($EventCfg.to) + @($EventCfg.cc)) {
+        if (_QCN-IsBlank $role) { continue }
+        switch -Regex ([string]$role) {
+            '^reviewers?$' { [void]$roles.Add('reviewer') }
+            '^designers?$' { [void]$roles.Add('designer') }
+            '^checkers?$' { [void]$roles.Add('checker') }
+        }
+    }
+    return @($roles)
+}
+
+function Get-QCStateChangeMissingEmailFields {
+    <#
+    .SYNOPSIS
+    Returns ProjectWise attribute column names that are required but empty for a workflow state notification.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [object]$Document = $null,
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = ''
+    )
+
+    $settings = Get-QCNotificationSettings -Config $Config
+    if (-not [bool]$settings.enabled) { return @() }
+    if (-not [bool]$settings.rollbackWhenEmailAttributesMissing) { return @() }
+
+    $state = ([string]$TargetStateName).Trim()
+    if ([string]::IsNullOrWhiteSpace($state)) { return @() }
+
+    $events = _QCN-ToHashtable $settings.events
+    if (-not $events -or -not $events.ContainsKey($state)) { return @() }
+    $eventCfg = _QCN-ToHashtable $events[$state]
+    if (-not $eventCfg -or ($eventCfg.ContainsKey('enabled') -and -not [bool]$eventCfg.enabled)) { return @() }
+
+    $requiredRoles = _QCN-GetRequiredEmailRolesForStateEvent -EventCfg $eventCfg -Config $Config
+    if ($requiredRoles.Count -eq 0) { return @() }
+
+    $attr = _QCN-ToHashtable $settings.attributes
+    if (-not $attr) { $attr = @{} }
+    $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
+    $reviewerField = if ($attr.reviewerEmailField) { [string]$attr.reviewerEmailField } else { 'EM_Reviewer_Email' }
+    $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
+
+    $qcTarget = _QCN-ResolveQcPdfNotificationTarget -Document $Document -Config $Config -Job $null `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -DocumentPath ''
+    $notifyDoc = $qcTarget.document
+    $notifyName = [string]$qcTarget.documentName
+    $notifyGuid = [string]$qcTarget.documentGuid
+    $folder = [string]$FolderPath
+    if (_QCN-IsBlank $folder) { $folder = [string](_QCN-GetProp -Object $notifyDoc -Names @('FolderPath', 'folderPath')) }
+
+    $roles = _QCN-ResolveNotificationRoleEmails -Document $notifyDoc -Settings $settings -Config $Config `
+        -FolderPath $folder -SourceDocumentName $notifyName -DocumentGuid $notifyGuid
+    $reviewType = _QCN-ResolveNotificationReviewType -Document $notifyDoc -Settings $settings -Config $Config `
+        -FolderPath $folder -SourceName $notifyName
+    $useCheckerForReviewer = _QCN-TestNotificationIndependentCheckReviewType -ReviewType $reviewType -Config $Config
+
+    $missing = [System.Collections.Generic.List[string]]::new()
+    foreach ($role in $requiredRoles) {
+        switch ($role) {
+            'designer' {
+                if (_QCN-IsBlank $roles.designerEmail) { $missing.Add($designerField) | Out-Null }
+            }
+            'reviewer' {
+                if ($useCheckerForReviewer) {
+                    if (_QCN-IsBlank $roles.checkerEmail) { $missing.Add($checkerField) | Out-Null }
+                } elseif (_QCN-IsBlank $roles.reviewerEmail) {
+                    $missing.Add($reviewerField) | Out-Null
+                }
+            }
+            'checker' {
+                if (_QCN-IsBlank $roles.checkerEmail) { $missing.Add($checkerField) | Out-Null }
+            }
+        }
+    }
+    return @($missing | Select-Object -Unique)
+}
+
+function Resolve-QCStateChangeActorEmailAddress {
+    <#
+    .SYNOPSIS
+    Resolves the SMTP address of the ProjectWise user who committed a workflow state change.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0 -and (Get-Command -Name 'Sync-PWUserDirectory' -ErrorAction SilentlyContinue)) {
+        try { Sync-PWUserDirectory -Config $Config -UserNumbers @([int]$ChangedByUser) -MaxUsers 1 | Out-Null } catch { }
+    }
+
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0 -and $Config -and (Get-Command -Name 'Get-QCPWUserIdentity' -ErrorAction SilentlyContinue)) {
+        try {
+            $res = Get-QCPWUserIdentity -Config $Config -UserNumber ([int]$ChangedByUser)
+            if ($res -and $res.IsSuccess -and $res.Data -and $res.Data.identity) {
+                $identity = _QCN-ToHashtable $res.Data.identity
+                if ($identity -and $identity.pw_user_email -and -not (_QCN-IsBlank $identity.pw_user_email)) {
+                    return [string]$identity.pw_user_email.Trim()
+                }
+            }
+        } catch { }
+    }
+
+    if (-not (_QCN-IsBlank $ChangedByUsername) -and $ChangedByUsername -match '@') {
+        return [string]$ChangedByUsername.Trim()
+    }
+    return ''
+}
+
+function Send-QCStateChangeBlockedNotification {
+    <#
+    .SYNOPSIS
+    Emails the user who attempted a workflow state change when required document email attributes are missing.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string[]]$MissingFields,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [string]$PreviousStateName = '',
+        [string]$DocumentName = '',
+        [string]$DocumentPath = '',
+        [string]$DocumentGuid = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [bool]$DryRun = $false
+    )
+
+    $settings = Get-QCNotificationSettings -Config $Config
+    if (-not [bool]$settings.enabled) {
+        return New-QCSuccessResult -Code 'QC_STATE_CHANGE_BLOCKED_NOTIFY_SKIPPED' -Message 'Notifications disabled.' -Data @{ skipped = $true }
+    }
+
+    $actorEmail = Resolve-QCStateChangeActorEmailAddress -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+    if (_QCN-IsBlank $actorEmail) {
+        $msg = 'State change blocked for missing email attributes, but actor email could not be resolved.'
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_STATE_CHANGE_BLOCKED_NO_ACTOR_EMAIL' -Message $msg -Data @{
+                documentName = $DocumentName; targetState = $TargetStateName; missingFields = @($MissingFields)
+                changedByUser = $ChangedByUser; changedByUsername = $ChangedByUsername
+            } | Out-Null
+        }
+        return New-QCFailureResult -Code 'QC_STATE_CHANGE_BLOCKED_NO_ACTOR_EMAIL' -Message $msg -Data @{
+            missingFields = @($MissingFields); actorEmail = ''
+        }
+    }
+
+    $fieldList = ($MissingFields | ForEach-Object { [string]$_ }) -join ', '
+    $intro = @(
+        'Your ProjectWise QC workflow state change was not applied because required email attributes are missing on the sheet documents.',
+        '',
+        ('Attempted transition: {0} -> {1}' -f $(if ($PreviousStateName) { $PreviousStateName } else { '(unknown)' }), $TargetStateName),
+        ('Document: {0}' -f $(if ($DocumentName) { $DocumentName } else { '(unknown)' })),
+        ('Missing attribute(s): {0}' -f $fieldList),
+        '',
+        'Workflow states for this sheet and its associated files (DGN, sheet PDF, QC PDF) were restored to their previous values.',
+        'Enter the missing email values on the sheet PDF (or QC PDF) in ProjectWise, then change the workflow state again.'
+    ) -join "`r`n"
+
+    $event = @{
+        eventType = 'STATE_CHANGE_BLOCKED'
+        documentName = $DocumentName
+        documentPath = $DocumentPath
+        documentGuid = $DocumentGuid
+        previousState = $PreviousStateName
+        currentState = $TargetStateName
+        actionRequired = ('Missing attributes: ' + $fieldList)
+        missingFields = @($MissingFields)
+        changedByUser = $ChangedByUser
+        changedByUsername = $ChangedByUsername
+    }
+    $subject = ('QC state change blocked: missing email attributes on {0}' -f $(if ($DocumentName) { $DocumentName } else { 'sheet' }))
+
+    if ($DryRun -or [bool]$settings.dryRun) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_STATE_CHANGE_BLOCKED_NOTIFY_PLANNED' -Message 'Planned blocked-state notice to state-change actor.' -Data @{
+                to = $actorEmail; subject = $subject; missingFields = @($MissingFields); documentName = $DocumentName
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_STATE_CHANGE_BLOCKED_NOTIFY_PLANNED' -Message 'Dry-run: would notify state-change actor.' -Data @{
+            to = @($actorEmail); subject = $subject; missingFields = @($MissingFields); planned = $true
+        }
+    }
+
+    return Send-QCNotification -Event $event -Config $Config -Subject $subject -Body $intro -To @($actorEmail) -Cc @()
+}
+
+function Invoke-QCWorkflowStateEmailAttributeGate {
+    <#
+    .SYNOPSIS
+    Blocks audit-driven sheet state sync when notification email attributes are missing; rolls back and notifies the actor.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [Parameter(Mandatory)][array]$Members,
+        [hashtable]$StateByGuid = @{},
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [bool]$DryRun = $false
+    )
+
+    $result = @{ blocked = $false; missingFields = @(); rollback = $null; notification = $null }
+    $settings = Get-QCNotificationSettings -Config $Config
+    if (-not [bool]$settings.enabled -or -not [bool]$settings.rollbackWhenEmailAttributesMissing) {
+        return $result
+    }
+
+    if ($Config -and (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue)) {
+        try {
+            if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
+                return $result
+            }
+        } catch { }
+    }
+
+    $missing = @(Get-QCStateChangeMissingEmailFields -Config $Config -TargetStateName $TargetStateName `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -FolderPath $FolderPath)
+    if ($missing.Count -eq 0) { return $result }
+
+    $result.blocked = $true
+    $result.missingFields = @($missing)
+
+    $previousState = ''
+    foreach ($member in $Members) {
+        $dn = [string]$member.documentName
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+            $dg = [string]$member.documentGuid
+            if ($dg) { $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg }
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($previousState) -and $DocumentGuid) {
+        $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+    }
+
+    if (Get-Command -Name 'Revert-PWAssociatedSheetWorkflowStates' -ErrorAction SilentlyContinue) {
+        $result.rollback = Revert-PWAssociatedSheetWorkflowStates -Config $Config -Members $Members `
+            -StateByGuid $StateByGuid -FolderPath $FolderPath -TargetStateName $TargetStateName -DryRun:$DryRun
+    }
+
+    $docPath = if ($FolderPath -and $DocumentName) { ($FolderPath.TrimEnd('\') + '\' + $DocumentName) } else { '' }
+    $result.notification = Send-QCStateChangeBlockedNotification -Config $Config -MissingFields $missing `
+        -TargetStateName $TargetStateName -PreviousStateName $previousState -DocumentName $DocumentName `
+        -DocumentPath $docPath -DocumentGuid $DocumentGuid -ChangedByUser $ChangedByUser `
+        -ChangedByUsername $ChangedByUsername -DryRun:$DryRun
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_STATE_CHANGE_BLOCKED_MISSING_EMAIL' `
+            -Message 'Workflow state change rolled back because required email attributes are missing.' -Data @{
+            documentName = $DocumentName; documentGuid = $DocumentGuid; folderPath = $FolderPath
+            targetState = $TargetStateName; previousState = $previousState; missingFields = @($missing)
+            changedByUser = $ChangedByUser; rollback = $result.rollback; dryRun = [bool]$DryRun
+        } | Out-Null
+    }
+
+    return $result
+}
+
 function Invoke-QCNotificationForStateChange {
     <#
     .SYNOPSIS
@@ -1603,4 +1902,5 @@ function Invoke-QCNotificationForStateChange {
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
     Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+    Get-QCStateChangeMissingEmailFields, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult
