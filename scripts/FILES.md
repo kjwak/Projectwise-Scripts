@@ -33,4 +33,5 @@ The PowerShell files in this directory are intended to stay thin: they parse com
 | `Watch-QCTrigger.ps1` | One-shot trigger scan that discovers local/ProjectWise candidates, evaluates rules and filters, and enqueues queue jobs. |
 | `README.md` | Existing overview and usage notes for script entrypoints. |
 | `FILES.md` | This file; quick purpose index and refactoring assessment for the scripts directory. |
+| `Import-QCScriptModules.ps1` | Dot-sourced by DB cleanup scripts to load Core.* modules into global scope. |
 | `run_prepend_qc.ps1` | Compatibility launcher for the modular watcher/worker pipeline, with optional legacy monolith mode. |
