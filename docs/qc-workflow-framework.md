@@ -205,6 +205,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\discovery\Test-QCWorkf
 4. Pilot `dryRunWriteback: false` on one project.
 5. Optionally enable `StateAndAttributes` + `autoSetState` after workflow transitions are validated.
 
+### Expanding QC to more folders (sheet_index already populated)
+
+Status-set reconciliation may already have rows in `sheet_index` for the new watch roots. That is fine: baseline suppression only skips telemetry when **`pw_state_name` was empty** and PW still shows **In Production** (`auditPoller.workflowTriggers.suppressBaselineIndexStateTransition`, default **true**).
+
+To avoid replaying historical `DOCUMENT_STATE` from the audit backlog when you add roots:
+
+1. Set `auditPoller.workflowTriggers.processingGoLiveUtc` to the UTC time you enable QC (e.g. `2026-06-04T14:00:00Z`).
+2. Add the new `projectWise.watchList.roots` paths; do **not** reset `audit-capture-watermark.txt` unless you intend a deliberate backfill.
+3. Optionally run one scheduled full reconciliation so `pw_state_name` on existing rows matches PW before go-live.
+4. After `audit_events` with `processed = 0` drains, clear `processingGoLiveUtc` (empty string).
+
+Log codes: `WATCH_AUDIT_BASELINE_STATE_SUPPRESSED`, `WATCH_AUDIT_STATE_SKIPPED_GO_LIVE`.
+
 ## Tests
 
 - `test/test_qc_workflow.ps1` — settings, assignment, deprecation warnings, attribute mapping

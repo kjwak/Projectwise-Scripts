@@ -329,6 +329,9 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on `*-qc.pdf`. |
 | `workflowTriggers.recordFromProcessor` | true | Also record state/attribute changes from `QC_PREPEND` and `QC_COMMENT_STATUS_SYNC` processors. |
 | `workflowTriggers.ignoreStateChangeFromAutomation` | false | When **true**, skip audit notifications and sibling-sync for `DOCUMENT_STATE` from `automationPwUsernames`. Default **false** so automation-driven **QC Received** is visible to audit triggers (dedupe prevents duplicate emails). |
+| `workflowTriggers.suppressBaselineIndexStateTransition` | true | Skip `transition_events` / notifications when `sheet_index.pw_state_name` was empty and PW shows `qcWorkflow.states.production` (index seed only). Safe when expanding QC to folders that already have `sheet_index` rows from status-set scans. |
+| `workflowTriggers.baselineStateNames` | `[]` | Extra production-style labels (e.g. localized **In Production**). |
+| `workflowTriggers.processingGoLiveUtc` | (empty) | Optional UTC ISO time. `DOCUMENT_STATE` workflow sync is skipped for older `audit_events` (still ingested + marked processed). Set to **now** when enabling QC on additional watch roots. Clear after backlog drains. |
 | `workflowTriggers.automationPwUsernames` | `["srv_typsa_archivist"]` | Service account logins from `dms_user` / `pw_users`. |
 | `workflowTriggers.automationPwUserNumbers` | `[]` | Optional numeric `o_userno` list if usernames differ by environment. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |

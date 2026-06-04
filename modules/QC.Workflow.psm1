@@ -127,7 +127,37 @@ function _QCW-InvokeStateChangeNotification {
         $dedupeKey = $null
         if (Get-Command -Name 'Get-QCNotificationDedupeKey' -ErrorAction SilentlyContinue) {
             try {
-                $dedupeKey = Get-QCNotificationDedupeKey -Config $Config -Document $Document -EventType $CurrentState -CurrentState $CurrentState
+                $notifSettings = Get-QCNotificationSettings -Config $Config
+                $docGuid = ''
+                $docName = ''
+                if ($Document) {
+                    try { $docGuid = [string]$Document.DocumentGUID } catch { }
+                    try { if (-not $docGuid) { $docGuid = [string]$Document.DocumentGuid } } catch { }
+                    try { $docName = [string]$Document.Name } catch { }
+                }
+                $eventTypeForDedupe = ([string]$CurrentState).ToUpperInvariant().Replace(' ', '_')
+                $eventsMap = _QCW-ToHashtable $notifSettings.events
+                if ($eventsMap -and $eventsMap.ContainsKey([string]$CurrentState)) {
+                    $evCfg = _QCW-ToHashtable $eventsMap[[string]$CurrentState]
+                    if ($evCfg -and $evCfg.eventType) { $eventTypeForDedupe = [string]$evCfg.eventType }
+                }
+                $eventForDedupe = @{
+                    eventType = $eventTypeForDedupe
+                    documentGuid = $docGuid
+                    documentName = $docName
+                    previousState = [string]$PreviousState
+                    currentState = [string]$CurrentState
+                }
+                if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue -and -not (_QCW-IsNullOrWhiteSpace $docName)) {
+                    try { $eventForDedupe['sheetStem'] = [string](Get-PWSheetStemFromDocumentName -DocumentName $docName) } catch { }
+                }
+                if ($Context -and $Context.ContainsKey('transitionId') -and $null -ne $Context.transitionId) {
+                    try {
+                        $ctxTid = [int]$Context.transitionId
+                        if ($ctxTid -gt 0) { $eventForDedupe['transitionId'] = $ctxTid }
+                    } catch { }
+                }
+                $dedupeKey = Get-QCNotificationDedupeKey -Event $eventForDedupe -Settings $notifSettings -Config $Config
             } catch { }
         }
         if ($dedupeKey) {
@@ -177,6 +207,12 @@ function _QCW-InvokeStateChangeNotification {
         }
         if ($null -ne $wfChangedByUser) { $notifJob.metadata['changedByUser'] = $wfChangedByUser }
         if (-not (_QCW-IsNullOrWhiteSpace $wfChangedByUsername)) { $notifJob.metadata['changedByUsername'] = $wfChangedByUsername }
+        if ($Context -and $Context.ContainsKey('transitionId') -and $null -ne $Context.transitionId) {
+            try {
+                $ctxTid = [int]$Context.transitionId
+                if ($ctxTid -gt 0) { $notifJob.metadata['transitionId'] = $ctxTid }
+            } catch { }
+        }
         if ($Context -and $Context.ContainsKey('documentPath') -and $Context.documentPath) {
             $dp = [string]$Context.documentPath
             if ($dp -match '\\') { $notifJob.sourceFolder = [System.IO.Path]::GetDirectoryName($dp) }
@@ -262,9 +298,23 @@ function _QCW-InvokeStateChangeNotification {
                 }
             }
         }
-        return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
-            -Document $Document -Job $notifJob -StateTransitionKey $stKey -ChangedByUser $wfChangedByUser `
-            -ChangedByUsername $wfChangedByUsername
+        $notifyParams = @{
+            Config = $Config
+            PreviousState = $PreviousState
+            CurrentState = $CurrentState
+            Document = $Document
+            Job = $notifJob
+            StateTransitionKey = $stKey
+            ChangedByUser = $wfChangedByUser
+            ChangedByUsername = $wfChangedByUsername
+        }
+        if ($Context -and $Context.ContainsKey('transitionId') -and $null -ne $Context.transitionId) {
+            try {
+                $ctxTid = [int]$Context.transitionId
+                if ($ctxTid -gt 0) { $notifyParams['TransitionId'] = $ctxTid }
+            } catch { }
+        }
+        return Invoke-QCNotificationForStateChange @notifyParams
     } catch {
         if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
             Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `

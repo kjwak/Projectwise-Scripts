@@ -5,9 +5,8 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 if (-not (Get-Command -Name 'Write-QCDocumentStateHistoryRow' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
 }
-if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
-}
+# Do not import QC.Notifications here: it loads PW.Discovery which re-imports this module and can
+# break exported cmdlets during circular load. Notifications are lazy-loaded in Invoke-QCAuditWorkflowStateChangeTriggers.
 
 function _QCAT-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -115,6 +114,9 @@ function Get-QCAuditWorkflowTriggerSettings {
         notifyOnStateChange             = $true
         qcPdfNotificationsOnly          = $true
         ignoreStateChangeFromAutomation = $false
+        suppressBaselineIndexStateTransition = $true
+        baselineStateNames              = @()
+        processingGoLiveUtc             = ''
         automationPwUsernames           = @('srv_typsa_archivist')
         automationPwUserNumbers         = @()
     }
@@ -126,7 +128,13 @@ function Get-QCAuditWorkflowTriggerSettings {
                 if ($wt) {
                     foreach ($k in $wt.Keys) {
                         if (-not $defaults.ContainsKey($k)) { continue }
-                        if ($k -in @('automationPwUsernames', 'automationPwUserNumbers')) {
+                        if ($k -eq 'processingGoLiveUtc') {
+                            if (-not [string]::IsNullOrWhiteSpace([string]$wt[$k])) {
+                                $defaults[$k] = [string]$wt[$k].Trim()
+                            }
+                            continue
+                        }
+                        if ($k -in @('automationPwUsernames', 'automationPwUserNumbers', 'baselineStateNames')) {
                             if ($wt[$k] -is [System.Collections.IEnumerable] -and -not ($wt[$k] -is [string])) {
                                 $defaults[$k] = @($wt[$k] | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                             } elseif (-not [string]::IsNullOrWhiteSpace([string]$wt[$k])) {
@@ -176,6 +184,112 @@ function Test-QCIsAutomationPwActor {
         if ($user.Equals([string]$configured, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
+}
+
+function Get-QCBaselineWorkflowStateNames {
+    <#
+    .SYNOPSIS
+    Workflow state labels treated as sheet_index baseline (no telemetry when DB had no prior state).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $seen = @{}
+    $names = [System.Collections.Generic.List[string]]::new()
+
+    $addName = {
+        param([string]$Value)
+        $n = _QCAT-NormalizeValue $Value
+        if ([string]::IsNullOrWhiteSpace($n)) { return }
+        $key = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { return }
+        $seen[$key] = $true
+        [void]$names.Add($n)
+    }
+
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                $prod = Get-QCWorkflowStateName -Settings $wf -StateKey 'production'
+                if (-not [string]::IsNullOrWhiteSpace($prod)) { & $addName $prod }
+            }
+        } catch { }
+    }
+    if ($names.Count -eq 0) { & $addName 'In Production' }
+
+    $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    foreach ($extra in @($wt.baselineStateNames)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$extra)) { & $addName ([string]$extra) }
+    }
+
+    return @($names)
+}
+
+function Test-QCShouldSuppressBaselineSheetIndexStateTransition {
+    <#
+    .SYNOPSIS
+    True when sheet_index had no prior state and PW already shows a baseline lifecycle state (index seed only).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$PreviousState = '',
+        [Parameter(Mandatory)][string]$CurrentState
+    )
+
+    $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if (-not [bool]$wt.suppressBaselineIndexStateTransition) { return $false }
+
+    $prev = _QCAT-NormalizeValue $PreviousState
+    if (-not [string]::IsNullOrWhiteSpace($prev)) { return $false }
+
+    $curr = _QCAT-NormalizeValue $CurrentState
+    if ([string]::IsNullOrWhiteSpace($curr)) { return $false }
+
+    foreach ($baseline in @(Get-QCBaselineWorkflowStateNames -Config $Config)) {
+        if ($curr.Equals($baseline, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function _QCAT-ParsePwActTimeUtc {
+    param([string]$ActTime)
+    if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
+    $s = [string]$ActTime.Trim()
+    try {
+        return [DateTimeOffset]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+    } catch { }
+    try {
+        $dt = [DateTime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+        return [DateTimeOffset]::new($dt.ToUniversalTime())
+    } catch { }
+    return $null
+}
+
+function Test-QCShouldSkipAuditWorkflowProcessingForEvent {
+    <#
+    .SYNOPSIS
+    True when audit event pw_acttime is before workflowTriggers.processingGoLiveUtc (expansion / backlog skip).
+    .DESCRIPTION
+    Skips DOCUMENT_STATE sibling sync and workflow telemetry for historical audit rows while still ingesting
+    and marking them processed. Use when enabling QC on folders that already have sheet_index rows.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$ActTime = ''
+    )
+
+    $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    $goLiveRaw = ''
+    try { $goLiveRaw = [string]$wt.processingGoLiveUtc } catch { }
+    if ([string]::IsNullOrWhiteSpace($goLiveRaw)) { return $false }
+
+    $goLive = _QCAT-ParsePwActTimeUtc -ActTime $goLiveRaw
+    $eventAt = _QCAT-ParsePwActTimeUtc -ActTime $ActTime
+    if ($null -eq $goLive -or $null -eq $eventAt) { return $false }
+    return ($eventAt -lt $goLive)
 }
 
 function Test-QCShouldSuppressAuditStateChangeNotification {
@@ -437,6 +551,16 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     $curr = _QCAT-NormalizeValue $CurrentState
     if ($prev -eq $curr) { return }
 
+    if (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $Config -PreviousState $prev -CurrentState $curr) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_BASELINE_STATE_SUPPRESSED' `
+                -Message 'Skipped workflow triggers for sheet_index baseline seed (empty prior state).' -Data @{
+                documentGuid = $DocumentGuid; documentName = $DocumentName; currentState = $curr
+            } | Out-Null
+        }
+        return
+    }
+
     $shouldNotify = [bool]$settings.notifyOnStateChange
     if ($shouldNotify -and [bool]$settings.qcPdfNotificationsOnly -and -not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
         $shouldNotify = $false
@@ -462,7 +586,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     $transitionId = $null
     $transitionWritten = $false
     if ([bool]$settings.recordTransitions) {
-        $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+        $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
             -JobType 'audit_trigger' -TriggerAuditId $AuditEventId -ChangedByUser $ChangedByUser `
             -ChangedByUsername $ChangedByUsername
@@ -484,6 +608,9 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     if (-not $shouldNotify) { return }
+    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
+        try { Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -ErrorAction SilentlyContinue } catch { }
+    }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return }
 
     $attrs = @{}
@@ -515,22 +642,23 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     try {
-        $notif = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr `
-            -Document $Document -DocumentName $DocumentName -DocumentGuid $DocumentGuid `
-            -DocumentPath ($FolderPath + '\' + $DocumentName) -StateTransitionKey $stateTransitionKey `
-            -ChangedByUser $ChangedByUser -ChangedByUsername $notifyUsername
-        if ($notif -is [System.Array]) { $notif = $notif[-1] }
-        $notifData = if ($notif -and $notif.Data -is [hashtable]) { $notif.Data } elseif ($notif -and $notif.Data) { _QCAT-ToHashtable $notif.Data } else { $null }
-        if ($transitionId -and $notif -and $notif.IsSuccess -and $notifData) {
-            $nid = $null
-            if ($notifData.ContainsKey('dedupeKey')) { $nid = [string]$notifData['dedupeKey'] }
-            elseif ($notifData['dedupeKey']) { $nid = [string]$notifData['dedupeKey'] }
-            $sent = $false
-            try { if ($notifData.success -eq $true) { $sent = $true } } catch { }
-            if ($sent) {
-                Update-QCTransitionEventNotification -Config $Config -TransitionId $transitionId -NotificationSent $true -NotificationId $nid
-            }
+        $notifyParams = @{
+            Config = $Config
+            PreviousState = $prev
+            CurrentState = $curr
+            Document = $Document
+            DocumentName = $DocumentName
+            DocumentGuid = $DocumentGuid
+            DocumentPath = ($FolderPath + '\' + $DocumentName)
+            StateTransitionKey = $stateTransitionKey
+            ChangedByUser = $ChangedByUser
+            ChangedByUsername = $notifyUsername
         }
+        if ($null -ne $transitionId -and $transitionId -gt 0) {
+            $notifyParams['TransitionId'] = $transitionId
+        }
+        $notif = Invoke-QCNotificationForStateChange @notifyParams
+        if ($notif -is [System.Array]) { $notif = $notif[-1] }
     } catch {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_NOTIFY_FAILED' -Message $_.Exception.Message -Data @{
@@ -655,9 +783,12 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
             -FieldName 'pw_state_name' -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername | Out-Null
     }
     if ([bool]$settings.recordTransitions) {
-        $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+        $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
             -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
             -JobId $jobId -JobType $JobType -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername
+        if ($Context -and $tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
+            try { $Context['transitionId'] = [int]$tr.Data.transitionId } catch { }
+        }
         $written = $false
         try {
             if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $written = $true }
@@ -762,7 +893,8 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     }
 }
 
-Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
+Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
+    Test-QCIsAutomationPwActor, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

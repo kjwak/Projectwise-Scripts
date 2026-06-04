@@ -138,7 +138,7 @@ function Get-QCNotificationSettings {
         dedupe = @{
             enabled = $true
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
-            keyFields = @('documentGuid', 'eventType', 'currentState')
+            keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
         }
         graph = @{
             tenantId = ''
@@ -1071,17 +1071,40 @@ function Get-QCNotificationDedupeKey {
     param(
         [Parameter(Mandatory)]
         [hashtable]$Event,
-        [hashtable]$Settings
+        [hashtable]$Settings,
+        [hashtable]$Config = $null
     )
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+
+    if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
+        try {
+            $tid = [int]$Event.transitionId
+            if ($tid -gt 0) { return ('transition:{0}' -f $tid) }
+        } catch { }
+    }
+
     $dedupe = _QCN-ToHashtable $Settings.dedupe
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('documentGuid', 'eventType', 'currentState') }
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('sheetStem', 'eventType', 'previousState', 'currentState') }
+
+    if (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
+        $stem = ''
+        if ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+            try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+        }
+        if (-not (_QCN-IsBlank $stem)) { $Event['sheetStem'] = $stem }
+    }
 
     $parts = [System.Collections.Generic.List[string]]::new()
     foreach ($field in @($fields)) {
         $value = ''
         switch ([string]$field) {
+            'sheetStem' {
+                if ($Event.sheetStem) { $value = [string]$Event.sheetStem }
+                elseif ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                    try { $value = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+                }
+            }
             'documentGuid' {
                 $value = if ($Event.documentGuid) { [string]$Event.documentGuid }
                 elseif ($Event.documentPath) { [string]$Event.documentPath }
@@ -1094,15 +1117,16 @@ function Get-QCNotificationDedupeKey {
             'previousState' { $value = [string]$Event.previousState }
             'project' { $value = [string]$Event.project }
             'stateTransitionKey' { $value = [string]$Event.stateTransitionKey }
+            'transitionId' {
+                if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
+                    try { $value = [string][int]$Event.transitionId } catch { $value = [string]$Event.transitionId }
+                }
+            }
             default {
                 if ($Event.ContainsKey($field)) { $value = [string]$Event[$field] }
             }
         }
         $parts.Add(('{0}={1}' -f $field, $value)) | Out-Null
-    }
-    # Per-transition dedupe when audit/processor supplies a key (all configured state emails).
-    if (-not ($fields -contains 'stateTransitionKey') -and $Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
-        $parts.Add(('stateTransitionKey=' + [string]$Event.stateTransitionKey)) | Out-Null
     }
     return ($parts -join '|')
 }
@@ -1112,12 +1136,53 @@ function Test-QCNotificationDedupe {
     param(
         [Parameter(Mandatory)]
         [string]$DedupeKey,
-        [hashtable]$Settings
+        [hashtable]$Settings,
+        [hashtable]$Config = $null,
+        [Nullable[int]]$TransitionId = $null
     )
+
+    if (_QCN-IsBlank $DedupeKey) { return $false }
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
     $dedupe = _QCN-ToHashtable $Settings.dedupe
     if (-not $dedupe -or -not [bool]$dedupe.enabled) { return $false }
+
+    if ($null -ne $TransitionId -and $TransitionId -gt 0) {
+        if ($Config -and (Get-Command -Name 'Test-QCTransitionEventNotificationSent' -ErrorAction SilentlyContinue)) {
+            try {
+                if (Test-QCTransitionEventNotificationSent -Config $Config -TransitionId $TransitionId) { return $true }
+            } catch { }
+        }
+        if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+            try {
+                if (Test-QCDatabaseEnabled -Config $Config) {
+                    $tidRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 1 AS found
+FROM notification_log
+WHERE transition_id = @transitionId AND success = 1
+"@ -Parameters @{ transitionId = $TransitionId }
+                    if ($tidRes.IsSuccess -and $tidRes.Data.table -and $tidRes.Data.table.Rows.Count -gt 0) {
+                        return $true
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+        try {
+            if (Test-QCDatabaseEnabled -Config $Config) {
+                $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 1 AS found
+FROM notification_log
+WHERE dedupe_key = @dedupeKey AND success = 1
+"@ -Parameters @{ dedupeKey = $DedupeKey }
+                if ($dbRes.IsSuccess -and $dbRes.Data.table -and $dbRes.Data.table.Rows.Count -gt 0) {
+                    return $true
+                }
+            }
+        } catch { }
+    }
 
     $storePath = if ($dedupe.storePath) { [string]$dedupe.storePath } else { (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl') }
     if (-not (Test-Path -LiteralPath $storePath)) { return $false }
@@ -1399,17 +1464,30 @@ function Send-QCNotification {
         $result['timestampUtc'] = Get-QCTimestamp
     }
 
-    $code = if ($sendResult.IsSuccess) { 'QC_NOTIFICATION_SENT' } else { 'QC_NOTIFICATION_FAILED' }
+    $code = if ($sendResult.IsSuccess) {
+        if ($sendResult.Code) { [string]$sendResult.Code } else { 'QC_NOTIFICATION_SENT' }
+    } else { 'QC_NOTIFICATION_FAILED' }
     $level = if ($sendResult.IsSuccess) { 'Information' } else { 'Warning' }
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
 
     if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
+        $telemetryFolder = [string]$Event.folderPath
+        if (_QCN-IsBlank $telemetryFolder) { $telemetryFolder = [string]$Event.documentPath }
+        $dedupeForTelemetry = ''
+        if ($Event.ContainsKey('dedupeKey') -and -not (_QCN-IsBlank $Event.dedupeKey)) {
+            $dedupeForTelemetry = [string]$Event.dedupeKey
+        }
+        $transitionForTelemetry = $null
+        if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
+            try { $transitionForTelemetry = [int]$Event.transitionId } catch { $transitionForTelemetry = $null }
+        }
         [void](Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
             -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
-            -FolderPath ([string]$Event.documentPath) `
+            -FolderPath $telemetryFolder `
             -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
-            -Provider ([string]$provider) -Success $sendResult.IsSuccess `
-            -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null }))
+            -DedupeKey $dedupeForTelemetry -Provider ([string]$provider) -Success $sendResult.IsSuccess `
+            -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null }) `
+            -TransitionId $transitionForTelemetry)
     }
 
     if ($sendResult.IsSuccess) { return New-QCSuccessResult -Code $code -Message $sendResult.Message -Data $result }
@@ -1923,7 +2001,7 @@ function Invoke-QCWorkflowStateEmailAttributeGate {
     $blockedDedupeKey = _QCN-GetStateChangeBlockedDedupeKey -SheetStem ([string]$sheetIdentity.sheetStem) `
         -TargetStateName $TargetStateName -ChangedByUser $ChangedByUser
     $notifySkippedDuplicate = $false
-    if (Test-QCNotificationDedupe -DedupeKey $blockedDedupeKey -Settings $settings) {
+    if (Test-QCNotificationDedupe -DedupeKey $blockedDedupeKey -Settings $settings -Config $Config) {
         $notifySkippedDuplicate = $true
         $result.notification = New-QCSuccessResult -Code 'QC_STATE_CHANGE_BLOCKED_NOTIFY_DEDUPED' `
             -Message 'Blocked-state notice already sent for this sheet transition.' -Data @{
@@ -1980,6 +2058,7 @@ function Invoke-QCNotificationForStateChange {
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
         [string]$SubmittedBy = '',
+        [Nullable[int]]$TransitionId = $null,
         [switch]$Force
     )
 
@@ -2073,7 +2152,7 @@ function Invoke-QCNotificationForStateChange {
     $sourceJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
 
     $resolvedStKey = $StateTransitionKey
-    if (_QCN-IsBlank $resolvedStKey -and $Job -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
+    if ((_QCN-IsBlank $resolvedStKey) -and $Job -and ($Job.metadata -is [hashtable]) -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
         $resolvedStKey = [string]$Job.metadata.stateTransitionKey
     }
     $resolvedActor = Resolve-QCNotificationStateChangeActor -Config $Config -StateTransitionKey $resolvedStKey `
@@ -2145,7 +2224,7 @@ function Invoke-QCNotificationForStateChange {
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
     if (-not (_QCN-IsBlank $folderForRoles)) { $event['folderPath'] = $folderForRoles }
     if (-not (_QCN-IsBlank $StateTransitionKey)) { $event['stateTransitionKey'] = [string]$StateTransitionKey }
-    elseif ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
+    elseif ($Job -and ($Job.metadata -is [hashtable]) -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
         $event['stateTransitionKey'] = [string]$Job.metadata.stateTransitionKey
     }
 
@@ -2170,8 +2249,25 @@ function Invoke-QCNotificationForStateChange {
     if ($null -ne $ChangedByUser) { $event['changedByUser'] = $ChangedByUser }
     if (-not (_QCN-IsBlank $ChangedByUsername)) { $event['changedByUsername'] = [string]$ChangedByUsername }
 
-    $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings
-    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings)) {
+    $sheetIdentity = _QCN-ResolveSheetNotificationIdentity -DocumentName $DocumentName -DocumentGuid $DocumentGuid -Config $Config
+    if (-not (_QCN-IsBlank $sheetIdentity.sheetStem)) {
+        $event['sheetStem'] = [string]$sheetIdentity.sheetStem
+    }
+
+    $resolvedTransitionId = $TransitionId
+    if (($null -eq $resolvedTransitionId -or $resolvedTransitionId -le 0) -and $Job -and ($Job.metadata -is [hashtable])) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd -and $jobMd.ContainsKey('transitionId') -and $null -ne $jobMd.transitionId) {
+            try { $resolvedTransitionId = [int]$jobMd.transitionId } catch { }
+        }
+    }
+    if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0) {
+        $event['transitionId'] = $resolvedTransitionId
+    }
+
+    $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config
+    $event['dedupeKey'] = $dedupeKey
+    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId)) {
         $skipped = @{
             success = $false
             skipped = $true
@@ -2202,9 +2298,17 @@ function Invoke-QCNotificationForStateChange {
     $resultData = _QCN-ToHashtable $send.Data
     if ($send.IsSuccess -and $resultData -and $resultData.success -eq $true) {
         Register-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -ResultData $resultData
+        if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0 -and (Get-Command -Name 'Update-QCTransitionEventNotification' -ErrorAction SilentlyContinue)) {
+            try {
+                Update-QCTransitionEventNotification -Config $Config -TransitionId $resolvedTransitionId -NotificationSent $true -NotificationId $dedupeKey
+            } catch { }
+        }
     }
     if ($resultData) {
         $resultData['dedupeKey'] = $dedupeKey
+        if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0) {
+            $resultData['transitionId'] = $resolvedTransitionId
+        }
     }
     $notifyCode = if ($send.IsSuccess) { 'QC_NOTIFICATION_SENT' } elseif ($send.Code) { [string]$send.Code } else { 'QC_NOTIFICATION_FAILED' }
     $notifyMessage = [string]$send.Message

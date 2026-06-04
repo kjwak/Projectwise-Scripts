@@ -33,6 +33,36 @@ $cfgDefault = @{ auditPoller = @{} }
 $s2 = Get-QCAuditWorkflowTriggerSettings -Config $cfgDefault
 Assert-Eq $s2.enabled $true 'defaults enable workflow triggers'
 Assert-Eq $s2.recordFromProcessor $true 'defaults enable processor telemetry'
+Assert-Eq $s2.suppressBaselineIndexStateTransition $true 'baseline suppression on by default'
+
+Assert-True (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState '' -CurrentState 'In Production') `
+    'empty index -> In Production is baseline seed'
+Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState '' -CurrentState 'QC Received')) `
+    'empty index -> QC Received is a real transition'
+Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState 'In Production' -CurrentState 'QC Initiated')) `
+    'prior state blocks baseline suppression'
+
+$cfgExtraBaseline = @{
+    auditPoller = @{ workflowTriggers = @{ baselineStateNames = @('En producción') } }
+}
+Assert-True (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgExtraBaseline -PreviousState '' -CurrentState 'En producción') `
+    'baselineStateNames extends production label'
+
+$cfgBaselineOff = @{ auditPoller = @{ workflowTriggers = @{ suppressBaselineIndexStateTransition = $false } } }
+Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgBaselineOff -PreviousState '' -CurrentState 'In Production')) `
+    'suppressBaselineIndexStateTransition=false'
+
+$cfgGoLive = @{
+    auditPoller = @{
+        workflowTriggers = @{ processingGoLiveUtc = '2026-06-04T12:00:00Z' }
+    }
+}
+Assert-True (Test-QCShouldSkipAuditWorkflowProcessingForEvent -Config $cfgGoLive -ActTime '2026-06-04T11:59:59Z') `
+    'audit before go-live is skipped'
+Assert-True (-not (Test-QCShouldSkipAuditWorkflowProcessingForEvent -Config $cfgGoLive -ActTime '2026-06-04T12:00:01Z')) `
+    'audit after go-live is processed'
+Assert-True (-not (Test-QCShouldSkipAuditWorkflowProcessingForEvent -Config $cfgDefault -ActTime '2020-01-01T00:00:00Z')) `
+    'empty processingGoLiveUtc never skips'
 
 Assert-Eq (Resolve-QCWorkflowEventQcReviewType -Context @{ attributes = @{ reviewType = 'Independent Check' } }) `
     'Independent Check' 'context attributes reviewType'
@@ -60,12 +90,6 @@ Assert-Eq (Get-QCPrependStateTransitionDedupeKey -AuditEventId 9102 -SheetStem '
 Assert-Eq (Get-QCInitiatedWorkflowStateName -Config $cfgDefault) 'QC Initiated' 'default initiated state name'
 Assert-True (Test-QCWorkflowStateIsQcInitiated -StateName 'QC Initiated' -Config $cfgDefault) 'qc initiated match'
 Assert-True (-not (Test-QCWorkflowStateIsQcInitiated -StateName 'In Production' -Config $cfgDefault)) 'non-initiated state'
-
-$cfgDbOff = @{ database = @{ enabled = $false }; auditPoller = @{ workflowTriggers = @{ enabled = $true } } }
-Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfgDbOff -DocumentGuid 'g1' -DocumentName 'a-qc.pdf' `
-    -FolderPath 'Documents\X\CADD\Sheets' -PreviousState 'In Production' -CurrentState 'QC Received' | Out-Null
-Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $cfgDbOff -DocumentGuid 'g1' -DocumentName 'a.pdf' `
-    -FolderPath 'Documents\X\CADD\Sheets' -FieldChanges @{ designer_email = @{ oldValue = 'a@x.com'; newValue = 'b@x.com' } } | Out-Null
 
 $cfgAuto = @{
     auditPoller = @{

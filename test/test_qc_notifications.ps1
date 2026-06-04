@@ -10,6 +10,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Notifications.psm1" -Force
+Import-Module "$repoRoot/modules/QC.NotificationTemplates.psm1" -Force
 Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
 Import-Module "$repoRoot/modules/QC.AuditTriggers.psm1" -Force
 
@@ -28,7 +29,7 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
             dedupe = @{
                 enabled = $true
                 storePath = $dedupePath
-                keyFields = @('documentGuid', 'eventType', 'currentState')
+                keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
             }
             graph = @{
                 tenantId = ''
@@ -204,6 +205,32 @@ $second = Invoke-QCNotificationForStateChange -Config $dupCfg -PreviousState 'In
 Assert-True $second.Data.skipped 'Second identical notification should be deduped'
 Assert-Eq $second.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Duplicate should use skip code'
 
+# Different audit ids for the same sheet transition should still dedupe (echo audits / sibling sync)
+$auditEchoDedupe = Join-Path $testRoot 'dedupe-audit-echo\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $auditEchoDedupe) -Force | Out-Null
+$auditEchoCfg = New-NotifyConfig -Enabled $true
+$auditEchoCfg.notifications.dedupe.storePath = $auditEchoDedupe
+$auditEchoCfg.notifications.events['QC Complete'] = @{
+    enabled = $true
+    eventType = 'QC_COMPLETE'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'QC review cycle is complete.'
+}
+$auditEchoDoc = [pscustomobject]@{
+    Name = '081800063ea515-qc.pdf'
+    DocumentGUID = 'guid-qc-complete'
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$ae1 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9001'
+Assert-True $ae1.IsSuccess 'First QC Complete send should succeed'
+$ae2 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9002'
+Assert-True $ae2.Data.skipped 'Second audit echo for same sheet transition should dedupe'
+Assert-Eq $ae2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Audit echo duplicate should use skip code'
+
 # New transition to same state should not dedupe (repeat QC cycle)
 $cycleDedupe = Join-Path $testRoot 'dedupe-cycle\sent-keys.jsonl'
 New-Item -ItemType Directory -Path (Split-Path $cycleDedupe) -Force | Out-Null
@@ -225,6 +252,38 @@ $r2 = Invoke-QCNotificationForStateChange -Config $cycleCfg -PreviousState 'Corr
     -Document $docCycle -StateTransitionKey 'audit:2002'
 Assert-True $r2.IsSuccess 'Second cycle Redlines Received should succeed with new transition key'
 Assert-True (-not $r2.Data.skipped) 'Second cycle should not be deduped'
+
+# Transition id drives dedupe key and suppresses echo retries for the same transition
+$tidDedupe = Join-Path $testRoot 'dedupe-transition-id\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $tidDedupe) -Force | Out-Null
+$tidCfg = New-NotifyConfig -Enabled $true
+$tidCfg.notifications.dedupe.storePath = $tidDedupe
+$tidCfg.notifications.events['QC Complete'] = @{
+    enabled = $true
+    eventType = 'QC_COMPLETE'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'QC review cycle is complete.'
+}
+$tidSettings = Get-QCNotificationSettings -Config $tidCfg
+$tidEvent = @{ eventType = 'QC_COMPLETE'; documentName = '081800063ea515-qc.pdf'; sheetStem = '081800063ea515'; previousState = 'QC Finalizing'; currentState = 'QC Complete'; transitionId = 42 }
+Assert-Eq (Get-QCNotificationDedupeKey -Event $tidEvent -Settings $tidSettings) 'transition:42' 'Transition id should produce transition-scoped dedupe key'
+$tidDoc = [pscustomobject]@{
+    Name = '081800063ea515-qc.pdf'
+    DocumentGUID = 'guid-tid'
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$t1 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $tidDoc -StateTransitionKey 'audit:9101' -TransitionId 42
+Assert-True $t1.IsSuccess 'First send with transition id should succeed'
+$t2 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $tidDoc -StateTransitionKey 'audit:9102' -TransitionId 42
+Assert-True $t2.Data.skipped 'Same transition id with different audit echo should dedupe'
+$t3 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'Corrections Received' -CurrentState 'QC Complete' `
+    -Document $tidDoc -StateTransitionKey 'audit:9103' -TransitionId 43
+Assert-True $t3.IsSuccess 'New transition id (QC cycle) should send again'
+Assert-True (-not $t3.Data.skipped) 'New transition id should not be deduped'
 
 # Graph not configured
 $graphCfg = New-NotifyConfig -Enabled $true -Provider 'MicrosoftGraph'

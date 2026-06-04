@@ -1026,23 +1026,38 @@ if ($statusSetRules.Count -ge 0) {
                                         if ([string]::IsNullOrWhiteSpace($itemName)) {
                                             throw ('Document name could not be resolved for DOCUMENT_STATE (documentGuid=' + [string]$ac.objGuid + ').')
                                         }
-                                        $acUserno = $null
-                                        try {
-                                            if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
-                                        } catch { $acUserno = $null }
-                                        $acAuditIdSync = $null
-                                        try {
-                                            if ($null -ne $ac.auditEventId) { $acAuditIdSync = [long]$ac.auditEventId }
-                                        } catch { $acAuditIdSync = $null }
-                                        Sync-PWAssociatedSheetWorkflowState -Config $config `
-                                            -DocumentGuid ([string]$ac.objGuid) `
-                                            -DocumentName $itemName `
-                                            -FolderPath $fp `
-                                            -WatchRoot $acWatchRoot `
-                                            -LastAuditEventAt ([string]$ac.actTime) `
-                                            -AuditEventId $acAuditIdSync `
-                                            -DryRun:$isDryRun `
-                                            -ChangedByUser $acUserno
+                                        $skipStateWorkflow = $false
+                                        if (Get-Command -Name 'Test-QCShouldSkipAuditWorkflowProcessingForEvent' -ErrorAction SilentlyContinue) {
+                                            $skipStateWorkflow = Test-QCShouldSkipAuditWorkflowProcessingForEvent -Config $config -ActTime ([string]$ac.actTime)
+                                        }
+                                        if ($skipStateWorkflow) {
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SKIPPED_GO_LIVE' `
+                                                -Message 'Skipped DOCUMENT_STATE workflow sync: audit event is before processingGoLiveUtc.' -Data @{
+                                                documentGuid = [string]$ac.objGuid
+                                                documentName = $itemName
+                                                folderPath     = $fp
+                                                actTime        = [string]$ac.actTime
+                                                auditEventId   = $candidateAuditEventId
+                                            }
+                                        } else {
+                                            $acUserno = $null
+                                            try {
+                                                if ($null -ne $ac.userno) { $acUserno = [int]$ac.userno }
+                                            } catch { $acUserno = $null }
+                                            $acAuditIdSync = $null
+                                            try {
+                                                if ($null -ne $ac.auditEventId) { $acAuditIdSync = [long]$ac.auditEventId }
+                                            } catch { $acAuditIdSync = $null }
+                                            Sync-PWAssociatedSheetWorkflowState -Config $config `
+                                                -DocumentGuid ([string]$ac.objGuid) `
+                                                -DocumentName $itemName `
+                                                -FolderPath $fp `
+                                                -WatchRoot $acWatchRoot `
+                                                -LastAuditEventAt ([string]$ac.actTime) `
+                                                -AuditEventId $acAuditIdSync `
+                                                -DryRun:$isDryRun `
+                                                -ChangedByUser $acUserno
+                                        }
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
                                         if (-not (_Watch-EnsureAllModuleExports)) {
                                             throw 'Required module exports unavailable before DOCUMENT_ATTR sync.'

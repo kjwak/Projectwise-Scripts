@@ -1771,8 +1771,24 @@ function Invoke-QCNotificationProcessor {
         try { $changedByUser = [int]$meta.changedByUser } catch { }
     }
     $changedByUsername = if ($meta.ContainsKey('changedByUsername')) { [string]$meta.changedByUsername } else { '' }
-    $res = Invoke-QCNotificationForStateChange -Config $Config -PreviousState $prev -CurrentState $curr -Document $doc `
-        -Job $Job -StateTransitionKey $stKey -ChangedByUser $changedByUser -ChangedByUsername $changedByUsername
+    $transitionId = $null
+    if ($meta.ContainsKey('transitionId') -and $null -ne $meta.transitionId) {
+        try { $transitionId = [int]$meta.transitionId } catch { }
+    }
+    $notifyParams = @{
+        Config = $Config
+        PreviousState = $prev
+        CurrentState = $curr
+        Document = $doc
+        Job = $Job
+        StateTransitionKey = $stKey
+        ChangedByUser = $changedByUser
+        ChangedByUsername = $changedByUsername
+    }
+    if ($null -ne $transitionId -and $transitionId -gt 0) {
+        $notifyParams['TransitionId'] = $transitionId
+    }
+    $res = Invoke-QCNotificationForStateChange @notifyParams
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         $cp = if ($res -and $res.IsSuccess) { 'notification_complete' } else { 'notification_failed' }
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $cp | Out-Null

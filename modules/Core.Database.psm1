@@ -2127,6 +2127,151 @@ VALUES
     }
 }
 
+function Ensure-QCTransitionEvent {
+    <#
+    .SYNOPSIS
+    Returns an existing transition_events row for the same state change when possible; inserts only for a new cycle.
+    .DESCRIPTION
+    Reuses a pending (notification_sent=0) row for echo audits. Reuses a sent row only when the same
+    trigger_audit_id is seen again. After notification_sent=1 with a different audit/job, inserts a new row
+    so a later QC cycle to the same target state can notify again.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$TransitionType,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$FromValue = '',
+        [string]$ToValue = '',
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [Nullable[long]]$TriggerAuditId = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'TRANSITION_EVENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; transitionId = $null; reused = $false }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'TRANSITION_EVENT_PLANNED' -Message 'Dry-run: transition event not written.' -Data @{ written = $false; planned = $true; transitionId = $null; reused = $false }
+    }
+
+    $fromNorm = if ($FromValue) { ([string]$FromValue).Trim() } else { '' }
+    $toNorm = if ($ToValue) { ([string]$ToValue).Trim() } else { '' }
+    $typeNorm = ([string]$TransitionType).Trim()
+
+    try {
+        if ($null -ne $TriggerAuditId -and $TriggerAuditId -gt 0) {
+            $auditRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, notification_sent
+FROM transition_events
+WHERE document_guid = @documentGuid
+  AND transition_type = @transitionType
+  AND ISNULL(from_value, '') = @fromValue
+  AND ISNULL(to_value, '') = @toValue
+  AND trigger_audit_id = @triggerAuditId
+ORDER BY id DESC
+"@ -Parameters @{
+                documentGuid = $DocumentGuid
+                transitionType = $typeNorm
+                fromValue = $fromNorm
+                toValue = $toNorm
+                triggerAuditId = [long]$TriggerAuditId
+            }
+            if ($auditRes.IsSuccess -and $auditRes.Data.table -and $auditRes.Data.table.Rows.Count -gt 0) {
+                $r = $auditRes.Data.table.Rows[0]
+                $existingId = [int]$r.id
+                return New-QCSuccessResult -Code 'TRANSITION_EVENT_REUSED' -Message 'Existing transition_events row reused (same audit).' -Data @{
+                    written = $false; reused = $true; transitionId = $existingId
+                    notificationSent = [bool]$r.notification_sent
+                }
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($JobId)) {
+            $jobRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, notification_sent
+FROM transition_events
+WHERE document_guid = @documentGuid
+  AND transition_type = @transitionType
+  AND ISNULL(from_value, '') = @fromValue
+  AND ISNULL(to_value, '') = @toValue
+  AND job_id = @jobId
+ORDER BY id DESC
+"@ -Parameters @{
+                documentGuid = $DocumentGuid
+                transitionType = $typeNorm
+                fromValue = $fromNorm
+                toValue = $toNorm
+                jobId = [string]$JobId
+            }
+            if ($jobRes.IsSuccess -and $jobRes.Data.table -and $jobRes.Data.table.Rows.Count -gt 0) {
+                $r = $jobRes.Data.table.Rows[0]
+                $existingId = [int]$r.id
+                return New-QCSuccessResult -Code 'TRANSITION_EVENT_REUSED' -Message 'Existing transition_events row reused (same job).' -Data @{
+                    written = $false; reused = $true; transitionId = $existingId
+                    notificationSent = [bool]$r.notification_sent
+                }
+            }
+        }
+
+        $latestRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, notification_sent, trigger_audit_id
+FROM transition_events
+WHERE document_guid = @documentGuid
+  AND transition_type = @transitionType
+  AND ISNULL(from_value, '') = @fromValue
+  AND ISNULL(to_value, '') = @toValue
+ORDER BY id DESC
+"@ -Parameters @{
+            documentGuid = $DocumentGuid
+            transitionType = $typeNorm
+            fromValue = $fromNorm
+            toValue = $toNorm
+        }
+        if ($latestRes.IsSuccess -and $latestRes.Data.table -and $latestRes.Data.table.Rows.Count -gt 0) {
+            $r = $latestRes.Data.table.Rows[0]
+            $sent = $false
+            try { $sent = [bool]$r.notification_sent } catch { }
+            if (-not $sent) {
+                $existingId = [int]$r.id
+                return New-QCSuccessResult -Code 'TRANSITION_EVENT_REUSED' -Message 'Existing pending transition_events row reused.' -Data @{
+                    written = $false; reused = $true; transitionId = $existingId; notificationSent = $false
+                }
+            }
+        }
+    } catch { }
+
+    return Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -TransitionType $TransitionType `
+        -DocumentName $DocumentName -FolderPath $FolderPath -FromValue $FromValue -ToValue $ToValue `
+        -JobId $JobId -JobType $JobType -TriggerAuditId $TriggerAuditId -ChangedByUser $ChangedByUser `
+        -ChangedByUsername $ChangedByUsername
+}
+
+function Test-QCTransitionEventNotificationSent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][int]$TransitionId
+    )
+
+    if ($TransitionId -le 0) { return $false }
+    if (-not (_QDB-IsEnabled -Config $Config)) { return $false }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 notification_sent FROM transition_events WHERE id = @id
+"@ -Parameters @{ id = $TransitionId }
+        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+            $r = $res.Data.table.Rows[0]
+            if (-not ($r.notification_sent -is [DBNull])) { return [bool]$r.notification_sent }
+        }
+    } catch { }
+    return $false
+}
+
 function Write-QCTransitionEvent {
     <#
     .SYNOPSIS
@@ -3127,4 +3272,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
