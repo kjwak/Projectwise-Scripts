@@ -152,6 +152,7 @@ function Get-QCNotificationSettings {
             templatePath = 'email/templates/qc_notification.html'
             logoPath = 'email/typsalogo.png.webp'
             environment = 'Production'
+            subjectTemplate = '[{ReviewType}] {ProjectName} | {DocumentName} | {WorkflowState}'
             qcPdfUrlTemplate = ''
             pwLinkBaseUrl = 'https://connect-projectwisewac.bentley.com/pwlink/'
             pwLinkApp = 'pwe'
@@ -171,7 +172,6 @@ function Get-QCNotificationSettings {
                 eventType = 'QC_RECEIVED'
                 to = @('reviewers')
                 cc = @('designers')
-                subjectTemplate = 'QC Received - {documentName}'
                 actionRequired = 'Reviewer to begin QC review.'
             }
             'Ready for QC' = @{
@@ -179,7 +179,6 @@ function Get-QCNotificationSettings {
                 eventType = 'READY_FOR_QC'
                 to = @('reviewers')
                 cc = @('designers')
-                subjectTemplate = 'Ready for QC - {documentName}'
                 actionRequired = 'Reviewer to begin QC review.'
             }
             'Redlines Received' = @{
@@ -187,7 +186,6 @@ function Get-QCNotificationSettings {
                 eventType = 'REDLINES_RECEIVED'
                 to = @('designers')
                 cc = @('reviewers')
-                subjectTemplate = 'Redlines Received - {documentName}'
                 actionRequired = 'Designer to address QC comments and return corrections.'
             }
             'Corrections Received' = @{
@@ -195,7 +193,6 @@ function Get-QCNotificationSettings {
                 eventType = 'CORRECTIONS_RECEIVED'
                 to = @('reviewers')
                 cc = @('designers')
-                subjectTemplate = 'Corrections Received - {documentName}'
                 actionRequired = 'Reviewer to verify corrections and approve or return redlines.'
             }
             'Error Needs Attention' = @{
@@ -203,7 +200,6 @@ function Get-QCNotificationSettings {
                 eventType = 'QC_ERROR'
                 to = @('reviewers', 'designers')
                 cc = @()
-                subjectTemplate = 'QC Automation Error - {documentName}'
                 actionRequired = 'Manual review required.'
             }
             'QC Complete' = @{
@@ -211,7 +207,6 @@ function Get-QCNotificationSettings {
                 eventType = 'QC_COMPLETE'
                 to = @('designers', 'reviewers')
                 cc = @()
-                subjectTemplate = 'QC Complete - {documentName}'
                 actionRequired = 'QC review cycle is complete.'
             }
         }
@@ -238,6 +233,59 @@ function Get-QCNotificationSettings {
         try { $settings.dedupe.enabled = [bool]$settings.dedupe.enabled } catch { }
     }
     return $settings
+}
+
+function _QCN-GetDefaultNotificationSubjectTemplate {
+    return '[{ReviewType}] {ProjectName} | {DocumentName} | {WorkflowState}'
+}
+
+function _QCN-NewNotificationSubjectTokens {
+    param(
+        [string]$DocumentName,
+        [string]$DocumentPath = '',
+        [string]$Project = '',
+        [string]$PreviousState = '',
+        [string]$CurrentState = '',
+        [string]$EventType = '',
+        [string]$ReviewType = ''
+    )
+
+    $tokens = @{
+        documentName = $DocumentName
+        documentPath = $DocumentPath
+        project = $Project
+        previousState = $PreviousState
+        currentState = $CurrentState
+        eventType = $EventType
+        reviewType = $ReviewType
+    }
+    $tokens['DocumentName'] = $DocumentName
+    $tokens['ProjectName'] = $Project
+    $tokens['WorkflowState'] = $CurrentState
+    $tokens['ReviewType'] = $ReviewType
+    return $tokens
+}
+
+function _QCN-ResolveNotificationSubjectTemplate {
+    param(
+        [hashtable]$EventCfg,
+        [hashtable]$Settings
+    )
+
+    $template = ''
+    if ($EventCfg -and $EventCfg.subjectTemplate) {
+        $template = [string]$EventCfg.subjectTemplate
+    }
+    if (_QCN-IsBlank $template -and $Settings -and $Settings.email) {
+        $emailCfg = _QCN-ToHashtable $Settings.email
+        if ($emailCfg -and $emailCfg.subjectTemplate) {
+            $template = [string]$emailCfg.subjectTemplate
+        }
+    }
+    if (_QCN-IsBlank $template) {
+        $template = _QCN-GetDefaultNotificationSubjectTemplate
+    }
+    return $template
 }
 
 function New-QCNotificationEvent {
@@ -983,17 +1031,25 @@ function Send-QCNotification {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Message $result.message -Data $result
     }
 
-    if (_QCN-IsBlank $Subject) {
-        $Subject = ('QC Notification - {0}' -f $Event.documentName)
-    }
-    if (_QCN-IsBlank $Body) {
-        $Body = New-QCNotificationEmailBody -Event $Event
-    }
-
     $eventCfg = @{}
     if ($Event._eventCfg) {
         $ec = _QCN-ToHashtable $Event._eventCfg
         if ($ec) { $eventCfg = $ec }
+    }
+
+    if (_QCN-IsBlank $Subject) {
+        $reviewType = ''
+        if ($Event.reviewType) { $reviewType = [string]$Event.reviewType }
+        elseif ($Event.qcReviewType) { $reviewType = [string]$Event.qcReviewType }
+        $tokens = _QCN-NewNotificationSubjectTokens -DocumentName ([string]$Event.documentName) `
+            -DocumentPath ([string]$Event.documentPath) -Project ([string]$Event.project) `
+            -PreviousState ([string]$Event.previousState) -CurrentState ([string]$Event.currentState) `
+            -EventType ([string]$Event.eventType) -ReviewType $reviewType
+        $template = _QCN-ResolveNotificationSubjectTemplate -EventCfg $eventCfg -Settings $settings
+        $Subject = Expand-QCNotificationTemplate -Template $template -Tokens $tokens
+    }
+    if (_QCN-IsBlank $Body) {
+        $Body = New-QCNotificationEmailBody -Event $Event
     }
 
     $htmlBody = ''
@@ -1328,15 +1384,10 @@ function Invoke-QCNotificationForStateChange {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
     }
 
-    $tokens = @{
-        documentName = $DocumentName
-        documentPath = $DocumentPath
-        project = $Project
-        previousState = $prev
-        currentState = $curr
-        eventType = $eventType
-    }
-    $subject = Expand-QCNotificationTemplate -Template ([string]$eventCfg.subjectTemplate) -Tokens $tokens
+    $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $DocumentName -DocumentPath $DocumentPath `
+        -Project $Project -PreviousState $prev -CurrentState $curr -EventType $eventType -ReviewType $resolvedReviewType
+    $subjectTemplate = _QCN-ResolveNotificationSubjectTemplate -EventCfg $eventCfg -Settings $settings
+    $subject = Expand-QCNotificationTemplate -Template $subjectTemplate -Tokens $tokens
 
     $qcUrl = Resolve-QCNotificationQcPdfUrl -Event $event -Settings $settings -Document $Document -Config $Config
     if (-not (_QCN-IsBlank $qcUrl)) {

@@ -41,13 +41,15 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
                 designerEmailField = 'EM_Designer_Email'
                 ccEmailField = 'CcEmails'
             }
+            email = @{
+                subjectTemplate = '[{ReviewType}] {ProjectName} | {DocumentName} | {WorkflowState}'
+            }
             events = @{
                 'QC Received' = @{
                     enabled = $true
                     eventType = 'QC_RECEIVED'
                     to = @('reviewers')
                     cc = @('designers')
-                    subjectTemplate = 'QC Received - {documentName}'
                     actionRequired = 'Reviewer to begin QC review.'
                 }
             }
