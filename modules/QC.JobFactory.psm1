@@ -82,7 +82,7 @@ function New-QCJobId {
         return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_TYPE' -Message 'Rule.jobType is required to generate a job id.' -Data @{ rule = $Rule }
     }
 
-    $pathRes = Normalize-QCPath -Path ([string]$Candidate.path)
+    $pathRes = Normalize-QCDocumentsFolderPath -Path ([string]$Candidate.path)
     if (-not $pathRes.IsSuccess) { return $pathRes }
     $sourcePath = [string]$pathRes.Data.path
     if (_QCJF-IsNullOrWhiteSpace $sourcePath) {
@@ -174,7 +174,7 @@ function New-QCJobObject {
         return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_TYPE' -Message 'Job type is required (Rule.jobType).' -Data @{ rule = $Rule }
     }
 
-    $pathRes = Normalize-QCPath -Path ([string]$Candidate.path)
+    $pathRes = Normalize-QCDocumentsFolderPath -Path ([string]$Candidate.path)
     if (-not $pathRes.IsSuccess) { return $pathRes }
     $sourcePath = [string]$pathRes.Data.path
     if (_QCJF-IsNullOrWhiteSpace $sourcePath) {
@@ -223,7 +223,7 @@ function New-QCJobObject {
         try { $sourceFolder = [System.IO.Path]::GetDirectoryName($sourcePath) } catch { $sourceFolder = $null }
     }
     if ($sourceFolder) {
-        $sf = Normalize-QCPath -Path $sourceFolder
+        $sf = Normalize-QCDocumentsFolderPath -Path $sourceFolder
         if ($sf.IsSuccess) { $sourceFolder = [string]$sf.Data.path }
     }
 
@@ -360,7 +360,7 @@ function Get-QCDedupeKey {
         return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_TYPE' -Message 'Job.type is required to compute dedupe key.' -Data @{ job = $Job }
     }
 
-    $pathRes = Normalize-QCPath -Path ([string]$Job.sourcePath)
+    $pathRes = Normalize-QCDocumentsFolderPath -Path ([string]$Job.sourcePath)
     if (-not $pathRes.IsSuccess) { return $pathRes }
     $path = [string]$pathRes.Data.path
     if (_QCJF-IsNullOrWhiteSpace $path) {

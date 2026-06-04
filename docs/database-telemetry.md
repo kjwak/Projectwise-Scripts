@@ -149,7 +149,7 @@ Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (m
 | `job_type` | NVARCHAR(50) | `STATUS_SET_GEN`, `QC_PREPEND`, etc. |
 | `status` | NVARCHAR(20) | `pending`, `succeeded`, `failed`, `dead` |
 | `duration_ms` | INT | Job execution time in milliseconds |
-| `source_path` / `source_folder` | NVARCHAR | Document and folder paths |
+| `source_path` / `source_folder` | NVARCHAR | Document and folder paths (canonical: lowercase `documents\...`; see `Normalize-QCDocumentsFolderPath` in `Core.Paths.psm1`) |
 | `error_code` / `error_message` | NVARCHAR | Error details on failure |
 | `result_data` | NVARCHAR(MAX) | JSON result payload |
 

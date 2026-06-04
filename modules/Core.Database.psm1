@@ -4,6 +4,15 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+
+function _QDB-NormalizeTelemetryPath {
+    param([AllowNull()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $r = Normalize-QCDocumentsFolderPath -Path $Path
+    if ($r.IsSuccess) { return [string]$r.Data.path }
+    return $Path.Trim()
+}
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -1758,6 +1767,8 @@ function Write-QCJobTelemetry {
     if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
         return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database writes blocked (dry-run).' -Data @{ written = $false; reason = 'dry_run' }
     }
+    $SourceFolder = _QDB-NormalizeTelemetryPath -Path $SourceFolder
+    $SourcePath = _QDB-NormalizeTelemetryPath -Path $SourcePath
     $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
     $resultPayload = _QDB-TruncateTelemetryPayload -Text $ResultData
     $startedAt = $null

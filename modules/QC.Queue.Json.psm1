@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
 
 function _QCQJ-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }
@@ -742,6 +743,10 @@ function Clear-QCWatcherActive {
 
 function _QCQJ-NormalizeFolderKey([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    if (Get-Command -Name 'Normalize-QCDocumentsFolderPath' -ErrorAction SilentlyContinue) {
+        $r = Normalize-QCDocumentsFolderPath -Path $Path
+        if ($r.IsSuccess) { return [string]$r.Data.path }
+    }
     return ([string]$Path).Trim().TrimEnd('\', '/').Replace('/', '\').ToLowerInvariant()
 }
 

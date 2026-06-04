@@ -12,7 +12,7 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 
 ### `Core.Paths.psm1`
 - **Purpose**: normalize paths (local + ProjectWise-ish `pw:\...`) so filters/triggers match consistently.
-- **Exports**: `Normalize-QCPath`, `Normalize-QCPaths`, `Test-PathUnderRoot`, `Split-QCPathParts`.
+- **Exports**: `Normalize-QCPath`, `Normalize-QCDocumentsFolderPath`, `Normalize-QCPaths`, `Test-PathUnderRoot`, `Split-QCPathParts`.
 - **Notable behavior**: converts `pw:\...\Documents\...` into canonical `Documents\...`, collapses slashes, trims trailing `\`, lowercases.
 
 ### `Core.Config.psm1`

@@ -43,6 +43,39 @@ function Normalize-QCPath {
     return New-QCSuccessResult -Code 'PATH_NORMALIZED' -Message 'Path normalized.' -Data @{ path = $normalized }
 }
 
+function Normalize-QCDocumentsFolderPath {
+    <#
+    .SYNOPSIS
+    Canonical ProjectWise logical folder path for DB telemetry, queue jobs, and dedupe.
+    .DESCRIPTION
+    Applies Normalize-QCPath (lowercase, pw: strip, slash cleanup) then ensures a leading
+    documents\ segment so paths are comparable across audit, Get-PWFolders, and processing_jobs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $base = Normalize-QCPath -Path $Path
+    if (-not $base.IsSuccess) { return $base }
+
+    $p = [string]$base.Data.path
+    if ([string]::IsNullOrWhiteSpace($p)) {
+        return New-QCFailureResult -Code 'PATH_EMPTY' -Message 'Path is null, empty, or whitespace.' -Data @{ input = $Path }
+    }
+
+    while ($p.StartsWith('documents\documents\', [StringComparison]::Ordinal)) {
+        $p = $p.Substring('documents\'.Length)
+    }
+
+    if (-not $p.StartsWith('documents\', [StringComparison]::Ordinal)) {
+        $p = 'documents\' + $p.TrimStart('\')
+    }
+
+    return New-QCSuccessResult -Code 'PATH_NORMALIZED' -Message 'Documents folder path normalized.' -Data @{ path = $p }
+}
+
 function Normalize-QCPaths {
     [CmdletBinding()]
     param(

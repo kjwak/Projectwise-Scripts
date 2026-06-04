@@ -920,16 +920,20 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
 
 function _AuditPoller-NormalizeFolderPath {
     param([AllowNull()][string]$FolderPath)
+    if (Get-Command -Name 'Normalize-QCDocumentsFolderPath' -ErrorAction SilentlyContinue) {
+        $r = Normalize-QCDocumentsFolderPath -Path ([string]$FolderPath)
+        if ($r.IsSuccess) { return [string]$r.Data.path }
+    }
     $t = ($FolderPath -as [string]).Trim().TrimEnd('\').Replace('/', '\')
     $t = $t -replace '\\{2,}', '\'
     if ([string]::IsNullOrWhiteSpace($t)) { return $null }
-    # Align with Core.Paths: strip pw:\datasource\ prefix so watch roots can match.
     if ($t -match '^(?i)pw:\\') {
         $idx = $t.IndexOf('\Documents\', [System.StringComparison]::OrdinalIgnoreCase)
         if ($idx -ge 0) { $t = $t.Substring($idx + 1) }
     }
-    if ($t -match '^(?i)documents\\') { return $t }
-    return ('Documents\' + $t)
+    $t = $t.ToLowerInvariant()
+    if ($t.StartsWith('documents\', [StringComparison]::Ordinal)) { return $t }
+    return ('documents\' + $t.TrimStart('\'))
 }
 
 function _AuditPoller-GetWatchRootPathFromConfig {
