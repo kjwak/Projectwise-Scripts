@@ -142,6 +142,22 @@ function _QCW-InvokeStateChangeNotification {
         } elseif ($job -and $job.id) {
             $wfTransitionKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
         }
+        $wfChangedByUser = $null
+        $wfChangedByUsername = ''
+        if ($job -and $job.ContainsKey('metadata') -and $job.metadata) {
+            $wfMd = _QCW-ToHashtable $job.metadata
+            if ($wfMd) {
+                if ($wfMd.ContainsKey('changedByUser') -and $null -ne $wfMd.changedByUser) {
+                    try {
+                        $n = [int]$wfMd.changedByUser
+                        if ($n -gt 0) { $wfChangedByUser = $n }
+                    } catch { }
+                }
+                if ($wfMd.ContainsKey('changedByUsername') -and -not (_QCW-IsNullOrWhiteSpace $wfMd.changedByUsername)) {
+                    $wfChangedByUsername = [string]$wfMd.changedByUsername
+                }
+            }
+        }
         $notifJob = @{
             id = ('qc_notification_' + [guid]::NewGuid().ToString('n').Substring(0, 12))
             type = 'QC_NOTIFICATION'
@@ -159,6 +175,8 @@ function _QCW-InvokeStateChangeNotification {
                 stateTransitionKey = $wfTransitionKey
             }
         }
+        if ($null -ne $wfChangedByUser) { $notifJob.metadata['changedByUser'] = $wfChangedByUser }
+        if (-not (_QCW-IsNullOrWhiteSpace $wfChangedByUsername)) { $notifJob.metadata['changedByUsername'] = $wfChangedByUsername }
         if ($Context -and $Context.ContainsKey('documentPath') -and $Context.documentPath) {
             $dp = [string]$Context.documentPath
             if ($dp -match '\\') { $notifJob.sourceFolder = [System.IO.Path]::GetDirectoryName($dp) }
@@ -217,20 +235,36 @@ function _QCW-InvokeStateChangeNotification {
         } elseif ($job -and $job.id) {
             $stKey = 'workflow:job:' + [string]$job.id + '|state:' + ([string]$CurrentState).Trim()
         }
-        $automationActor = ''
-        if ($Config) {
+        $wfChangedByUser = $null
+        $wfChangedByUsername = ''
+        if ($job -and $job.ContainsKey('metadata') -and $job.metadata) {
+            $wfMd = _QCW-ToHashtable $job.metadata
+            if ($wfMd) {
+                if ($wfMd.ContainsKey('changedByUser') -and $null -ne $wfMd.changedByUser) {
+                    try {
+                        $n = [int]$wfMd.changedByUser
+                        if ($n -gt 0) { $wfChangedByUser = $n }
+                    } catch { }
+                }
+                if ($wfMd.ContainsKey('changedByUsername') -and -not (_QCW-IsNullOrWhiteSpace $wfMd.changedByUsername)) {
+                    $wfChangedByUsername = [string]$wfMd.changedByUsername
+                }
+            }
+        }
+        if ($null -eq $wfChangedByUser -and _QCW-IsNullOrWhiteSpace $wfChangedByUsername -and $Config) {
             $ap = _QCW-ToHashtable $Config.auditPoller
             if ($ap) {
                 $wt = _QCW-ToHashtable $ap.workflowTriggers
                 if ($wt -and $wt.automationPwUsernames) {
                     foreach ($name in @($wt.automationPwUsernames)) {
-                        if (-not (_QCW-IsNullOrWhiteSpace $name)) { $automationActor = [string]$name; break }
+                        if (-not (_QCW-IsNullOrWhiteSpace $name)) { $wfChangedByUsername = [string]$name; break }
                     }
                 }
             }
         }
         return Invoke-QCNotificationForStateChange -Config $Config -PreviousState $PreviousState -CurrentState $CurrentState `
-            -Document $Document -Job $notifJob -StateTransitionKey $stKey -ChangedByUsername $automationActor
+            -Document $Document -Job $notifJob -StateTransitionKey $stKey -ChangedByUser $wfChangedByUser `
+            -ChangedByUsername $wfChangedByUsername
     } catch {
         if (Get-Command -Name Write-QCNotificationResult -ErrorAction SilentlyContinue) {
             Write-QCNotificationResult -Code 'QC_NOTIFICATION_HOOK_FAILED' -Level 'Error' -Message $_.Exception.Message `

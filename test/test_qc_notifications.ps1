@@ -296,4 +296,20 @@ Assert-Eq (Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser 42
     'SVC_TYPSA_ARCHIVIST' 'automation actor should use service username'
 Assert-Eq (Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser 99) 'PW User 99' 'unknown user falls back to PW User n'
 
+# SubmittedBy display is resolved from the same PW userno as transition_events.changed_by_user
+$actorJob = @{
+    metadata = @{
+        changedByUser = 99
+        changedByUsername = 'audit.user'
+        lastActionBy = 'designer@typsa.com'
+    }
+}
+$resolvedActor = Resolve-QCNotificationStateChangeActor -StateTransitionKey '' -ChangedByUser $null `
+    -ChangedByUsername '' -Job $actorJob
+Assert-Eq $resolvedActor.changedByUser 99 'job metadata changedByUser is used'
+Assert-Eq $resolvedActor.changedByUsername 'audit.user' 'changedByUsername only from metadata, not designer fallbacks'
+$display = Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser $resolvedActor.changedByUser `
+    -ChangedByUsername $resolvedActor.changedByUsername
+Assert-Eq $display 'PW User 99' 'SubmittedBy follows resolved changedByUser'
+
 Write-Host 'All QC notification tests passed.'

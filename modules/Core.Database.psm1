@@ -2214,6 +2214,83 @@ WHERE id = @id
     } catch { }
 }
 
+function Get-QCTransitionEventActor {
+    <#
+    .SYNOPSIS
+    Returns changed_by_user and changed_by_username for a transition_events row.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][int]$TransitionId
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return @{ changedByUser = $null; changedByUsername = '' }
+    }
+    try {
+        $sql = @"
+SELECT changed_by_user, changed_by_username
+FROM transition_events
+WHERE id = @id
+"@
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters @{ id = $TransitionId }
+        if (-not $res.IsSuccess -or -not $res.Data.rows -or $res.Data.rows.Count -lt 1) {
+            return @{ changedByUser = $null; changedByUsername = '' }
+        }
+        $row = $res.Data.rows[0]
+        $user = $null
+        if ($null -ne $row.changed_by_user -and -not ($row.changed_by_user -is [DBNull])) {
+            try { $user = [int]$row.changed_by_user } catch { $user = $null }
+        }
+        $username = ''
+        if ($null -ne $row.changed_by_username -and -not ($row.changed_by_username -is [DBNull])) {
+            $username = [string]$row.changed_by_username
+        }
+        return @{ changedByUser = $user; changedByUsername = $username }
+    } catch {
+        return @{ changedByUser = $null; changedByUsername = '' }
+    }
+}
+
+function Get-QCAuditEventActor {
+    <#
+    .SYNOPSIS
+    Returns pw_userno and username for an audit_events row (audit trigger actor source).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][long]$AuditEventId
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return @{ changedByUser = $null; changedByUsername = '' }
+    }
+    try {
+        $sql = @"
+SELECT ae.pw_userno, pu.pw_username
+FROM audit_events ae
+LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno
+WHERE ae.id = @id
+"@
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters @{ id = $AuditEventId }
+        if (-not $res.IsSuccess -or -not $res.Data.rows -or $res.Data.rows.Count -lt 1) {
+            return @{ changedByUser = $null; changedByUsername = '' }
+        }
+        $row = $res.Data.rows[0]
+        $user = $null
+        if ($null -ne $row.pw_userno -and -not ($row.pw_userno -is [DBNull])) {
+            try { $user = [int]$row.pw_userno } catch { $user = $null }
+        }
+        $username = ''
+        if ($null -ne $row.pw_username -and -not ($row.pw_username -is [DBNull])) {
+            $username = [string]$row.pw_username
+        }
+        return @{ changedByUser = $user; changedByUsername = $username }
+    } catch {
+        return @{ changedByUser = $null; changedByUsername = '' }
+    }
+}
+
 function Write-QCNotificationTelemetry {
     <#
     .SYNOPSIS
@@ -3050,4 +3127,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

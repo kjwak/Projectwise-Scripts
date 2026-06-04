@@ -588,6 +588,39 @@ function _QCAT-GetContextDocumentIdentity {
     return @{ documentGuid = $docGuid; documentName = $docName; folderPath = $folderPath; job = $job }
 }
 
+function _QCAT-GetContextStateChangeActor {
+    param([hashtable]$Context)
+    $changedByUser = $null
+    $changedByUsername = ''
+    if ($Context) {
+        if ($Context.ContainsKey('changedByUser') -and $null -ne $Context.changedByUser) {
+            try {
+                $n = [int]$Context.changedByUser
+                if ($n -gt 0) { $changedByUser = $n }
+            } catch { }
+        }
+        if ($Context.ContainsKey('changedByUsername') -and -not [string]::IsNullOrWhiteSpace($Context.changedByUsername)) {
+            $changedByUsername = [string]$Context.changedByUsername.Trim()
+        }
+    }
+    $id = _QCAT-GetContextDocumentIdentity -Context $Context
+    if ($id.job -and $id.job.ContainsKey('metadata') -and $id.job.metadata) {
+        $meta = _QCAT-ToHashtable $id.job.metadata
+        if ($meta) {
+            if ($null -eq $changedByUser -and $meta.ContainsKey('changedByUser') -and $null -ne $meta.changedByUser) {
+                try {
+                    $n = [int]$meta.changedByUser
+                    if ($n -gt 0) { $changedByUser = $n }
+                } catch { }
+            }
+            if ([string]::IsNullOrWhiteSpace($changedByUsername) -and $meta.ContainsKey('changedByUsername') -and -not [string]::IsNullOrWhiteSpace($meta.changedByUsername)) {
+                $changedByUsername = [string]$meta.changedByUsername.Trim()
+            }
+        }
+    }
+    return @{ changedByUser = $changedByUser; changedByUsername = $changedByUsername }
+}
+
 function Invoke-QCProcessorWorkflowStateTelemetry {
     <#
     .SYNOPSIS
@@ -614,16 +647,17 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
 
     $jobId = ''
     if ($id.job -and $id.job.ContainsKey('id')) { $jobId = [string]$id.job.id }
+    $actor = _QCAT-GetContextStateChangeActor -Context $Context
 
     if ([bool]$settings.recordStateHistory) {
         Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
             -FolderPath $id.folderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
-            -FieldName 'pw_state_name' | Out-Null
+            -FieldName 'pw_state_name' -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername | Out-Null
     }
     if ([bool]$settings.recordTransitions) {
         $tr = Write-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
             -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
-            -JobId $jobId -JobType $JobType
+            -JobId $jobId -JobType $JobType -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername
         $written = $false
         try {
             if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $written = $true }

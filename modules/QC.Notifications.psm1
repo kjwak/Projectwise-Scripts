@@ -420,6 +420,71 @@ function Resolve-QCNotificationSubmittedBy {
     return '(unknown)'
 }
 
+function Resolve-QCNotificationStateChangeActor {
+    <#
+    .SYNOPSIS
+    Resolves PW user number and username for the actor who caused a workflow state change.
+    Prefers transition_events / audit_events when stateTransitionKey references a DB row.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null,
+        [string]$StateTransitionKey = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [hashtable]$Job = $null
+    )
+
+    $user = $null
+    $username = ''
+    $key = ([string]$StateTransitionKey).Trim()
+
+    if ($Config -and $key.Length -gt 0) {
+        if ($key -match '^transition:(\d+)$' -and (Get-Command -Name 'Get-QCTransitionEventActor' -ErrorAction SilentlyContinue)) {
+            try {
+                $tid = [int]$Matches[1]
+                $fromDb = Get-QCTransitionEventActor -Config $Config -TransitionId $tid
+                if ($fromDb) {
+                    if ($null -ne $fromDb.changedByUser) { $user = $fromDb.changedByUser }
+                    if (-not (_QCN-IsBlank $fromDb.changedByUsername)) { $username = [string]$fromDb.changedByUsername }
+                }
+            } catch { }
+        }
+        elseif ($key -match '^audit:(\d+)$' -and (Get-Command -Name 'Get-QCAuditEventActor' -ErrorAction SilentlyContinue)) {
+            try {
+                $aid = [long]$Matches[1]
+                $fromDb = Get-QCAuditEventActor -Config $Config -AuditEventId $aid
+                if ($fromDb) {
+                    if ($null -eq $user -and $null -ne $fromDb.changedByUser) { $user = $fromDb.changedByUser }
+                    if (_QCN-IsBlank $username -and -not (_QCN-IsBlank $fromDb.changedByUsername)) {
+                        $username = [string]$fromDb.changedByUsername
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    if ($null -eq $user -and $null -ne $ChangedByUser) {
+        try {
+            $n = [int]$ChangedByUser
+            if ($n -gt 0) { $user = $n }
+        } catch { }
+    }
+    if (_QCN-IsBlank $username -and -not (_QCN-IsBlank $ChangedByUsername)) {
+        $username = [string]$ChangedByUsername.Trim()
+    }
+
+    if (($null -eq $user) -or (_QCN-IsBlank $username)) {
+        $fromJob = _QCN-ResolveStateChangeActorFromJob -Job $Job
+        if ($null -eq $user -and $null -ne $fromJob.changedByUser) { $user = $fromJob.changedByUser }
+        if (_QCN-IsBlank $username -and -not (_QCN-IsBlank $fromJob.changedByUsername)) {
+            $username = [string]$fromJob.changedByUsername
+        }
+    }
+
+    return @{ changedByUser = $user; changedByUsername = $username }
+}
+
 function _QCN-ResolveStateChangeActorFromJob {
     param([hashtable]$Job)
 
@@ -437,10 +502,8 @@ function _QCN-ResolveStateChangeActorFromJob {
         if ($md.ContainsKey('changedByUser') -and $null -ne $md.changedByUser) {
             try { $changedByUser = [int]$md.changedByUser } catch { }
         }
-        foreach ($key in @('changedByUsername', 'lastActionBy', 'userName', 'triggeredBy')) {
-            if (_QCN-IsBlank $changedByUsername -and $md.ContainsKey($key) -and -not (_QCN-IsBlank $md[$key])) {
-                $changedByUsername = [string]$md[$key]
-            }
+        if ($md.ContainsKey('changedByUsername') -and -not (_QCN-IsBlank $md.changedByUsername)) {
+            $changedByUsername = [string]$md.changedByUsername
         }
         if ($md.ContainsKey('submittedBy') -and -not (_QCN-IsBlank $md.submittedBy)) {
             $submittedBy = [string]$md.submittedBy
@@ -2009,11 +2072,18 @@ function Invoke-QCNotificationForStateChange {
     $actionRequired = if ($eventCfg.actionRequired) { [string]$eventCfg.actionRequired } else { '' }
     $sourceJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
 
-    $actorFromJob = _QCN-ResolveStateChangeActorFromJob -Job $Job
-    if ($null -eq $ChangedByUser -and $null -ne $actorFromJob.changedByUser) { $ChangedByUser = $actorFromJob.changedByUser }
-    if (_QCN-IsBlank $ChangedByUsername -and -not (_QCN-IsBlank $actorFromJob.changedByUsername)) {
-        $ChangedByUsername = [string]$actorFromJob.changedByUsername
+    $resolvedStKey = $StateTransitionKey
+    if (_QCN-IsBlank $resolvedStKey -and $Job -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
+        $resolvedStKey = [string]$Job.metadata.stateTransitionKey
     }
+    $resolvedActor = Resolve-QCNotificationStateChangeActor -Config $Config -StateTransitionKey $resolvedStKey `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername -Job $Job
+    if ($resolvedActor) {
+        if ($null -ne $resolvedActor.changedByUser) { $ChangedByUser = $resolvedActor.changedByUser }
+        if (-not (_QCN-IsBlank $resolvedActor.changedByUsername)) { $ChangedByUsername = [string]$resolvedActor.changedByUsername }
+    }
+
+    $actorFromJob = _QCN-ResolveStateChangeActorFromJob -Job $Job
     if (_QCN-IsBlank $SubmittedBy -and -not (_QCN-IsBlank $actorFromJob.submittedBy)) {
         $SubmittedBy = [string]$actorFromJob.submittedBy
     }
@@ -2145,7 +2215,7 @@ function Invoke-QCNotificationForStateChange {
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

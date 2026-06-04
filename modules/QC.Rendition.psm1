@@ -363,6 +363,7 @@ function Test-QCShouldDeferReadyForQcNotification {
     )
 
     $rendition = Get-QCRenditionSettings -Config $Config
+    if (-not $rendition) { return $false }
     if (-not [bool]$rendition.enabled) { return $false }
     if (-not [bool]$rendition.deferReadyForQcNotification) { return $false }
 

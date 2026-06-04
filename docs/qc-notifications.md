@@ -129,6 +129,18 @@ Preview without sending:
 
 Output: `output/test_qc_email.html`, `output/test_qc_graph_payload.json`. Send live test: `.\scripts\Test-QCEmailTemplate.ps1 -To you@company.com -Send -Live`
 
+### Submitted By (email template)
+
+The HTML field **Submitted By** (`{SubmittedBy}`) is a display label (email, display name, or PW username), not the raw integer stored in SQL.
+
+It is resolved from the same actor as `transition_events.changed_by_user` / `changed_by_username`:
+
+1. When `stateTransitionKey` is `transition:{id}`, actor fields are read from that `transition_events` row.
+2. When the key is `audit:{id}`, actor fields come from `audit_events.pw_userno` (and `pw_users` when synced).
+3. Otherwise callers pass `ChangedByUser` / `ChangedByUsername`, or the QC job metadata keys `changedByUser` / `changedByUsername`.
+
+`Resolve-QCNotificationSubmittedBy` turns that PW user number into the human-readable label shown in email. It does not use designer/reviewer attribute emails for Submitted By.
+
 ### QC PDF link (`QCPdfUrl`)
 
 `Resolve-QCNotificationQcPdfUrl` resolves the **Open QC PDF** button URL (first match wins):
@@ -155,6 +167,7 @@ Discovery: `tools/discovery/Test-PWDocumentProperties.ps1` prints `ProjectWiseWe
 - `New-QCNotificationEvent`
 - `Resolve-QCNotificationRecipients`
 - `Resolve-QCNotificationQcPdfUrl`
+- `Resolve-QCNotificationStateChangeActor`
 - `ConvertTo-QCEmailHtml`
 - `New-QCNotificationEmailTemplateData`
 - `New-QCGraphEmailMessage`
