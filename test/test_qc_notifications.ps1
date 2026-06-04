@@ -114,6 +114,16 @@ $okFields = @(Get-QCStateChangeMissingEmailFields -Config $missingCfg -TargetSta
     -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com'))
 Assert-Eq $okFields.Count 0 'Populated emails should yield no missing fields'
 
+# QC Initiated also requires emails for post-prepend Ready for QC notification
+$initiatedMissing = @(Get-QCWorkflowTransitionMissingEmailFields -Config $missingCfg -TargetStateName 'QC Initiated' `
+    -Document (New-MockDocument '' ''))
+Assert-True ($initiatedMissing.Count -ge 2) 'QC Initiated should inherit Ready for QC email requirements'
+$prependBlock = Test-QCPrependBlockedByMissingEmailAttributes -Config $missingCfg -SheetPdfName 'sheet001.pdf'
+Assert-True $prependBlock.blocked 'Prepend should be blocked when notification emails are missing'
+$prependOk = Test-QCPrependBlockedByMissingEmailAttributes -Config $missingCfg -SheetPdfName 'sheet001.pdf' `
+    -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com')
+Assert-True (-not $prependOk.blocked) 'Prepend should proceed when notification emails are present'
+
 # Independent Check routes reviewers role to checker email
 $icCfg = New-NotifyConfig -Enabled $true
 $icSettings = Get-QCNotificationSettings -Config $icCfg

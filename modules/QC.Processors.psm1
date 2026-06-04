@@ -1468,6 +1468,27 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     $sheetPdf = _QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName $TriggerDocumentName
     if (_QCP-IsNullOrWhiteSpace $sheetPdf) { return $null }
 
+    if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
+        try { Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
+        $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
+            -SheetPdfName $sheetPdf -DocumentGuid $TriggerDocumentGuid
+        if ($emailGate -and [bool]$emailGate.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_PREPEND_SKIPPED_MISSING_EMAIL' `
+                    -Message 'QC_PREPEND skipped: required notification email attributes are missing.' -Data @{
+                    folderPath = $FolderPath; sheetPdf = $sheetPdf; triggerDocumentGuid = $TriggerDocumentGuid
+                    missingFields = @($emailGate.missingFields); postPrependState = [string]$emailGate.postPrependState
+                } | Out-Null
+            }
+            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_MISSING_EMAIL' `
+                -Message 'QC_PREPEND skipped because required email attributes are missing for post-prepend notification.' -Data @{
+                missingFields = @($emailGate.missingFields); sheetPdf = $sheetPdf; folderPath = $FolderPath
+            }
+        }
+    }
+
     try { _QCP-EnsureQueueModulesLoaded } catch {
         return New-QCFailureResult -Code 'QC_PREPEND_QUEUE_UNAVAILABLE' -Message $_.Exception.Message -Data @{}
     }

@@ -1463,6 +1463,173 @@ function Get-QCStateChangeMissingEmailFields {
     return @($missing | Select-Object -Unique)
 }
 
+function _QCN-ResolveSheetNotificationIdentity {
+    <#
+    .SYNOPSIS
+    Resolves canonical sheet-level identity for notifications (siblings share one sheet stem).
+    #>
+    param(
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [hashtable]$Config = $null,
+        [array]$Members = $null
+    )
+
+    $stem = ''
+    if (-not (_QCN-IsBlank $DocumentName) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+        try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $DocumentName) } catch { }
+    }
+
+    $sheetPdfName = if ($stem) { ($stem + '.pdf') } else { $DocumentName }
+    $sheetPdfGuid = $DocumentGuid
+
+    foreach ($member in @($Members)) {
+        if (-not $member) { continue }
+        $dn = [string]$member.documentName
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+            $sheetPdfName = $dn
+            if ($member.documentGuid) { $sheetPdfGuid = [string]$member.documentGuid }
+            if (_QCN-IsBlank $stem -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $dn) } catch { }
+            }
+            break
+        }
+    }
+
+    if (_QCN-IsBlank $stem -and -not (_QCN-IsBlank $sheetPdfName)) {
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($sheetPdfName)
+    }
+
+    return @{
+        sheetStem = $stem
+        sheetPdfName = $sheetPdfName
+        sheetPdfGuid = $sheetPdfGuid
+    }
+}
+
+function _QCN-GetInitialPrependPostStateName {
+    param([hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if (Get-Command -Name 'Resolve-QCWorkflowStateAfterPrepend' -ErrorAction SilentlyContinue) {
+                return [string](Resolve-QCWorkflowStateAfterPrepend -Settings $wf -Context @{ prependTrigger = 'initialQcPdf' })
+            }
+            if ($wf.stateAfterSuccessfulPrepend) { return [string]$wf.stateAfterSuccessfulPrepend }
+        } catch { }
+    }
+    return 'Ready for QC'
+}
+
+function _QCN-GetQcInitiatedWorkflowStateName {
+    param([hashtable]$Config)
+
+    $name = 'QC Initiated'
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
+            if (-not (_QCN-IsBlank $resolved)) { $name = [string]$resolved }
+        } catch { }
+    }
+    return $name
+}
+
+function _QCN-TestWorkflowStateNameIsQcInitiated {
+    param(
+        [string]$StateName,
+        [hashtable]$Config
+    )
+
+    $state = ([string]$StateName).Trim()
+    if ([string]::IsNullOrWhiteSpace($state)) { return $false }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+        try { return [bool](Test-QCWorkflowStateIsQcInitiated -StateName $state -Config $Config) } catch { }
+    }
+    return ($state.ToLowerInvariant() -eq 'qc initiated')
+}
+
+function Get-QCWorkflowTransitionMissingEmailFields {
+    <#
+    .SYNOPSIS
+    Returns missing email attribute columns for a workflow transition, including prerequisite states
+    (e.g. QC Initiated also requires emails for the post-prepend Ready for QC notification).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [object]$Document = $null,
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = ''
+    )
+
+    $statesToCheck = [System.Collections.Generic.List[string]]::new()
+    $target = ([string]$TargetStateName).Trim()
+    if ($target.Length -gt 0) { $statesToCheck.Add($target) | Out-Null }
+
+    if (_QCN-TestWorkflowStateNameIsQcInitiated -StateName $target -Config $Config) {
+        $postState = _QCN-GetInitialPrependPostStateName -Config $Config
+        if (-not (_QCN-IsBlank $postState) -and ($postState.ToLowerInvariant() -ne $target.ToLowerInvariant())) {
+            $statesToCheck.Add([string]$postState) | Out-Null
+        }
+    }
+
+    $missing = [System.Collections.Generic.List[string]]::new()
+    foreach ($stateName in @($statesToCheck | Select-Object -Unique)) {
+        $fields = @(Get-QCStateChangeMissingEmailFields -Config $Config -TargetStateName $stateName `
+            -Document $Document -DocumentName $DocumentName -DocumentGuid $DocumentGuid -FolderPath $FolderPath)
+        foreach ($field in $fields) {
+            if (-not $missing.Contains([string]$field)) { $missing.Add([string]$field) | Out-Null }
+        }
+    }
+    return @($missing)
+}
+
+function Test-QCPrependBlockedByMissingEmailAttributes {
+    <#
+    .SYNOPSIS
+    True when initial QC prepend must not run because required notification email attributes are missing.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SheetPdfName = '',
+        [string]$DocumentGuid = '',
+        [object]$Document = $null
+    )
+
+    $initiated = _QCN-GetQcInitiatedWorkflowStateName -Config $Config
+    $missing = @(Get-QCWorkflowTransitionMissingEmailFields -Config $Config -TargetStateName $initiated `
+        -Document $Document -DocumentName $SheetPdfName -DocumentGuid $DocumentGuid -FolderPath $FolderPath)
+
+    return @{
+        blocked = ($missing.Count -gt 0)
+        missingFields = @($missing)
+        postPrependState = _QCN-GetInitialPrependPostStateName -Config $Config
+    }
+}
+
+function _QCN-GetStateChangeBlockedDedupeKey {
+    param(
+        [string]$SheetStem,
+        [string]$TargetStateName,
+        [Nullable[int]]$ChangedByUser = $null
+    )
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    $parts.Add(('sheetStem={0}' -f $(if ($SheetStem) { $SheetStem } else { '' }))) | Out-Null
+    $parts.Add('eventType=STATE_CHANGE_BLOCKED') | Out-Null
+    $parts.Add(('targetState={0}' -f $(if ($TargetStateName) { $TargetStateName } else { '' }))) | Out-Null
+    if ($null -ne $ChangedByUser -and $ChangedByUser -gt 0) {
+        $parts.Add(('changedByUser={0}' -f $ChangedByUser)) | Out-Null
+    }
+    return ($parts -join '|')
+}
+
 function Resolve-QCStateChangeActorEmailAddress {
     <#
     .SYNOPSIS
@@ -1608,8 +1775,15 @@ function Invoke-QCWorkflowStateEmailAttributeGate {
         } catch { }
     }
 
-    $missing = @(Get-QCStateChangeMissingEmailFields -Config $Config -TargetStateName $TargetStateName `
-        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -FolderPath $FolderPath)
+    $sheetIdentity = _QCN-ResolveSheetNotificationIdentity -DocumentName $DocumentName -DocumentGuid $DocumentGuid `
+        -Config $Config -Members $Members
+    $notifyDocName = [string]$sheetIdentity.sheetPdfName
+    $notifyDocGuid = [string]$sheetIdentity.sheetPdfGuid
+    if (_QCN-IsBlank $notifyDocName) { $notifyDocName = $DocumentName }
+    if (_QCN-IsBlank $notifyDocGuid) { $notifyDocGuid = $DocumentGuid }
+
+    $missing = @(Get-QCWorkflowTransitionMissingEmailFields -Config $Config -TargetStateName $TargetStateName `
+        -DocumentName $notifyDocName -DocumentGuid $notifyDocGuid -FolderPath $FolderPath)
     if ($missing.Count -eq 0) { return $result }
 
     $result.blocked = $true
@@ -1624,8 +1798,8 @@ function Invoke-QCWorkflowStateEmailAttributeGate {
             break
         }
     }
-    if ([string]::IsNullOrWhiteSpace($previousState) -and $DocumentGuid) {
-        $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+    if ([string]::IsNullOrWhiteSpace($previousState) -and $notifyDocGuid) {
+        $previousState = _QCN-GetSheetIndexPwStateName -Config $Config -DocumentGuid $notifyDocGuid
     }
 
     if (Get-Command -Name 'Revert-PWAssociatedSheetWorkflowStates' -ErrorAction SilentlyContinue) {
@@ -1633,18 +1807,39 @@ function Invoke-QCWorkflowStateEmailAttributeGate {
             -StateByGuid $StateByGuid -FolderPath $FolderPath -TargetStateName $TargetStateName -DryRun:$DryRun
     }
 
-    $docPath = if ($FolderPath -and $DocumentName) { ($FolderPath.TrimEnd('\') + '\' + $DocumentName) } else { '' }
-    $result.notification = Send-QCStateChangeBlockedNotification -Config $Config -MissingFields $missing `
-        -TargetStateName $TargetStateName -PreviousStateName $previousState -DocumentName $DocumentName `
-        -DocumentPath $docPath -DocumentGuid $DocumentGuid -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername -DryRun:$DryRun
+    $docPath = if ($FolderPath -and $notifyDocName) { ($FolderPath.TrimEnd('\') + '\' + $notifyDocName) } else { '' }
+    $blockedDedupeKey = _QCN-GetStateChangeBlockedDedupeKey -SheetStem ([string]$sheetIdentity.sheetStem) `
+        -TargetStateName $TargetStateName -ChangedByUser $ChangedByUser
+    $notifySkippedDuplicate = $false
+    if (Test-QCNotificationDedupe -DedupeKey $blockedDedupeKey -Settings $settings) {
+        $notifySkippedDuplicate = $true
+        $result.notification = New-QCSuccessResult -Code 'QC_STATE_CHANGE_BLOCKED_NOTIFY_DEDUPED' `
+            -Message 'Blocked-state notice already sent for this sheet transition.' -Data @{
+            dedupeKey = $blockedDedupeKey; sheetStem = [string]$sheetIdentity.sheetStem; skipped = $true
+        }
+    } else {
+        $result.notification = Send-QCStateChangeBlockedNotification -Config $Config -MissingFields $missing `
+            -TargetStateName $TargetStateName -PreviousStateName $previousState -DocumentName $notifyDocName `
+            -DocumentPath $docPath -DocumentGuid $notifyDocGuid -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername -DryRun:$DryRun
+        if (-not $DryRun -and -not [bool]$settings.dryRun -and $result.notification -and $result.notification.IsSuccess) {
+            Register-QCNotificationDedupe -DedupeKey $blockedDedupeKey -Settings $settings -ResultData @{
+                eventType = 'STATE_CHANGE_BLOCKED'
+                documentName = $notifyDocName
+                provider = [string]$settings.provider
+            }
+        }
+    }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_STATE_CHANGE_BLOCKED_MISSING_EMAIL' `
             -Message 'Workflow state change rolled back because required email attributes are missing.' -Data @{
-            documentName = $DocumentName; documentGuid = $DocumentGuid; folderPath = $FolderPath
-            targetState = $TargetStateName; previousState = $previousState; missingFields = @($missing)
+            documentName = $notifyDocName; documentGuid = $notifyDocGuid; folderPath = $FolderPath
+            triggerDocumentName = $DocumentName; triggerDocumentGuid = $DocumentGuid
+            sheetStem = [string]$sheetIdentity.sheetStem; targetState = $TargetStateName
+            previousState = $previousState; missingFields = @($missing)
             changedByUser = $ChangedByUser; rollback = $result.rollback; dryRun = [bool]$DryRun
+            notifySkippedDuplicate = $notifySkippedDuplicate; blockedDedupeKey = $blockedDedupeKey
         } | Out-Null
     }
 
@@ -1902,5 +2097,6 @@ function Invoke-QCNotificationForStateChange {
 
 Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
     Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
-    Get-QCStateChangeMissingEmailFields, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
+    Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
+    Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

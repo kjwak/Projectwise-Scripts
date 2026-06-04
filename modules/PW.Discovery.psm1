@@ -1808,6 +1808,30 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
 
     if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
         if (Test-QCWorkflowStateIsQcInitiated -StateName $canonical -Config $Config) {
+            if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
+                try {
+                    $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+                    Import-Module $notifPath -ErrorAction SilentlyContinue
+                    if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
+                        Import-Module $notifPath -Force -ErrorAction SilentlyContinue
+                    }
+                } catch { }
+            }
+            if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
+                $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
+                    -SheetPdfName $sheetPdfName -DocumentGuid $sheetPdfGuid
+                if ($emailGate -and [bool]$emailGate.blocked) {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_SKIPPED_MISSING_EMAIL' `
+                            -Message 'QC_PREPEND skipped after sheet sync: required notification email attributes are missing.' -Data @{
+                            folderPath = $FolderPath; sheetPdf = $sheetPdfName; sheetStem = $sheetStem
+                            missingFields = @($emailGate.missingFields); postPrependState = [string]$emailGate.postPrependState
+                            canonicalState = $canonical
+                        } | Out-Null
+                    }
+                    return
+                }
+            }
             $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
                 -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
                 -SheetStem $sheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $canonical `
