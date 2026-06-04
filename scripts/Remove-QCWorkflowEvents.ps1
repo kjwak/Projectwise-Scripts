@@ -1,17 +1,19 @@
 <#
 .SYNOPSIS
-Removes rows from dbo.qc_workflow_events (and optional comment-sync tables) by folder scope.
+Removes rows from dbo.qc_workflow_events (and optional comment-sync tables).
 
 .DESCRIPTION
-Targets bad telemetry for specific ProjectWise paths. Matches workflow rows via
-sheet_index.folder_path on document_id, and comment runs via qc_comment_runs.pw_path.
-Path matching is case-insensitive; backslashes and forward slashes are equivalent.
+-TruncateAll deletes every row in qc_workflow_events (no folder_path on that table).
+Optional -IncludeCommentTelemetry also clears qc_comment_runs, qc_comments, and
+qc_comment_status_history.
 
-Optional -OlderThanDays / -BeforeUtc narrow further. Default is preview; pass -ConfirmDeletes to apply.
+For scoped cleanup, -FolderPathLike resolves document_id via sheet_index.folder_path.
+Default is preview; pass -ConfirmDeletes to apply.
 
 .EXAMPLE
-.\scripts\Remove-QCWorkflowEvents.ps1 -FolderPathLike 'AZFWY2302-018'
-.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -FolderPathLike 'BADPROJ', 'HOLD'
+.\scripts\Remove-QCWorkflowEvents.ps1 -TruncateAll
+.\scripts\Remove-QCWorkflowEvents.ps1 -TruncateAll -IncludeCommentTelemetry -ConfirmDeletes
+.\scripts\Remove-QCWorkflowEvents.ps1 -ConfirmDeletes -FolderPathLike 'AZFWY2302-018'
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -26,6 +28,7 @@ param(
     [datetime]$BeforeUtc,
     [int]$BatchSize = 5000,
     [switch]$IncludeCommentTelemetry,
+    [Alias('All')]
     [switch]$TruncateAll,
     [switch]$Pretty
 )
@@ -82,6 +85,8 @@ if ($TruncateAll.IsPresent) {
     $cutoff = [datetimeoffset]::UtcNow.AddDays(-1 * $OlderThanDays)
     $useCutoff = $true
 }
+
+$fullWipe = $TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $useCutoff
 
 function _QWE-NormalizePathPattern {
     param([string]$Pattern)
@@ -225,7 +230,7 @@ $summary = [ordered]@{
 }
 
 Write-Host '[qc_workflow_events] Counting matching rows...' -ForegroundColor Cyan
-if ($TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $useCutoff) {
+if ($fullWipe) {
     $wfCount = _QWE-GetScalar -Config $config -Sql 'SELECT COUNT_BIG(1) FROM qc_workflow_events' -Params $params
 } else {
     $wfCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_workflow_events w$wfWhere" -Params $params
@@ -238,9 +243,15 @@ if ($pathPatterns.Count -gt 0) {
 
 if ($IncludeCommentTelemetry.IsPresent) {
     Write-Host '[comment telemetry] Counting matching rows...' -ForegroundColor Cyan
-    $runCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_runs r$runWhere" -Params $params
-    $commentCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($runSub)" -Params $params
-    $histCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_status_history h$histWhere" -Params $params
+    if ($fullWipe) {
+        $runCount = _QWE-GetScalar -Config $config -Sql 'SELECT COUNT_BIG(1) FROM qc_comment_runs' -Params $params
+        $commentCount = _QWE-GetScalar -Config $config -Sql 'SELECT COUNT_BIG(1) FROM qc_comments' -Params $params
+        $histCount = _QWE-GetScalar -Config $config -Sql 'SELECT COUNT_BIG(1) FROM qc_comment_status_history' -Params $params
+    } else {
+        $runCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_runs r$runWhere" -Params $params
+        $commentCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($runSub)" -Params $params
+        $histCount = _QWE-GetScalar -Config $config -Sql "SELECT COUNT_BIG(1) FROM qc_comment_status_history h$histWhere" -Params $params
+    }
     $summary.commentTelemetry = @{
         rowsMatched = @{ runs = $runCount; comments = $commentCount; history = $histCount }
         deleted     = $null
@@ -253,21 +264,30 @@ if ($IncludeCommentTelemetry.IsPresent) {
 if ($doDelete) {
     if ($IncludeCommentTelemetry.IsPresent) {
         $summary.commentTelemetry.deleted = [ordered]@{}
-        $summary.commentTelemetry.deleted.qc_comment_status_history = _QWE-RunDeleteLoop -Config $config `
-            -Sql "DELETE TOP (@batchSize) FROM qc_comment_status_history WHERE history_id IN (SELECT h.history_id FROM qc_comment_status_history h$histWhere)" `
-            -Params $params -Label 'qc_comment_status_history'
-        $summary.commentTelemetry.deleted.qc_comments = _QWE-RunDeleteLoop -Config $config `
-            -Sql "DELETE TOP (@batchSize) FROM qc_comments WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE c.run_id IN ($runSub))" `
-            -Params $params -Label 'qc_comments'
-        $summary.commentTelemetry.deleted.qc_comment_runs = _QWE-RunDeleteLoop -Config $config `
-            -Sql "DELETE TOP (@batchSize) FROM qc_comment_runs WHERE run_id IN (SELECT r.run_id FROM qc_comment_runs r$runWhere)" `
-            -Params $params -Label 'qc_comment_runs'
+        if ($fullWipe) {
+            $summary.commentTelemetry.deleted.qc_comments = _QWE-RunDeleteLoop -Config $config `
+                -Sql 'DELETE TOP (@batchSize) FROM qc_comments' -Params $params -Label 'qc_comments'
+            $summary.commentTelemetry.deleted.qc_comment_status_history = _QWE-RunDeleteLoop -Config $config `
+                -Sql 'DELETE TOP (@batchSize) FROM qc_comment_status_history' -Params $params -Label 'qc_comment_status_history'
+            $summary.commentTelemetry.deleted.qc_comment_runs = _QWE-RunDeleteLoop -Config $config `
+                -Sql 'DELETE TOP (@batchSize) FROM qc_comment_runs' -Params $params -Label 'qc_comment_runs'
+        } else {
+            $summary.commentTelemetry.deleted.qc_comment_status_history = _QWE-RunDeleteLoop -Config $config `
+                -Sql "DELETE TOP (@batchSize) FROM qc_comment_status_history WHERE history_id IN (SELECT h.history_id FROM qc_comment_status_history h$histWhere)" `
+                -Params $params -Label 'qc_comment_status_history'
+            $summary.commentTelemetry.deleted.qc_comments = _QWE-RunDeleteLoop -Config $config `
+                -Sql "DELETE TOP (@batchSize) FROM qc_comments WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE c.run_id IN ($runSub))" `
+                -Params $params -Label 'qc_comments'
+            $summary.commentTelemetry.deleted.qc_comment_runs = _QWE-RunDeleteLoop -Config $config `
+                -Sql "DELETE TOP (@batchSize) FROM qc_comment_runs WHERE run_id IN (SELECT r.run_id FROM qc_comment_runs r$runWhere)" `
+                -Params $params -Label 'qc_comment_runs'
+        }
         $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comment_status_history
         $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comments
         $summary.totalDeleted += [long]$summary.commentTelemetry.deleted.qc_comment_runs
     }
 
-    if ($TruncateAll.IsPresent -and -not $hasFolderScope -and -not $hasIdScope -and -not $useCutoff) {
+    if ($fullWipe) {
         $summary.qc_workflow_events.deleted = _QWE-RunDeleteLoop -Config $config `
             -Sql 'DELETE TOP (@batchSize) FROM qc_workflow_events' -Params $params -Label 'qc_workflow_events'
     } else {
