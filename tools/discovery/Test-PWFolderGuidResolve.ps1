@@ -150,7 +150,7 @@ if ($docRows) {
 Write-Host ''
 try {
     $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs @($FolderGuids) -ErrorAction Stop) | Where-Object { $null -ne $_ }
-    Write-Host "Get-PWFoldersByGUIDs (batch): $($folders.Count) non-null object(s)" -ForegroundColor Cyan
+    Write-Host "Get-PWFoldersByGUIDs (batch canonical): $($folders.Count) non-null object(s)" -ForegroundColor Cyan
     foreach ($f in $folders) {
         $fp = _FolderPathFromObject $f
         $fg = _Prop $f 'FolderGUID'

@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v4'
+$script:AuditPollerLogicVersion = '2026-06-04-folder-guid-resolve-v5'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -306,43 +306,62 @@ function _AuditPoller-FetchPwFolderObjectsViaSqlProjectNo {
     return $byKey
 }
 
+function _AuditPoller-RegisterFetchedFolderInByKey {
+    param(
+        [object]$FolderObject,
+        [string]$RequestedGuid,
+        [hashtable]$ByKey
+    )
+    if ($null -eq $FolderObject) { return }
+    $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $FolderObject
+    $nk = _AuditPoller-NormalizeFolderGuidKey -Guid $fg
+    $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $RequestedGuid
+    if ($nk) { $ByKey[$nk] = $FolderObject }
+    if ($rk -and -not $ByKey.ContainsKey($rk)) { $ByKey[$rk] = $FolderObject }
+}
+
+function _AuditPoller-FetchPwFolderByGuidCmdlet {
+    param([string]$Guid)
+    if (-not (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue)) { return $null }
+    foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $Guid)) {
+        if ([string]::IsNullOrWhiteSpace($v)) { continue }
+        try {
+            $one = @(Get-PWFoldersByGUIDs -FolderGUIDs @($v) -ErrorAction Stop) | Where-Object { $null -ne $_ }
+            if ($one.Count -gt 0) {
+                return (_AuditPoller-PreparePwFolderObject -Folder $one[0])
+            }
+        } catch { }
+    }
+    return $null
+}
+
 function _AuditPoller-FetchPwFoldersForGuidChunk {
     param([string[]]$ChunkGuids)
 
     $byKey = @{}
-    $list = [System.Collections.Generic.List[object]]::new()
-    $guidArgs = [System.Collections.Generic.List[string]]::new()
-    foreach ($g in @($ChunkGuids)) {
-        foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $g)) {
-            if (-not [string]::IsNullOrWhiteSpace($v)) { [void]$guidArgs.Add($v) }
-        }
-    }
-    $uniqueArgs = @($guidArgs | Sort-Object -Unique)
-    if ($uniqueArgs.Count -eq 0) { return $byKey }
+    $batchGuids = @($ChunkGuids | ForEach-Object {
+        $k = _AuditPoller-NormalizeFolderGuidKey -Guid $_
+        if ($k) { $k } else { ([string]$_).Trim() }
+    } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    if ($batchGuids.Count -eq 0) { return $byKey }
 
+    # pwps_dab: batch with many GUID variants often returns nothing; use one canonical guid per parent.
     if (Get-Command -Name 'Get-PWFoldersByGUIDs' -ErrorAction SilentlyContinue) {
         try {
-            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $uniqueArgs -ErrorAction Stop) | Where-Object { $null -ne $_ }
-            foreach ($f in $folders) { [void]$list.Add((_AuditPoller-PreparePwFolderObject -Folder $f)) }
+            $folders = @(Get-PWFoldersByGUIDs -FolderGUIDs $batchGuids -ErrorAction Stop) | Where-Object { $null -ne $_ }
+            foreach ($f in $folders) {
+                $prepared = _AuditPoller-PreparePwFolderObject -Folder $f
+                _AuditPoller-RegisterFetchedFolderInByKey -FolderObject $prepared -RequestedGuid '' -ByKey $byKey | Out-Null
+            }
         } catch { }
-    }
-
-    foreach ($f in $list) {
-        $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
-        $nk = _AuditPoller-NormalizeFolderGuidKey -Guid $fg
-        if ($nk) { $byKey[$nk] = $f }
     }
 
     foreach ($req in @($ChunkGuids)) {
         $rk = _AuditPoller-NormalizeFolderGuidKey -Guid $req
-        if (-not $rk) { continue }
-        if ($byKey.ContainsKey($rk)) { continue }
-        foreach ($v in @(_AuditPoller-GetFolderGuidLookupVariants -Guid $req)) {
-            $vk = _AuditPoller-NormalizeFolderGuidKey -Guid $v
-            if ($vk -and $byKey.ContainsKey($vk)) {
-                $byKey[$rk] = $byKey[$vk]
-                break
-            }
+        if (-not $rk -or $byKey.ContainsKey($rk)) { continue }
+        $f = _AuditPoller-FetchPwFolderByGuidCmdlet -Guid $req
+        if ($f) {
+            _AuditPoller-RegisterFetchedFolderInByKey -FolderObject $f -RequestedGuid $req -ByKey $byKey | Out-Null
         }
     }
 

@@ -129,7 +129,7 @@ Audit-trail scanning typically processes 2000+ events in 70–90 seconds, compar
 
 GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to minimize PW API round-trips.
 
-**Folder resolution (Jun 2026):** `pw_parentguid` on document audit rows is the containing folder GUID (`dms_proj.o_projguid`). Resolution order: `Get-PWFoldersByGUIDs -FolderGUIDs @(...)` (requires an active PW login), then SQL `dms_proj` → `Get-PWFolders -FolderID` + `GetFullPath()`. `Get-PWFoldersHashTableByGuid` is **not** used for arbitrary GUIDs (it only enumerates a subtree from `-FolderPath` or `-FolderID`). Cache: `pw_folder_cache` + warm-up via `Sync-AuditPollerWatchFolderGuidCache` (`auditPoller.folderGuidCache` in `appsettings.json`).
+**Folder resolution (Jun 2026):** `pw_parentguid` on document audit rows is the containing folder GUID. Resolution: `Get-PWFoldersByGUIDs` (batch with one canonical GUID per parent, then per-GUID retry with brace variants if needed), optional SQL `dms_proj` → `Get-PWFolders -FolderID`, then `Get-PWDocumentsByGUIDs` for document parents. Call `GetFullPath()` before reading path properties. Paths are normalized to `Documents\...` for watch-root matching. `Get-PWFoldersHashTableByGuid` is only for subtree enumeration by path/ID, not arbitrary GUID lists. Cache: `pw_folder_cache` + `Sync-AuditPollerWatchFolderGuidCache` (`auditPoller.folderGuidCache`).
 
 If lookup fails, a **negative cache** row is written (`resolve_failed = 1`, empty `folder_path`, TTL `auditPoller.negativeCacheTtlSeconds`, default 30 minutes). Delete that row (or wait for `expires_at`) before retrying after a fix. Watcher logs: `AUDIT_FOLDER_GUID_NOT_FOUND` (no PW object) vs `AUDIT_FOLDER_GUID_NO_PATH` (object returned but path not extracted).
 
