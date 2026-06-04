@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-ingest-exclude-checkout-v6'
+$script:AuditPollerLogicVersion = '2026-06-04-ingest-qc-actions-only-v7'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -21,15 +21,8 @@ $script:QCRelevantActions = @{
     1020 = 'DOCUMENT_DELETE'
 }
 
-# Never written to audit_events (high-volume checkout noise). Watermark still advances on fetch.
-$script:AuditIngestExcludedActions = @{
-    1009 = 'DOCUMENT_CHOUT'
-    1010 = 'DOCUMENT_CPOUT'
-    1011 = 'DOCUMENT_GOUT'
-}
-
-# Full PW audit trail action map (dms_audt o_action / pw_action). Ingest skips AuditIngestExcludedActions;
-# job triggers use QCRelevantActions only. Source: Bentley ProjectWise audit action constants.
+# Full PW audit trail action map (dms_audt o_action / pw_action). Only QCRelevantActions are written to audit_events;
+# all other actions still advance the watermark on fetch. Source: Bentley ProjectWise audit action constants.
 $script:AuditActionNames = @{
     # Folders
     1    = 'FOLDER_CREATE';           2    = 'FOLDER_MODIFY';           3    = 'FOLDER_WFLOW'
@@ -1222,9 +1215,9 @@ function _AuditPoller-GetActionCode {
     try { return [int]$v } catch { return 0 }
 }
 
-function _AuditPoller-TestAuditIngestExcludedActionCode {
+function _AuditPoller-TestAuditIngestAllowedActionCode {
     param([int]$ActionCode)
-    return $script:AuditIngestExcludedActions.ContainsKey($ActionCode)
+    return $script:QCRelevantActions.ContainsKey($ActionCode)
 }
 
 function _AuditPoller-TryAdvanceWatermarkFromAuditRow {
@@ -1563,7 +1556,7 @@ function Invoke-AuditTrailScan {
         failedFolderGuidCacheHits = 0
         triggerSource      = 'pw_batch'
         auditLogicVersion  = $script:AuditPollerLogicVersion
-        ingestExcluded     = 0
+        ingestSkipped      = 0
         totalFetchedRaw    = 0
     }
 
@@ -1604,8 +1597,8 @@ function Invoke-AuditTrailScan {
                 $stats.totalFetchedRaw++
                 _AuditPoller-TryAdvanceWatermarkFromAuditRow -Row $row -Config $Config -MaxPwActTime ([ref]$maxPwActTime) -MaxPwActTimeUtc ([ref]$maxPwActTimeUtc)
                 $actionCode = _AuditPoller-GetActionCode -Row $row
-                if (_AuditPoller-TestAuditIngestExcludedActionCode -ActionCode $actionCode) {
-                    $stats.ingestExcluded++
+                if (-not (_AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $actionCode)) {
+                    $stats.ingestSkipped++
                     continue
                 }
                 [void]$allEvents.Add($row)
@@ -1644,8 +1637,8 @@ function Invoke-AuditTrailScan {
             $stats.maxPwActTime = $maxPwActTime
             $stats.maxPwActTimeUtc = $maxPwActTimeUtc
         }
-        if ($stats.ingestExcluded -gt 0 -and $watermarkAfterEmpty) {
-            return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "No ingestable audit events ($($stats.ingestExcluded) checkout rows excluded)." -Data @{
+        if ($stats.ingestSkipped -gt 0 -and $watermarkAfterEmpty) {
+            return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "No ingestable audit events ($($stats.ingestSkipped) non-QC rows skipped)." -Data @{
                 events = @(); candidates = @(); docToFolder = @{}; stats = $stats
                 watermarkAfter = $watermarkAfterEmpty; durationMs = [int]$sw.ElapsedMilliseconds
                 pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
@@ -1658,7 +1651,7 @@ function Invoke-AuditTrailScan {
         }
     }
 
-    # 2. Ingest fetched rows into audit_events (checkout GOUT/CPOUT/CHOUT already excluded).
+    # 2. Ingest QC-relevant rows into audit_events (QCRelevantActions allowlist only).
     $watermarkAfter = $null
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
@@ -1709,7 +1702,7 @@ function Invoke-AuditTrailScan {
             Write-QCJsonLog -Flush -Level $ingestLevel -Code 'AUDIT_EVENTS_INGEST' -Message "audit_events ingest: $($stats.dbWrites) written, $($stats.dbSkipped) skipped/duplicate." -Data @{
                 eventsFetched = $stats.totalEvents
                 totalFetchedRaw = [int]$stats.totalFetchedRaw
-                ingestExcluded = [int]$stats.ingestExcluded
+                ingestSkipped = [int]$stats.ingestSkipped
                 rowsPrepared  = $stats.dbRowsPrepared
                 rowsNullGuid  = $stats.dbRowsNullGuid
                 written       = $stats.dbWrites
@@ -1937,9 +1930,9 @@ function Get-AuditPollerLogicVersion {
     return $script:AuditPollerLogicVersion
 }
 
-function Test-QCAuditIngestExcludedActionCode {
+function Test-QCAuditIngestAllowedActionCode {
     param([Parameter(Mandatory)][int]$ActionCode)
-    return _AuditPoller-TestAuditIngestExcludedActionCode -ActionCode $ActionCode
+    return _AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $ActionCode
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestExcludedActionCode
+Export-ModuleMember -Function Invoke-AuditTrailScan, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode

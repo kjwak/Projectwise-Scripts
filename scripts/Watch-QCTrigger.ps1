@@ -872,7 +872,7 @@ if ($statusSetRules.Count -ge 0) {
                                 $dbAuditEventWritesSkipped += [int]$auditData.stats.dbSkipped
                             }
                         } catch { }
-                        # Advance watermark when dms_audt returned rows this tick (including ingest-excluded checkout).
+                        # Advance watermark when dms_audt returned rows this tick (including ingest-skipped non-QC actions).
                         $maxPwActTime = $null
                         $maxPwActTimeUtc = $null
                         $totalEventsFetched = 0
@@ -935,7 +935,7 @@ if ($statusSetRules.Count -ge 0) {
                         _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_DONE' -Message 'Audit trail scan completed.' -Data @{
                             totalEvents    = $auditData.stats.totalEvents
                             totalFetchedRaw = if ($null -ne $auditData.stats.totalFetchedRaw) { [int]$auditData.stats.totalFetchedRaw } else { $null }
-                            ingestExcluded = if ($null -ne $auditData.stats.ingestExcluded) { [int]$auditData.stats.ingestExcluded } else { $null }
+                            ingestSkipped = if ($null -ne $auditData.stats.ingestSkipped) { [int]$auditData.stats.ingestSkipped } else { $null }
                             relevantEvents = $auditData.stats.relevantEvents
                             watchMatches   = $auditData.stats.watchMatches
                             sheetsMatches  = $auditData.stats.sheetsMatches
