@@ -23,7 +23,7 @@ foreach ($file in $loadOrder) {
     if (-not (Test-Path -LiteralPath $modPath)) {
         throw "Missing module file: $modPath"
     }
-    Import-Module -LiteralPath $modPath -Force -Scope Global -ErrorAction Stop | Out-Null
+    Import-Module $modPath -Force -Scope Global -ErrorAction Stop | Out-Null
 }
 
 if (-not (Get-Command -Name 'Read-QCAppSettings' -ErrorAction SilentlyContinue)) {
