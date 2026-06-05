@@ -884,26 +884,55 @@ function _QCN-GetQcReviewerEmailAttributeName {
 function _QCN-GetRoleEmailsFromSheetIndex {
     param(
         [hashtable]$Config,
-        [string]$DocumentGuid
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = ''
     )
 
-    if (_QCN-IsBlank $DocumentGuid) { return $null }
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $null }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
+
     try {
-        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT designer_email, reviewer_email, checker_email
 FROM sheet_index
 WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid }
-        if (-not $res.IsSuccess -or -not $res.Data.table -or $res.Data.table.Rows.Count -eq 0) { return $null }
-        $r = $res.Data.table.Rows[0]
-        return @{
-            designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
-            reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
-            checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $r = $res.Data.table.Rows[0]
+                $roles = @{
+                    designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
+                    reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
+                    checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+                }
+                if (-not (_QCN-IsBlank $roles.reviewerEmail) -or -not (_QCN-IsBlank $roles.designerEmail)) {
+                    return $roles
+                }
+            }
+        }
+        if (-not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceDocumentName)) {
+            $srcName = [string]$SourceDocumentName
+            if ($srcName -match '(?i)-qc\.pdf$') {
+                $srcName = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcName)) + '.pdf'
+            }
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@srcName)
+"@ -Parameters @{ folderPath = [string]$FolderPath; srcName = $srcName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $r2 = $res2.Data.table.Rows[0]
+                return @{
+                    designerEmail = if ($r2.designer_email -is [DBNull]) { '' } else { [string]$r2.designer_email }
+                    reviewerEmail = if ($r2.reviewer_email -is [DBNull]) { '' } else { [string]$r2.reviewer_email }
+                    checkerEmail = if ($r2.checker_email -is [DBNull]) { '' } else { [string]$r2.checker_email }
+                }
+            }
         }
     } catch { return $null }
+    return $null
 }
 
 function _QCN-ResolveQcPdfGuidFromSheetIndex {
@@ -1040,10 +1069,11 @@ function _QCN-ResolveNotificationRoleEmails {
         }
     }
 
-    if ($Config -and (-not (_QCN-IsBlank $DocumentGuid))) {
+    if ($Config -and ((-not (_QCN-IsBlank $DocumentGuid)) -or ((-not (_QCN-IsBlank $folderPath)) -and (-not (_QCN-IsBlank $sourceName))))) {
         $needIndex = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
         if ($needIndex) {
-            $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid
+            $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid `
+                -FolderPath $folderPath -SourceDocumentName $sourceName
             if ($idx) {
                 if (_QCN-IsBlank $designer) { $designer = [string]$idx.designerEmail }
                 if (_QCN-IsBlank $reviewer) { $reviewer = [string]$idx.reviewerEmail }

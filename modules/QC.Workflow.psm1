@@ -132,6 +132,77 @@ function _QCW-EnsureNotificationCommandsLoaded {
     return [bool](Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)
 }
 
+function _QCW-ResolveNotificationRoleAttrsForEnqueue {
+    param(
+        [hashtable]$Config,
+        [object]$Document,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = ''
+    )
+
+    $out = @{}
+    $attr = @{}
+    if ($Config -and (Get-Command -Name 'Get-QCNotificationSettings' -ErrorAction SilentlyContinue)) {
+        try {
+            $settings = Get-QCNotificationSettings -Config $Config
+            $attr = _QCW-ToHashtable $settings.attributes
+            if (-not $attr) { $attr = @{} }
+        } catch { }
+    }
+    $reviewerField = if ($attr.reviewerEmailField) { [string]$attr.reviewerEmailField } else { 'EM_Reviewer_Email' }
+    $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
+    $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
+
+    if ($Document) {
+        $docH = _QCW-ToHashtable $Document
+        if ($docH) {
+            if ($docH.ContainsKey('designerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.designerEmail)) {
+                $out['designerEmail'] = [string]$docH.designerEmail
+            } elseif ($docH.ContainsKey($designerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$designerField])) {
+                $out['designerEmail'] = [string]$docH[$designerField]
+            }
+            if ($docH.ContainsKey('reviewerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.reviewerEmail)) {
+                $out['reviewerEmail'] = [string]$docH.reviewerEmail
+            } elseif ($docH.ContainsKey($reviewerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$reviewerField])) {
+                $out['reviewerEmail'] = [string]$docH[$reviewerField]
+            }
+            if ($docH.ContainsKey('checkerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.checkerEmail)) {
+                $out['checkerEmail'] = [string]$docH.checkerEmail
+            } elseif ($docH.ContainsKey($checkerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$checkerField])) {
+                $out['checkerEmail'] = [string]$docH[$checkerField]
+            }
+        }
+    }
+
+    $srcName = [string]$SourceDocumentName
+    if (_QCW-IsNullOrWhiteSpace $srcName) -and $Document) {
+        try { $srcName = [string]$Document.Name } catch { }
+    }
+    if (-not (_QCW-IsNullOrWhiteSpace $srcName) -and $srcName -match '(?i)-qc\.pdf$') {
+        $srcName = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcName)) + '.pdf'
+    }
+    $folder = [string]$FolderPath
+    if (_QCW-IsNullOrWhiteSpace $folder) -and $Document) {
+        try { $folder = [string]$Document.FolderPath } catch { }
+    }
+
+    $needPw = (-not $out.ContainsKey('reviewerEmail')) -or (-not $out.ContainsKey('designerEmail')) -or (-not $out.ContainsKey('checkerEmail'))
+    if ($needPw -and $Config -and -not (_QCW-IsNullOrWhiteSpace $folder) -and -not (_QCW-IsNullOrWhiteSpace $srcName)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            try {
+                $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folder -SourceDocumentName $srcName -Config $Config
+                if ($pw.found) {
+                    if ((-not $out.ContainsKey('reviewerEmail')) -and $pw.reviewerEmail) { $out['reviewerEmail'] = [string]$pw.reviewerEmail }
+                    if ((-not $out.ContainsKey('designerEmail')) -and $pw.designerEmail) { $out['designerEmail'] = [string]$pw.designerEmail }
+                    if ((-not $out.ContainsKey('checkerEmail')) -and $pw.checkerEmail) { $out['checkerEmail'] = [string]$pw.checkerEmail }
+                    if ($pw.qcReviewType) { $out['qcReviewType'] = [string]$pw.qcReviewType }
+                }
+            } catch { }
+        }
+    }
+    return $out
+}
+
 function _QCW-InvokeStateChangeNotification {
     param(
         [hashtable]$Config,
@@ -324,6 +395,18 @@ function _QCW-InvokeStateChangeNotification {
         if (-not $roleAttrs -and $job -and $job.ContainsKey('metadata') -and $job.metadata) {
             $jobMd = _QCW-ToHashtable $job.metadata
             if ($jobMd -and $jobMd.attributes) { $roleAttrs = _QCW-ToHashtable $jobMd.attributes }
+        }
+        $resolvedRoles = _QCW-ResolveNotificationRoleAttrsForEnqueue -Config $Config -Document $Document `
+            -FolderPath ([string]$notifJob.sourceFolder) -SourceDocumentName ([string]$notifJob.sourceName)
+        if ($resolvedRoles -and $resolvedRoles.Count -gt 0) {
+            if (-not $roleAttrs) { $roleAttrs = @{} }
+            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail', 'reviewType', 'qcReviewType')) {
+                if ($resolvedRoles.ContainsKey($k) -and -not (_QCW-IsNullOrWhiteSpace $resolvedRoles[$k])) {
+                    if (-not $roleAttrs.ContainsKey($k) -or (_QCW-IsNullOrWhiteSpace $roleAttrs[$k])) {
+                        $roleAttrs[$k] = [string]$resolvedRoles[$k]
+                    }
+                }
+            }
         }
         if ($roleAttrs) {
             $attrsForNotif = @{}
