@@ -138,7 +138,9 @@ function Get-QCNotificationSettings {
         dedupe = @{
             enabled = $true
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
-            keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
+            # Logical sheet-transition identity.  Do not key by transitionId by default because
+            # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
+            keyFields = @('notificationType', 'sheetStem', 'targetState', 'cycleId', 'recipientKey')
         }
         graph = @{
             tenantId = ''
@@ -1066,6 +1068,21 @@ function Resolve-QCNotificationRecipients {
     }
 }
 
+function _QCN-BuildRecipientKey {
+    param(
+        [string[]]$To = @(),
+        [string[]]$Cc = @()
+    )
+
+    $set = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($email in @($To) + @($Cc)) {
+        if (_QCN-IsBlank $email) { continue }
+        [void]$set.Add(([string]$email).Trim().ToLowerInvariant())
+    }
+    if ($set.Count -eq 0) { return '' }
+    return ('recipients:' + ((@($set)) -join ','))
+}
+
 function Get-QCNotificationDedupeKey {
     [CmdletBinding()]
     param(
@@ -1077,16 +1094,11 @@ function Get-QCNotificationDedupeKey {
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
 
-    if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
-        try {
-            $tid = [int]$Event.transitionId
-            if ($tid -gt 0) { return ('transition:{0}' -f $tid) }
-        } catch { }
-    }
-
     $dedupe = _QCN-ToHashtable $Settings.dedupe
-    # stateTransitionKey (audit:/transition:) allows a new email each QC cycle; transitionId scopes one row.
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('stateTransitionKey', 'sheetStem', 'eventType', 'previousState', 'currentState') }
+    # Default to one durable notification per logical sheet transition + recipient set.  A
+    # transition_events id is intentionally *not* authoritative here: sibling sync can create
+    # one transition row for the DGN, sheet PDF, and *-qc.pdf for the same logical sheet action.
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('notificationType', 'sheetStem', 'targetState', 'cycleId', 'recipientKey') }
 
     if (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
         $stem = ''
@@ -1094,6 +1106,19 @@ function Get-QCNotificationDedupeKey {
             try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
         }
         if (-not (_QCN-IsBlank $stem)) { $Event['sheetStem'] = $stem }
+    }
+
+    if ((-not $Event.ContainsKey('recipientKey') -or (_QCN-IsBlank $Event.recipientKey)) -and ($Event.ContainsKey('to') -or $Event.ContainsKey('cc'))) {
+        $Event['recipientKey'] = _QCN-BuildRecipientKey -To @($Event.to) -Cc @($Event.cc)
+    }
+    if (-not $Event.ContainsKey('notificationType') -or (_QCN-IsBlank $Event.notificationType)) {
+        $Event['notificationType'] = [string]$Event.eventType
+    }
+    if (-not $Event.ContainsKey('targetState') -or (_QCN-IsBlank $Event.targetState)) {
+        $Event['targetState'] = [string]$Event.currentState
+    }
+    if (-not $Event.ContainsKey('cycleId') -or (_QCN-IsBlank $Event.cycleId)) {
+        $Event['cycleId'] = [string]$Event.stateTransitionKey
     }
 
     $parts = [System.Collections.Generic.List[string]]::new()
@@ -1114,11 +1139,17 @@ function Get-QCNotificationDedupeKey {
             'documentName' { $value = [string]$Event.documentName }
             'documentPath' { $value = [string]$Event.documentPath }
             'eventType' { $value = [string]$Event.eventType }
+            'notificationType' { $value = [string]$Event.notificationType }
             'currentState' { $value = [string]$Event.currentState }
+            'targetState' { $value = [string]$Event.targetState }
             'previousState' { $value = [string]$Event.previousState }
             'project' { $value = [string]$Event.project }
             'stateTransitionKey' { $value = [string]$Event.stateTransitionKey }
+            'cycleId' { $value = [string]$Event.cycleId }
+            'recipientKey' { $value = [string]$Event.recipientKey }
             'transitionId' {
+                # Backward-compatible opt-in only. Not part of the default key because it is
+                # per-document-row rather than per logical sheet transition.
                 if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
                     try { $value = [string][int]$Event.transitionId } catch { $value = [string]$Event.transitionId }
                 }
@@ -1280,6 +1311,109 @@ function Write-QCNotificationResult {
     if (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $data | Out-Null
     }
+}
+
+function _QCN-GetNotificationAuditEventId {
+    param([hashtable]$Event)
+    if (-not $Event) { return $null }
+    foreach ($key in @('auditEventId', 'triggerAuditId', 'sourceAuditId')) {
+        if ($Event.ContainsKey($key) -and $null -ne $Event[$key]) {
+            try {
+                $v = [long]$Event[$key]
+                if ($v -gt 0) { return $v }
+            } catch { }
+        }
+    }
+    if ($Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
+        $m = [regex]::Match([string]$Event.stateTransitionKey, 'audit:(\d+)')
+        if ($m.Success) {
+            try { return [long]$m.Groups[1].Value } catch { }
+        }
+    }
+    return $null
+}
+
+function _QCN-TestNotificationActorIsAutomation {
+    param(
+        [hashtable]$Config,
+        [hashtable]$Event
+    )
+    if (-not $Config -or -not $Event) { return $false }
+    if (-not (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue)) { return $false }
+    $userno = $null
+    if ($Event.ContainsKey('changedByUser') -and $null -ne $Event.changedByUser) {
+        try {
+            $n = [int]$Event.changedByUser
+            if ($n -gt 0) { $userno = $n }
+        } catch { }
+    }
+    $username = if ($Event.ContainsKey('changedByUsername')) { [string]$Event.changedByUsername } else { '' }
+    try { return [bool](Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $userno -ChangedByUsername $username) } catch { }
+    return $false
+}
+
+function _QCN-ResolveNotificationTriggerSource {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Job
+    )
+    if ($Event) {
+        foreach ($key in @('triggerSource', 'source', 'origin')) {
+            if ($Event.ContainsKey($key) -and -not (_QCN-IsBlank $Event[$key])) { return [string]$Event[$key] }
+        }
+        if ($Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
+            $st = [string]$Event.stateTransitionKey
+            if ($st.StartsWith('audit:', [StringComparison]::OrdinalIgnoreCase)) { return 'audit' }
+            if ($st.StartsWith('workflow:', [StringComparison]::OrdinalIgnoreCase)) { return 'workflow' }
+        }
+    }
+    if ($Job) {
+        foreach ($key in @('type', 'jobType')) {
+            if ($Job.ContainsKey($key) -and -not (_QCN-IsBlank $Job[$key])) { return [string]$Job[$key] }
+        }
+    }
+    return ''
+}
+
+function _QCN-WriteNotificationLifecycleLog {
+    param(
+        [Parameter(Mandatory)][string]$Code,
+        [string]$Level = 'Information',
+        [string]$Message = '',
+        [hashtable]$Event,
+        [hashtable]$Config = $null,
+        [hashtable]$Job,
+        [string[]]$To = @(),
+        [string[]]$Cc = @(),
+        [string]$Subject = ''
+    )
+
+    if (-not (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue)) { return }
+    if (_QCN-IsBlank $Message) { $Message = $Code }
+    $actor = ''
+    if ($Event -and $Event.ContainsKey('changedByUsername') -and -not (_QCN-IsBlank $Event.changedByUsername)) { $actor = [string]$Event.changedByUsername }
+    elseif ($Event -and $Event.ContainsKey('submittedBy') -and -not (_QCN-IsBlank $Event.submittedBy)) { $actor = [string]$Event.submittedBy }
+    $recipientKey = ''
+    if ($Event -and $Event.ContainsKey('recipientKey') -and -not (_QCN-IsBlank $Event.recipientKey)) { $recipientKey = [string]$Event.recipientKey }
+    else { $recipientKey = _QCN-BuildRecipientKey -To @($To) -Cc @($Cc) }
+    $data = @{
+        jobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } elseif ($Event -and $Event.ContainsKey('sourceJobId')) { [string]$Event.sourceJobId } else { '' }
+        auditEventId = _QCN-GetNotificationAuditEventId -Event $Event
+        documentName = if ($Event -and $Event.ContainsKey('documentName')) { [string]$Event.documentName } else { '' }
+        sheetStem = if ($Event -and $Event.ContainsKey('sheetStem')) { [string]$Event.sheetStem } else { '' }
+        targetState = if ($Event -and $Event.ContainsKey('targetState')) { [string]$Event.targetState } elseif ($Event -and $Event.ContainsKey('currentState')) { [string]$Event.currentState } else { '' }
+        previousState = if ($Event -and $Event.ContainsKey('previousState')) { [string]$Event.previousState } else { '' }
+        recipient = $recipientKey
+        to = @($To)
+        cc = @($Cc)
+        notificationType = if ($Event -and $Event.ContainsKey('notificationType')) { [string]$Event.notificationType } elseif ($Event -and $Event.ContainsKey('eventType')) { [string]$Event.eventType } else { '' }
+        dedupeKey = if ($Event -and $Event.ContainsKey('dedupeKey')) { [string]$Event.dedupeKey } else { '' }
+        actor = $actor
+        actorIsAutomation = _QCN-TestNotificationActorIsAutomation -Config $Config -Event $Event
+        triggerSource = _QCN-ResolveNotificationTriggerSource -Event $Event -Job $Job
+        subject = $Subject
+    }
+    Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $data | Out-Null
 }
 
 function Send-QCNotification {
@@ -1446,6 +1580,9 @@ function Send-QCNotification {
     $provider = ([string]$settings.provider).Trim()
     if (_QCN-IsBlank $provider) { $provider = 'Mock' }
 
+    _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_SEND_ATTEMPT' -Level 'Information' `
+        -Message 'Sending QC workflow notification.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
+
     $sendResult = $null
     switch ($provider.ToLowerInvariant()) {
         'microsoftgraph' {
@@ -1473,6 +1610,10 @@ function Send-QCNotification {
     } else { 'QC_NOTIFICATION_FAILED' }
     $level = if ($sendResult.IsSuccess) { 'Information' } else { 'Warning' }
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
+    if ($sendResult.IsSuccess) {
+        _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_SENT' -Level 'Information' `
+            -Message 'QC workflow notification sent.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
+    }
 
     if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
         $telemetryFolder = [string]$Event.folderPath
@@ -2223,13 +2364,24 @@ function Invoke-QCNotificationForStateChange {
     $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc) `
         -Config $Config -Job $Job -RoleOverrides $roleOverrides -FolderPath $folderForRoles -SourceDocumentName $sourceForRoles `
         -DocumentGuid $DocumentGuid
+    $recipientKey = _QCN-BuildRecipientKey -To @($resolved.to) -Cc @($resolved.cc)
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
     if (-not (_QCN-IsBlank $folderForRoles)) { $event['folderPath'] = $folderForRoles }
+    $event['notificationType'] = $eventType
+    $event['targetState'] = $curr
+    $event['recipientKey'] = $recipientKey
+    $event['to'] = @($resolved.to)
+    $event['cc'] = @($resolved.cc)
     if (-not (_QCN-IsBlank $StateTransitionKey)) { $event['stateTransitionKey'] = [string]$StateTransitionKey }
     elseif ($Job -and ($Job.metadata -is [hashtable]) -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
         $event['stateTransitionKey'] = [string]$Job.metadata.stateTransitionKey
+    }
+    if ($event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $event.stateTransitionKey)) {
+        $event['cycleId'] = [string]$event.stateTransitionKey
+        $auditId = _QCN-GetNotificationAuditEventId -Event $event
+        if ($null -ne $auditId) { $event['auditEventId'] = $auditId }
     }
 
     $folderForRt = ''
@@ -2272,6 +2424,10 @@ function Invoke-QCNotificationForStateChange {
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config
     $event['dedupeKey'] = $dedupeKey
     if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId)) {
+        $skipCode = if (_QCN-TestNotificationActorIsAutomation -Config $Config -Event $event) { 'QC_NOTIFICATION_SKIPPED_AUTOMATION_ECHO' } else { 'QC_NOTIFICATION_DEDUPED' }
+        _QCN-WriteNotificationLifecycleLog -Code $skipCode -Level 'Information' `
+            -Message 'Duplicate workflow notification suppressed for logical sheet transition.' `
+            -Event $event -Config $Config -Job $Job -To @($resolved.to) -Cc @($resolved.cc)
         $skipped = @{
             success = $false
             skipped = $true
@@ -2281,7 +2437,7 @@ function Invoke-QCNotificationForStateChange {
             documentName = $DocumentName
             timestampUtc = Get-QCTimestamp
         }
-        Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
+        Write-QCNotificationResult -Code $skipCode -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
     }
 
