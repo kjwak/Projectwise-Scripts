@@ -40,6 +40,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Core.Hashing.psm1'
         'Core.Database.psm1'
         'QC.StatusSet.psm1'
+        'PW.Connection.psm1'
         'PW.AuditPoller.psm1'
         'PW.Discovery.psm1'
     )

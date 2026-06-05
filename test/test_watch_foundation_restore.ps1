@@ -10,6 +10,7 @@ $restoreOrder = @(
     'Core.Database.psm1'
     'QC.Notifications.psm1'
     'QC.StatusSet.psm1'
+    'PW.Connection.psm1'
     'PW.AuditPoller.psm1'
     'PW.Discovery.psm1'
 )
@@ -48,6 +49,9 @@ $need = @(
     'Get-QCNotificationDedupeKey'
     'Get-PWObjectPropertyValue'
     'Ensure-PWDiscoveryModuleLoaded'
+    'Get-PWCredentialFromFile'
+    'Connect-PW'
+    'Get-PWImmediateChildFolders'
 )
 
 function Restore-Foundation {
