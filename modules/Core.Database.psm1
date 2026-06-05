@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.9.0'
+    $targetVersion = '1.10.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through transition_events.changed_by columns")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through processing_jobs.dedupe_key NVARCHAR(500)")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -703,7 +703,7 @@ CREATE TABLE processing_jobs (
     status          NVARCHAR(20) NOT NULL DEFAULT 'pending',
     trigger_source  NVARCHAR(50),
     trigger_audit_id BIGINT,
-    dedupe_key      NVARCHAR(200),
+    dedupe_key      NVARCHAR(500),
     attempt_count   INT NOT NULL DEFAULT 0,
     duration_ms     INT,
     error_code      NVARCHAR(100),
@@ -1151,7 +1151,7 @@ CREATE TABLE processing_jobs (
     status          NVARCHAR(20) NOT NULL DEFAULT 'pending',
     trigger_source  NVARCHAR(50),
     trigger_audit_id BIGINT,
-    dedupe_key      NVARCHAR(200),
+    dedupe_key      NVARCHAR(500),
     attempt_count   INT NOT NULL DEFAULT 0,
     duration_ms     INT,
     error_code      NVARCHAR(100),
@@ -1319,6 +1319,16 @@ IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.trans
     ALTER TABLE transition_events ADD changed_by_username NVARCHAR(128) NULL;
 IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'changed_by_username') IS NULL
     ALTER TABLE document_state_history ADD changed_by_username NVARCHAR(128) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot10Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') IS NOT NULL
+   AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') < 500
+    ALTER TABLE dbo.processing_jobs ALTER COLUMN dedupe_key NVARCHAR(500) NULL;
 '@
 }
 
