@@ -125,6 +125,19 @@ function _QCN-GetAttributeValue([object]$Document, [string]$AttributeName) {
     return $null
 }
 
+function Test-QCNotificationsEnqueueAsJob {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    try {
+        if ($Config -and $Config.ContainsKey('notifications') -and $Config.notifications) {
+            $n = _QCN-ToHashtable $Config.notifications
+            if ($n -and $n.ContainsKey('enqueueAsJob')) { return [bool]$n.enqueueAsJob }
+        }
+    } catch { }
+    return $false
+}
+
 function Get-QCNotificationSettings {
     [CmdletBinding()]
     param([hashtable]$Config)
@@ -2784,7 +2797,7 @@ function Invoke-QCNotificationForStateChange {
     return New-QCFailureResult -Code $notifyCode -Message $notifyMessage -Data $resultData
 }
 
-Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
+Export-ModuleMember -Function Get-QCNotificationSettings, Test-QCNotificationsEnqueueAsJob, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
     Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `

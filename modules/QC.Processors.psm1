@@ -1732,19 +1732,6 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     return $enq
 }
 
-function Test-QCNotificationsEnqueueAsJob {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$Config)
-    try {
-        if ($Config.ContainsKey('notifications') -and $Config.notifications) {
-            $n = $Config.notifications
-            if ($n -is [hashtable] -and $n.ContainsKey('enqueueAsJob')) { return [bool]$n.enqueueAsJob }
-            if ($n.PSObject -and $null -ne $n.enqueueAsJob) { return [bool]$n.enqueueAsJob }
-        }
-    } catch { }
-    return $false
-}
-
 function Invoke-QCNotificationProcessor {
     <#
     .SYNOPSIS

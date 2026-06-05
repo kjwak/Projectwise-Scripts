@@ -296,6 +296,8 @@ $script:WatchModuleLoadOrder = @(
     'QC.Triggers.psm1'
     'QC.JobFactory.psm1'
     'QC.Queue.Json.psm1'
+    'QC.Notifications.psm1'
+    'QC.Workflow.psm1'
     'QC.Rendition.psm1'
     'QC.Processors.psm1'
     'QC.WatcherOrchestration.psm1'
@@ -344,6 +346,10 @@ $script:WatchRequiredCommands = @(
     'New-QCJobObject'
     'Test-QCDuplicateJob'
     'Add-QCQueueJob'
+    'Test-QCNotificationsEnqueueAsJob'
+    'Invoke-QCWorkflowStateChangeNotification'
+    'Invoke-QCNotificationForStateChange'
+    'Get-QCNotificationDedupeKey'
     'Test-QCStatusSetJobInFlight'
     'Add-QCPrependJobForQcInitiatedStateChange'
     'Add-QCPrependJobForQcFinalizingStateChange'
@@ -497,6 +503,8 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -WarningAct
 Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.Workflow.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Users.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue

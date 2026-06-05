@@ -1068,6 +1068,57 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         $notif = Invoke-QCWorkflowStateChangeNotification -Config $Config -Context $notifyContext `
             -PreviousState $prev -CurrentState $curr -Document $Document
         if ($notif -is [System.Array]) { $notif = $notif[-1] }
+        if ($null -eq $notif) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_NOTIFY_UNAVAILABLE' `
+                    -Message 'Workflow notification returned no result.' -Data @{
+                    auditEventId = $AuditEventId
+                    documentGuid = $DocumentGuid
+                    documentName = $DocumentName
+                    previousState = $prev
+                    currentState = $curr
+                } | Out-Null
+            }
+        }
+        elseif ($notif.Code -eq 'QC_NOTIFICATION_MODULE_UNAVAILABLE') {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_NOTIFY_UNAVAILABLE' `
+                    -Message ([string]$notif.Message) -Data @{
+                    auditEventId = $AuditEventId
+                    documentGuid = $DocumentGuid
+                    documentName = $DocumentName
+                    previousState = $prev
+                    currentState = $curr
+                    notificationCode = [string]$notif.Code
+                } | Out-Null
+            }
+        }
+        elseif ($notif.Code -in @('QC_NOTIFICATION_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE')) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_SKIPPED_DUPLICATE' `
+                    -Message ([string]$notif.Message) -Data @{
+                    auditEventId = $AuditEventId
+                    documentGuid = $DocumentGuid
+                    documentName = $DocumentName
+                    previousState = $prev
+                    currentState = $curr
+                    dedupeKey = if ($notif.Data -and $notif.Data.dedupeKey) { [string]$notif.Data.dedupeKey } else { '' }
+                } | Out-Null
+            }
+        }
+        elseif (-not $notif.IsSuccess) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_NOTIFY_FAILED' `
+                    -Message ([string]$notif.Message) -Data @{
+                    auditEventId = $AuditEventId
+                    documentGuid = $DocumentGuid
+                    documentName = $DocumentName
+                    previousState = $prev
+                    currentState = $curr
+                    notificationCode = [string]$notif.Code
+                } | Out-Null
+            }
+        }
     } catch {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_NOTIFY_FAILED' -Message $_.Exception.Message -Data @{

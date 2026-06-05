@@ -122,6 +122,14 @@ function Invoke-QCWorkflowStateChangeNotification {
         -PreviousState $PreviousState -CurrentState $CurrentState -Document $Document
 }
 
+function _QCW-EnsureNotificationCommandsLoaded {
+    if (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue) { return $true }
+    $path = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try { Import-Module $path -Force -ErrorAction Stop | Out-Null } catch { return $false }
+    return [bool](Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)
+}
+
 function _QCW-InvokeStateChangeNotification {
     param(
         [hashtable]$Config,
@@ -132,7 +140,16 @@ function _QCW-InvokeStateChangeNotification {
     )
 
     if (-not $Config) { return $null }
-    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return $null }
+    if (-not (_QCW-EnsureNotificationCommandsLoaded)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_NOTIFICATION_MODULE_UNAVAILABLE' `
+                -Message 'QC.Notifications module not loaded; state-change notification skipped.' -Data @{
+                currentState = [string]$CurrentState
+                previousState = [string]$PreviousState
+            } | Out-Null
+        }
+        return New-QCFailureResult -Code 'QC_NOTIFICATION_MODULE_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
+    }
 
     $ctxChangedByUser = $null
     $ctxChangedByUsername = ''
@@ -210,6 +227,14 @@ function _QCW-InvokeStateChangeNotification {
         if ($dedupeKey) {
             $dup = Test-QCDuplicateJob -DedupeKey $dedupeKey -Config $Config
             if ($dup.IsSuccess -and [bool]$dup.Data.isDuplicate) {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE' `
+                        -Message 'Notification job already queued for this dedupe key.' -Data @{
+                        dedupeKey = $dedupeKey
+                        currentState = [string]$CurrentState
+                        previousState = [string]$PreviousState
+                    } | Out-Null
+                }
                 return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
             }
         }
@@ -312,6 +337,23 @@ function _QCW-InvokeStateChangeNotification {
         if (-not (_QCW-IsNullOrWhiteSpace $notifJob.sourceFolder) -and -not (_QCW-IsNullOrWhiteSpace $notifJob.sourceName)) {
             $notifJob.sourcePath = Join-Path ([string]$notifJob.sourceFolder) ([string]$notifJob.sourceName)
         }
+        if (_QCW-IsNullOrWhiteSpace $dedupeKey) {
+            $fallbackParts = @(
+                ('currentState={0}' -f ([string]$CurrentState).Trim())
+                ('previousState={0}' -f ([string]$PreviousState).Trim())
+            )
+            if ($Context -and $Context.folderPath) { $fallbackParts += ('folderPath={0}' -f [string]$Context.folderPath) }
+            if ($Context -and $Context.ContainsKey('stateTransitionKey') -and $Context.stateTransitionKey) {
+                $fallbackParts += ('stateTransitionKey={0}' -f [string]$Context.stateTransitionKey)
+            } elseif (-not (_QCW-IsNullOrWhiteSpace $wfTransitionKey)) {
+                $fallbackParts += ('stateTransitionKey={0}' -f $wfTransitionKey)
+            }
+            if (-not (_QCW-IsNullOrWhiteSpace $notifJob.sourceName)) {
+                $fallbackParts += ('sourceName={0}' -f [string]$notifJob.sourceName)
+            }
+            $dedupeKey = ($fallbackParts -join '|')
+            $notifJob.dedupeKey = $dedupeKey
+        }
         $enq = Add-QCQueueJob -Job $notifJob -Config $Config
         if ($enq.IsSuccess) {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -326,6 +368,17 @@ function _QCW-InvokeStateChangeNotification {
                 } | Out-Null
             }
             return New-QCSuccessResult -Code 'QC_NOTIFICATION_ENQUEUED' -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{ jobId = [string]$notifJob.id }
+        }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_NOTIFICATION_ENQUEUE_FAILED' `
+                -Message 'Failed to enqueue QC_NOTIFICATION job; falling back to inline send.' -Data @{
+                jobId = [string]$notifJob.id
+                dedupeKey = $dedupeKey
+                enqueueCode = if ($enq -and $enq.Code) { [string]$enq.Code } else { '' }
+                enqueueMessage = if ($enq -and $enq.Message) { [string]$enq.Message } else { '' }
+                currentState = [string]$CurrentState
+                previousState = [string]$PreviousState
+            } | Out-Null
         }
     }
     try {
