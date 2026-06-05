@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-04-ingest-qc-actions-only-v7'
+$script:AuditPollerLogicVersion = '2026-06-05-watermark-pagination-safety-v8'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -1472,11 +1472,18 @@ function Get-AuditTrailPollWindow {
     if ($overlapSeconds -lt 0) { $overlapSeconds = 0 }
     if ($restartOverlapSeconds -lt 0) { $restartOverlapSeconds = 0 }
 
+    $effectiveOverlapSeconds = $overlapSeconds
+    if ($lastCapture -and -not $UseRestartOverlap.IsPresent -and $effectiveOverlapSeconds -lt 1) {
+        # dms_audt timestamps are second-granular in practice. Always re-read the
+        # watermark second so rows sharing the high-water timestamp cannot be skipped;
+        # audit_events natural-key dedupe absorbs the overlap.
+        $effectiveOverlapSeconds = 1
+    }
     $since = if ($lastCapture) {
         if ($UseRestartOverlap.IsPresent -and $restartOverlapSeconds -gt 0) {
             $lastCapture.AddSeconds(-$restartOverlapSeconds)
-        } elseif ($overlapSeconds -gt 0) {
-            $lastCapture.AddSeconds(-$overlapSeconds)
+        } elseif ($effectiveOverlapSeconds -gt 0) {
+            $lastCapture.AddSeconds(-$effectiveOverlapSeconds)
         } else {
             $lastCapture
         }
@@ -1499,9 +1506,9 @@ function Get-AuditTrailPollWindow {
         watermarkBefore = $watermarkBefore
         isFirstCapture  = (-not $lastCapture)
         lookbackSecondsUsed = if ($lastCapture) {
-            if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $overlapSeconds }
+            if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $effectiveOverlapSeconds }
         } else { $initialLookbackSeconds }
-        overlapSecondsUsed  = if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $overlapSeconds }
+        overlapSecondsUsed  = if ($UseRestartOverlap.IsPresent) { $restartOverlapSeconds } else { $effectiveOverlapSeconds }
         restartOverlapUsed  = [bool]$UseRestartOverlap.IsPresent
         displayTimeZoneId = $tz.Id
     }
@@ -1544,6 +1551,7 @@ function Invoke-AuditTrailScan {
         pagesFetched       = 0
         eventsTruncated    = $false
         dbLastError        = $null
+        dbWriteFailed      = 0
         dbUnprocessedLoaded = 0
         guidCacheHits      = 0
         guidCacheMisses    = 0
@@ -1577,19 +1585,23 @@ function Invoke-AuditTrailScan {
     $allEvents = [System.Collections.Generic.List[object]]::new()
     $cursorSince = $sinceStr
     $cursorGuid = ''
+    $cursorAction = $null
+    $cursorObjNo = $null
     $pageNum = 0
     try {
         while ($pageNum -lt $maxPages) {
             $pageNum++
             $untilStr = $queryUntilStr
-            $lowerBoundSql = if ($cursorGuid) {
+            $lowerBoundSql = if ($null -ne $cursorAction -and $null -ne $cursorObjNo) {
                 $t = _AuditPoller-EscapeSqlLiteral -Value $cursorSince
                 $g = _AuditPoller-EscapeSqlLiteral -Value $cursorGuid
-                "(o_acttime > '$t' OR (o_acttime = '$t' AND o_objguid > '$g'))"
+                $a = [int]$cursorAction
+                $n = [int]$cursorObjNo
+                "(o_acttime > '$t' OR (o_acttime = '$t' AND (ISNULL(o_objguid,'') > '$g' OR (ISNULL(o_objguid,'') = '$g' AND (o_action > $a OR (o_action = $a AND o_objno > $n))))))"
             } else {
                 "o_acttime > '$(_AuditPoller-EscapeSqlLiteral -Value $cursorSince)'"
             }
-            $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' ORDER BY o_acttime ASC, o_objguid ASC"
+            $sql = "SELECT TOP $pageSize o_acttime, o_action, o_objtype, o_objno, o_objguid, o_parentguid, o_userno, o_itemname, o_itemdesc, o_textparam FROM dms_audt WHERE $lowerBoundSql AND o_acttime <= '$(_AuditPoller-EscapeSqlLiteral -Value $untilStr)' ORDER BY o_acttime ASC, ISNULL(o_objguid,'') ASC, o_action ASC, o_objno ASC"
             $result = Select-PWSQL -SQLSelectStatement $sql -ErrorAction Stop
             $batch = @(_AuditPoller-GetSqlResultRows -Result $result)
             if ($batch.Count -eq 0) { break }
@@ -1612,12 +1624,15 @@ function Invoke-AuditTrailScan {
             }
             if ([string]::IsNullOrWhiteSpace($cursorSince)) { break }
             $cursorGuid = [string](_AuditPoller-GetRowValue -Row $last -Name 'o_objguid')
+            if ($null -eq $cursorGuid) { $cursorGuid = '' }
+            try { $cursorAction = [int](_AuditPoller-GetRowValue -Row $last -Name 'o_action') } catch { $cursorAction = 0 }
+            try { $cursorObjNo = [int](_AuditPoller-GetRowValue -Row $last -Name 'o_objno') } catch { $cursorObjNo = 0 }
             if ($batch.Count -lt $pageSize) { break }
         }
-        if ($pageNum -ge $maxPages -and $allEvents.Count -gt 0) {
+        if ($pageNum -ge $maxPages -and [int]$stats.totalFetchedRaw -gt 0) {
             $stats.eventsTruncated = $true
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_QUERY_TRUNCATED' -Message "dms_audt page cap reached ($maxPages x $pageSize); re-run will continue from watermark cursor." -Data @{
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_QUERY_TRUNCATED' -Message "dms_audt page cap reached ($maxPages x $pageSize); watermark will not advance so the capped window is retried." -Data @{
                     since = $sinceStr; until = $untilStr; pagesFetched = $pageNum; eventsFetched = $allEvents.Count
                 }
             }
@@ -1632,7 +1647,7 @@ function Invoke-AuditTrailScan {
     if ($allEvents.Count -eq 0) {
         $sw.Stop()
         $watermarkAfterEmpty = $null
-        if ($maxPwActTimeUtc) {
+        if ($maxPwActTimeUtc -and -not [bool]$stats.eventsTruncated) {
             $watermarkAfterEmpty = $maxPwActTimeUtc
             $stats.maxPwActTime = $maxPwActTime
             $stats.maxPwActTimeUtc = $maxPwActTimeUtc
@@ -1674,9 +1689,11 @@ function Invoke-AuditTrailScan {
             if ($dbRes.IsSuccess -and $dbRes.Data) {
                 $stats.dbWrites += [int]$dbRes.Data.written
                 $stats.dbSkipped += [int]$dbRes.Data.skipped
+                if ($null -ne $dbRes.Data.failed) { $stats.dbWriteFailed += [int]$dbRes.Data.failed }
                 if ($dbRes.Data.lastError) { $stats.dbLastError = [string]$dbRes.Data.lastError }
             } else {
                 $stats.dbSkipped += $dbRows.Count
+                $stats.dbWriteFailed += $dbRows.Count
                 $stats.dbLastError = [string]$dbRes.Message
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                     Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_FAILED' -Message "Write-QCAuditEventRows failed: $($dbRes.Message)" -Data @{
@@ -1688,6 +1705,7 @@ function Invoke-AuditTrailScan {
             }
         } catch {
             $stats.dbSkipped += $dbRows.Count
+            $stats.dbWriteFailed += $dbRows.Count
             $stats.dbLastError = [string]$_.Exception.Message
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_EVENTS_WRITE_EXCEPTION' -Message $_.Exception.Message -Data @{ rowCount = $dbRows.Count; nullGuid = $stats.dbRowsNullGuid }
@@ -1707,6 +1725,7 @@ function Invoke-AuditTrailScan {
                 rowsNullGuid  = $stats.dbRowsNullGuid
                 written       = $stats.dbWrites
                 skipped       = $stats.dbSkipped
+                failed        = [int]$stats.dbWriteFailed
                 skippedNoGuid = $ingestSkippedNoGuid
                 lastError     = $stats.dbLastError
             }
@@ -1718,8 +1737,17 @@ function Invoke-AuditTrailScan {
         }
     }
 
+    if ([int]$stats.dbWriteFailed -gt 0) {
+        $sw.Stop()
+        return New-QCFailureResult -Code 'AUDIT_EVENTS_WRITE_INCOMPLETE' -Message "audit_events ingest failed for $($stats.dbWriteFailed) rows; watermark not advanced." -Data @{
+            events = @(); candidates = @(); docToFolder = @{}; stats = $stats
+            watermarkAfter = $null; durationMs = [int]$sw.ElapsedMilliseconds
+            pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
+        }
+    }
+
     if ($maxPwActTime) { $stats.maxPwActTime = $maxPwActTime }
-    if ($maxPwActTimeUtc) {
+    if ($maxPwActTimeUtc -and -not [bool]$stats.eventsTruncated) {
         $stats.maxPwActTimeUtc = $maxPwActTimeUtc
         $watermarkAfter = $maxPwActTimeUtc
     }
@@ -1729,17 +1757,32 @@ function Invoke-AuditTrailScan {
     $useDbTriggers = $false
     if (Test-QCDatabaseEnabled -Config $Config) {
         $maxUnprocessed = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxUnprocessedPerPoll' -Default 500
+        if ($maxUnprocessed -lt 1) { $maxUnprocessed = 500 }
+        $maxUnprocessedBatches = _AuditPoller-GetAuditPollerInt -Config $Config -Key 'maxUnprocessedBatchesPerPoll' -Default 1
+        if ($maxUnprocessedBatches -lt 1) { $maxUnprocessedBatches = 1 }
         if (Get-Command -Name 'Get-QCUnprocessedAuditEvents' -ErrorAction SilentlyContinue) {
-            $unprocRes = Get-QCUnprocessedAuditEvents -Config $Config -MaxRows $maxUnprocessed
-            if ($unprocRes.IsSuccess -and $null -ne $unprocRes.Data) {
-                $dbRows = @()
-                if ($unprocRes.Data.rows) { $dbRows = @($unprocRes.Data.rows) }
-                if ($dbRows.Count -gt 0) {
-                    $triggerRows = $dbRows
-                    $stats.dbUnprocessedLoaded = $triggerRows.Count
-                    $stats.triggerSource = 'audit_events_db'
-                    $useDbTriggers = $true
+            $dbRows = [System.Collections.Generic.List[object]]::new()
+            $loadedIds = [System.Collections.Generic.List[long]]::new()
+            for ($batchNo = 1; $batchNo -le $maxUnprocessedBatches; $batchNo++) {
+                $unprocRes = Get-QCUnprocessedAuditEvents -Config $Config -MaxRows $maxUnprocessed -ExcludeEventIds @($loadedIds)
+                if (-not ($unprocRes.IsSuccess -and $null -ne $unprocRes.Data)) { break }
+                $batchRows = @()
+                if ($unprocRes.Data.rows) { $batchRows = @($unprocRes.Data.rows) }
+                if ($batchRows.Count -eq 0) { break }
+                foreach ($r in $batchRows) {
+                    [void]$dbRows.Add($r)
+                    try {
+                        if ($null -ne $r.id) { [void]$loadedIds.Add([long]$r.id) }
+                    } catch { }
                 }
+                if ($batchRows.Count -lt $maxUnprocessed) { break }
+            }
+            if ($dbRows.Count -gt 0) {
+                $triggerRows = @($dbRows)
+                $stats.dbUnprocessedLoaded = $triggerRows.Count
+                $stats.dbUnprocessedBatchesLoaded = [int][Math]::Ceiling($triggerRows.Count / [double]$maxUnprocessed)
+                $stats.triggerSource = 'audit_events_db'
+                $useDbTriggers = $true
             }
         }
     }

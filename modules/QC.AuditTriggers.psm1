@@ -186,6 +186,76 @@ function Test-QCIsAutomationPwActor {
     return $false
 }
 
+
+function Get-QCRestartIntakeSourceStateNames {
+    <#
+    .SYNOPSIS
+    Workflow state labels that may intentionally restart a QC cycle by moving back to QC Initiated.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $seen = @{}
+    $names = [System.Collections.Generic.List[string]]::new()
+    $addName = {
+        param([string]$Value)
+        $n = _QCAT-NormalizeValue $Value
+        if ([string]::IsNullOrWhiteSpace($n)) { return }
+        $key = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { return }
+        $seen[$key] = $true
+        [void]$names.Add($n)
+    }
+
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                foreach ($key in @('correctionsReceived','correctionsInProgress','complete','error')) {
+                    $name = Get-QCWorkflowStateName -Settings $wf -StateKey $key
+                    if (-not [string]::IsNullOrWhiteSpace($name)) { & $addName $name }
+                }
+            }
+        } catch { }
+    }
+    foreach ($fallback in @('Corrections Received','Corrections In Progress','QC Complete','Error Needs Attention')) { & $addName $fallback }
+    return @($names)
+}
+
+function Test-QCWorkflowStateIsRestartIntakeTransition {
+    <#
+    .SYNOPSIS
+    True for deliberate QC cycle restart/intake transitions back to QC Initiated.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$PreviousState = '',
+        [string]$CurrentState = ''
+    )
+
+    $prev = _QCAT-NormalizeValue $PreviousState
+    $curr = _QCAT-NormalizeValue $CurrentState
+    if ([string]::IsNullOrWhiteSpace($prev) -or [string]::IsNullOrWhiteSpace($curr)) { return $false }
+
+    $initiated = 'QC Initiated'
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                $cfgInitiated = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
+                if (-not [string]::IsNullOrWhiteSpace($cfgInitiated)) { $initiated = [string]$cfgInitiated }
+            }
+        } catch { }
+    }
+    if (-not $curr.Equals($initiated, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+    foreach ($source in @(Get-QCRestartIntakeSourceStateNames -Config $Config)) {
+        if ($prev.Equals([string]$source, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Get-QCBaselineWorkflowStateNames {
     <#
     .SYNOPSIS
@@ -893,7 +963,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     }
 }
 
-Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
+Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `

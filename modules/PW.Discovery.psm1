@@ -1633,24 +1633,68 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
     }
 }
 
+function _PWD-GetSheetIndexStateSnapshot {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+    $snapshot = @{ pwStateName = ''; lastAuditEventAt = $null }
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return $snapshot }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $snapshot }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $snapshot }
+    try {
+        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT pw_state_name, last_audit_event_at FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+            $r = $siRes.Data.table.Rows[0]
+            if (-not ($r.pw_state_name -is [DBNull])) { $snapshot.pwStateName = [string]$r.pw_state_name }
+            if (-not ($r.last_audit_event_at -is [DBNull])) { $snapshot.lastAuditEventAt = $r.last_audit_event_at }
+        }
+    } catch { }
+    return $snapshot
+}
+
 function _PWD-GetSheetIndexPwStateName {
     param(
         [hashtable]$Config,
         [string]$DocumentGuid
     )
-    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return '' }
-    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
-    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    $snapshot = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $DocumentGuid
+    return [string]$snapshot.pwStateName
+}
+
+function _PWD-TryParseAuditDateTime {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    try { return [DateTimeOffset]::Parse([string]$Value) } catch { }
+    try { return [DateTimeOffset]::ParseExact(([string]$Value).Trim().TrimEnd('Z'), 'yyyy-MM-dd HH:mm:ss', $null, [Globalization.DateTimeStyles]::AssumeUniversal) } catch { }
+    return $null
+}
+
+function _PWD-TestShouldBlockStaleRestartOverwrite {
+    param(
+        [hashtable]$Config,
+        [string]$CurrentState = '',
+        [string]$TargetState = '',
+        [hashtable]$SheetIndexSnapshot = $null,
+        [string]$SourceAuditEventAt = ''
+    )
+    if (-not (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $CurrentState -Config $Config)) { return $false }
+    if (Test-QCWorkflowStateIsQcInitiated -StateName $TargetState -Config $Config) { return $false }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) {
+        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState $CurrentState)) { return $false }
+    }
+    if (-not $SheetIndexSnapshot) { return $false }
+    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName ([string]$SheetIndexSnapshot.pwStateName) -Config $Config)) { return $false }
+    $sourceAt = _PWD-TryParseAuditDateTime -Value $SourceAuditEventAt
+    $targetAt = $null
     try {
-        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid }
-        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
-            $r = $siRes.Data.table.Rows[0]
-            if (-not ($r.pw_state_name -is [DBNull])) { return [string]$r.pw_state_name }
-        }
-    } catch { }
-    return ''
+        if ($SheetIndexSnapshot.lastAuditEventAt) { $targetAt = [DateTimeOffset]$SheetIndexSnapshot.lastAuditEventAt }
+    } catch { $targetAt = _PWD-TryParseAuditDateTime -Value ([string]$SheetIndexSnapshot.lastAuditEventAt) }
+    if ($sourceAt -and $targetAt) { return ($sourceAt -le $targetAt) }
+    return $true
 }
 
 function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
@@ -2161,6 +2205,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         } else {
             _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
         }
+        $memberSheetIndexSnapshot = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $dg
         if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $canonicalState)) {
             if ($dbEnabled) {
                 try {
@@ -2172,6 +2217,33 @@ WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $dg; lastAudit = $LastAuditEventAt } | Out-Null
                     }
                 } catch { }
+            }
+            continue
+        }
+
+        if (_PWD-TestShouldBlockStaleRestartOverwrite -Config $Config -CurrentState ([string]$currentState) `
+                -TargetState ([string]$canonicalState) -SheetIndexSnapshot $memberSheetIndexSnapshot `
+                -SourceAuditEventAt $LastAuditEventAt) {
+            $targetLastAuditEventAtForLog = $null
+            if ($memberSheetIndexSnapshot.lastAuditEventAt) { $targetLastAuditEventAtForLog = [string]$memberSheetIndexSnapshot.lastAuditEventAt }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_SYNC_STALE_RESTART_BLOCKED' `
+                    -Message 'Blocked stale sibling sync from overwriting a newer manual QC Initiated restart.' -Data @{
+                    sourceAuditId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    sourceState = [string]$canonicalState
+                    sourceAuditEventAt = $LastAuditEventAt
+                    targetDocumentGuid = $dg
+                    targetDocumentName = $dn
+                    previousTargetState = [string]$currentState
+                    newTargetState = [string]$canonicalState
+                    targetSheetIndexState = [string]$memberSheetIndexSnapshot.pwStateName
+                    targetLastAuditEventAt = $targetLastAuditEventAtForLog
+                    changedByUser = $ChangedByUser
+                    changedByUsername = $ChangedByUsername
+                    reason = 'stale_restart_overwrite_guard'
+                } | Out-Null
             }
             continue
         }
@@ -2199,6 +2271,23 @@ WHERE document_guid = @docGuid
             try {
                 _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState
                 $change.applied = $true
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_CHANGE' `
+                        -Message 'Sibling workflow state changed from DOCUMENT_STATE audit event.' -Data @{
+                        sourceAuditId = $AuditEventId
+                        sourceDocumentGuid = $DocumentGuid
+                        sourceDocumentName = $DocumentName
+                        sourceState = [string]$canonicalState
+                        targetDocumentGuid = $dg
+                        targetDocumentName = $dn
+                        previousTargetState = [string]$currentState
+                        newTargetState = [string]$canonicalState
+                        changedByUser = $ChangedByUser
+                        changedByUsername = $ChangedByUsername
+                        reason = 'document_state_sibling_sync'
+                        dryRun = [bool]$DryRun
+                    } | Out-Null
+                }
                 if (Get-Command -Name 'Write-QCStateChangeJobTelemetry' -ErrorAction SilentlyContinue) {
                     $recordJobs = $true
                     if (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue) {
@@ -2289,18 +2378,39 @@ WHERE document_guid = @docGuid
 
     $appliedStateUpdates = @($stateUpdates | Where-Object { $_ -and $_.applied -eq $true })
     if ($appliedStateUpdates.Count -eq 0) {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
-                -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
-                triggerDocumentGuid = $DocumentGuid
-                triggerDocumentName = $DocumentName
-                folderPath          = $FolderPath
-                canonicalState      = $canonicalState
-                memberCount         = $members.Count
-                auditEventId        = $AuditEventId
-            } | Out-Null
+        $allowPrependForRestartEcho = $false
+        if ($qcInitiated -and (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue)) {
+            $allowPrependForRestartEcho = Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config `
+                -PreviousState $previousSheetState -CurrentState $canonicalState
         }
-        return
+        if ($allowPrependForRestartEcho) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_RESTART_NO_STATE_CHANGES' `
+                    -Message 'QC_PREPEND evaluation allowed for QC Initiated restart even though sibling states were already aligned.' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    previousSheetState  = $previousSheetState
+                    canonicalState      = $canonicalState
+                    memberCount         = $members.Count
+                    auditEventId        = $AuditEventId
+                    reason              = 'qc_initiated_restart_intake'
+                } | Out-Null
+            }
+        } else {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
+                    -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    canonicalState      = $canonicalState
+                    memberCount         = $members.Count
+                    auditEventId        = $AuditEventId
+                } | Out-Null
+            }
+            return
+        }
     }
 
     _PWD-EnqueuePrependJobsFromAssociatedQcPdfState -Config $Config -FolderPath $FolderPath -Members $members `

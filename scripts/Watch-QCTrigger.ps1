@@ -944,8 +944,10 @@ if ($statusSetRules.Count -ge 0) {
                             dbSkipped      = [int]$auditData.stats.dbSkipped
                             dbRowsPrepared = [int]$auditData.stats.dbRowsPrepared
                             dbRowsNullGuid = [int]$auditData.stats.dbRowsNullGuid
+                            dbWriteFailed = if ($null -ne $auditData.stats.dbWriteFailed) { [int]$auditData.stats.dbWriteFailed } else { 0 }
                             dbLastError    = if ($auditData.stats.dbLastError) { [string]$auditData.stats.dbLastError } else { $null }
                             dbUnprocessedLoaded = [int]$auditData.stats.dbUnprocessedLoaded
+                            dbUnprocessedBatchesLoaded = if ($null -ne $auditData.stats.dbUnprocessedBatchesLoaded) { [int]$auditData.stats.dbUnprocessedBatchesLoaded } else { $null }
                             triggerSource  = if ($auditData.stats.triggerSource) { [string]$auditData.stats.triggerSource } else { $null }
                             guidCacheHits  = [int]$auditData.stats.guidCacheHits
                             guidCacheMisses = [int]$auditData.stats.guidCacheMisses
@@ -974,21 +976,26 @@ if ($statusSetRules.Count -ge 0) {
                         $auditTriggerEventIds = [System.Collections.Generic.List[long]]::new()
                         $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
                         foreach ($ac in $auditCandidates) {
+                            $candidateAuditEventId = $null
+                            $itemName = ''
+                            $fp = ''
+                            $actionName = ''
+                            $auditCandidateOutcome = 'processed'
+                            $auditCandidateReason = 'evaluated'
+                            $auditCandidateRetryable = $false
                             try {
-                                if (-not (_Watch-EnsureAllModuleExports)) {
-                                    $missingCand = @(_Watch-GetMissingRequiredCommands)
-                                    throw ('Required module exports unavailable before audit candidate: ' + ($missingCand -join ', '))
-                                }
-                                $fp = [string]$ac.resolvedFolder
-                                if ([string]::IsNullOrWhiteSpace($fp)) { continue }
-
-                                $candidateAuditEventId = $null
                                 try {
                                     if ($null -ne $ac.auditEventId) {
                                         $aeid = [long]$ac.auditEventId
                                         if ($aeid -gt 0) { $candidateAuditEventId = $aeid }
                                     }
                                 } catch { }
+                                if (-not (_Watch-EnsureAllModuleExports)) {
+                                    $missingCand = @(_Watch-GetMissingRequiredCommands)
+                                    throw ('Required module exports unavailable before audit candidate: ' + ($missingCand -join ', '))
+                                }
+                                $fp = [string]$ac.resolvedFolder
+                                if ([string]::IsNullOrWhiteSpace($fp)) { continue }
 
                                 $itemName = [string]$ac.itemName
                                 if ([string]::IsNullOrWhiteSpace($itemName) -and $ac.objGuid `
@@ -1099,8 +1106,16 @@ if ($statusSetRules.Count -ge 0) {
                                     }
 
                                     $allowRes = Test-QCPathAllowed -CandidatePath $fp -Config $config
-                                    if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                    if (-not $allowRes.IsSuccess) {
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'path_filter_failed'
+                                        continue
+                                    }
+                                    if (-not [bool]$allowRes.Data.allowed) {
                                         $filtered++
+                                        $auditCandidateOutcome = 'terminalSkip'
+                                        $auditCandidateReason = 'path_filtered'
                                         continue
                                     }
 
@@ -1154,6 +1169,12 @@ if ($statusSetRules.Count -ge 0) {
                                         }
                                     } else {
                                     $acGateRes = Test-StatusSetWatcherShouldEnqueue -Config $config -SourceFolder $fp -FolderState $acState
+                                    if (-not $acGateRes.IsSuccess) {
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'status_set_manifest_gate_failed'
+                                        continue
+                                    }
                                     if ($acGateRes.IsSuccess -and -not [bool]$acGateRes.Data.shouldEnqueue) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_CURRENT' -Message 'Audit STATUS_SET_GEN skipped: manifest current.' -Data @{
                                             folder = $fp
@@ -1185,12 +1206,22 @@ if ($statusSetRules.Count -ge 0) {
                                     }
 
                                     $jobRes = New-QCJobObject -Candidate $candidate -Rule $statusRuleObj -Config $config
+                                    if (-not $jobRes.IsSuccess) {
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'status_set_job_create_failed'
+                                    }
                                     if ($jobRes.IsSuccess) {
                                     $job = [hashtable]$jobRes.Data.job
 
                                     $accepted++
                                     $dedupeChecks++
                                     $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
+                                    if (-not $dupRes.IsSuccess) {
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'status_set_dedupe_failed'
+                                    }
                                     if ($dupRes.IsSuccess) {
                                     $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
@@ -1202,7 +1233,11 @@ if ($statusSetRules.Count -ge 0) {
 
                                     if (-not $isDryRun -and -not $wouldDedupe) {
                                         $enqRes = Add-QCQueueJob -Job $job -Config $config
-                                        if ($enqRes.IsSuccess) { $enqueued++ }
+                                        if ($enqRes.IsSuccess) { $enqueued++ } else {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'status_set_enqueue_failed'
+                                        }
                                     } elseif ($wouldDedupe) { $duplicates++ }
                                     }
                                     }
@@ -1229,14 +1264,20 @@ if ($statusSetRules.Count -ge 0) {
                                         continue
                                     }
                                     if (-not (_Watch-EnsureDiscoveryExports)) {
-                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (PW.Discovery exports unavailable).' -Data @{
-                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'pw_discovery_exports_unavailable'
+                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (PW.Discovery exports unavailable).' -Data @{
+                                            auditEventId = $candidateAuditEventId; path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
                                         }
                                         continue
                                     }
                                     if (-not (Get-Command -Name 'Test-PWSheetPdfHasMatchingPair' -ErrorAction SilentlyContinue)) {
-                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (Test-PWSheetPdfHasMatchingPair unavailable).' -Data @{
-                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'pair_check_unavailable'
+                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (pair-check command unavailable).' -Data @{
+                                            auditEventId = $candidateAuditEventId; path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
                                         }
                                         continue
                                     }
@@ -1248,17 +1289,21 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                     if ((Get-Command -Name 'Test-PWFolderResolvable' -ErrorAction SilentlyContinue) `
                                             -and -not (Test-PWFolderResolvable -FolderPath $fp)) {
-                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (ProjectWise folder path not resolvable).' -Data @{
-                                            path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'folder_not_resolvable'
+                                        _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (ProjectWise folder path not resolvable).' -Data @{
+                                            auditEventId = $candidateAuditEventId; path = ($fp + '\' + $itemName); actionName = $actionName; folderPath = $fp
                                         }
                                         continue
                                     }
                                     try {
                                         $pwStateForPrepend = ''
+                                        $pwStateLookupFailed = $false
                                         if (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue) {
                                             try {
                                                 $pwStateForPrepend = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
-                                            } catch { }
+                                            } catch { $pwStateLookupFailed = $true }
                                         }
                                         $dd = ''
                                         $descKey = ''
@@ -1288,7 +1333,16 @@ if ($statusSetRules.Count -ge 0) {
                                             if ([string]::IsNullOrWhiteSpace($pwState)) {
                                                 try {
                                                     $pwState = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
-                                                } catch { }
+                                                } catch { $pwStateLookupFailed = $true }
+                                            }
+                                            if ($pwStateLookupFailed) {
+                                                $auditCandidateRetryable = $true
+                                                $auditCandidateOutcome = 'retryableError'
+                                                $auditCandidateReason = 'workflow_state_lookup_failed'
+                                                _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (workflow state lookup failed).' -Data @{
+                                                    auditEventId = $candidateAuditEventId; path = ($fp + '\' + $itemName); actionName = $actionName; requiredState = $initiatedStateName
+                                                }
+                                                continue
                                             }
                                             if ([string]::IsNullOrWhiteSpace($pwState) -or ($pwState.Trim().ToLowerInvariant() -ne $initiatedStateName.Trim().ToLowerInvariant())) {
                                                 _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (QC_Archivist tag but workflow state is not QC Initiated).' -Data @{
@@ -1315,18 +1369,32 @@ if ($statusSetRules.Count -ge 0) {
                                         }
 
                                         $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
-                                        if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                        if (-not $allowRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'qc_prepend_path_filter_failed'
+                                            _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (path filter failed).' -Data @{
+                                                auditEventId = $candidateAuditEventId; path = [string]$candidate.path; actionName = $actionName; error = $allowRes.Message
+                                            }
+                                            continue
+                                        }
+                                        if (-not [bool]$allowRes.Data.allowed) {
                                             _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped by path filter.' -Data @{
                                                 path = [string]$candidate.path; actionName = $actionName
                                             }
                                             $filtered++
+                                            $auditCandidateOutcome = 'terminalSkip'
+                                            $auditCandidateReason = 'qc_prepend_path_filtered'
                                             continue
                                         }
 
                                         $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config -TriggerType 'pw'
                                         if (-not $matchRes.IsSuccess) {
-                                            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Trigger evaluation failed for audit PDF.' -Data @{
-                                                path = [string]$candidate.path; actionName = $actionName; error = $matchRes.Message
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'qc_prepend_trigger_eval_failed'
+                                            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit PDF evaluation deferred (trigger evaluation failed).' -Data @{
+                                                auditEventId = $candidateAuditEventId; path = [string]$candidate.path; actionName = $actionName; error = $matchRes.Message
                                             }
                                             continue
                                         }
@@ -1345,12 +1413,23 @@ if ($statusSetRules.Count -ge 0) {
                                         if ([string]$ruleObj.jobType -ne 'QC_PREPEND') { continue }
 
                                         $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
-                                        if (-not $jobRes.IsSuccess) { continue }
+                                        if (-not $jobRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'qc_prepend_job_create_failed'
+                                            continue
+                                        }
                                         $job = [hashtable]$jobRes.Data.job
                                         $accepted++
                                         $dedupeChecks++
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
-                                        $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
+                                        if (-not $dupRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'qc_prepend_dedupe_failed'
+                                            continue
+                                        }
+                                        $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_PREPEND candidate accepted.' -Data @{
                                             jobId          = [string]$job['id']
@@ -1364,9 +1443,17 @@ if ($statusSetRules.Count -ge 0) {
 
                                         if (-not $isDryRun -and -not $wouldDedupe) {
                                             $enqRes = Add-QCQueueJob -Job $job -Config $config
-                                            if ($enqRes.IsSuccess) { $enqueued++ }
+                                            if ($enqRes.IsSuccess) { $enqueued++ } else {
+                                                $auditCandidateRetryable = $true
+                                                $auditCandidateOutcome = 'retryableError'
+                                                $auditCandidateReason = 'qc_prepend_enqueue_failed'
+                                            }
                                         } elseif ($wouldDedupe) { $duplicates++ }
                                     } catch {
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'qc_prepend_exception'
+                                        $errors++
                                         $errMsg = [string]$_.Exception.Message
                                         $logLevel = 'Warning'
                                         $logMsg = 'Audit QC_PREPEND evaluation threw.'
@@ -1374,7 +1461,8 @@ if ($statusSetRules.Count -ge 0) {
                                             $logLevel = 'Information'
                                             $logMsg = 'Audit PDF skipped (ProjectWise state lookup failed on this path).'
                                         }
-                                        _Watch-WriteJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_SKIPPED' -Message $logMsg -Data @{
+                                        _Watch-WriteJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_RETRYABLE' -Message $logMsg -Data @{
+                                            auditEventId = $candidateAuditEventId
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
                                             error = $errMsg
@@ -1416,22 +1504,47 @@ if ($statusSetRules.Count -ge 0) {
                                         }
 
                                         $allowRes = Test-QCPathAllowed -CandidatePath ([string]$candidate.path) -Config $config
-                                        if (-not $allowRes.IsSuccess -or -not [bool]$allowRes.Data.allowed) {
+                                        if (-not $allowRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'comment_sync_path_filter_failed'
+                                            continue
+                                        }
+                                        if (-not [bool]$allowRes.Data.allowed) {
                                             $filtered++
+                                            $auditCandidateOutcome = 'terminalSkip'
+                                            $auditCandidateReason = 'comment_sync_path_filtered'
                                             continue
                                         }
 
                                         $matchRes = Test-QCTriggerCandidate -Candidate $candidate -OrderedRules $orderedTriggerRules -Config $config -TriggerType 'pw'
-                                        if (-not $matchRes.IsSuccess -or -not [bool]$matchRes.Data.matched) { continue }
+                                        if (-not $matchRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'comment_sync_trigger_eval_failed'
+                                            continue
+                                        }
+                                        if (-not [bool]$matchRes.Data.matched) { continue }
                                         $ruleObj = $matchRes.Data.rule
                                         if ([string]$ruleObj.jobType -ne 'QC_COMMENT_STATUS_SYNC') { continue }
 
                                         $jobRes = New-QCJobObject -Candidate $candidate -Rule $ruleObj -Config $config
-                                        if (-not $jobRes.IsSuccess) { continue }
+                                        if (-not $jobRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'comment_sync_job_create_failed'
+                                            continue
+                                        }
                                         $job = [hashtable]$jobRes.Data.job
                                         $accepted++
                                         $dupRes = Test-QCDuplicateJob -DedupeKey ([string]$job['dedupeKey']) -Config $config
-                                        $wouldDedupe = if ($dupRes.IsSuccess) { [bool]$dupRes.Data.isDuplicate } else { $false }
+                                        if (-not $dupRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'comment_sync_dedupe_failed'
+                                            continue
+                                        }
+                                        $wouldDedupe = [bool]$dupRes.Data.isDuplicate
 
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'Audit-sourced QC_COMMENT_STATUS_SYNC candidate accepted.' -Data @{
                                             jobId           = [string]$job['id']
@@ -1445,10 +1558,19 @@ if ($statusSetRules.Count -ge 0) {
 
                                         if (-not $isDryRun -and -not $wouldDedupe) {
                                             $enqRes = Add-QCQueueJob -Job $job -Config $config
-                                            if ($enqRes.IsSuccess) { $enqueued++ }
+                                            if ($enqRes.IsSuccess) { $enqueued++ } else {
+                                                $auditCandidateRetryable = $true
+                                                $auditCandidateOutcome = 'retryableError'
+                                                $auditCandidateReason = 'comment_sync_enqueue_failed'
+                                            }
                                         } elseif ($wouldDedupe) { $duplicates++ }
                                     } catch {
-                                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit QC_COMMENT_STATUS_SYNC evaluation threw.' -Data @{
+                                        $auditCandidateRetryable = $true
+                                        $auditCandidateOutcome = 'retryableError'
+                                        $auditCandidateReason = 'comment_sync_exception'
+                                        $errors++
+                                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_RETRYABLE' -Message 'Audit QC_COMMENT_STATUS_SYNC evaluation deferred after exception.' -Data @{
+                                            auditEventId = $candidateAuditEventId
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName
                                             error = $_.Exception.Message
@@ -1456,10 +1578,10 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                 }
 
-                                if ($null -ne $candidateAuditEventId -and $candidateAuditEventId -gt 0) {
-                                    [void]$auditTriggerEventIds.Add([long]$candidateAuditEventId)
-                                }
                             } catch {
+                                $auditCandidateRetryable = $true
+                                $auditCandidateOutcome = 'retryableError'
+                                $auditCandidateReason = 'candidate_exception'
                                 $errors++
                                 $errDoc = ''
                                 $errAction = ''
@@ -1482,6 +1604,31 @@ if ($statusSetRules.Count -ge 0) {
                                     $errData['missingCommands'] = @($missingAfter)
                                 }
                                 _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_CANDIDATE_ERROR' -Message $_.Exception.Message -Data $errData
+                            } finally {
+                                if ($null -ne $candidateAuditEventId -and $candidateAuditEventId -gt 0) {
+                                    if ($auditCandidateRetryable) {
+                                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_EVAL_OUTCOME' -Message 'Audit event left unprocessed for retryable evaluation error.' -Data @{
+                                            auditEventId = $candidateAuditEventId
+                                            outcome      = $auditCandidateOutcome
+                                            reason       = $auditCandidateReason
+                                            actionName   = $actionName
+                                            documentName = $itemName
+                                            documentGuid = [string]$ac.objGuid
+                                            folderPath   = $fp
+                                        }
+                                    } else {
+                                        [void]$auditTriggerEventIds.Add([long]$candidateAuditEventId)
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_EVAL_OUTCOME' -Message 'Audit event deterministically evaluated.' -Data @{
+                                            auditEventId = $candidateAuditEventId
+                                            outcome      = $auditCandidateOutcome
+                                            reason       = $auditCandidateReason
+                                            actionName   = $actionName
+                                            documentName = $itemName
+                                            documentGuid = [string]$ac.objGuid
+                                            folderPath   = $fp
+                                        }
+                                    }
+                                }
                             }
                         }
                         if ($auditTriggerEventIds.Count -gt 0 -and (Get-Command -Name 'Mark-QCAuditEventsProcessed' -ErrorAction SilentlyContinue)) {

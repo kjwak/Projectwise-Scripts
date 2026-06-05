@@ -1554,7 +1554,7 @@ function Write-QCAuditEventRows {
     Batch-insert PW audit trail rows into audit_events (deduped by natural key).
     Rows without a document GUID are skipped (USER_LOGIN etc. use empty guid and break UX_audit_events_natural_key).
     .OUTPUTS
-    QCResult with Data: @{ written; skipped; skippedNoGuid; skippedDupInBatch; chunks; lastError }
+    QCResult with Data: @{ written; skipped; failed; skippedNoGuid; skippedDupInBatch; chunks; lastError }
     #>
     [CmdletBinding()]
     param(
@@ -1568,10 +1568,10 @@ function Write-QCAuditEventRows {
     if ($ChunkSize -lt 1 -or $ChunkSize -gt $maxChunk) { $ChunkSize = $maxChunk }
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
-        return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; chunks = 0 }
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; failed = 0; chunks = 0 }
     }
     if (-not $Rows -or $Rows.Count -eq 0) {
-        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; chunks = 0 }
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; failed = 0; chunks = 0 }
     }
 
     $prep = _QDB-PrepareAuditEventRowsForInsert -Rows $Rows
@@ -1580,11 +1580,12 @@ function Write-QCAuditEventRows {
     if ($insertRows.Count -eq 0) {
         return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE_INSERTABLE' -Message 'No audit rows with document GUID to insert.' -Data @{
             written = 0; skipped = $skipped; skippedNoGuid = [int]$prep.skippedNoGuid
-            skippedDupInBatch = [int]$prep.skippedDupInBatch; chunks = 0; lastError = $null
+            skippedDupInBatch = [int]$prep.skippedDupInBatch; failed = 0; chunks = 0; lastError = $null
         }
     }
 
     $written = 0
+    $failed = 0
     $chunks = 0
     $lastError = $null
     for ($i = 0; $i -lt $insertRows.Count; $i += $ChunkSize) {
@@ -1621,11 +1622,13 @@ WHERE NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL
                 $skipped += ($chunk.Count - [int]$res.Data.rowsAffected)
             } else {
                 $skipped += $chunk.Count
+                $failed += $chunk.Count
                 $lastError = [string]$res.Message
                 if ($res.Data -and $res.Data.error) { $lastError = "$lastError ($($res.Data.error))" }
             }
         } catch {
             $skipped += $chunk.Count
+            $failed += $chunk.Count
             $lastError = [string]$_.Exception.Message
         }
     }
@@ -1633,6 +1636,7 @@ WHERE NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL
     return New-QCSuccessResult -Code 'AUDIT_EVENTS_WRITTEN' -Message "Audit events: $written inserted, $skipped skipped/duplicate." -Data @{
         written           = $written
         skipped           = $skipped
+        failed            = $failed
         skippedNoGuid     = [int]$prep.skippedNoGuid
         skippedDupInBatch = [int]$prep.skippedDupInBatch
         chunks            = $chunks
@@ -2827,7 +2831,8 @@ function Get-QCUnprocessedAuditEvents {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [int]$MaxRows = 500,
-        [int[]]$ActionCodes = @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020)
+        [int[]]$ActionCodes = @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020),
+        [long[]]$ExcludeEventIds = @()
     )
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
@@ -2839,14 +2844,17 @@ function Get-QCUnprocessedAuditEvents {
         return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_NONE' -Message 'No action codes configured.' -Data @{ rows = @(); count = 0 }
     }
     $codeList = ($codes | ForEach-Object { [string][int]$_ }) -join ','
+    $excludeIds = @($ExcludeEventIds | Where-Object { $_ -gt 0 } | ForEach-Object { [string][long]$_ } | Select-Object -Unique)
+    $excludeSql = ''
+    if ($excludeIds.Count -gt 0) { $excludeSql = "`n  AND id NOT IN ($($excludeIds -join ','))" }
     $sql = @"
 SELECT TOP ($MaxRows)
     id, pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid,
     pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type
 FROM audit_events
 WHERE processed = 0
-  AND pw_action IN ($codeList)
-ORDER BY CASE WHEN pw_action = 1012 THEN 0 ELSE 1 END, pw_acttime ASC, pw_objguid ASC
+  AND pw_action IN ($codeList)$excludeSql
+ORDER BY CASE WHEN pw_action = 1012 THEN 0 ELSE 1 END, pw_acttime ASC, pw_objguid ASC, id ASC
 "@
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql
