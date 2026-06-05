@@ -1676,7 +1676,7 @@ function Advance-QCWorkflowCycleForRedlinesResubmit {
             $existing = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $sourceDocGuid -FolderPath $folderPath -SheetStem $sheetStem
         } catch { }
     }
-    if (-not $existing -or (_QCW-IsNullOrWhiteSpace $existing.cycleId) -and (_QCW-IsNullOrWhiteSpace $existing.cycleNumber))) {
+    if (-not $existing -or ((_QCW-IsNullOrWhiteSpace $existing.cycleId) -and (_QCW-IsNullOrWhiteSpace $existing.cycleNumber))) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Warning' -Code 'QC_WORKFLOW_CYCLE_RESUBMIT_SKIPPED' `
                 -Message 'Skipped redlines resubmit sub-cycle bump because no active QC cycle was found.' -Data @{
