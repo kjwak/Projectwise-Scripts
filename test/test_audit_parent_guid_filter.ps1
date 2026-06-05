@@ -11,7 +11,7 @@ function _Assert($cond, $msg) {
 }
 
 $v = Get-AuditPollerLogicVersion
-_Assert ($v -eq '2026-06-05-parent-guid-cache-gate-v9') "Expected parent-guid gate logic version, got: $v"
+_Assert ($v -eq '2026-06-05-parent-guid-cache-gate-v10') "Expected parent-guid gate logic version, got: $v"
 
 $watchGuid = '9475dfe8-1a85-46de-8986-3e59744591ca'
 $otherGuid = '00000000-0000-0000-0000-000000000099'
@@ -27,14 +27,20 @@ Register-AuditPollerFolderGuidCacheEntry -Config $cfg -FolderGuid $watchGuid -Fo
 
 $rows = @(
     @{ o_action = 1007; o_parentguid = $watchGuid; o_objguid = 'doc-1'; o_itemname = 'a.dgn' },
-    @{ o_action = 1012; o_parentguid = $otherGuid; o_objguid = 'doc-2'; o_itemname = 'b.pdf' },
+    @{ o_action = 1007; o_parentguid = $otherGuid; o_objguid = 'doc-2'; o_itemname = 'b.dgn' },
+    @{ o_action = 1012; o_parentguid = $otherGuid; o_objguid = 'doc-state'; o_itemname = '0818000063ea515-qc.pdf' },
     @{ o_action = 1002; pw_parentguid = $watchGuid; pw_objguid = 'doc-3'; pw_itemname = 'c.pdf' }
 )
 
 $gate = Invoke-QCAuditParentGuidCacheGate -Rows $rows -Config $cfg -WatchRootConfigs @()
 _Assert ($gate.active) 'gate should be active when cache has entries'
-_Assert ($gate.kept.Count -eq 2) "expected 2 kept rows, got $($gate.kept.Count)"
+_Assert ($gate.kept.Count -eq 3) "expected 3 kept rows, got $($gate.kept.Count)"
 _Assert ($gate.skipped.Count -eq 1) "expected 1 skipped row, got $($gate.skipped.Count)"
+
+$statsExempt = @{}
+$gateState = Invoke-QCAuditParentGuidCacheGate -Rows @($rows[2]) -Config $cfg -Stats $statsExempt
+_Assert ($gateState.kept.Count -eq 1) 'DOCUMENT_STATE must pass parent GUID filter even when folder not cached'
+_Assert ($statsExempt.parentGuidFilterExemptPassed -eq 1) 'one DOCUMENT_STATE should pass via exempt list'
 
 $disabledCfg = @{
     auditPoller = @{
@@ -45,7 +51,7 @@ $disabledCfg = @{
 }
 $gateOff = Invoke-QCAuditParentGuidCacheGate -Rows $rows -Config $disabledCfg
 _Assert (-not $gateOff.active) 'gate should be inactive when disabled'
-_Assert ($gateOff.kept.Count -eq 3) 'disabled gate should pass all rows'
+_Assert ($gateOff.kept.Count -eq 4) 'disabled gate should pass all rows'
 
 $emptyGate = Invoke-QCAuditParentGuidCacheGate -Rows @() -Config $cfg
 _Assert ($emptyGate.kept.Count -eq 0) 'empty input should return empty kept'

@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-05-parent-guid-cache-gate-v9'
+$script:AuditPollerLogicVersion = '2026-06-05-parent-guid-cache-gate-v10'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -121,6 +121,28 @@ function _AuditPoller-GetAuditPollerBool {
         }
     } catch { }
     return $Default
+}
+
+function _AuditPoller-GetParentGuidFilterExemptActionCodes {
+    param([hashtable]$Config)
+    $defaults = @(1012)
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            $fg = $null
+            if ($ap -is [hashtable] -and $ap.ContainsKey('folderGuidCache')) { $fg = $ap.folderGuidCache }
+            elseif ($ap.PSObject -and $ap.folderGuidCache) { $fg = $ap.folderGuidCache }
+            if ($fg) {
+                $list = $null
+                if ($fg -is [hashtable] -and $fg.ContainsKey('parentGuidFilterExemptActionCodes')) { $list = $fg.parentGuidFilterExemptActionCodes }
+                elseif ($fg.PSObject -and $fg.parentGuidFilterExemptActionCodes) { $list = $fg.parentGuidFilterExemptActionCodes }
+                if ($list) {
+                    return @($list | ForEach-Object { [int]$_ })
+                }
+            }
+        }
+    } catch { }
+    return $defaults
 }
 
 function _AuditPoller-GetPwObjectProperty {
@@ -454,6 +476,7 @@ function Invoke-QCAuditParentGuidCacheGate {
     .SYNOPSIS
     Keeps audit rows whose o_parentguid / pw_parentguid is in the warmed folder GUID cache.
     Skips PW folder/doc resolution for events outside watched folders. No-op when disabled or cache is empty.
+    Action codes in parentGuidFilterExemptActionCodes (default: DOCUMENT_STATE / 1012) always pass.
     #>
     [CmdletBinding()]
     param(
@@ -491,9 +514,21 @@ function Invoke-QCAuditParentGuidCacheGate {
         return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
     }
 
+    $exemptCodes = @{}
+    foreach ($code in @(_AuditPoller-GetParentGuidFilterExemptActionCodes -Config $Config)) {
+        $exemptCodes[[int]$code] = $true
+    }
+
     $kept = [System.Collections.Generic.List[object]]::new()
     $skipped = [System.Collections.Generic.List[object]]::new()
+    $exemptPassed = 0
     foreach ($row in @($Rows)) {
+        $actionCode = _AuditPoller-GetTriggerActionCode -Row $row
+        if ($exemptCodes.ContainsKey($actionCode)) {
+            [void]$kept.Add($row)
+            $exemptPassed++
+            continue
+        }
         $key = _AuditPoller-NormalizeFolderGuidKey -Guid (_AuditPoller-GetParentGuidFromRow -Row $row)
         if ($key -and $script:AuditPoller_FolderGuidCache.ContainsKey($key)) {
             [void]$kept.Add($row)
@@ -507,6 +542,7 @@ function Invoke-QCAuditParentGuidCacheGate {
         $Stats.parentGuidFilterCacheSize = $cacheSize
         $Stats.parentGuidFilterPassed = $kept.Count
         $Stats.parentGuidFilterSkipped = $skipped.Count
+        $Stats.parentGuidFilterExemptPassed = $exemptPassed
         $Stats.parentGuidFilterBypassReason = $null
     }
 
@@ -1673,6 +1709,7 @@ function Invoke-AuditTrailScan {
         parentGuidFilterCacheSize = 0
         parentGuidFilterPassed = 0
         parentGuidFilterSkipped = 0
+        parentGuidFilterExemptPassed = 0
         parentGuidFilterSkippedReload = 0
         parentGuidFilterMarkedProcessed = 0
         parentGuidFilterBypassReason = $null
