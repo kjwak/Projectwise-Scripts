@@ -36,7 +36,13 @@ function _QCN-IsBlank([object]$Value) {
 
 function _QCN-GetProp([object]$Object, [string[]]$Names) {
     foreach ($n in @($Names)) {
-        try { if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n } } catch { }
+        try {
+            if ($Object -is [hashtable]) {
+                if ($Object.ContainsKey($n) -and $null -ne $Object[$n]) { return $Object[$n] }
+                continue
+            }
+            if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n }
+        } catch { }
     }
     return $null
 }
@@ -1200,6 +1206,55 @@ function _QCN-IsPlaceholderNotificationSheetStem {
     return $Stem.Equals('unknown-document', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function _QCN-IsPlaceholderNotificationDocumentName {
+    param([string]$DocumentName)
+    if (_QCN-IsBlank $DocumentName) { return $true }
+    $name = [System.IO.Path]::GetFileName([string]$DocumentName)
+    if ($name -match '(?i)^unknown-document(-qc)?\.pdf$') { return $true }
+    if ($name.Equals('unknown-document', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $false
+}
+
+function _QCN-ResolveNotificationDisplayDocumentName {
+    param(
+        [string]$DocumentName = '',
+        [hashtable]$Job = $null,
+        [hashtable]$Event = $null,
+        [hashtable]$Config = $null
+    )
+
+    if ($Job) {
+        $src = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+        if (-not (_QCN-IsBlank $src)) {
+            if ($src -match '(?i)-qc\.pdf$') {
+                $src = [System.IO.Path]::GetFileNameWithoutExtension($src) + '.pdf'
+            }
+            if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $src)) { return $src }
+        }
+    }
+
+    $stem = ''
+    if ($Event) {
+        if ($Event.ContainsKey('sheetStem') -and -not (_QCN-IsBlank $Event.sheetStem) `
+                -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem ([string]$Event.sheetStem))) {
+            $stem = [string]$Event.sheetStem
+        }
+        else {
+            $stem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+        }
+    }
+    if (-not (_QCN-IsBlank $stem) -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) {
+        return ($stem + '.pdf')
+    }
+
+    $name = [string]$DocumentName
+    if ($name -match '(?i)-qc\.pdf$') {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf'
+    }
+    if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $name)) { return $name }
+    return $name
+}
+
 function _QCN-ResolveSheetStemFromFolderForDedupe {
     param(
         [hashtable]$Config,
@@ -1699,7 +1754,8 @@ function Send-QCNotification {
         $reviewType = ''
         if ($Event.reviewType) { $reviewType = [string]$Event.reviewType }
         elseif ($Event.qcReviewType) { $reviewType = [string]$Event.qcReviewType }
-        $tokens = _QCN-NewNotificationSubjectTokens -DocumentName ([string]$Event.documentName) `
+        $subjectDocumentName = if ($Event.displayDocumentName) { [string]$Event.displayDocumentName } else { [string]$Event.documentName }
+        $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $subjectDocumentName `
             -DocumentPath ([string]$Event.documentPath) -Project ([string]$Event.project) `
             -PreviousState ([string]$Event.previousState) -CurrentState ([string]$Event.currentState) `
             -EventType ([string]$Event.eventType) -ReviewType $reviewType
@@ -2503,7 +2559,12 @@ function Invoke-QCNotificationForStateChange {
     }
 
     if (_QCN-IsBlank $DocumentName) {
-        $DocumentName = _QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')
+        if ($Job) {
+            $DocumentName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+        }
+        if (_QCN-IsBlank $DocumentName) {
+            $DocumentName = _QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')
+        }
         if (_QCN-IsBlank $DocumentName) { $DocumentName = 'unknown-document' }
     }
     if (_QCN-IsBlank $DocumentGuid) {
@@ -2663,6 +2724,10 @@ function Invoke-QCNotificationForStateChange {
 
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config
     $event['dedupeKey'] = $dedupeKey
+    $displayDocumentName = _QCN-ResolveNotificationDisplayDocumentName -DocumentName $DocumentName -Job $Job -Event $event -Config $Config
+    if (-not (_QCN-IsBlank $displayDocumentName)) {
+        $event['displayDocumentName'] = $displayDocumentName
+    }
     if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId)) {
         $skipCode = if (_QCN-TestNotificationActorIsAutomation -Config $Config -Event $event) { 'QC_NOTIFICATION_SKIPPED_AUTOMATION_ECHO' } else { 'QC_NOTIFICATION_DEDUPED' }
         _QCN-WriteNotificationLifecycleLog -Code $skipCode -Level 'Information' `
@@ -2681,7 +2746,8 @@ function Invoke-QCNotificationForStateChange {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
     }
 
-    $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $DocumentName -DocumentPath $DocumentPath `
+    $subjectDocumentName = if (-not (_QCN-IsBlank $displayDocumentName)) { $displayDocumentName } else { $DocumentName }
+    $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $subjectDocumentName -DocumentPath $DocumentPath `
         -Project $Project -PreviousState $prev -CurrentState $curr -EventType $eventType -ReviewType $resolvedReviewType
     $subjectTemplate = _QCN-ResolveNotificationSubjectTemplate -EventCfg $eventCfg -Settings $settings
     $subject = Expand-QCNotificationTemplate -Template $subjectTemplate -Tokens $tokens

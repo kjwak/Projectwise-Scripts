@@ -1807,6 +1807,9 @@ function Invoke-QCNotificationProcessor {
     if ($meta.ContainsKey('documentGuid') -and $meta.documentGuid) {
         $notifyParams['DocumentGuid'] = [string]$meta.documentGuid
     }
+    if (-not (_QCP-IsNullOrWhiteSpace $Job.sourceName)) {
+        $notifyParams['DocumentName'] = [string]$Job.sourceName
+    }
     if (-not (_QCP-IsNullOrWhiteSpace $Job.sourceFolder)) {
         $notifyParams['DocumentPath'] = Join-Path ([string]$Job.sourceFolder) $(if ($Job.sourceName) { [string]$Job.sourceName } else { '' })
     }

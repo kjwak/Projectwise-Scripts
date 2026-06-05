@@ -221,6 +221,44 @@ $keyNamed = Get-QCNotificationDedupeKey -Event @{
 Assert-Eq $keyUnknown $keyNamed 'Same folder + sheet stem should dedupe despite different document names'
 Assert-True ($keyUnknown -match 'folderPath=') 'Dedupe key should include folderPath'
 
+# Subject should use sheet PDF name (stem.pdf), not unknown-document placeholder from QC PDF resolution
+$readyCfg = New-NotifyConfig -Enabled $true
+$readyDedupe = Join-Path $testRoot 'dedupe-ready-subject\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $readyDedupe) -Force | Out-Null
+$readyCfg.notifications.dedupe.storePath = $readyDedupe
+$readyCfg.notifications.events['Ready for QC'] = @{
+    enabled = $true
+    eventType = 'READY_FOR_QC'
+    to = @('reviewers')
+    cc = @('designers')
+    actionRequired = 'Begin QC review.'
+}
+$readyJob = @{
+    id = 'qc_notification_subject_test'
+    sourceName = '080J082001ca001.pdf'
+    sourceFolder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+    metadata = @{
+        previousState = 'QC Initiated'
+        currentState = 'Ready for QC'
+        documentGuid = 'guid-ready-subject'
+        stateTransitionKey = 'audit:9999'
+        transitionId = 88
+    }
+}
+$readyDoc = [pscustomobject]@{
+    Name = '080J082001ca001.pdf'
+    DocumentGUID = 'guid-ready-subject'
+    EM_Reviewer_Email = 'reviewer@company.com'
+    EM_Designer_Email = 'designer@company.com'
+}
+$readySend = Invoke-QCNotificationForStateChange -Config $readyCfg -PreviousState 'QC Initiated' -CurrentState 'Ready for QC' `
+    -Document $readyDoc -Job $readyJob -DocumentGuid 'guid-ready-subject' -StateTransitionKey 'audit:9999' `
+    -TransitionId 88 -Project 'cafwy2200-i-15_elpse'
+Assert-True $readySend.IsSuccess 'Ready for QC job notification should succeed'
+$readyPayload = Get-Content -LiteralPath $readySend.Data.filePath -Raw | ConvertFrom-Json
+Assert-True ($readyPayload.subject -match '080J082001ca001\.pdf') 'Subject should use sheet PDF name'
+Assert-True ($readyPayload.subject -notmatch 'unknown-document') 'Subject must not contain unknown-document placeholder'
+
 # Duplicate suppression
 $dupCfg = New-NotifyConfig -Enabled $true
 $dupDedupe = Join-Path $testRoot 'dedupe-dup\sent-keys.jsonl'
