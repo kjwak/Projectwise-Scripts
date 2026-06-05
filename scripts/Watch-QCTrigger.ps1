@@ -308,8 +308,8 @@ $script:WatchModuleLoadOrder = @(
     'PW.AuditPoller.psm1'
 )
 
-# Re-import after PW/QC modules; nested Import-Module -Force drops Core.Database/Core.Hashing
-# and QC.Workflow/Processors can drop QC.Notifications session exports.
+# Re-import after PW/QC modules; nested Import-Module -Force drops Core.Database/Core.Hashing,
+# QC.Workflow/Processors can drop QC.Notifications exports, and QC.Notifications can drop PW.Discovery exports.
 $script:WatchModuleRestoreOrder = @(
     'Core.Results.psm1'
     'Core.Paths.psm1'
@@ -317,6 +317,9 @@ $script:WatchModuleRestoreOrder = @(
     'Core.Hashing.psm1'
     'Core.Database.psm1'
     'QC.Notifications.psm1'
+    'QC.StatusSet.psm1'
+    'PW.AuditPoller.psm1'
+    'PW.Discovery.psm1'
 )
 
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
@@ -398,6 +401,9 @@ function _Watch-RestoreFoundationModules {
         if (Test-Path -LiteralPath $modPath) {
             Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
         }
+    }
+    if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
+        [void](Ensure-PWDiscoveryModuleLoaded)
     }
 }
 

@@ -7,7 +7,9 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Config.psm1') -Force -ErrorAction S
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+}
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
 

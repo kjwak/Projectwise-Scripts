@@ -8,6 +8,10 @@ $restoreOrder = @(
     'Core.Runtime.psm1'
     'Core.Hashing.psm1'
     'Core.Database.psm1'
+    'QC.Notifications.psm1'
+    'QC.StatusSet.psm1'
+    'PW.AuditPoller.psm1'
+    'PW.Discovery.psm1'
 )
 $loadOrder = @(
     'Core.Results.psm1'
@@ -19,6 +23,8 @@ $loadOrder = @(
     'QC.Triggers.psm1'
     'QC.JobFactory.psm1'
     'QC.Queue.Json.psm1'
+    'QC.Notifications.psm1'
+    'QC.Workflow.psm1'
     'QC.Rendition.psm1'
     'QC.Processors.psm1'
     'QC.WatcherOrchestration.psm1'
@@ -37,11 +43,19 @@ $need = @(
     'Write-QCSheetIndexBatch'
     'Invoke-AuditTrailScan'
     'Sync-PWAssociatedSheetWorkflowState'
+    'Test-QCNotificationsEnqueueAsJob'
+    'Invoke-QCNotificationForStateChange'
+    'Get-QCNotificationDedupeKey'
+    'Get-PWObjectPropertyValue'
+    'Ensure-PWDiscoveryModuleLoaded'
 )
 
 function Restore-Foundation {
     foreach ($m in $restoreOrder) {
         Import-Module (Join-Path $modulesRoot $m) -Force -WarningAction SilentlyContinue | Out-Null
+    }
+    if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
+        [void](Ensure-PWDiscoveryModuleLoaded)
     }
 }
 function Reload-All {
