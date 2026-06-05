@@ -457,11 +457,15 @@ function Invoke-QCAuditParentGuidCacheGate {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][array]$Rows,
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$Rows,
         [Parameter(Mandatory)][hashtable]$Config,
         [array]$WatchRootConfigs = @(),
         [hashtable]$Stats = $null
     )
+
+    if (-not $Rows -or @($Rows).Count -eq 0) {
+        return @{ kept = @(); skipped = @(); active = $false; cacheSize = 0 }
+    }
 
     $enabled = _AuditPoller-GetAuditPollerBool -Config $Config -Key 'filterByParentGuidCache' -Default $true
     if (-not $enabled) {
@@ -1750,18 +1754,6 @@ function Invoke-AuditTrailScan {
     $stats.pagesFetched = $pageNum
     $stats.totalEvents = $allEvents.Count
 
-    $ingestGate = Invoke-QCAuditParentGuidCacheGate -Rows @($allEvents.ToArray()) -Config $Config -WatchRootConfigs $WatchRootConfigs -Stats $stats
-    $eventsToIngest = @($ingestGate.kept)
-
-    if ($ingestGate.active -and $ingestGate.skipped.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER' -Message "Skipped $($ingestGate.skipped.Count) QC events (parent GUID not in watch cache)." -Data @{
-            cacheSize = [int]$ingestGate.cacheSize
-            passed = [int]$ingestGate.kept.Count
-            skipped = [int]$ingestGate.skipped.Count
-            totalQcEvents = [int]$allEvents.Count
-        }
-    }
-
     if ($allEvents.Count -eq 0) {
         $sw.Stop()
         $watermarkAfterEmpty = $null
@@ -1781,6 +1773,18 @@ function Invoke-AuditTrailScan {
             events = @(); candidates = @(); docToFolder = @{}; stats = $stats
             watermarkAfter = $watermarkAfterEmpty; durationMs = [int]$sw.ElapsedMilliseconds
             pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
+        }
+    }
+
+    $ingestGate = Invoke-QCAuditParentGuidCacheGate -Rows @($allEvents.ToArray()) -Config $Config -WatchRootConfigs $WatchRootConfigs -Stats $stats
+    $eventsToIngest = @($ingestGate.kept)
+
+    if ($ingestGate.active -and $ingestGate.skipped.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER' -Message "Skipped $($ingestGate.skipped.Count) QC events (parent GUID not in watch cache)." -Data @{
+            cacheSize = [int]$ingestGate.cacheSize
+            passed = [int]$ingestGate.kept.Count
+            skipped = [int]$ingestGate.skipped.Count
+            totalQcEvents = [int]$allEvents.Count
         }
     }
 

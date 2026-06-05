@@ -47,4 +47,8 @@ $gateOff = Invoke-QCAuditParentGuidCacheGate -Rows $rows -Config $disabledCfg
 _Assert (-not $gateOff.active) 'gate should be inactive when disabled'
 _Assert ($gateOff.kept.Count -eq 3) 'disabled gate should pass all rows'
 
+$emptyGate = Invoke-QCAuditParentGuidCacheGate -Rows @() -Config $cfg
+_Assert ($emptyGate.kept.Count -eq 0) 'empty input should return empty kept'
+_Assert ($emptyGate.skipped.Count -eq 0) 'empty input should return empty skipped'
+
 Write-Host 'OK: audit parent GUID filter tests passed.' -ForegroundColor Green
