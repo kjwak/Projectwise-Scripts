@@ -175,14 +175,14 @@ function _QCW-ResolveNotificationRoleAttrsForEnqueue {
     }
 
     $srcName = [string]$SourceDocumentName
-    if (_QCW-IsNullOrWhiteSpace $srcName) -and $Document) {
+    if ((_QCW-IsNullOrWhiteSpace $srcName) -and $Document) {
         try { $srcName = [string]$Document.Name } catch { }
     }
     if (-not (_QCW-IsNullOrWhiteSpace $srcName) -and $srcName -match '(?i)-qc\.pdf$') {
         $srcName = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcName)) + '.pdf'
     }
     $folder = [string]$FolderPath
-    if (_QCW-IsNullOrWhiteSpace $folder) -and $Document) {
+    if ((_QCW-IsNullOrWhiteSpace $folder) -and $Document) {
         try { $folder = [string]$Document.FolderPath } catch { }
     }
 
