@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-05-watermark-pagination-safety-v8'
+$script:AuditPollerLogicVersion = '2026-06-05-parent-guid-cache-gate-v9'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -437,6 +437,97 @@ function _AuditPoller-LoadFolderGuidCache {
         } catch { }
     }
     return $script:AuditPoller_FolderGuidCache
+}
+
+function _AuditPoller-GetParentGuidFromRow {
+    param($Row)
+    if ($null -eq $Row) { return $null }
+    foreach ($name in @('pw_parentguid', 'parentguid', 'o_parentguid')) {
+        $pg = _AuditPoller-GetRowValue -Row $Row -Name $name
+        if (-not [string]::IsNullOrWhiteSpace([string]$pg)) { return [string]$pg }
+    }
+    return $null
+}
+
+function Invoke-QCAuditParentGuidCacheGate {
+    <#
+    .SYNOPSIS
+    Keeps audit rows whose o_parentguid / pw_parentguid is in the warmed folder GUID cache.
+    Skips PW folder/doc resolution for events outside watched folders. No-op when disabled or cache is empty.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][array]$Rows,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [array]$WatchRootConfigs = @(),
+        [hashtable]$Stats = $null
+    )
+
+    $enabled = _AuditPoller-GetAuditPollerBool -Config $Config -Key 'filterByParentGuidCache' -Default $true
+    if (-not $enabled) {
+        if ($Stats) {
+            $Stats.parentGuidFilterActive = $false
+            $Stats.parentGuidFilterBypassReason = 'disabled'
+        }
+        return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
+    }
+
+    if (-not $script:AuditPoller_WatchFolderCacheWarmed) {
+        try { Sync-AuditPollerWatchFolderGuidCache -Config $Config -WatchRootConfigs $WatchRootConfigs | Out-Null } catch { }
+    }
+    [void](_AuditPoller-LoadFolderGuidCache -Config $Config)
+
+    $cacheSize = $script:AuditPoller_FolderGuidCache.Count
+    if ($cacheSize -eq 0) {
+        if ($Stats) {
+            $Stats.parentGuidFilterActive = $false
+            $Stats.parentGuidFilterBypassReason = 'empty_cache'
+            $Stats.parentGuidFilterCacheSize = 0
+        }
+        return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
+    }
+
+    $kept = [System.Collections.Generic.List[object]]::new()
+    $skipped = [System.Collections.Generic.List[object]]::new()
+    foreach ($row in @($Rows)) {
+        $key = _AuditPoller-NormalizeFolderGuidKey -Guid (_AuditPoller-GetParentGuidFromRow -Row $row)
+        if ($key -and $script:AuditPoller_FolderGuidCache.ContainsKey($key)) {
+            [void]$kept.Add($row)
+        } else {
+            [void]$skipped.Add($row)
+        }
+    }
+
+    if ($Stats) {
+        $Stats.parentGuidFilterActive = $true
+        $Stats.parentGuidFilterCacheSize = $cacheSize
+        $Stats.parentGuidFilterPassed = $kept.Count
+        $Stats.parentGuidFilterSkipped = $skipped.Count
+        $Stats.parentGuidFilterBypassReason = $null
+    }
+
+    return @{
+        kept      = @($kept.ToArray())
+        skipped   = @($skipped.ToArray())
+        active    = $true
+        cacheSize = $cacheSize
+    }
+}
+
+function Register-AuditPollerFolderGuidCacheEntry {
+    <#
+    .SYNOPSIS
+    Registers a folder GUID -> path mapping in the in-memory audit poller cache (and optional SQL cache).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderGuid,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = ''
+    )
+    $statsRef = [ref]@{}
+    _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $FolderGuid -FolderPath $FolderPath -WatchRoot $WatchRoot -StatsRef $statsRef
 }
 
 function _AuditPoller-ResolveParentFoldersBatched {
@@ -1574,6 +1665,13 @@ function Invoke-AuditTrailScan {
         auditLogicVersion  = $script:AuditPollerLogicVersion
         ingestSkipped      = 0
         totalFetchedRaw    = 0
+        parentGuidFilterActive = $false
+        parentGuidFilterCacheSize = 0
+        parentGuidFilterPassed = 0
+        parentGuidFilterSkipped = 0
+        parentGuidFilterSkippedReload = 0
+        parentGuidFilterMarkedProcessed = 0
+        parentGuidFilterBypassReason = $null
     }
 
     $maxPwActTime = $null
@@ -1652,6 +1750,18 @@ function Invoke-AuditTrailScan {
     $stats.pagesFetched = $pageNum
     $stats.totalEvents = $allEvents.Count
 
+    $ingestGate = Invoke-QCAuditParentGuidCacheGate -Rows @($allEvents.ToArray()) -Config $Config -WatchRootConfigs $WatchRootConfigs -Stats $stats
+    $eventsToIngest = @($ingestGate.kept)
+
+    if ($ingestGate.active -and $ingestGate.skipped.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER' -Message "Skipped $($ingestGate.skipped.Count) QC events (parent GUID not in watch cache)." -Data @{
+            cacheSize = [int]$ingestGate.cacheSize
+            passed = [int]$ingestGate.kept.Count
+            skipped = [int]$ingestGate.skipped.Count
+            totalQcEvents = [int]$allEvents.Count
+        }
+    }
+
     if ($allEvents.Count -eq 0) {
         $sw.Stop()
         $watermarkAfterEmpty = $null
@@ -1674,11 +1784,26 @@ function Invoke-AuditTrailScan {
         }
     }
 
+    if ($eventsToIngest.Count -eq 0) {
+        $sw.Stop()
+        $watermarkAfterFiltered = $null
+        if ($maxPwActTimeUtc -and -not [bool]$stats.eventsTruncated) {
+            $watermarkAfterFiltered = $maxPwActTimeUtc
+            $stats.maxPwActTime = $maxPwActTime
+            $stats.maxPwActTimeUtc = $maxPwActTimeUtc
+        }
+        return New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message "No QC events in watch-folder cache ($($stats.parentGuidFilterSkipped) skipped by parent GUID filter)." -Data @{
+            events = @(); candidates = @(); docToFolder = @{}; stats = $stats
+            watermarkAfter = $watermarkAfterFiltered; durationMs = [int]$sw.ElapsedMilliseconds
+            pollWindow = @{ since = $sinceStr; until = $queryUntilStr }
+        }
+    }
+
     # 2. Ingest QC-relevant rows into audit_events (QCRelevantActions allowlist only).
     $watermarkAfter = $null
     $dbRows = @()
     if (Test-QCDatabaseEnabled -Config $Config) {
-        foreach ($evt in $allEvents) {
+        foreach ($evt in $eventsToIngest) {
             $dbRows += (_AuditPoller-NewAuditEventDbRow -Evt $evt -Config $Config)
         }
     } else {
@@ -1729,6 +1854,9 @@ function Invoke-AuditTrailScan {
                 eventsFetched = $stats.totalEvents
                 totalFetchedRaw = [int]$stats.totalFetchedRaw
                 ingestSkipped = [int]$stats.ingestSkipped
+                parentGuidFilterActive = [bool]$stats.parentGuidFilterActive
+                parentGuidFilterSkipped = [int]$stats.parentGuidFilterSkipped
+                parentGuidFilterPassed = [int]$stats.parentGuidFilterPassed
                 rowsPrepared  = $stats.dbRowsPrepared
                 rowsNullGuid  = $stats.dbRowsNullGuid
                 written       = $stats.dbWrites
@@ -1795,9 +1923,38 @@ function Invoke-AuditTrailScan {
         }
     }
     if (-not $useDbTriggers) {
-        $triggerRows = @($allEvents | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
+        $triggerRows = @($eventsToIngest | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
         $stats.triggerSource = 'pw_batch'
     }
+
+    if ($triggerRows.Count -gt 0) {
+        $triggerGate = Invoke-QCAuditParentGuidCacheGate -Rows $triggerRows -Config $Config -WatchRootConfigs $WatchRootConfigs
+        if ($triggerGate.active -and $triggerGate.skipped.Count -gt 0) {
+            $skipIds = [System.Collections.Generic.List[long]]::new()
+            foreach ($row in @($triggerGate.skipped)) {
+                $idVal = _AuditPoller-GetRowValue -Row $row -Name 'id'
+                if ($null -eq $idVal) { continue }
+                try { [void]$skipIds.Add([long]$idVal) } catch { }
+            }
+            if ($skipIds.Count -gt 0 -and (Get-Command -Name 'Mark-QCAuditEventsProcessed' -ErrorAction SilentlyContinue)) {
+                try {
+                    $markRes = Mark-QCAuditEventsProcessed -Config $Config -EventIds @($skipIds.ToArray())
+                    if ($markRes.IsSuccess -and $markRes.Data) {
+                        $stats.parentGuidFilterMarkedProcessed = [int]$markRes.Data.marked
+                    }
+                } catch { }
+            }
+            $stats.parentGuidFilterSkippedReload = [int]$triggerGate.skipped.Count
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER_RELOAD' -Message "Marked $($stats.parentGuidFilterMarkedProcessed) unprocessed audit_events rows skipped by parent GUID filter." -Data @{
+                    skippedReload = [int]$triggerGate.skipped.Count
+                    markedProcessed = [int]$stats.parentGuidFilterMarkedProcessed
+                }
+            }
+        }
+        $triggerRows = @($triggerGate.kept)
+    }
+
     $stats.relevantEvents = $triggerRows.Count
 
     if ($triggerRows.Count -eq 0) {
@@ -1986,4 +2143,4 @@ function Test-QCAuditIngestAllowedActionCode {
     return _AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $ActionCode
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode
+Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode

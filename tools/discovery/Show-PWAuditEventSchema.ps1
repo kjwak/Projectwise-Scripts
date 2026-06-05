@@ -90,6 +90,9 @@ $DmsAudtColumnDocs = [ordered]@{
     o_itemname  = 'Name of the affected item'
     o_itemdesc  = 'Description of the affected item'
     o_parentguid = 'Parent GUID - for document events this is the containing folder GUID (use for folder filtering)'
+    o_audtno     = 'Audit record sequence number (observed on live datasource)'
+    o_username   = 'User login/email (joined column on live datasource)'
+    o_userdesc   = 'User display name (joined column on live datasource)'
 }
 
 function _RunSQL {
@@ -209,11 +212,22 @@ $schemaRows = @()
 $schemaResult = _RunSQL -Sql "SELECT TOP 1 * FROM dms_audt ORDER BY o_acttime DESC" -Label 'schema_probe'
 if ($schemaResult.success) {
     $probeRows = _SqlRows $schemaResult.data
+    $columns = $null
     if ($probeRows.Count -gt 0 -and $probeRows[0] -is [System.Data.DataRow]) {
-        foreach ($col in $probeRows[0].Table.Columns) {
+        $columns = @($probeRows[0].Table.Columns)
+    } elseif ($schemaResult.data -is [System.Data.DataTable]) {
+        $columns = @($schemaResult.data.Columns)
+    } elseif ($probeRows.Count -gt 0) {
+        $columns = @((_RowToOrderedHash $probeRows[0]).Keys | Sort-Object | ForEach-Object {
+            [pscustomobject]@{ ColumnName = $_; DataType = @{ Name = '(from row)' } }
+        })
+    }
+    if ($columns) {
+        foreach ($col in $columns) {
             $name = [string]$col.ColumnName
+            $typeName = try { [string]$col.DataType.Name } catch { '(from row)' }
             $desc = if ($DmsAudtColumnDocs.Contains($name)) { $DmsAudtColumnDocs[$name] } else { '(observed; not in QC docs)' }
-            $schemaRows += [pscustomobject]@{ column = $name; dataType = [string]$col.DataType.Name; description = $desc }
+            $schemaRows += [pscustomobject]@{ column = $name; dataType = $typeName; description = $desc }
         }
     }
 }
@@ -430,8 +444,12 @@ Write-Host "`n[5] Watch-folder GUID filter feasibility" -ForegroundColor Yellow
 
 $watchGuidSet = @{}
 $watchFolders = @()
+$watchRootConfigs = @()
+if ($pwCfg.watchList -and $pwCfg.watchList.roots) {
+    $watchRootConfigs = @($pwCfg.watchList.roots | ForEach-Object { ConvertTo-HashtableDeep -Value $_ })
+}
 try {
-    $warmRes = Sync-AuditPollerWatchFolderGuidCache -Config $config
+    $warmRes = Sync-AuditPollerWatchFolderGuidCache -Config $config -WatchRootConfigs $watchRootConfigs
     if ($warmRes.IsSuccess -and $warmRes.Data) {
         Write-Host ("    Sync-AuditPollerWatchFolderGuidCache: warmed {0} folder(s)" -f $warmRes.Data.warmed) -ForegroundColor Green
     }
