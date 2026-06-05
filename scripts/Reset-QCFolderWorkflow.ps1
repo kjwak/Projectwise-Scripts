@@ -447,15 +447,24 @@ WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($sourceFolderClause))
         }
 
         if (-not $SkipSheetIndexUpdate.IsPresent) {
-            $sheetSql = @"
+            if (-not $KeepSheetIndexQcFields.IsPresent) {
+                $sheetSql = @"
+UPDATE sheet_index
+SET pw_state_name = @targetState,
+    last_updated_at = SYSDATETIMEOFFSET(),
+    qc_stage = NULL,
+    qc_status = NULL,
+    last_audit_event_at = NULL
+WHERE ($siFolderClause)
+"@
+            } else {
+                $sheetSql = @"
 UPDATE sheet_index
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET()
+WHERE ($siFolderClause)
 "@
-            if (-not $KeepSheetIndexQcFields.IsPresent) {
-                $sheetSql += "`r`n    qc_stage = NULL,`r`n    qc_status = NULL,`r`n    last_audit_event_at = NULL"
             }
-            $sheetSql += "`r`nWHERE ($siFolderClause)"
 
             if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
                 $upd = Invoke-QCDatabaseNonQuery -Config $config -Sql $sheetSql -Parameters $params
