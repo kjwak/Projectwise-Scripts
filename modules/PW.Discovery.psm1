@@ -1633,6 +1633,60 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
     }
 }
 
+
+function _PWD-GetConfiguredWorkflowStateNames {
+    param([hashtable]$Config)
+    $states = [System.Collections.Generic.List[string]]::new()
+    $seen = @{}
+    $add = {
+        param([string]$Name)
+        if ([string]::IsNullOrWhiteSpace($Name)) { return }
+        $n = ([string]$Name).Trim()
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { return }
+        $seen[$k] = $true
+        [void]$states.Add($n)
+    }
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                foreach ($key in @('production','qcInitiated','qcReceived','readyForQc','redlinesReceived','correctionsReceived','correctionsInProgress','qcFinalizing','complete','error')) {
+                    try { & $add (Get-QCWorkflowStateName -Settings $wf -StateKey $key) } catch { }
+                }
+            }
+        } catch { }
+    }
+    foreach ($fallback in @('In Production','QC Initiated','Ready for QC','Redlines Received','Corrections Received','Corrections In Progress','QC Finalizing','QC Complete','Error Needs Attention')) {
+        & $add $fallback
+    }
+    return @($states)
+}
+
+function _PWD-ResolveAuditWorkflowTargetStateName {
+    param(
+        [hashtable]$Config,
+        [string]$AuditTargetStateName = '',
+        [string]$AuditRawItemDesc = '',
+        [string]$AuditRawTextParam = ''
+    )
+    $knownStates = @(_PWD-GetConfiguredWorkflowStateNames -Config $Config)
+    foreach ($raw in @($AuditTargetStateName, $AuditRawTextParam, $AuditRawItemDesc)) {
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $value = ([string]$raw).Trim()
+        foreach ($state in $knownStates) {
+            if ([string]::IsNullOrWhiteSpace($state)) { continue }
+            if ($value.Equals([string]$state, [System.StringComparison]::OrdinalIgnoreCase)) { return [string]$state }
+        }
+        foreach ($state in $knownStates) {
+            if ([string]::IsNullOrWhiteSpace($state)) { continue }
+            $escaped = [regex]::Escape(([string]$state).Trim())
+            if ($escaped -and $value -match ('(?i)(^|[^A-Za-z0-9])' + $escaped + '([^A-Za-z0-9]|$)')) { return [string]$state }
+        }
+    }
+    return ''
+}
+
 function _PWD-GetSheetIndexStateSnapshot {
     param(
         [hashtable]$Config,
@@ -1681,13 +1735,12 @@ function _PWD-TestShouldBlockStaleRestartOverwrite {
         [string]$SourceAuditEventAt = ''
     )
     if (-not (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) { return $false }
-    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $CurrentState -Config $Config)) { return $false }
     if (Test-QCWorkflowStateIsQcInitiated -StateName $TargetState -Config $Config) { return $false }
-    if (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) {
-        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState $CurrentState)) { return $false }
-    }
     if (-not $SheetIndexSnapshot) { return $false }
     if (-not (Test-QCWorkflowStateIsQcInitiated -StateName ([string]$SheetIndexSnapshot.pwStateName) -Config $Config)) { return $false }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) {
+        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState ([string]$SheetIndexSnapshot.pwStateName))) { return $false }
+    }
     $sourceAt = _PWD-TryParseAuditDateTime -Value $SourceAuditEventAt
     $targetAt = $null
     try {
@@ -2068,7 +2121,10 @@ function Sync-PWAssociatedSheetWorkflowState {
         [Nullable[long]]$AuditEventId = $null,
         [bool]$DryRun = $false,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [string]$AuditTargetStateName = '',
+        [string]$AuditRawItemDesc = '',
+        [string]$AuditRawTextParam = ''
     )
 
     if (Get-Command -Name 'Test-QCShouldSuppressAuditSheetStateSync' -ErrorAction SilentlyContinue) {
@@ -2085,8 +2141,56 @@ function Sync-PWAssociatedSheetWorkflowState {
         }
     }
 
-    $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
-    if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
+    $sourcePwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+    if ([string]::IsNullOrWhiteSpace($sourcePwState)) { return }
+    $auditTargetState = _PWD-ResolveAuditWorkflowTargetStateName -Config $Config `
+        -AuditTargetStateName $AuditTargetStateName -AuditRawItemDesc $AuditRawItemDesc -AuditRawTextParam $AuditRawTextParam
+    $canonicalState = $sourcePwState
+    $actorIsAutomation = $false
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        try { $actorIsAutomation = Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername } catch { $actorIsAutomation = $false }
+    }
+    if ((-not $actorIsAutomation) -and -not [string]::IsNullOrWhiteSpace($auditTargetState) `
+            -and (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) `
+            -and (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $sourcePwState -CurrentState $auditTargetState)) {
+        $canonicalState = $auditTargetState
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_RESTART_TARGET_ACCEPTED' `
+                -Message 'Manual DOCUMENT_STATE audit target accepted as QC restart/intake state.' -Data @{
+                auditEventId = $AuditEventId
+                sourceDocumentGuid = $DocumentGuid
+                sourceDocumentName = $DocumentName
+                folderPath = $FolderPath
+                sourceCurrentPwState = $sourcePwState
+                auditTargetState = $auditTargetState
+                sourceAuditActionTime = $LastAuditEventAt
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+                rawItemDesc = $AuditRawItemDesc
+                rawTextParam = $AuditRawTextParam
+                reason = 'manual_restart_intake_audit_target'
+            } | Out-Null
+        }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SOURCE' `
+            -Message 'DOCUMENT_STATE sibling sync source state resolved.' -Data @{
+            auditEventId = $AuditEventId
+            sourceDocumentGuid = $DocumentGuid
+            sourceDocumentName = $DocumentName
+            folderPath = $FolderPath
+            sourceCurrentPwState = $sourcePwState
+            auditTargetState = $auditTargetState
+            canonicalState = $canonicalState
+            sourceAuditActionTime = $LastAuditEventAt
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            actorIsAutomation = $actorIsAutomation
+            rawItemDesc = $AuditRawItemDesc
+            rawTextParam = $AuditRawTextParam
+        } | Out-Null
+    }
 
     if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
@@ -2195,6 +2299,40 @@ function Sync-PWAssociatedSheetWorkflowState {
         -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
         -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
 
+    if ($guids.Count -gt 0) {
+        try {
+            $liveRefresh = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
+            if ($liveRefresh) {
+                foreach ($k in @($liveRefresh.Keys)) { $stateByGuid[$k] = $liveRefresh[$k] }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH' `
+                    -Message 'Re-read live ProjectWise workflow states before applying sibling sync.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    memberCount = $members.Count
+                    stateCount = if ($liveRefresh) { @($liveRefresh.Keys).Count } else { 0 }
+                    sourceAuditActionTime = $LastAuditEventAt
+                    changedByUser = $ChangedByUser
+                    changedByUsername = $ChangedByUsername
+                } | Out-Null
+            }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH_FAILED' `
+                    -Message 'Failed to re-read live ProjectWise workflow states before sibling sync.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    error = [string]$_.Exception.Message
+                } | Out-Null
+            }
+        }
+    }
+
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -2206,6 +2344,52 @@ function Sync-PWAssociatedSheetWorkflowState {
             _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
         }
         $memberSheetIndexSnapshot = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $dg
+        $regressionBlocked = _PWD-TestShouldBlockStaleRestartOverwrite -Config $Config -CurrentState ([string]$currentState) `
+            -TargetState ([string]$canonicalState) -SheetIndexSnapshot $memberSheetIndexSnapshot `
+            -SourceAuditEventAt $LastAuditEventAt
+        if ($regressionBlocked) {
+            $restartStateToKeep = [string]$memberSheetIndexSnapshot.pwStateName
+            $targetLastAuditEventAtForLog = $null
+            if ($memberSheetIndexSnapshot.lastAuditEventAt) { $targetLastAuditEventAtForLog = [string]$memberSheetIndexSnapshot.lastAuditEventAt }
+            $restored = $false
+            $restoreError = ''
+            if ((-not $DryRun) -and ((_PWD-NormalizeSheetIndexValue $currentState) -ne (_PWD-NormalizeSheetIndexValue $restartStateToKeep))) {
+                try {
+                    _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $restartStateToKeep
+                    $restored = $true
+                } catch {
+                    $restoreError = [string]$_.Exception.Message
+                }
+            }
+            if ($dbEnabled -and (-not $DryRun)) {
+                try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $restartStateToKeep) } catch { }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                $level = if ($restoreError) { 'Warning' } else { 'Warning' }
+                Write-QCJsonLog -Flush -Level $level -Code 'WATCH_AUDIT_STATE_REGRESSION_BLOCKED' `
+                    -Message 'Blocked stale DOCUMENT_STATE sync from regressing a newer manual QC Initiated restart.' -Data @{
+                    sourceAuditId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    sourceCurrentPwState = $sourcePwState
+                    sourceAuditActionTime = $LastAuditEventAt
+                    sourceActorUserNo = $ChangedByUser
+                    sourceActorUsername = $ChangedByUsername
+                    sourceActorIsAutomation = $actorIsAutomation
+                    targetDocumentGuid = $dg
+                    targetDocumentName = $dn
+                    targetPreviousPwState = [string]$currentState
+                    targetNewPwState = $restartStateToKeep
+                    targetLastAuditEventAt = $targetLastAuditEventAtForLog
+                    targetChangeIsAutomationOriginated = $actorIsAutomation
+                    reason = 'newer_manual_qc_initiated_restart'
+                    restored = $restored
+                    dryRun = [bool]$DryRun
+                    error = $restoreError
+                } | Out-Null
+            }
+            continue
+        }
         if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $canonicalState)) {
             if ($dbEnabled) {
                 try {
@@ -2217,33 +2401,6 @@ WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $dg; lastAudit = $LastAuditEventAt } | Out-Null
                     }
                 } catch { }
-            }
-            continue
-        }
-
-        if (_PWD-TestShouldBlockStaleRestartOverwrite -Config $Config -CurrentState ([string]$currentState) `
-                -TargetState ([string]$canonicalState) -SheetIndexSnapshot $memberSheetIndexSnapshot `
-                -SourceAuditEventAt $LastAuditEventAt) {
-            $targetLastAuditEventAtForLog = $null
-            if ($memberSheetIndexSnapshot.lastAuditEventAt) { $targetLastAuditEventAtForLog = [string]$memberSheetIndexSnapshot.lastAuditEventAt }
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_SYNC_STALE_RESTART_BLOCKED' `
-                    -Message 'Blocked stale sibling sync from overwriting a newer manual QC Initiated restart.' -Data @{
-                    sourceAuditId = $AuditEventId
-                    sourceDocumentGuid = $DocumentGuid
-                    sourceDocumentName = $DocumentName
-                    sourceState = [string]$canonicalState
-                    sourceAuditEventAt = $LastAuditEventAt
-                    targetDocumentGuid = $dg
-                    targetDocumentName = $dn
-                    previousTargetState = [string]$currentState
-                    newTargetState = [string]$canonicalState
-                    targetSheetIndexState = [string]$memberSheetIndexSnapshot.pwStateName
-                    targetLastAuditEventAt = $targetLastAuditEventAtForLog
-                    changedByUser = $ChangedByUser
-                    changedByUsername = $ChangedByUsername
-                    reason = 'stale_restart_overwrite_guard'
-                } | Out-Null
             }
             continue
         }
@@ -2277,13 +2434,21 @@ WHERE document_guid = @docGuid
                         sourceAuditId = $AuditEventId
                         sourceDocumentGuid = $DocumentGuid
                         sourceDocumentName = $DocumentName
+                        sourceCurrentPwState = $sourcePwState
                         sourceState = [string]$canonicalState
+                        sourceAuditActionTime = $LastAuditEventAt
+                        sourceActorUserNo = $ChangedByUser
+                        sourceActorUsername = $ChangedByUsername
+                        sourceActorIsAutomation = $actorIsAutomation
                         targetDocumentGuid = $dg
                         targetDocumentName = $dn
                         previousTargetState = [string]$currentState
+                        targetPreviousPwState = [string]$currentState
                         newTargetState = [string]$canonicalState
+                        targetNewPwState = [string]$canonicalState
                         changedByUser = $ChangedByUser
                         changedByUsername = $ChangedByUsername
+                        targetChangeIsAutomationOriginated = $actorIsAutomation
                         reason = 'document_state_sibling_sync'
                         dryRun = [bool]$DryRun
                     } | Out-Null

@@ -887,8 +887,13 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
             if ($null -eq $u) { $u = _AuditPoller-GetRowValue -Row $row -Name 'o_userno' }
             if ($null -ne $u) { $userno = [int]$u }
         } catch { $userno = 0 }
+        $username = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_username')
         $itemName = [string](_AuditPoller-GetRowValue -Row $row -Name 'pw_itemname')
         if ([string]::IsNullOrWhiteSpace($itemName)) { $itemName = [string](_AuditPoller-GetRowValue -Row $row -Name 'o_itemname') }
+        $itemDesc = _AuditPoller-GetRowValue -Row $row -Name 'pw_itemdesc'
+        if ($null -eq $itemDesc) { $itemDesc = _AuditPoller-GetRowValue -Row $row -Name 'o_itemdesc' }
+        $textParam = _AuditPoller-GetRowValue -Row $row -Name 'pw_textparam'
+        if ($null -eq $textParam) { $textParam = _AuditPoller-GetRowValue -Row $row -Name 'o_textparam' }
 
         $candidates += @{
             auditEventId        = $auditId
@@ -899,6 +904,9 @@ function _AuditPoller-BuildCandidatesFromTriggerRows {
             itemName            = $itemName
             actTime             = $actTime
             userno              = $userno
+            username            = $username
+            itemdesc            = if ($null -eq $itemDesc) { $null } else { [string]$itemDesc }
+            textparam           = if ($null -eq $textParam) { $null } else { [string]$textParam }
             resolvedFolder      = $resolvedFolder
             isSheetsFolder      = $isSheetsFolder
             candidateType       = $candidateType

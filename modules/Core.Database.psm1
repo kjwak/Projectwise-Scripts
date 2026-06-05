@@ -2846,15 +2846,16 @@ function Get-QCUnprocessedAuditEvents {
     $codeList = ($codes | ForEach-Object { [string][int]$_ }) -join ','
     $excludeIds = @($ExcludeEventIds | Where-Object { $_ -gt 0 } | ForEach-Object { [string][long]$_ } | Select-Object -Unique)
     $excludeSql = ''
-    if ($excludeIds.Count -gt 0) { $excludeSql = "`n  AND id NOT IN ($($excludeIds -join ','))" }
+    if ($excludeIds.Count -gt 0) { $excludeSql = "`n  AND ae.id NOT IN ($($excludeIds -join ','))" }
     $sql = @"
 SELECT TOP ($MaxRows)
-    id, pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid,
-    pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type
-FROM audit_events
-WHERE processed = 0
-  AND pw_action IN ($codeList)$excludeSql
-ORDER BY CASE WHEN pw_action = 1012 THEN 0 ELSE 1 END, pw_acttime ASC, pw_objguid ASC, id ASC
+    ae.id, ae.pw_acttime, ae.pw_action, ae.pw_action_name, ae.pw_objtype, ae.pw_objno, ae.pw_objguid, ae.pw_parentguid,
+    ae.pw_userno, pu.pw_username, ae.pw_itemname, ae.pw_itemdesc, ae.pw_textparam, ae.resolved_folder, ae.candidate_type
+FROM audit_events ae
+LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno
+WHERE ae.processed = 0
+  AND ae.pw_action IN ($codeList)$excludeSql
+ORDER BY CASE WHEN ae.pw_action = 1012 THEN 0 ELSE 1 END, ae.pw_acttime ASC, ae.pw_objguid ASC, ae.id ASC
 "@
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql

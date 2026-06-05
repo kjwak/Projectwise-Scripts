@@ -1061,6 +1061,30 @@ if ($statusSetRules.Count -ge 0) {
                                             try {
                                                 if ($null -ne $ac.auditEventId) { $acAuditIdSync = [long]$ac.auditEventId }
                                             } catch { $acAuditIdSync = $null }
+                                            $acUsername = ''
+                                            try { if ($ac.username) { $acUsername = [string]$ac.username } } catch { }
+                                            if ([string]::IsNullOrWhiteSpace($acUsername) -and $null -ne $acAuditIdSync -and (Get-Command -Name 'Get-QCAuditEventActor' -ErrorAction SilentlyContinue)) {
+                                                try {
+                                                    $actor = Get-QCAuditEventActor -Config $config -AuditEventId $acAuditIdSync
+                                                    if ($actor -and $actor.changedByUsername) { $acUsername = [string]$actor.changedByUsername }
+                                                } catch { }
+                                            }
+                                            $acItemDesc = ''
+                                            $acTextParam = ''
+                                            try { if ($null -ne $ac.itemdesc) { $acItemDesc = [string]$ac.itemdesc } } catch { }
+                                            try { if ($null -ne $ac.textparam) { $acTextParam = [string]$ac.textparam } } catch { }
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_DOCUMENT_STATE_CONTEXT' -Message 'DOCUMENT_STATE audit context resolved before sibling sync.' -Data @{
+                                                auditEventId = $acAuditIdSync
+                                                documentGuid = [string]$ac.objGuid
+                                                documentName = $itemName
+                                                folderPath = $fp
+                                                actionName = $acAction
+                                                actTime = [string]$ac.actTime
+                                                changedByUser = $acUserno
+                                                changedByUsername = $acUsername
+                                                itemdesc = $acItemDesc
+                                                textparam = $acTextParam
+                                            }
                                             Sync-PWAssociatedSheetWorkflowState -Config $config `
                                                 -DocumentGuid ([string]$ac.objGuid) `
                                                 -DocumentName $itemName `
@@ -1069,7 +1093,10 @@ if ($statusSetRules.Count -ge 0) {
                                                 -LastAuditEventAt ([string]$ac.actTime) `
                                                 -AuditEventId $acAuditIdSync `
                                                 -DryRun:$isDryRun `
-                                                -ChangedByUser $acUserno
+                                                -ChangedByUser $acUserno `
+                                                -ChangedByUsername $acUsername `
+                                                -AuditRawItemDesc $acItemDesc `
+                                                -AuditRawTextParam $acTextParam
                                         }
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
                                         if (-not (_Watch-EnsureAllModuleExports)) {
