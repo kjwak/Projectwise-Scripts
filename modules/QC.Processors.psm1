@@ -678,6 +678,12 @@ function Test-QCJobReady {
         [hashtable]$Config
     )
 
+    if ((-not $Job.ContainsKey('sourcePath') -or (_QCP-IsNullOrWhiteSpace $Job.sourcePath)) `
+        -and $Job.ContainsKey('sourceFolder') -and -not (_QCP-IsNullOrWhiteSpace $Job.sourceFolder) `
+        -and $Job.ContainsKey('sourceName') -and -not (_QCP-IsNullOrWhiteSpace $Job.sourceName)) {
+        $Job['sourcePath'] = Join-Path ([string]$Job.sourceFolder) ([string]$Job.sourceName)
+    }
+
     $missing = @()
     foreach ($k in @('id', 'type', 'sourcePath', 'dedupeKey')) {
         if (-not $Job.ContainsKey($k) -or (_QCP-IsNullOrWhiteSpace $Job[$k])) { $missing += $k }

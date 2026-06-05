@@ -250,6 +250,9 @@ function _QCW-InvokeStateChangeNotification {
                 $notifJob.metadata['attributes'] = $attrsForNotif
             }
         }
+        if (-not (_QCW-IsNullOrWhiteSpace $notifJob.sourceFolder) -and -not (_QCW-IsNullOrWhiteSpace $notifJob.sourceName)) {
+            $notifJob.sourcePath = Join-Path ([string]$notifJob.sourceFolder) ([string]$notifJob.sourceName)
+        }
         $enq = Add-QCQueueJob -Job $notifJob -Config $Config
         if ($enq.IsSuccess) {
             return New-QCSuccessResult -Code 'QC_NOTIFICATION_ENQUEUED' -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{ jobId = [string]$notifJob.id }
