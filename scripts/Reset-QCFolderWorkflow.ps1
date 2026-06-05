@@ -5,9 +5,9 @@ Resets ProjectWise workflow state for all documents in a folder and clears QC te
 .DESCRIPTION
 For a single Sheets (or any) folder:
 
-1. ProjectWise — sets workflow state on every document in the folder to the target state
+1. ProjectWise - sets workflow state on every document in the folder to the target state
    (default: qcWorkflow.states.production, usually "In Production").
-2. Database — deletes folder-scoped rows from QC telemetry tables (not sheet_index).
+2. Database - deletes folder-scoped rows from QC telemetry tables (not sheet_index).
 
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
@@ -368,7 +368,7 @@ WHERE r.document_id IN ($guidSub)
     if ($SkipSheetIndexUpdate.IsPresent) {
         Write-Host '  sheet_index: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
     } else {
-        Write-Host ("  sheet_index: {0} row(s) matched — UPDATE only, rows are not deleted." -f $sheetIndexMatched) -ForegroundColor DarkGray
+        Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
     }
 
     if ($doApply) {
