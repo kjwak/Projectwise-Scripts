@@ -612,6 +612,17 @@ function Resolve-QCNotificationQcPdfUrl {
     }
 
     $docGuid = if ($Event.documentGuid) { [string]$Event.documentGuid.Trim() } else { '' }
+    if (_QCN-IsBlank $docGuid) {
+        $folderForGuid = if ($Event.folderPath) { [string]$Event.folderPath } elseif ($Event.documentPath -and ($Event.documentPath -match '\\')) {
+            [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+        } else { '' }
+        $srcForGuid = if ($Event.documentName) { [string]$Event.documentName } else { '' }
+        if (-not (_QCN-IsBlank $srcForGuid) -and $srcForGuid -match '(?i)-qc\.pdf$') {
+            $srcForGuid = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcForGuid)) + '.pdf'
+        }
+        $docGuid = _QCN-ResolveQcPdfGuidFromSheetIndex -Config $Config -FolderPath $folderForGuid `
+            -SourceDocumentName $srcForGuid -DocumentGuid $docGuid
+    }
     if ($docGuid -and (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) {
         try {
             $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($docGuid) -ErrorAction SilentlyContinue)
@@ -666,6 +677,36 @@ function Resolve-QCNotificationQcPdfUrl {
             $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
             $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
             return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
+        }
+    }
+
+    if (_QCN-IsBlank $docGuid) {
+        $folderForSearch = if ($Event.folderPath) { [string]$Event.folderPath } elseif ($Event.documentPath -and ($Event.documentPath -match '\\')) {
+            [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+        } else { '' }
+        $qcNameForSearch = if ($Event.documentName) { [string]$Event.documentName } else { '' }
+        if (-not (_QCN-IsBlank $qcNameForSearch) -and $qcNameForSearch -notmatch '(?i)-qc\.pdf$') {
+            $qcNameForSearch = [System.IO.Path]::GetFileNameWithoutExtension($qcNameForSearch) + '-qc.pdf'
+        }
+        $docGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $folderForSearch -QcPdfName $qcNameForSearch
+        if (-not (_QCN-IsBlank $docGuid) -and -not (_QCN-IsBlank $baseUrl)) {
+            $datasourceName = ''
+            if ($Config -and $Config.projectWise) {
+                $pw = _QCN-ToHashtable $Config.projectWise
+                if ($pw) {
+                    if ($pw.datasourceName) { $datasourceName = [string]$pw.datasourceName }
+                    elseif ($pw.datasource) { $datasourceName = [string]$pw.datasource }
+                }
+            }
+            if (_QCN-IsBlank $datasourceName -and (Get-Command -Name 'Get-PWCurrentDatasource' -ErrorAction SilentlyContinue)) {
+                try { $datasourceName = [string](Get-PWCurrentDatasource) } catch { }
+            }
+            if (-not (_QCN-IsBlank $datasourceName)) {
+                $dsParam = _QCN-GetEncodedPwDatasource -DatasourceName $datasourceName
+                $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
+                $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
+                return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
+            }
         }
     }
 
@@ -844,6 +885,64 @@ WHERE document_guid = @docGuid
     } catch { return $null }
 }
 
+function _QCN-ResolveQcPdfGuidFromSheetIndex {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = '',
+        [string]$DocumentGuid = ''
+    )
+
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    try {
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_pdf_guid
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $g = if ($res.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_pdf_guid }
+                if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+            }
+        }
+        if (-not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceDocumentName)) {
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_pdf_guid
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@srcName)
+"@ -Parameters @{ folderPath = [string]$FolderPath; srcName = [string]$SourceDocumentName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $g2 = if ($res2.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].qc_pdf_guid }
+                if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
+            }
+        }
+    } catch { }
+    return ''
+}
+
+function _QCN-TryResolveQcPdfGuidFromPwSearch {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$QcPdfName
+    )
+
+    if (_QCN-IsBlank $FolderPath) { return '' }
+    if (_QCN-IsBlank $QcPdfName) { return '' }
+    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
+    try {
+        $docs = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -DocumentName $QcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
+        if ($docs.Count -gt 0) {
+            $g = [string](_QCN-GetProp -Object $docs[0] -Names @('DocumentGUID','DocumentGuid','GUID'))
+            if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+        }
+    } catch { }
+    return ''
+}
+
 function _QCN-ResolveNotificationRoleEmails {
     param(
         [object]$Document,
@@ -979,7 +1078,10 @@ function _QCN-ResolveQcPdfNotificationTarget {
                 $dn = [string]$m.documentName
                 if ($dn -match '(?i)-qc\.pdf$') {
                     $out.documentName = $dn
-                    $out.documentGuid = [string]$m.documentGuid
+                    $resolvedGuid = [string]$m.documentGuid
+                    if (-not (_QCN-IsBlank $resolvedGuid)) {
+                        $out.documentGuid = $resolvedGuid.Trim()
+                    }
                     $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
                     if ($m.document) { $out.document = $m.document }
                     return $out
@@ -990,6 +1092,15 @@ function _QCN-ResolveQcPdfNotificationTarget {
                 $qcName = $stem + '-qc.pdf'
                 $out.documentName = $qcName
                 $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $qcName) } else { $DocumentPath }
+            }
+            if (_QCN-IsBlank $out.documentGuid) {
+                $idxGuid = _QCN-ResolveQcPdfGuidFromSheetIndex -Config $Config -FolderPath $folderPath `
+                    -SourceDocumentName $triggerName -DocumentGuid $guid
+                if (-not (_QCN-IsBlank $idxGuid)) { $out.documentGuid = $idxGuid }
+            }
+            if (_QCN-IsBlank $out.documentGuid) {
+                $pwGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $folderPath -QcPdfName $out.documentName
+                if (-not (_QCN-IsBlank $pwGuid)) { $out.documentGuid = $pwGuid }
             }
         } catch { }
     }

@@ -445,10 +445,30 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     $srcFolder = [string]$Job['sourceFolder']
                     $qcPdfName = [System.IO.Path]::GetFileName([string]$resultData.qcOutputPdf)
                     if ($srcName -and $srcFolder -and $qcPdfName) {
-                        Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+                        $srcGuid = ''
+                        if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) {
+                            $md = $Job.metadata
+                            foreach ($gk in @('triggerDocumentGuid', 'documentGuid')) {
+                                if ($md.ContainsKey($gk) -and $md[$gk]) { $srcGuid = [string]$md[$gk]; break }
+                            }
+                        }
+                        $qcPdfGuid = ''
+                        if (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue) {
+                            try {
+                                $qcDocs = @(Get-PWDocumentsBySearch -FolderPath $srcFolder -DocumentName $qcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
+                                if ($qcDocs.Count -gt 0 -and $qcDocs[0].DocumentGUID) {
+                                    $qcPdfGuid = [string]$qcDocs[0].DocumentGUID
+                                }
+                            } catch { }
+                        }
+                        if (Get-Command -Name 'Update-QCSheetQcPdf' -ErrorAction SilentlyContinue -and $srcGuid) {
+                            Update-QCSheetQcPdf -Config $Config -SourceDocumentGuid $srcGuid -QcPdfGuid $qcPdfGuid -QcPdfName $qcPdfName | Out-Null
+                        } else {
+                            Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE sheet_index SET qc_pdf_name = @qcPdfName, last_updated_at = SYSDATETIMEOFFSET()
 WHERE document_name = @srcName AND folder_path = @srcFolder
 "@ -Parameters @{ qcPdfName = $qcPdfName; srcName = $srcName; srcFolder = $srcFolder } | Out-Null
+                        }
                     }
                 } catch { }
             }
