@@ -1263,7 +1263,24 @@ function Invoke-QCWorkflowWriteback {
                 $stateName = Resolve-QCWorkflowStateAfterPrepend -Settings $settings -Context $Context
             }
         }
-        $state = Set-PWQCWorkflowState -Settings $settings -Context $Context -StateName $stateName -DryRun:$dryRun
+        if (_QCW-IsNullOrWhiteSpace $stateName) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                    -Message 'Skipped QC workflow writeback because resolved StateName was empty.' -Data @{
+                    callSite = 'Invoke-PWQCWorkflowAutomation.stateName'
+                    auditEventId = $null
+                    documentName = if ($Context -and $Context.ContainsKey('documentName')) { [string]$Context.documentName } else { '' }
+                    folderPath = if ($Context -and $Context.ContainsKey('sourceFolder')) { [string]$Context.sourceFolder } else { '' }
+                    sourceVariableName = 'stateName'
+                    sourceValue = $stateName
+                    livePwState = if ($Context -and $Context.ContainsKey('previousState')) { [string]$Context.previousState } else { '' }
+                    changedByUsername = ''
+                } | Out-Null
+            }
+            $state = _QCW-NewWorkflowResult -IsSuccess $true -Code 'QC_WORKFLOW_STATE_EMPTY_SKIPPED' -Message 'Resolved workflow state was empty; no state write was attempted.' -Data @{ stateName = $stateName; changed = $false; planned = $false; warnings = @('Resolved workflow state was empty.') }
+        } else {
+            $state = Set-PWQCWorkflowState -Settings $settings -Context $Context -StateName $stateName -DryRun:$dryRun
+        }
         $actions.Add($state) | Out-Null
         if ($state.Data -and $state.Data.warnings) { foreach ($w in @($state.Data.warnings)) { if ($w) { $warnings.Add([string]$w) | Out-Null } } }
         if (-not $state.IsSuccess -and [bool]$settings.strictMode) { return New-QCFailureResult -Code 'QC_WORKFLOW_STRICT_FAILURE' -Message $state.Message -Data @{ actions = @($actions); warnings = @($warnings); settings = $settings; dryRun = $dryRun } }

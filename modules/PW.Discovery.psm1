@@ -1159,10 +1159,19 @@ function Get-PWAssociatedSheetDocumentNames {
 function _PWD-InvokeSetPwDocumentState {
     param(
         [Parameter(Mandatory)][object]$Document,
-        [Parameter(Mandatory)][string]$StateName
+        [string]$StateName = '',
+        [hashtable]$GuardContext = @{}
     )
     if ([string]::IsNullOrWhiteSpace($StateName)) {
-        throw 'Set-PWDocumentState skipped: target workflow state is empty.'
+        if (-not $GuardContext) { $GuardContext = @{} }
+        $guardCallSite = '_PWD-InvokeSetPwDocumentState'
+        if ($GuardContext.callSite) { $guardCallSite = [string]$GuardContext.callSite }
+        _PWD-WriteEmptyStateGuardLog -CallSite $guardCallSite `
+            -AuditEventId $GuardContext.auditEventId -DocumentName ([string]$GuardContext.documentName) `
+            -FolderPath ([string]$GuardContext.folderPath) -SourceVariableName ([string]$GuardContext.sourceVariableName) `
+            -SourceValue $StateName -LivePwState ([string]$GuardContext.livePwState) `
+            -ChangedByUsername ([string]$GuardContext.changedByUsername)
+        return $false
     }
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
     if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
@@ -1430,8 +1439,18 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
             continue
         }
 
+        if (-not (_PWD-TestStateNameNotEmpty -StateName $target -CallSite 'Sync-PWAssociatedSheetReviewTypeAttributes.target' `
+                -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'target' -LivePwState ([string]$currentState) `
+                -ChangedByUsername '')) {
+            $change.skipped = 'empty_target_state'
+            $stateUpdates.Add($change) | Out-Null
+            continue
+        }
         try {
-            _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $target
+            _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $target -GuardContext @{
+                callSite = 'Sync-PWAssociatedSheetReviewTypeAttributes.target'; documentName = $dn; folderPath = $FolderPath
+                sourceVariableName = 'target'; livePwState = [string]$currentState
+            }
             $change.applied = $true
             $verifiedState = if ($dg) {
                 Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
@@ -1634,6 +1653,50 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 }
 
 
+
+function _PWD-WriteEmptyStateGuardLog {
+    param(
+        [string]$CallSite = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SourceVariableName = '',
+        [AllowNull()][object]$SourceValue = $null,
+        [string]$LivePwState = '',
+        [string]$ChangedByUsername = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+        -Message 'Skipped workflow state call because StateName source value was empty.' -Data @{
+        callSite = $CallSite
+        auditEventId = $AuditEventId
+        documentName = $DocumentName
+        folderPath = $FolderPath
+        sourceVariableName = $SourceVariableName
+        sourceValue = if ($null -eq $SourceValue) { $null } else { [string]$SourceValue }
+        livePwState = $LivePwState
+        changedByUsername = $ChangedByUsername
+    } | Out-Null
+}
+
+function _PWD-TestStateNameNotEmpty {
+    param(
+        [string]$StateName = '',
+        [string]$CallSite = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SourceVariableName = '',
+        [string]$LivePwState = '',
+        [string]$ChangedByUsername = ''
+    )
+    if (-not [string]::IsNullOrWhiteSpace($StateName)) { return $true }
+    _PWD-WriteEmptyStateGuardLog -CallSite $CallSite -AuditEventId $AuditEventId `
+        -DocumentName $DocumentName -FolderPath $FolderPath -SourceVariableName $SourceVariableName `
+        -SourceValue $StateName -LivePwState $LivePwState -ChangedByUsername $ChangedByUsername
+    return $false
+}
+
 function _PWD-GetConfiguredWorkflowStateNames {
     param([hashtable]$Config)
     $states = [System.Collections.Generic.List[string]]::new()
@@ -1735,11 +1798,14 @@ function _PWD-TestShouldBlockStaleRestartOverwrite {
         [string]$SourceAuditEventAt = ''
     )
     if (-not (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($TargetState)) { return $false }
     if (Test-QCWorkflowStateIsQcInitiated -StateName $TargetState -Config $Config) { return $false }
     if (-not $SheetIndexSnapshot) { return $false }
-    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName ([string]$SheetIndexSnapshot.pwStateName) -Config $Config)) { return $false }
+    $snapshotState = [string]$SheetIndexSnapshot.pwStateName
+    if ([string]::IsNullOrWhiteSpace($snapshotState)) { return $false }
+    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $snapshotState -Config $Config)) { return $false }
     if (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) {
-        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState ([string]$SheetIndexSnapshot.pwStateName))) { return $false }
+        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState $snapshotState)) { return $false }
     }
     $sourceAt = _PWD-TryParseAuditDateTime -Value $SourceAuditEventAt
     $targetAt = $null
@@ -2077,9 +2143,17 @@ function Revert-PWAssociatedSheetWorkflowStates {
             $change.planned = $true
         } elseif (-not $doc) {
             $change.error = 'ProjectWise document object unavailable for state rollback.'
+        } elseif (-not (_PWD-TestStateNameNotEmpty -StateName $previous -CallSite 'Invoke-QCWorkflowStateEmailAttributeGate.rollback.previous' `
+                -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'previous' `
+                -LivePwState ([string]$current) -ChangedByUsername $ChangedByUsername)) {
+            $change.skipped = 'empty_previous_state'
         } else {
             try {
-                _PWD-InvokeSetPwDocumentState -Document $doc -StateName $previous
+                _PWD-InvokeSetPwDocumentState -Document $doc -StateName $previous -GuardContext @{
+                    callSite = 'Invoke-QCWorkflowStateEmailAttributeGate.rollback.previous'; auditEventId = $AuditEventId
+                    documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'previous'
+                    livePwState = [string]$current; changedByUsername = $ChangedByUsername
+                }
                 $change.applied = $true
                 if ($dbEnabled) {
                     try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $previous) } catch { }
@@ -2367,11 +2441,21 @@ function Sync-PWAssociatedSheetWorkflowState {
             $restored = $false
             $restoreError = ''
             if ((-not $DryRun) -and ((_PWD-NormalizeSheetIndexValue $currentState) -ne (_PWD-NormalizeSheetIndexValue $restartStateToKeep))) {
+                if (-not (_PWD-TestStateNameNotEmpty -StateName $restartStateToKeep -CallSite 'Sync-PWAssociatedSheetWorkflowState.restartStateToKeep' `
+                        -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'restartStateToKeep' `
+                        -LivePwState ([string]$currentState) -ChangedByUsername $ChangedByUsername)) {
+                    $restoreError = 'Restart state was empty; restore skipped.'
+                } else {
                 try {
-                    _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $restartStateToKeep
+                    _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $restartStateToKeep -GuardContext @{
+                        callSite = 'Sync-PWAssociatedSheetWorkflowState.restartStateToKeep'; auditEventId = $AuditEventId
+                        documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'restartStateToKeep'
+                        livePwState = [string]$currentState; changedByUsername = $ChangedByUsername
+                    }
                     $restored = $true
                 } catch {
                     $restoreError = [string]$_.Exception.Message
+                }
                 }
             }
             if ($dbEnabled -and (-not $DryRun)) {
@@ -2437,9 +2521,19 @@ WHERE document_guid = @docGuid
 
         if ($DryRun) {
             $change.planned = $true
+        } elseif (-not (_PWD-TestStateNameNotEmpty -StateName $canonicalState -CallSite 'Sync-PWAssociatedSheetWorkflowState.canonicalState' `
+                -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'canonicalState' `
+                -LivePwState ([string]$currentState) -ChangedByUsername $ChangedByUsername)) {
+            $change.skipped = 'empty_canonical_state'
+            $stateUpdates += $change
+            continue
         } else {
             try {
-                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState
+                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState -GuardContext @{
+                    callSite = 'Sync-PWAssociatedSheetWorkflowState.canonicalState'; auditEventId = $AuditEventId
+                    documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'canonicalState'
+                    livePwState = [string]$currentState; changedByUsername = $ChangedByUsername
+                }
                 $change.applied = $true
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_CHANGE' `
@@ -2521,8 +2615,13 @@ WHERE document_guid = @docGuid
     }
 
     $qcInitiated = $false
-    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+    if ((-not [string]::IsNullOrWhiteSpace($canonicalState)) -and (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) {
         $qcInitiated = Test-QCWorkflowStateIsQcInitiated -StateName $canonicalState -Config $Config
+    } elseif ([string]::IsNullOrWhiteSpace($canonicalState)) {
+        _PWD-WriteEmptyStateGuardLog -CallSite 'Sync-PWAssociatedSheetWorkflowState.qcInitiatedTest' `
+            -AuditEventId $AuditEventId -DocumentName $DocumentName -FolderPath $FolderPath `
+            -SourceVariableName 'canonicalState' -SourceValue $canonicalState -LivePwState $sourcePwState `
+            -ChangedByUsername $ChangedByUsername
     }
     if ($qcInitiated -and $dbEnabled -and -not $DryRun -and (Get-Command -Name 'Sync-PWSheetIndexOwnership' -ErrorAction SilentlyContinue)) {
         foreach ($member in $members) {
@@ -2648,6 +2747,13 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
     try {
         $sheetState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $sheetPdfName -DocumentGuid $sheetGuid)
     } catch { return }
+    if ([string]::IsNullOrWhiteSpace($sheetState)) {
+        _PWD-WriteEmptyStateGuardLog -CallSite '_PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf.sheetState' `
+            -AuditEventId $null -DocumentName $sheetPdfName -FolderPath $FolderPath `
+            -SourceVariableName 'sheetState' -SourceValue $sheetState -LivePwState $sheetState `
+            -ChangedByUsername $ChangedByUsername
+        return
+    }
     if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $sheetState -Config $Config)) { return }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

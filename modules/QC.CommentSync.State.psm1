@@ -47,6 +47,25 @@ function Set-QCPdfCommentSyncWorkflowState {
         }
     }
 
+    if ([string]::IsNullOrWhiteSpace($TargetStateName)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                -Message 'Skipped comment-sync workflow state write because target StateName was empty.' -Data @{
+                callSite = 'Set-QCPdfCommentSyncWorkflowState.TargetStateName'
+                auditEventId = $null
+                documentName = if ($Job -and $Job.ContainsKey('sourceName')) { [string]$Job.sourceName } else { '' }
+                folderPath = if ($Job -and $Job.ContainsKey('sourceFolder')) { [string]$Job.sourceFolder } else { '' }
+                sourceVariableName = 'TargetStateName'
+                sourceValue = $TargetStateName
+                livePwState = $PreviousStateName
+                changedByUsername = ''
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_COMMENT_STATE_EMPTY_TARGET_SKIPPED' -Message 'Comment-sync target workflow state was empty; no state change was made.' -Data @{
+            planned = $false; changed = $false; targetStateName = $TargetStateName; previousStateName = $PreviousStateName
+        }
+    }
+
     $settings = Get-QCWorkflowSettings -Config $Config
     $context = @{
         document = $Document

@@ -145,6 +145,22 @@ function _RSO-SetPwDocumentState {
         [object]$Document,
         [string]$StateName
     )
+    if ([string]::IsNullOrWhiteSpace($StateName)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                -Message 'Skipped reconcile workflow state write because StateName was empty.' -Data @{
+                callSite = '_RSO-SetPwDocumentState.StateName'
+                auditEventId = $null
+                documentName = ''
+                folderPath = ''
+                sourceVariableName = 'StateName'
+                sourceValue = $StateName
+                livePwState = ''
+                changedByUsername = ''
+            } | Out-Null
+        }
+        return
+    }
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
     if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
     $args = @{}
@@ -555,12 +571,30 @@ try {
                 if ($docObj -and $doWrites) {
                     $targetPath = "$($g.folderPath)\$($target.row.documentName)"
                     if ($PSCmdlet.ShouldProcess($targetPath, "Set workflow state to $canonicalState")) {
-                        try {
-                            _RSO-SetPwDocumentState -Document $docObj -StateName $canonicalState
-                            $change.applied = $true
-                            $summary.stateUpdates++
-                        } catch {
-                            $summary.errors += "State update failed for $($target.row.documentName): $($_.Exception.Message)"
+                        if ([string]::IsNullOrWhiteSpace($canonicalState)) {
+                            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                                    -Message 'Skipped reconcile state write because canonical state was empty.' -Data @{
+                                    callSite = 'Reconcile-QCSheetOwnership.canonicalState'
+                                    auditEventId = $null
+                                    documentName = $target.row.documentName
+                                    folderPath = $g.folderPath
+                                    sourceVariableName = 'canonicalState'
+                                    sourceValue = $canonicalState
+                                    livePwState = [string]$currentState
+                                    changedByUsername = ''
+                                } | Out-Null
+                            }
+                            $change.skipped = $true
+                            $change.reason = 'empty canonical state'
+                        } else {
+                            try {
+                                _RSO-SetPwDocumentState -Document $docObj -StateName $canonicalState
+                                $change.applied = $true
+                                $summary.stateUpdates++
+                            } catch {
+                                $summary.errors += "State update failed for $($target.row.documentName): $($_.Exception.Message)"
+                            }
                         }
                     }
                 } elseif ($docObj -and $DryRun.IsPresent) {
