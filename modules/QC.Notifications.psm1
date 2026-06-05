@@ -1519,6 +1519,25 @@ function _QCN-ResolveNotificationCycleId {
             return $value.Trim()
         }
     }
+
+    if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $folderPath = ''
+            $sheetStem = ''
+            $documentGuid = ''
+            if ($Event) {
+                if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+                if ($Event.sheetStem) { $sheetStem = [string]$Event.sheetStem }
+                if ($Event.documentGuid) { $documentGuid = [string]$Event.documentGuid }
+            }
+            if ((_QCN-IsBlank $sheetStem) -and $Event -and $Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+            }
+            if ((_QCN-IsBlank $folderPath) -and $Job -and $Job.sourceFolder) { $folderPath = [string]$Job.sourceFolder }
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $documentGuid -FolderPath $folderPath -SheetStem $sheetStem
+            if ($cycle -and -not (_QCN-IsBlank $cycle.cycleId)) { return [string]$cycle.cycleId.Trim() }
+        } catch { }
+    }
     return ''
 }
 

@@ -291,6 +291,50 @@ $keyRedlines2 = Get-QCNotificationDedupeKey -Event @{
 Assert-Eq $keyRedlines1 $keyRedlines2 'Redlines audit echo ids should not fork notification dedupe'
 Assert-True ($keyRedlines1 -match 'previousState=Ready for QC') 'Stale-index Redlines should normalize previousState'
 
+# Different QC cycles must not share notification dedupe when cycleId differs
+$cycleSplitCfg = New-NotifyConfig -Enabled $true
+$cycleSplitCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$cycleSplitSettings = Get-QCNotificationSettings -Config $cycleSplitCfg
+$keyCycle1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_oldcycle001'
+} -Settings $cycleSplitSettings
+$keyCycle2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_newcycle002'
+} -Settings $cycleSplitSettings
+Assert-True ($keyCycle1 -ne $keyCycle2) 'Different cycleId values should produce different dedupe keys'
+
+# Sub-cycle bumps (1 -> 1.1) must not collide with the forward Redlines notification in the same major cycle
+$subCycleCfg = New-NotifyConfig -Enabled $true
+$subCycleCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$subCycleSettings = Get-QCNotificationSettings -Config $subCycleCfg
+$keyForwardRedlines = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_cycle001|1'
+} -Settings $subCycleSettings
+$keyResubmitRedlines = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Corrections Received'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_cycle001|1.1'
+} -Settings $subCycleSettings
+Assert-True ($keyForwardRedlines -ne $keyResubmitRedlines) 'Forward and resubmit Redlines should use different cycleId dedupe keys'
+
 # Subject should use sheet PDF name (stem.pdf), not unknown-document placeholder from QC PDF resolution
 $readyCfg = New-NotifyConfig -Enabled $true
 $readyDedupe = Join-Path $testRoot 'dedupe-ready-subject\sent-keys.jsonl'

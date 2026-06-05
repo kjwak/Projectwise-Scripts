@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.10.0'
+    $targetVersion = '1.12.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1329,6 +1329,38 @@ IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL
    AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') IS NOT NULL
    AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') < 500
     ALTER TABLE dbo.processing_jobs ALTER COLUMN dedupe_key NVARCHAR(500) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot11Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.sheet_index', 'qc_cycle_id') IS NULL
+        ALTER TABLE sheet_index ADD qc_cycle_id NVARCHAR(80) NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'qc_cycle_number') IS NULL
+        ALTER TABLE sheet_index ADD qc_cycle_number INT NULL;
+END
+'@
+}
+
+function _QDB-GetSchemaV1dot12Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.sheet_index', 'qc_cycle_number') IS NOT NULL
+   AND EXISTS (
+       SELECT 1
+       FROM sys.columns c
+       INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+       WHERE c.object_id = OBJECT_ID('dbo.sheet_index')
+         AND c.name = 'qc_cycle_number'
+         AND t.name IN ('int', 'bigint', 'smallint', 'tinyint')
+   )
+BEGIN
+    ALTER TABLE sheet_index ALTER COLUMN qc_cycle_number NVARCHAR(16) NULL;
+END
 '@
 }
 
@@ -2650,6 +2682,145 @@ WHERE document_guid = @docGuid
     }
 }
 
+function Get-QCSheetIndexCycle {
+    <#
+    Returns the active QC cycle for a sheet package (stored on the sheet PDF row).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = ''
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return $null
+    }
+
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_cycle_id, qc_cycle_number
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $row = $res.Data.table.Rows[0]
+                $cycleId = if ($row.qc_cycle_id -is [DBNull]) { '' } else { [string]$row.qc_cycle_id }
+                $cycleNumber = $null
+                if ($row.qc_cycle_number -isnot [DBNull]) {
+                    $cycleNumber = [string]$row.qc_cycle_number
+                    if (-not [string]::IsNullOrWhiteSpace($cycleNumber)) { $cycleNumber = $cycleNumber.Trim() } else { $cycleNumber = $null }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($cycleId) -or -not [string]::IsNullOrWhiteSpace($cycleNumber)) {
+                    return @{ cycleId = $cycleId.Trim(); cycleNumber = $cycleNumber }
+                }
+            }
+        }
+
+        $stem = ([string]$SheetStem).Trim()
+        $folder = ([string]$FolderPath).Trim()
+        if ($stem.Length -gt 0 -and $folder.Length -gt 0) {
+            $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_cycle_id, qc_cycle_number
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@pdfName)
+"@ -Parameters @{ folderPath = $folder; pdfName = $pdfName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $row2 = $res2.Data.table.Rows[0]
+                $cycleId2 = if ($row2.qc_cycle_id -is [DBNull]) { '' } else { [string]$row2.qc_cycle_id }
+                $cycleNumber2 = $null
+                if ($row2.qc_cycle_number -isnot [DBNull]) {
+                    $cycleNumber2 = [string]$row2.qc_cycle_number
+                    if (-not [string]::IsNullOrWhiteSpace($cycleNumber2)) { $cycleNumber2 = $cycleNumber2.Trim() } else { $cycleNumber2 = $null }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($cycleId2) -or -not [string]::IsNullOrWhiteSpace($cycleNumber2)) {
+                    return @{ cycleId = $cycleId2.Trim(); cycleNumber = $cycleNumber2 }
+                }
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Update-QCSheetIndexCycle {
+    <#
+    Persists QC cycle identity on the sheet PDF row for notification dedupe and reporting.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CycleId,
+        [Parameter(Mandatory)][string]$CycleNumber,
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = ''
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    if ([string]::IsNullOrWhiteSpace($CycleId)) {
+        return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_ID_MISSING' -Message 'CycleId is required.' -Data @{}
+    }
+    $cycleNumberText = [string]$CycleNumber
+    if ([string]::IsNullOrWhiteSpace($cycleNumberText)) {
+        return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_NUMBER_MISSING' -Message 'CycleNumber is required.' -Data @{}
+    }
+
+    try {
+        $params = @{
+            cycleId = [string]$CycleId.Trim()
+            cycleNumber = $cycleNumberText.Trim()
+        }
+        $sql = $null
+        if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+            $sql = @"
+UPDATE sheet_index
+SET qc_cycle_id = @cycleId,
+    qc_cycle_number = @cycleNumber,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@
+            $params['docGuid'] = [string]$DocumentGuid.Trim()
+        } else {
+            $stem = ([string]$SheetStem).Trim()
+            $folder = ([string]$FolderPath).Trim()
+            if ($stem.Length -eq 0 -or $folder.Length -eq 0) {
+                return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_TARGET_MISSING' -Message 'DocumentGuid or folderPath+sheetStem is required.' -Data @{}
+            }
+            $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+            $sql = @"
+UPDATE sheet_index
+SET qc_cycle_id = @cycleId,
+    qc_cycle_number = @cycleNumber,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@pdfName)
+"@
+            $params['folderPath'] = $folder
+            $params['pdfName'] = $pdfName
+        }
+
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation = 'update_sheet_index_cycle' }
+        }
+        return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index cycle updated.' -Data @{
+            written = $true
+            rowsAffected = $dbRes.Data.rowsAffected
+            cycleId = $params.cycleId
+            cycleNumber = $params.cycleNumber
+        }
+    } catch {
+        $msg = [string]$_.Exception.Message
+        return New-QCErrorResult -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation = 'update_sheet_index_cycle' }
+    }
+}
+
 function Update-QCSheetQcPdf {
     <#
     .SYNOPSIS
@@ -3381,4 +3552,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

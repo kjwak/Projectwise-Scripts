@@ -120,8 +120,148 @@ function Invoke-QCWorkflowStateChangeNotification {
         [object]$Document = $null
     )
 
+    if ($Context -and (Get-Command -Name 'Advance-QCWorkflowCycleForRedlinesResubmit' -ErrorAction SilentlyContinue)) {
+        try {
+            $wfSettings = Get-QCWorkflowSettings -Config $Config
+            $Context = Advance-QCWorkflowCycleForRedlinesResubmit -Settings $wfSettings -Context $Context -Config $Config `
+                -PreviousState $PreviousState -CurrentState $CurrentState
+        } catch { }
+    }
+
     return _QCW-InvokeStateChangeNotification -Config $Config -Context $Context `
         -PreviousState $PreviousState -CurrentState $CurrentState -Document $Document
+}
+
+function _QCW-ParseQCCycleNumber {
+    param([object]$Value)
+
+    $major = 0
+    $minor = 0
+    if ($null -eq $Value) {
+        return @{ major = 0; minor = 0; display = '' }
+    }
+    $text = [string]$Value
+    if (_QCW-IsNullOrWhiteSpace $text) {
+        return @{ major = 0; minor = 0; display = '' }
+    }
+    $text = $text.Trim()
+    if ($text -match '^(\d+)\.(\d+)$') {
+        try {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+        } catch { }
+    } elseif ($text -match '^(\d+)$') {
+        try {
+            $major = [int]$Matches[1]
+            $minor = 0
+        } catch { }
+    }
+    $display = if ($minor -gt 0) { '{0}.{1}' -f $major, $minor } elseif ($major -gt 0) { [string]$major } else { '' }
+    return @{ major = $major; minor = $minor; display = $display }
+}
+
+function _QCW-FormatQCCycleNumber {
+    param(
+        [int]$Major,
+        [int]$Minor = 0
+    )
+
+    if ($Major -le 0) { return '' }
+    if ($Minor -gt 0) { return '{0}.{1}' -f $Major, $Minor }
+    return [string]$Major
+}
+
+function _QCW-GetBaseQCCycleId {
+    param([string]$CycleId)
+
+    if (_QCW-IsNullOrWhiteSpace $CycleId) { return '' }
+    $id = [string]$CycleId.Trim()
+    $pipe = $id.IndexOf('|')
+    if ($pipe -gt 0) { return $id.Substring(0, $pipe) }
+    return $id
+}
+
+function _QCW-BuildQCCycleId {
+    param(
+        [string]$BaseCycleId,
+        [string]$CycleNumberDisplay
+    )
+
+    $base = _QCW-GetBaseQCCycleId $BaseCycleId
+    if (_QCW-IsNullOrWhiteSpace $base) { return '' }
+    if (_QCW-IsNullOrWhiteSpace $CycleNumberDisplay) { return $base }
+    return '{0}|{1}' -f $base, ([string]$CycleNumberDisplay).Trim()
+}
+
+function _QCW-ResolveSheetCycleTargets {
+    param([hashtable]$Context)
+
+    $folderPath = ''
+    $sheetStem = ''
+    $sourceDocGuid = ''
+    $job = $null
+    if ($Context -and $Context.ContainsKey('job') -and $Context.job) { $job = $Context.job }
+    if ($Context -and $Context.ContainsKey('documentGuid') -and $Context.documentGuid) {
+        $sourceDocGuid = [string]$Context.documentGuid
+    }
+    if ($job) {
+        if (-not $folderPath -and $job.sourceFolder) { $folderPath = [string]$job.sourceFolder }
+        if (-not $sourceDocGuid) {
+            $md = _QCW-ToHashtable $job.metadata
+            if ($md -and $md.triggerDocumentGuid) { $sourceDocGuid = [string]$md.triggerDocumentGuid }
+            elseif ($md -and $md.documentGuid) { $sourceDocGuid = [string]$md.documentGuid }
+        }
+        if ($job.sourceName) {
+            $srcName = [string]$job.sourceName
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $srcName) } catch { }
+            }
+            if (_QCW-IsNullOrWhiteSpace $sheetStem) {
+                $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($srcName)
+            }
+        }
+    }
+    if ((_QCW-IsNullOrWhiteSpace $folderPath) -and $Context -and $Context.ContainsKey('folderPath') -and $Context.folderPath) {
+        $folderPath = [string]$Context.folderPath
+    }
+    if ((_QCW-IsNullOrWhiteSpace $folderPath) -and $Context -and $Context.ContainsKey('sourceFolder') -and $Context.sourceFolder) {
+        $folderPath = [string]$Context.sourceFolder
+    }
+    if ((_QCW-IsNullOrWhiteSpace $sheetStem) -and $Context -and $Context.ContainsKey('sourceName') -and $Context.sourceName) {
+        $srcName2 = [string]$Context.sourceName
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $srcName2) } catch { }
+        }
+        if (_QCW-IsNullOrWhiteSpace $sheetStem) {
+            $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($srcName2)
+        }
+    }
+    return @{
+        folderPath = $folderPath
+        sheetStem = $sheetStem
+        documentGuid = $sourceDocGuid
+    }
+}
+
+function _QCW-ApplyCycleToContext {
+    param(
+        [hashtable]$Context,
+        [string]$CycleId,
+        [string]$CycleNumber
+    )
+
+    if (-not $Context) { return $Context }
+    if (-not $Context.ContainsKey('attributes') -or -not $Context.attributes) {
+        $Context['attributes'] = @{}
+    }
+    $attrs = _QCW-ToHashtable $Context.attributes
+    if (-not $attrs) { $attrs = @{} }
+    $attrs['cycleId'] = $CycleId
+    $attrs['cycleNumber'] = $CycleNumber
+    $Context['attributes'] = $attrs
+    $Context['cycleId'] = $CycleId
+    $Context['cycleNumber'] = $CycleNumber
+    return $Context
 }
 
 function _QCW-EnsureNotificationCommandsLoaded {
@@ -299,6 +439,20 @@ function _QCW-InvokeStateChangeNotification {
                     if ($wfMdForDedupe -and $wfMdForDedupe.attributes) {
                         $eventForDedupe['attributes'] = _QCW-ToHashtable $wfMdForDedupe.attributes
                     }
+                    if ($wfMdForDedupe -and $wfMdForDedupe.cycleId -and -not $eventForDedupe.ContainsKey('cycleId')) {
+                        $eventForDedupe['cycleId'] = [string]$wfMdForDedupe.cycleId
+                    }
+                }
+                if ($Context -and $Context.ContainsKey('attributes') -and $Context.attributes) {
+                    $ctxAttrs = _QCW-ToHashtable $Context.attributes
+                    if ($ctxAttrs) {
+                        if ($ctxAttrs.ContainsKey('cycleId') -and -not (_QCW-IsNullOrWhiteSpace $ctxAttrs.cycleId)) {
+                            $eventForDedupe['cycleId'] = [string]$ctxAttrs.cycleId
+                        }
+                        $eventForDedupe['attributes'] = $ctxAttrs
+                    }
+                } elseif ($Context -and $Context.ContainsKey('cycleId') -and -not (_QCW-IsNullOrWhiteSpace $Context.cycleId)) {
+                    $eventForDedupe['cycleId'] = [string]$Context.cycleId
                 }
                 $dedupeKey = Get-QCNotificationDedupeKey -Event $eventForDedupe -Settings $notifSettings -Config $Config -Job $job
             } catch { }
@@ -306,15 +460,24 @@ function _QCW-InvokeStateChangeNotification {
         if ($dedupeKey) {
             $dup = Test-QCDuplicateJob -DedupeKey $dedupeKey -Config $Config
             if ($dup.IsSuccess -and [bool]$dup.Data.isDuplicate) {
-                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                    Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE' `
-                        -Message 'Notification job already queued for this dedupe key.' -Data @{
-                        dedupeKey = $dedupeKey
-                        currentState = [string]$CurrentState
-                        previousState = [string]$PreviousState
-                    } | Out-Null
+                $pendingDup = $false
+                foreach ($match in @($dup.Data.matches)) {
+                    if (-not $match) { continue }
+                    $matchState = ''
+                    try { $matchState = [string]$match.state } catch { }
+                    if ($matchState -in @('pending', 'running')) { $pendingDup = $true; break }
                 }
-                return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
+                if ($pendingDup) {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE' `
+                            -Message 'Notification job already queued for this dedupe key.' -Data @{
+                            dedupeKey = $dedupeKey
+                            currentState = [string]$CurrentState
+                            previousState = [string]$PreviousState
+                        } | Out-Null
+                    }
+                    return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
+                }
             }
             if (Get-Command -Name 'Test-QCNotificationDedupe' -ErrorAction SilentlyContinue) {
                 try {
@@ -436,13 +599,23 @@ function _QCW-InvokeStateChangeNotification {
         }
         if ($roleAttrs) {
             $attrsForNotif = @{}
-            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail', 'reviewType', 'qcReviewType')) {
+            foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail', 'reviewType', 'qcReviewType', 'cycleId', 'cycleNumber')) {
                 if ($roleAttrs.ContainsKey($k) -and -not (_QCW-IsNullOrWhiteSpace $roleAttrs[$k])) {
                     $attrsForNotif[$k] = [string]$roleAttrs[$k]
                 }
             }
             if ($attrsForNotif.Count -gt 0) {
                 $notifJob.metadata['attributes'] = $attrsForNotif
+            }
+        }
+        if ($Context -and $Context.ContainsKey('cycleId') -and -not (_QCW-IsNullOrWhiteSpace $Context.cycleId)) {
+            $notifJob.metadata['cycleId'] = [string]$Context.cycleId
+            if (-not $notifJob.metadata.ContainsKey('attributes') -or -not $notifJob.metadata.attributes) {
+                $notifJob.metadata['attributes'] = @{}
+            }
+            $notifJob.metadata['attributes']['cycleId'] = [string]$Context.cycleId
+            if ($Context.ContainsKey('cycleNumber') -and $null -ne $Context.cycleNumber) {
+                $notifJob.metadata['attributes']['cycleNumber'] = [string]$Context.cycleNumber
             }
         }
         if (Get-Command -Name '_QCN-ResolveQcPdfNotificationTarget' -ErrorAction SilentlyContinue) {
@@ -1469,6 +1642,210 @@ function Set-PWQCAttributes {
     }
 }
 
+function Advance-QCWorkflowCycleForRedlinesResubmit {
+    <#
+    Bumps the decimal sub-cycle (e.g. 1 -> 1.1 -> 1.2) when workflow reverses from
+    Corrections Received back to Redlines Received within the same major QC cycle.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][hashtable]$Context,
+        [hashtable]$Config = $null,
+        [Parameter(Mandatory)][string]$PreviousState,
+        [Parameter(Mandatory)][string]$CurrentState,
+        [bool]$DryRun = $false
+    )
+
+    $correctionsName = Get-QCWorkflowStateName -Settings $Settings -StateKey 'correctionsReceived'
+    $redlinesName = Get-QCWorkflowStateName -Settings $Settings -StateKey 'redlinesReceived'
+    if (_QCW-IsNullOrWhiteSpace $correctionsName) { $correctionsName = 'Corrections Received' }
+    if (_QCW-IsNullOrWhiteSpace $redlinesName) { $redlinesName = 'Redlines Received' }
+
+    if ([string]::Compare(([string]$PreviousState).Trim(), $correctionsName, $true) -ne 0) { return $Context }
+    if ([string]::Compare(([string]$CurrentState).Trim(), $redlinesName, $true) -ne 0) { return $Context }
+
+    $targets = _QCW-ResolveSheetCycleTargets -Context $Context
+    $folderPath = [string]$targets.folderPath
+    $sheetStem = [string]$targets.sheetStem
+    $sourceDocGuid = [string]$targets.documentGuid
+
+    $existing = $null
+    if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $existing = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $sourceDocGuid -FolderPath $folderPath -SheetStem $sheetStem
+        } catch { }
+    }
+    if (-not $existing -or (_QCW-IsNullOrWhiteSpace $existing.cycleId) -and (_QCW-IsNullOrWhiteSpace $existing.cycleNumber))) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_WORKFLOW_CYCLE_RESUBMIT_SKIPPED' `
+                -Message 'Skipped redlines resubmit sub-cycle bump because no active QC cycle was found.' -Data @{
+                folderPath = $folderPath
+                sheetStem = $sheetStem
+                documentGuid = $sourceDocGuid
+                previousState = $PreviousState
+                currentState = $CurrentState
+            } | Out-Null
+        }
+        return $Context
+    }
+
+    $parsed = _QCW-ParseQCCycleNumber $existing.cycleNumber
+    if ($parsed.major -le 0) {
+        $parsed.major = 1
+    }
+    $nextMinor = $parsed.minor + 1
+    $nextNumber = _QCW-FormatQCCycleNumber -Major $parsed.major -Minor $nextMinor
+    $baseCycleId = _QCW-GetBaseQCCycleId ([string]$existing.cycleId)
+    if (_QCW-IsNullOrWhiteSpace $baseCycleId) {
+        $baseCycleId = [string]$existing.cycleId
+    }
+    $nextCycleId = _QCW-BuildQCCycleId -BaseCycleId $baseCycleId -CycleNumberDisplay $nextNumber
+
+    $Context = _QCW-ApplyCycleToContext -Context $Context -CycleId $nextCycleId -CycleNumber $nextNumber
+
+    if ($DryRun) { return $Context }
+
+    if ($Config -and (Get-Command -Name 'Update-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            Update-QCSheetIndexCycle -Config $Config -CycleId $nextCycleId -CycleNumber $nextNumber `
+                -DocumentGuid $sourceDocGuid -FolderPath $folderPath -SheetStem $sheetStem | Out-Null
+        } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_WORKFLOW_CYCLE_RESUBMIT' `
+            -Message 'Advanced QC sub-cycle for Corrections Received to Redlines Received transition.' -Data @{
+            cycleId = $nextCycleId
+            cycleNumber = $nextNumber
+            previousCycleNumber = $existing.cycleNumber
+            folderPath = $folderPath
+            sheetStem = $sheetStem
+            documentGuid = $sourceDocGuid
+            previousState = $PreviousState
+            currentState = $CurrentState
+        } | Out-Null
+    }
+
+    return $Context
+}
+
+function Start-QCWorkflowCycleIfReadyForQc {
+    <#
+    Starts a new QC cycle when automation writeback lands on Ready for QC (prepend initialQcPdf).
+    Persists cycleId/cycleNumber to context attributes, ProjectWise writeback, and sheet_index.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][hashtable]$Context,
+        [hashtable]$Config = $null,
+        [Parameter(Mandatory)][string]$TargetStateName,
+        [bool]$DryRun = $false
+    )
+
+    $readyName = Get-QCWorkflowStateName -Settings $Settings -StateKey 'readyForQc'
+    if (_QCW-IsNullOrWhiteSpace $readyName) { $readyName = 'Ready for QC' }
+    if ([string]::Compare(([string]$TargetStateName).Trim(), $readyName, $true) -ne 0) {
+        return $Context
+    }
+
+    $job = $null
+    if ($Context -and $Context.ContainsKey('job') -and $Context.job) { $job = $Context.job }
+    $prependTrigger = ''
+    if ($Context -and $Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) {
+        $prependTrigger = [string]$Context.prependTrigger
+    } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.prependTrigger) {
+        $prependTrigger = [string]$job.metadata.prependTrigger
+    }
+
+    $previousState = ''
+    if ($Context -and $Context.ContainsKey('previousState') -and $Context.previousState) {
+        $previousState = [string]$Context.previousState
+    }
+    $initiatedName = Get-QCWorkflowStateName -Settings $Settings -StateKey 'qcInitiated'
+    if (_QCW-IsNullOrWhiteSpace $initiatedName) { $initiatedName = 'QC Initiated' }
+
+    $shouldBump = $false
+    if ($job -and $job.id) {
+        if ($prependTrigger -eq 'initialQcPdf') { $shouldBump = $true }
+        elseif (-not (_QCW-IsNullOrWhiteSpace $previousState) -and $previousState -ieq $initiatedName) { $shouldBump = $true }
+    }
+    if (-not $shouldBump) { return $Context }
+
+    $folderPath = ''
+    $sheetStem = ''
+    $sourceDocGuid = ''
+    if ($Context.ContainsKey('documentGuid') -and $Context.documentGuid) { $sourceDocGuid = [string]$Context.documentGuid }
+    if ($job) {
+        if (-not $folderPath -and $job.sourceFolder) { $folderPath = [string]$job.sourceFolder }
+        if (-not $sourceDocGuid) {
+            $md = _QCW-ToHashtable $job.metadata
+            if ($md -and $md.triggerDocumentGuid) { $sourceDocGuid = [string]$md.triggerDocumentGuid }
+            elseif ($md -and $md.documentGuid) { $sourceDocGuid = [string]$md.documentGuid }
+        }
+        if ($job.sourceName) {
+            $srcName = [string]$job.sourceName
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $srcName) } catch { }
+            }
+            if (_QCW-IsNullOrWhiteSpace $sheetStem) {
+                $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($srcName)
+            }
+        }
+    }
+    $targets = _QCW-ResolveSheetCycleTargets -Context $Context
+    if (_QCW-IsNullOrWhiteSpace $folderPath) { $folderPath = [string]$targets.folderPath }
+    if (_QCW-IsNullOrWhiteSpace $sheetStem) { $sheetStem = [string]$targets.sheetStem }
+    if (_QCW-IsNullOrWhiteSpace $sourceDocGuid) { $sourceDocGuid = [string]$targets.documentGuid }
+
+    $parsedCurrent = _QCW-ParseQCCycleNumber $null
+    if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $existing = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $sourceDocGuid -FolderPath $folderPath -SheetStem $sheetStem
+            if ($existing -and -not (_QCW-IsNullOrWhiteSpace $existing.cycleNumber)) {
+                $parsedCurrent = _QCW-ParseQCCycleNumber $existing.cycleNumber
+            } elseif ($existing -and -not (_QCW-IsNullOrWhiteSpace $existing.cycleId)) {
+                $parsedCurrent = _QCW-ParseQCCycleNumber 0
+            }
+        } catch { }
+    }
+    $nextMajor = [Math]::Max(0, $parsedCurrent.major) + 1
+    $nextNumber = _QCW-FormatQCCycleNumber -Major $nextMajor -Minor 0
+    $cycleId = [string]$job.id
+    if (_QCW-IsNullOrWhiteSpace $cycleId) {
+        $cycleId = 'qc_cycle_' + [guid]::NewGuid().ToString('n').Substring(0, 12)
+    }
+    $cycleId = _QCW-BuildQCCycleId -BaseCycleId $cycleId -CycleNumberDisplay $nextNumber
+
+    $Context = _QCW-ApplyCycleToContext -Context $Context -CycleId $cycleId -CycleNumber $nextNumber
+
+    if ($DryRun) { return $Context }
+
+    if ($Config -and (Get-Command -Name 'Update-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            Update-QCSheetIndexCycle -Config $Config -CycleId $cycleId -CycleNumber $nextNumber `
+                -DocumentGuid $sourceDocGuid -FolderPath $folderPath -SheetStem $sheetStem | Out-Null
+        } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_WORKFLOW_CYCLE_STARTED' `
+            -Message 'Started new QC cycle on automation Ready for QC writeback.' -Data @{
+            cycleId = $cycleId
+            cycleNumber = $nextNumber
+            folderPath = $folderPath
+            sheetStem = $sheetStem
+            documentGuid = $sourceDocGuid
+            prependTrigger = $prependTrigger
+            previousState = $previousState
+            targetState = $readyName
+        } | Out-Null
+    }
+
+    return $Context
+}
+
 function Invoke-QCWorkflowWriteback {
     [CmdletBinding()]
     param(
@@ -1520,6 +1897,10 @@ function Invoke-QCWorkflowWriteback {
                 $stateName = Resolve-QCWorkflowStateAfterPrepend -Settings $settings -Context $Context
             }
         }
+        if (-not (_QCW-IsNullOrWhiteSpace $stateName)) {
+            $Context = Start-QCWorkflowCycleIfReadyForQc -Settings $settings -Context $Context -Config $Config `
+                -TargetStateName $stateName -DryRun:$dryRun
+        }
         if (_QCW-IsNullOrWhiteSpace $stateName) {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
@@ -1569,4 +1950,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

@@ -1084,6 +1084,25 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     if ($attrs -and $attrs.Count -gt 0) {
         $notifyContext['attributes'] = $attrs
     }
+    if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $sheetStem = ''
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $sheetPdfName)
+            }
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $DocumentGuid -FolderPath $FolderPath -SheetStem $sheetStem
+            if ($cycle -and -not [string]::IsNullOrWhiteSpace($cycle.cycleId)) {
+                if (-not $notifyContext.ContainsKey('attributes') -or -not $notifyContext.attributes) {
+                    $notifyContext['attributes'] = @{}
+                }
+                $notifyContext.attributes['cycleId'] = [string]$cycle.cycleId
+                if ($null -ne $cycle.cycleNumber) {
+                    $notifyContext.attributes['cycleNumber'] = [string]$cycle.cycleNumber
+                }
+                $notifyContext['cycleId'] = [string]$cycle.cycleId
+            }
+        } catch { }
+    }
 
     try {
         $notif = Invoke-QCWorkflowStateChangeNotification -Config $Config -Context $notifyContext `
