@@ -294,7 +294,13 @@ function _QCW-InvokeStateChangeNotification {
                     $stKeyForDedupe = [string]$job.metadata.stateTransitionKey
                 }
                 if (-not (_QCW-IsNullOrWhiteSpace $stKeyForDedupe)) { $eventForDedupe['stateTransitionKey'] = $stKeyForDedupe }
-                $dedupeKey = Get-QCNotificationDedupeKey -Event $eventForDedupe -Settings $notifSettings -Config $Config
+                if ($job -and $job.metadata -is [hashtable]) {
+                    $wfMdForDedupe = _QCW-ToHashtable $job.metadata
+                    if ($wfMdForDedupe -and $wfMdForDedupe.attributes) {
+                        $eventForDedupe['attributes'] = _QCW-ToHashtable $wfMdForDedupe.attributes
+                    }
+                }
+                $dedupeKey = Get-QCNotificationDedupeKey -Event $eventForDedupe -Settings $notifSettings -Config $Config -Job $job
             } catch { }
         }
         if ($dedupeKey) {
@@ -309,6 +315,26 @@ function _QCW-InvokeStateChangeNotification {
                     } | Out-Null
                 }
                 return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification job already queued.' -Data @{ dedupeKey = $dedupeKey }
+            }
+            if (Get-Command -Name 'Test-QCNotificationDedupe' -ErrorAction SilentlyContinue) {
+                try {
+                    $notifSettingsForSent = Get-QCNotificationSettings -Config $Config
+                    $ctxTransitionId = $null
+                    if ($Context -and $Context.ContainsKey('transitionId') -and $null -ne $Context.transitionId) {
+                        try { $ctxTransitionId = [int]$Context.transitionId } catch { }
+                    }
+                    if (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $notifSettingsForSent -Config $Config -TransitionId $ctxTransitionId) {
+                        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                            Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUE_SKIPPED_ALREADY_SENT' `
+                                -Message 'Notification already sent for this logical sheet transition.' -Data @{
+                                dedupeKey = $dedupeKey
+                                currentState = [string]$CurrentState
+                                previousState = [string]$PreviousState
+                            } | Out-Null
+                        }
+                        return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification already sent for this sheet transition.' -Data @{ dedupeKey = $dedupeKey }
+                    }
+                } catch { }
             }
         }
         $wfTransitionKey = $null

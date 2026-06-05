@@ -195,7 +195,7 @@ Assert-Eq $key1 $key2 'Dedupe keys should be stable for the same event'
 
 # Placeholder document names should not fork dedupe when folder + sheet stem align
 $folderDedupeCfg = New-NotifyConfig -Enabled $true
-$folderDedupeCfg.notifications.dedupe.keyFields = @('stateTransitionKey', 'folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState')
+$folderDedupeCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
 $folderDedupeSettings = Get-QCNotificationSettings -Config $folderDedupeCfg
 $sharedFolder = 'documents\caltrans\proj\cadd\sheets\seg_1'
 $keyUnknown = Get-QCNotificationDedupeKey -Event @{
@@ -220,6 +220,54 @@ $keyNamed = Get-QCNotificationDedupeKey -Event @{
 } -Settings $folderDedupeSettings
 Assert-Eq $keyUnknown $keyNamed 'Same folder + sheet stem should dedupe despite different document names'
 Assert-True ($keyUnknown -match 'folderPath=') 'Dedupe key should include folderPath'
+
+# Sibling audit echo events must not fork dedupe (audit:39541 vs audit:39542 on same sheet transition)
+$echoCfg = New-NotifyConfig -Enabled $true
+$echoCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$echoSettings = Get-QCNotificationSettings -Config $echoCfg
+$keyEcho1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    stateTransitionKey = 'audit:39541'
+} -Settings $echoSettings
+$keyEcho2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    stateTransitionKey = 'audit:39542'
+} -Settings $echoSettings
+Assert-Eq $keyEcho1 $keyEcho2 'Different audit echo ids should not fork notification dedupe'
+Assert-True ($keyEcho1 -notmatch 'audit:39541') 'Dedupe key should not include audit event id'
+Assert-True ($keyEcho1 -match 'previousState=QC Finalizing') 'Empty stale-index previousState should normalize for QC Complete'
+
+# Prepend writeback (explicit previousState) should match stale-index audit path for same sheet transition
+$keyPrepend = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = 'QC Finalizing'
+    currentState = 'QC Complete'
+    cycleId = 'qc_qcprepend_c6e50e714af81799'
+} -Settings $echoSettings
+$keyAuditWithCycle = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    cycleId = 'qc_qcprepend_c6e50e714af81799'
+    stateTransitionKey = 'audit:39541'
+} -Settings $echoSettings
+Assert-Eq $keyPrepend $keyAuditWithCycle 'Prepend writeback and audit stale-index should dedupe when cycle id matches'
 
 # Subject should use sheet PDF name (stem.pdf), not unknown-document placeholder from QC PDF resolution
 $readyCfg = New-NotifyConfig -Enabled $true
