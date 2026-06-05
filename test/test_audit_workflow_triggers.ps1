@@ -39,6 +39,10 @@ Assert-True (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfg
     'empty index -> In Production is baseline seed'
 Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState '' -CurrentState 'QC Received')) `
     'empty index -> QC Received is a real transition'
+Assert-True (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $cfgDefault -PreviousState '' -CurrentState 'Ready for QC') `
+    'empty prior -> Ready for QC should suppress audit notification baseline'
+Assert-True (-not (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $cfgDefault -PreviousState 'QC Initiated' -CurrentState 'Ready for QC')) `
+    'QC Initiated -> Ready for QC is a real notification transition'
 Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState 'In Production' -CurrentState 'QC Initiated')) `
     'prior state blocks baseline suppression'
 

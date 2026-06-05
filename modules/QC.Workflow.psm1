@@ -104,6 +104,24 @@ function _QCW-NewWorkflowResult([bool]$IsSuccess, [string]$Code, [string]$Messag
     return New-QCFailureResult -Code $Code -Message $Message -Data $Data
 }
 
+function Invoke-QCWorkflowStateChangeNotification {
+    <#
+    .SYNOPSIS
+    Enqueues or sends a workflow state-change notification via the shared prepend/worker path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [hashtable]$Context,
+        [string]$PreviousState = '',
+        [Parameter(Mandatory)][string]$CurrentState,
+        [object]$Document = $null
+    )
+
+    return _QCW-InvokeStateChangeNotification -Config $Config -Context $Context `
+        -PreviousState $PreviousState -CurrentState $CurrentState -Document $Document
+}
+
 function _QCW-InvokeStateChangeNotification {
     param(
         [hashtable]$Config,
@@ -115,6 +133,20 @@ function _QCW-InvokeStateChangeNotification {
 
     if (-not $Config) { return $null }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return $null }
+
+    $ctxChangedByUser = $null
+    $ctxChangedByUsername = ''
+    if ($Context) {
+        if ($Context.ContainsKey('changedByUser') -and $null -ne $Context.changedByUser) {
+            try {
+                $n = [int]$Context.changedByUser
+                if ($n -gt 0) { $ctxChangedByUser = $n }
+            } catch { }
+        }
+        if ($Context.ContainsKey('changedByUsername') -and -not (_QCW-IsNullOrWhiteSpace $Context.changedByUsername)) {
+            $ctxChangedByUsername = [string]$Context.changedByUsername
+        }
+    }
 
     $job = $null
     if ($Context -and $Context.ContainsKey('job')) { $job = $Context.job }
@@ -147,6 +179,14 @@ function _QCW-InvokeStateChangeNotification {
                     documentName = $docName
                     previousState = [string]$PreviousState
                     currentState = [string]$CurrentState
+                }
+                if ($Context -and $Context.folderPath) {
+                    $eventForDedupe['folderPath'] = [string]$Context.folderPath
+                } elseif ($job -and $job.sourceFolder) {
+                    $eventForDedupe['folderPath'] = [string]$job.sourceFolder
+                } elseif ($Context -and $Context.documentPath -and ([string]$Context.documentPath -match '\\')) {
+                    $eventForDedupe['folderPath'] = [System.IO.Path]::GetDirectoryName([string]$Context.documentPath)
+                    $eventForDedupe['documentPath'] = [string]$Context.documentPath
                 }
                 if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue -and -not (_QCW-IsNullOrWhiteSpace $docName)) {
                     try { $eventForDedupe['sheetStem'] = [string](Get-PWSheetStemFromDocumentName -DocumentName $docName) } catch { }
@@ -216,6 +256,10 @@ function _QCW-InvokeStateChangeNotification {
         }
         if ($null -ne $wfChangedByUser) { $notifJob.metadata['changedByUser'] = $wfChangedByUser }
         if (-not (_QCW-IsNullOrWhiteSpace $wfChangedByUsername)) { $notifJob.metadata['changedByUsername'] = $wfChangedByUsername }
+        if ($null -eq $wfChangedByUser -and $null -ne $ctxChangedByUser) { $notifJob.metadata['changedByUser'] = $ctxChangedByUser }
+        if ((_QCW-IsNullOrWhiteSpace $wfChangedByUsername) -and -not (_QCW-IsNullOrWhiteSpace $ctxChangedByUsername)) {
+            $notifJob.metadata['changedByUsername'] = $ctxChangedByUsername
+        }
         if ($Context -and $Context.ContainsKey('transitionId') -and $null -ne $Context.transitionId) {
             try {
                 $ctxTid = [int]$Context.transitionId
@@ -226,6 +270,21 @@ function _QCW-InvokeStateChangeNotification {
             $dp = [string]$Context.documentPath
             if ($dp -match '\\') { $notifJob.sourceFolder = [System.IO.Path]::GetDirectoryName($dp) }
             if (-not $notifJob.sourceName) { $notifJob.sourceName = [System.IO.Path]::GetFileName($dp) }
+        }
+        if (-not $notifJob.sourceFolder -and $Context -and $Context.folderPath) {
+            $notifJob.sourceFolder = [string]$Context.folderPath
+        }
+        if ($Context -and $Context.ContainsKey('sourceName') -and -not (_QCW-IsNullOrWhiteSpace $Context.sourceName)) {
+            $notifJob.sourceName = [string]$Context.sourceName
+        } elseif (-not $notifJob.sourceName -and $Document) {
+            try {
+                $derivedName = [string]$Document.Name
+                if ($derivedName -match '(?i)-qc\.pdf$') {
+                    $notifJob.sourceName = [System.IO.Path]::GetFileNameWithoutExtension($derivedName) + '.pdf'
+                } elseif (-not (_QCW-IsNullOrWhiteSpace $derivedName)) {
+                    $notifJob.sourceName = $derivedName
+                }
+            } catch { }
         }
         if ($job) {
             if (-not $notifJob.sourceFolder -and $job.sourceFolder) { $notifJob.sourceFolder = [string]$job.sourceFolder }
@@ -255,6 +314,17 @@ function _QCW-InvokeStateChangeNotification {
         }
         $enq = Add-QCQueueJob -Job $notifJob -Config $Config
         if ($enq.IsSuccess) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUED' `
+                    -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{
+                    jobId = [string]$notifJob.id
+                    dedupeKey = $dedupeKey
+                    sourceFolder = [string]$notifJob.sourceFolder
+                    sourceName = [string]$notifJob.sourceName
+                    previousState = [string]$PreviousState
+                    currentState = [string]$CurrentState
+                } | Out-Null
+            }
             return New-QCSuccessResult -Code 'QC_NOTIFICATION_ENQUEUED' -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{ jobId = [string]$notifJob.id }
         }
     }
@@ -300,6 +370,12 @@ function _QCW-InvokeStateChangeNotification {
                     $wfChangedByUsername = [string]$wfMd.changedByUsername
                 }
             }
+        }
+        if (($null -eq $wfChangedByUser) -and (_QCW-IsNullOrWhiteSpace $wfChangedByUsername) -and $null -ne $ctxChangedByUser) {
+            $wfChangedByUser = $ctxChangedByUser
+        }
+        if ((_QCW-IsNullOrWhiteSpace $wfChangedByUsername) -and -not (_QCW-IsNullOrWhiteSpace $ctxChangedByUsername)) {
+            $wfChangedByUsername = $ctxChangedByUsername
         }
         if (($null -eq $wfChangedByUser) -and (_QCW-IsNullOrWhiteSpace $wfChangedByUsername) -and $Config) {
             $ap = _QCW-ToHashtable $Config.auditPoller
@@ -1315,4 +1391,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Invoke-QCWorkflowWriteback
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

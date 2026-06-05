@@ -193,6 +193,34 @@ $key1 = Get-QCNotificationDedupeKey -Event $event -Settings $settings
 $key2 = Get-QCNotificationDedupeKey -Event $event -Settings $settings
 Assert-Eq $key1 $key2 'Dedupe keys should be stable for the same event'
 
+# Placeholder document names should not fork dedupe when folder + sheet stem align
+$folderDedupeCfg = New-NotifyConfig -Enabled $true
+$folderDedupeCfg.notifications.dedupe.keyFields = @('transitionId', 'stateTransitionKey', 'folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState')
+$folderDedupeSettings = Get-QCNotificationSettings -Config $folderDedupeCfg
+$sharedFolder = 'documents\caltrans\proj\cadd\sheets\seg_1'
+$keyUnknown = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'READY_FOR_QC'
+    documentName = 'unknown-document-qc.pdf'
+    sheetStem = '080J082001ab001'
+    folderPath = $sharedFolder
+    previousState = 'QC Initiated'
+    currentState = 'Ready for QC'
+    transitionId = 77
+    stateTransitionKey = 'audit:5001'
+} -Settings $folderDedupeSettings
+$keyNamed = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'READY_FOR_QC'
+    documentName = '080J082001ab001-qc.pdf'
+    sheetStem = '080J082001ab001'
+    folderPath = $sharedFolder
+    previousState = 'QC Initiated'
+    currentState = 'Ready for QC'
+    transitionId = 77
+    stateTransitionKey = 'audit:5001'
+} -Settings $folderDedupeSettings
+Assert-Eq $keyUnknown $keyNamed 'Same folder + sheet stem should dedupe despite different document names'
+Assert-True ($keyUnknown -match 'folderPath=') 'Dedupe key should include folderPath'
+
 # Duplicate suppression
 $dupCfg = New-NotifyConfig -Enabled $true
 $dupDedupe = Join-Path $testRoot 'dedupe-dup\sent-keys.jsonl'
@@ -267,7 +295,8 @@ $tidCfg.notifications.events['QC Complete'] = @{
 }
 $tidSettings = Get-QCNotificationSettings -Config $tidCfg
 $tidEvent = @{ eventType = 'QC_COMPLETE'; documentName = '081800063ea515-qc.pdf'; sheetStem = '081800063ea515'; previousState = 'QC Finalizing'; currentState = 'QC Complete'; transitionId = 42 }
-Assert-Eq (Get-QCNotificationDedupeKey -Event $tidEvent -Settings $tidSettings) 'transition:42' 'Transition id should produce transition-scoped dedupe key'
+$tidKey = Get-QCNotificationDedupeKey -Event $tidEvent -Settings $tidSettings
+Assert-True ($tidKey -match 'sheetStem=081800063ea515') 'Dedupe key should include logical sheet stem'
 $tidDoc = [pscustomobject]@{
     Name = '081800063ea515-qc.pdf'
     DocumentGUID = 'guid-tid'

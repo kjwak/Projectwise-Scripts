@@ -323,6 +323,45 @@ function Test-QCShouldSuppressBaselineSheetIndexStateTransition {
     return $false
 }
 
+function Test-QCShouldSuppressAuditReadyForQcBaselineNotification {
+    <#
+    .SYNOPSIS
+    True when audit telemetry shows empty prior state landing on Ready for QC (DOCUMENT_CREATE / index seed).
+    The real QC Initiated -> Ready for QC notification is owned by prepend/worker with an explicit previousState.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$PreviousState = '',
+        [Parameter(Mandatory)][string]$CurrentState
+    )
+
+    $prev = _QCAT-NormalizeValue $PreviousState
+    if (-not [string]::IsNullOrWhiteSpace($prev)) { return $false }
+
+    $curr = _QCAT-NormalizeValue $CurrentState
+    if ([string]::IsNullOrWhiteSpace($curr)) { return $false }
+
+    $readyNames = [System.Collections.Generic.List[string]]::new()
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                foreach ($key in @('readyForQc', 'qcReceived')) {
+                    $name = Get-QCWorkflowStateName -Settings $wf -StateKey $key
+                    if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$readyNames.Add([string]$name) }
+                }
+            }
+        } catch { }
+    }
+    if ($readyNames.Count -eq 0) { [void]$readyNames.Add('Ready for QC') }
+
+    foreach ($ready in @($readyNames)) {
+        if ($curr.Equals([string]$ready, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function _QCAT-ParsePwActTimeUtc {
     param([string]$ActTime)
     if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
@@ -878,6 +917,21 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
             } | Out-Null
         }
     }
+    if ($shouldNotify -and (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $Config -PreviousState $prev -CurrentState $curr)) {
+        $shouldNotify = $false
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_SKIPPED_BASELINE_READY_FOR_QC' `
+                -Message 'Skipped Ready for QC audit notification for empty prior state (DOCUMENT_CREATE / index baseline).' -Data @{
+                auditEventId = $AuditEventId
+                auditActionName = $AuditActionName
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                currentState = $curr
+                previousState = $prev
+            } | Out-Null
+        }
+    }
 
     if ([bool]$settings.recordStateHistory) {
         Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
@@ -930,10 +984,10 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     if (-not $shouldNotify) { return }
-    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
-        try { Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -ErrorAction SilentlyContinue } catch { }
+    if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) {
+        try { Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
     }
-    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) { return }
 
     $attrs = @{}
     if ($PwAttributes) { $attrs = $PwAttributes }
@@ -988,24 +1042,31 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         } | Out-Null
     }
 
+    $sheetPdfName = $DocumentName
+    if ($DocumentName -match '(?i)-qc\.pdf$') {
+        $sheetPdfName = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName) + '.pdf'
+    }
+
+    $notifyContext = @{
+        config = $Config
+        folderPath = $FolderPath
+        documentPath = ($FolderPath + '\' + $DocumentName)
+        sourceName = $sheetPdfName
+        stateTransitionKey = $stateTransitionKey
+        changedByUser = $ChangedByUser
+        changedByUsername = $notifyUsername
+        notificationStateSource = $notificationStateSource
+    }
+    if ($null -ne $transitionId -and $transitionId -gt 0) {
+        $notifyContext['transitionId'] = $transitionId
+    }
+    if ($attrs -and $attrs.Count -gt 0) {
+        $notifyContext['attributes'] = $attrs
+    }
+
     try {
-        $notifyParams = @{
-            Config = $Config
-            PreviousState = $prev
-            CurrentState = $curr
-            Document = $Document
-            DocumentName = $DocumentName
-            DocumentGuid = $DocumentGuid
-            DocumentPath = ($FolderPath + '\' + $DocumentName)
-            StateTransitionKey = $stateTransitionKey
-            ChangedByUser = $ChangedByUser
-            ChangedByUsername = $notifyUsername
-            NotificationStateSource = $notificationStateSource
-        }
-        if ($null -ne $transitionId -and $transitionId -gt 0) {
-            $notifyParams['TransitionId'] = $transitionId
-        }
-        $notif = Invoke-QCNotificationForStateChange @notifyParams
+        $notif = Invoke-QCWorkflowStateChangeNotification -Config $Config -Context $notifyContext `
+            -PreviousState $prev -CurrentState $curr -Document $Document
         if ($notif -is [System.Array]) { $notif = $notif[-1] }
     } catch {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -1243,7 +1304,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCIsAutomationPwActor, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

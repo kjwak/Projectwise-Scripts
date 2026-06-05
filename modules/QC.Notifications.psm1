@@ -1194,6 +1194,104 @@ function _QCN-BuildRecipientKey {
     return ('recipients:' + ((@($set)) -join ','))
 }
 
+function _QCN-IsPlaceholderNotificationSheetStem {
+    param([string]$Stem)
+    if (_QCN-IsBlank $Stem) { return $true }
+    return $Stem.Equals('unknown-document', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function _QCN-ResolveSheetStemFromFolderForDedupe {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$DocumentGuid = ''
+    )
+
+    if (_QCN-IsBlank $FolderPath) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+
+    try {
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $byGuid = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($byGuid.IsSuccess -and $byGuid.Data.table -and $byGuid.Data.table.Rows.Count -gt 0) {
+                $dn = if ($byGuid.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byGuid.Data.table.Rows[0].document_name }
+                if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                    $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+                    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+                }
+            }
+            $byQcGuid = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE qc_pdf_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($byQcGuid.IsSuccess -and $byQcGuid.Data.table -and $byQcGuid.Data.table.Rows.Count -gt 0) {
+                $dn = if ($byQcGuid.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byQcGuid.Data.table.Rows[0].document_name }
+                if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                    $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+                    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+                }
+            }
+        }
+
+        $byFolder = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND document_name LIKE '%.pdf'
+  AND document_name NOT LIKE '%-qc.pdf'
+ORDER BY last_audit_event_at DESC
+"@ -Parameters @{ folderPath = [string]$FolderPath.Trim() }
+        if ($byFolder.IsSuccess -and $byFolder.Data.table -and $byFolder.Data.table.Rows.Count -gt 0) {
+            $dn = if ($byFolder.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byFolder.Data.table.Rows[0].document_name }
+            if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                return [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+            }
+        }
+    } catch { }
+
+    return ''
+}
+
+function _QCN-NormalizeNotificationSheetStemForDedupe {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Config = $null
+    )
+
+    if (-not $Event) { return '' }
+    $stem = if ($Event.ContainsKey('sheetStem') -and -not (_QCN-IsBlank $Event.sheetStem)) {
+        [string]$Event.sheetStem
+    } else { '' }
+
+    if (-not (_QCN-IsBlank $stem) -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+
+    if ((_QCN-IsBlank $stem) -and $Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+        try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+    }
+
+    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+
+    $folderPath = ''
+    if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+    elseif ($Event.documentPath -and ([string]$Event.documentPath -match '\\')) {
+        $folderPath = [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+    }
+
+    $docGuid = if ($Event.documentGuid) { [string]$Event.documentGuid } else { '' }
+    if ($Config -and -not (_QCN-IsBlank $folderPath)) {
+        $resolved = _QCN-ResolveSheetStemFromFolderForDedupe -Config $Config -FolderPath $folderPath -DocumentGuid $docGuid
+        if (-not (_QCN-IsBlank $resolved)) { return $resolved }
+    }
+
+    return $stem
+}
+
 function Get-QCNotificationDedupeKey {
     [CmdletBinding()]
     param(
@@ -1209,14 +1307,21 @@ function Get-QCNotificationDedupeKey {
     # Default to one durable notification per logical sheet transition + recipient set.  A
     # transition_events id is intentionally *not* authoritative here: sibling sync can create
     # one transition row for the DGN, sheet PDF, and *-qc.pdf for the same logical sheet action.
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('notificationType', 'sheetStem', 'targetState', 'cycleId', 'recipientKey') }
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('notificationType', 'folderPath', 'sheetStem', 'targetState', 'cycleId', 'recipientKey') }
 
-    if (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
-        $stem = ''
+    $folderPath = ''
+    if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+    elseif ($Event.documentPath -and ([string]$Event.documentPath -match '\\')) {
+        $folderPath = [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+    }
+    if (-not (_QCN-IsBlank $folderPath)) { $Event['folderPath'] = $folderPath }
+
+    $normalizedStem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+    if (-not (_QCN-IsBlank $normalizedStem)) { $Event['sheetStem'] = $normalizedStem }
+    elseif (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
         if ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
-            try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+            try { $Event['sheetStem'] = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
         }
-        if (-not (_QCN-IsBlank $stem)) { $Event['sheetStem'] = $stem }
     }
 
     if ((-not $Event.ContainsKey('recipientKey') -or (_QCN-IsBlank $Event.recipientKey)) -and ($Event.ContainsKey('to') -or $Event.ContainsKey('cc'))) {
@@ -1241,7 +1346,12 @@ function Get-QCNotificationDedupeKey {
                 elseif ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
                     try { $value = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
                 }
+                if (_QCN-IsPlaceholderNotificationSheetStem -Stem $value) {
+                    $resolvedStem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+                    if (-not (_QCN-IsBlank $resolvedStem)) { $value = $resolvedStem }
+                }
             }
+            'folderPath' { $value = [string]$Event.folderPath }
             'documentGuid' {
                 $value = if ($Event.documentGuid) { [string]$Event.documentGuid }
                 elseif ($Event.documentPath) { [string]$Event.documentPath }
