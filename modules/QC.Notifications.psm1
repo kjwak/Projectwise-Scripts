@@ -161,7 +161,7 @@ function Get-QCNotificationSettings {
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
             # Logical sheet-transition identity.  Do not key by transitionId by default because
             # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
-            keyFields = @('notificationType', 'sheetStem', 'targetState', 'cycleId', 'recipientKey')
+            keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
         }
         graph = @{
             tenantId = ''
@@ -1396,6 +1396,7 @@ function _QCN-NormalizeNotificationDedupePreviousState {
     <#
     Collapses stale sheet_index baselines (often empty) with the nominal prior workflow state
     so prepend writeback and audit stale-index paths share one notification dedupe key.
+    Applies to every configured workflow notification target state, not only QC Complete.
     #>
     param(
         [string]$PreviousState = '',
@@ -1409,18 +1410,54 @@ function _QCN-NormalizeNotificationDedupePreviousState {
     $curr = ([string]$CurrentState).Trim()
     if ($curr.Length -eq 0) { return $prev }
 
+    $priorByTarget = _QCN-GetWorkflowNotificationPriorStateMap -Config $Config
+    if ($null -ne $priorByTarget -and $priorByTarget.ContainsKey($curr)) {
+        $nominal = [string]$priorByTarget[$curr]
+        if (-not (_QCN-IsBlank $nominal)) { return $nominal }
+    }
+    return $prev
+}
+
+function _QCN-GetWorkflowNotificationPriorStateMap {
+    param([hashtable]$Config = $null)
+
+    $map = @{
+        'QC Complete' = 'QC Finalizing'
+        'QC Finalizing' = 'Ready for QC'
+        'Redlines Received' = 'Ready for QC'
+        'Corrections Received' = 'Redlines Received'
+        'Ready for QC' = 'QC Initiated'
+        'QC Received' = 'In Production'
+    }
+
     if ($Config -and $Config.qcWorkflow -and $Config.qcWorkflow.states) {
         $states = _QCN-ToHashtable $Config.qcWorkflow.states
         if ($states) {
-            $complete = if ($states.complete) { [string]$states.complete } else { '' }
-            $finalizing = if ($states.qcFinalizing) { [string]$states.qcFinalizing } else { '' }
-            if ($complete.Length -gt 0 -and $curr -eq $complete -and $finalizing.Length -gt 0) {
-                return $finalizing
+            $resolved = @{}
+            $pairs = @(
+                @('complete', 'qcFinalizing')
+                @('qcFinalizing', 'readyForQc')
+                @('redlinesReceived', 'readyForQc')
+                @('correctionsReceived', 'redlinesReceived')
+                @('readyForQc', 'qcInitiated')
+                @('qcReceived', 'production')
+            )
+            foreach ($pair in @($pairs)) {
+                $targetKey = [string]$pair[0]
+                $priorKey = [string]$pair[1]
+                if (-not $states.ContainsKey($targetKey)) { continue }
+                $targetName = [string]$states[$targetKey]
+                if (_QCN-IsBlank $targetName) { continue }
+                $priorName = if ($states.ContainsKey($priorKey)) { [string]$states[$priorKey] } else { '' }
+                if (-not (_QCN-IsBlank $priorName)) {
+                    $resolved[$targetName] = $priorName
+                }
             }
+            if ($resolved.Count -gt 0) { return $resolved }
         }
     }
-    if ($curr -eq 'QC Complete') { return 'QC Finalizing' }
-    return $prev
+
+    return $map
 }
 
 function Get-QCNotificationSheetTransitionKey {
@@ -1594,6 +1631,35 @@ function Get-QCNotificationDedupeKey {
     return ($parts -join '|')
 }
 
+function _QCN-GetNotificationDedupeStorePath {
+    param([hashtable]$Settings)
+    if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+    $dedupe = _QCN-ToHashtable $Settings.dedupe
+    if ($dedupe -and $dedupe.storePath) { return [string]$dedupe.storePath }
+    return (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
+}
+
+function _QCN-TestNotificationDedupeInStore {
+    param(
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [Parameter(Mandatory)][string]$StorePath
+    )
+
+    if (_QCN-IsBlank $DedupeKey) { return $false }
+    if (-not (Test-Path -LiteralPath $StorePath)) { return $false }
+    try {
+        $lines = Get-Content -LiteralPath $StorePath -ErrorAction Stop
+        foreach ($line in @($lines)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $row = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($row.key -eq $DedupeKey) { return $true }
+            } catch { }
+        }
+    } catch { }
+    return $false
+}
+
 function Test-QCNotificationDedupe {
     [CmdletBinding()]
     param(
@@ -1601,7 +1667,8 @@ function Test-QCNotificationDedupe {
         [string]$DedupeKey,
         [hashtable]$Settings,
         [hashtable]$Config = $null,
-        [Nullable[int]]$TransitionId = $null
+        [Nullable[int]]$TransitionId = $null,
+        [string]$ExcludeJobId = ''
     )
 
     if (_QCN-IsBlank $DedupeKey) { return $false }
@@ -1632,7 +1699,23 @@ WHERE transition_id = @transitionId AND success = 1
             } catch { }
         }
         if ($transitionAlreadySent) { return $true }
-        # Pending transition (notification_sent=0): do not block on legacy jsonl keys from sheet-only dedupe.
+    }
+
+    if ($Config -and (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) {
+        try {
+            $dup = Test-QCDuplicateJob -DedupeKey $DedupeKey -Config $Config
+            if ($dup.IsSuccess -and $dup.Data -and [bool]$dup.Data.isDuplicate) {
+                foreach ($match in @($dup.Data.matches)) {
+                    if (-not $match) { continue }
+                    $matchJobId = ''
+                    $matchState = ''
+                    try { $matchJobId = [string]$match.jobId } catch { }
+                    try { $matchState = [string]$match.state } catch { }
+                    if (-not (_QCN-IsBlank $ExcludeJobId) -and $matchJobId -eq $ExcludeJobId) { continue }
+                    if ($matchState -in @('pending', 'running', 'succeeded')) { return $true }
+                }
+            }
+        } catch { }
     }
 
     if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -1650,19 +1733,8 @@ WHERE dedupe_key = @dedupeKey AND success = 1
         } catch { }
     }
 
-    $storePath = if ($dedupe.storePath) { [string]$dedupe.storePath } else { (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl') }
-    if (-not (Test-Path -LiteralPath $storePath)) { return $false }
-
-    try {
-        $lines = Get-Content -LiteralPath $storePath -ErrorAction Stop
-        foreach ($line in @($lines)) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try {
-                $row = $line | ConvertFrom-Json -ErrorAction Stop
-                if ($row.key -eq $DedupeKey) { return $true }
-            } catch { }
-        }
-    } catch { }
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    if (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath) { return $true }
     return $false
 }
 
@@ -1679,7 +1751,9 @@ function Register-QCNotificationDedupe {
     $dedupe = _QCN-ToHashtable $Settings.dedupe
     if (-not $dedupe -or -not [bool]$dedupe.enabled) { return }
 
-    $storePath = if ($dedupe.storePath) { [string]$dedupe.storePath } else { (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl') }
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    if (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath) { return }
+
     $dir = Split-Path -Parent $storePath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
@@ -1692,6 +1766,46 @@ function Register-QCNotificationDedupe {
     } | ConvertTo-Json -Compress
 
     Add-Content -LiteralPath $storePath -Value $entry -Encoding UTF8
+}
+
+function Register-QCNotificationDedupeClaim {
+    <#
+    Atomically reserves a dedupe key before send so concurrent notification jobs cannot both pass Test-QCNotificationDedupe.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [hashtable]$Settings,
+        [hashtable]$Config = $null,
+        [Nullable[int]]$TransitionId = $null,
+        [string]$ExcludeJobId = '',
+        [hashtable]$ResultData = $null
+    )
+
+    if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+    $dedupe = _QCN-ToHashtable $Settings.dedupe
+    if (-not $dedupe -or -not [bool]$dedupe.enabled) { return $true }
+    if (_QCN-IsBlank $DedupeKey) { return $false }
+
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    $mutexName = 'Global\QCNotifyDedupe_' + ([string][BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($storePath.ToLowerInvariant())))).Replace('-', '')
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne(15000)
+        if (-not $acquired) { return $false }
+        if (Test-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -Config $Config -TransitionId $TransitionId -ExcludeJobId $ExcludeJobId) {
+            return $false
+        }
+        $claimData = if ($ResultData) { $ResultData } else { @{ eventType = ''; documentName = ''; provider = '' } }
+        Register-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -ResultData $claimData
+        return $true
+    } finally {
+        if ($acquired) {
+            try { $mutex.ReleaseMutex() | Out-Null } catch { }
+        }
+        try { $mutex.Dispose() } catch { }
+    }
 }
 
 function _QCN-EnsureSingleResult {
@@ -2902,11 +3016,15 @@ function Invoke-QCNotificationForStateChange {
 
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config -Job $Job
     $event['dedupeKey'] = $dedupeKey
+    if ($Job -and $Job.ContainsKey('id') -and -not (_QCN-IsBlank $Job.id)) {
+        $Job['dedupeKey'] = $dedupeKey
+    }
     $displayDocumentName = _QCN-ResolveNotificationDisplayDocumentName -DocumentName $DocumentName -Job $Job -Event $event -Config $Config
     if (-not (_QCN-IsBlank $displayDocumentName)) {
         $event['displayDocumentName'] = $displayDocumentName
     }
-    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId)) {
+    $excludeJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
+    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId -ExcludeJobId $excludeJobId)) {
         $skipCode = if (_QCN-TestNotificationActorIsAutomation -Config $Config -Event $event) { 'QC_NOTIFICATION_SKIPPED_AUTOMATION_ECHO' } else { 'QC_NOTIFICATION_DEDUPED' }
         _QCN-WriteNotificationLifecycleLog -Code $skipCode -Level 'Information' `
             -Message 'Duplicate workflow notification suppressed for logical sheet transition.' `
@@ -2922,6 +3040,30 @@ function Invoke-QCNotificationForStateChange {
         }
         Write-QCNotificationResult -Code $skipCode -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
+    }
+    if (-not $Force) {
+        $claimData = @{
+            eventType = $eventType
+            documentName = $DocumentName
+            provider = [string]$settings.provider
+        }
+        if (-not (Register-QCNotificationDedupeClaim -DedupeKey $dedupeKey -Settings $settings -Config $Config `
+                -TransitionId $resolvedTransitionId -ExcludeJobId $excludeJobId -ResultData $claimData)) {
+            _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_DEDUPED' -Level 'Information' `
+                -Message 'Duplicate workflow notification suppressed during dedupe claim.' `
+                -Event $event -Config $Config -Job $Job -To @($resolved.to) -Cc @($resolved.cc)
+            $skipped = @{
+                success = $false
+                skipped = $true
+                dedupeKey = $dedupeKey
+                message = 'Duplicate notification suppressed during dedupe claim.'
+                eventType = $eventType
+                documentName = $DocumentName
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_DEDUPED' -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
+        }
     }
 
     $subjectDocumentName = if (-not (_QCN-IsBlank $displayDocumentName)) { $displayDocumentName } else { $DocumentName }
@@ -2963,7 +3105,7 @@ function Invoke-QCNotificationForStateChange {
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, Test-QCNotificationsEnqueueAsJob, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, Register-QCNotificationDedupeClaim, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult

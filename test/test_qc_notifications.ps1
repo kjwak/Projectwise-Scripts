@@ -269,6 +269,28 @@ $keyAuditWithCycle = Get-QCNotificationDedupeKey -Event @{
 } -Settings $echoSettings
 Assert-Eq $keyPrepend $keyAuditWithCycle 'Prepend writeback and audit stale-index should dedupe when cycle id matches'
 
+# Redlines Received audit echoes (39533 vs 39534 pattern) must share one dedupe key
+$keyRedlines1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:5001'
+} -Settings $echoSettings
+$keyRedlines2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:5002'
+} -Settings $echoSettings
+Assert-Eq $keyRedlines1 $keyRedlines2 'Redlines audit echo ids should not fork notification dedupe'
+Assert-True ($keyRedlines1 -match 'previousState=Ready for QC') 'Stale-index Redlines should normalize previousState'
+
 # Subject should use sheet PDF name (stem.pdf), not unknown-document placeholder from QC PDF resolution
 $readyCfg = New-NotifyConfig -Enabled $true
 $readyDedupe = Join-Path $testRoot 'dedupe-ready-subject\sent-keys.jsonl'
@@ -344,6 +366,24 @@ $ae2 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 
     -Document $auditEchoDoc -StateTransitionKey 'audit:9002'
 Assert-True $ae2.Data.skipped 'Second audit echo for same sheet transition should dedupe'
 Assert-Eq $ae2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Audit echo duplicate should use skip code'
+
+$redlinesEchoCfg = New-NotifyConfig -Enabled $true
+$redlinesEchoCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-redlines-echo\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $redlinesEchoCfg.notifications.dedupe.storePath) -Force | Out-Null
+$redlinesEchoCfg.notifications.events['Redlines Received'] = @{
+    enabled = $true
+    eventType = 'REDLINES_RECEIVED'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'Designer corrections.'
+}
+$re1 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousState '' -CurrentState 'Redlines Received' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9101'
+Assert-True $re1.IsSuccess 'First Redlines Received send should succeed'
+$re2 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousState '' -CurrentState 'Redlines Received' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9102'
+Assert-True $re2.Data.skipped 'Second Redlines audit echo should dedupe'
+Assert-Eq $re2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Redlines audit echo duplicate should use skip code'
 
 # New transition to same state should not dedupe (repeat QC cycle)
 $cycleDedupe = Join-Path $testRoot 'dedupe-cycle\sent-keys.jsonl'
