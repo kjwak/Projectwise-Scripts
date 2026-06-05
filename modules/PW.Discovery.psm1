@@ -1077,8 +1077,8 @@ function _PWD-WriteDocumentStateLiveVerificationLog {
         [void]$divergences.Add('pdf_vs_qcPdf')
     }
     if ($divergences.Count -gt 0) {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_DIVERGENCE' `
-            -Message 'Associated sheet workflow states diverge before DOCUMENT_STATE evaluation.' -Data @{
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_STATE_DIVERGENCE' `
+            -Message 'Associated sheet workflow states differ before sibling sync (expected when QC PDF or a member changes first).' -Data @{
             auditEventId = $AuditEventId
             sourceDocumentGuid = $SourceDocumentGuid
             sourceDocumentName = $SourceDocumentName
