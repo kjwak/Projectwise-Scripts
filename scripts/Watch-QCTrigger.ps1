@@ -308,13 +308,15 @@ $script:WatchModuleLoadOrder = @(
     'PW.AuditPoller.psm1'
 )
 
-# Re-import after PW/QC modules; nested Import-Module -Force drops Core.Database/Core.Hashing session exports.
+# Re-import after PW/QC modules; nested Import-Module -Force drops Core.Database/Core.Hashing
+# and QC.Workflow/Processors can drop QC.Notifications session exports.
 $script:WatchModuleRestoreOrder = @(
     'Core.Results.psm1'
     'Core.Paths.psm1'
     'Core.Runtime.psm1'
     'Core.Hashing.psm1'
     'Core.Database.psm1'
+    'QC.Notifications.psm1'
 )
 
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
