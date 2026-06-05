@@ -2822,6 +2822,96 @@ WHERE NULLIF(LTRIM(RTRIM(document_guid)), '') IS NOT NULL
     return New-QCSuccessResult -Code 'DOC_FOLDER_CACHE_OK' -Message "Loaded $($cache.Count) cached document folders." -Data @{ cache = $cache; count = $cache.Count }
 }
 
+function Get-QCNewerSheetDocumentStateAuditEvent {
+    <#
+    .SYNOPSIS
+    Returns the earliest DOCUMENT_STATE audit_events row newer than the current event for the same sheet group.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [array]$MemberDocumentNames = @(),
+        [array]$MemberDocumentGuids = @(),
+        [Nullable[long]]$CurrentAuditEventId = $null,
+        [string]$CurrentAuditEventAt = ''
+    )
+
+    $notFound = @{ found = $false }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_SKIPPED' -Message 'Database disabled.' -Data $notFound
+    }
+
+    $names = @($MemberDocumentNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    $guids = @($MemberDocumentGuids | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    if ($names.Count -eq 0 -and $guids.Count -eq 0) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NONE' -Message 'No sheet member identities supplied.' -Data $notFound
+    }
+
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    if ([string]::IsNullOrWhiteSpace($folder)) { $folder = [string]$FolderPath }
+
+    $memberClauses = [System.Collections.Generic.List[string]]::new()
+    $params = @{ folderPath = $folder }
+    $ni = 0
+    foreach ($n in $names) {
+        $key = "docName$ni"
+        $params[$key] = $n
+        [void]$memberClauses.Add("LOWER(ae.pw_itemname) = LOWER(@$key)")
+        $ni++
+    }
+    $gi = 0
+    foreach ($g in $guids) {
+        $key = "docGuid$gi"
+        $params[$key] = $g
+        [void]$memberClauses.Add("ae.pw_objguid = @$key")
+        $gi++
+    }
+    if ($memberClauses.Count -eq 0) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NONE' -Message 'No member match clauses.' -Data $notFound
+    }
+
+    $newerClause = ''
+    if ($null -ne $CurrentAuditEventId -and $CurrentAuditEventId -gt 0) {
+        $newerClause = 'AND ae.id > @currentAuditEventId'
+        $params['currentAuditEventId'] = [long]$CurrentAuditEventId
+    } elseif (-not [string]::IsNullOrWhiteSpace($CurrentAuditEventAt)) {
+        $newerClause = 'AND ae.pw_acttime > @currentAuditEventAt'
+        $params['currentAuditEventAt'] = [string]$CurrentAuditEventAt
+    } else {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NO_ANCHOR' -Message 'No audit event anchor for recency comparison.' -Data $notFound
+    }
+
+    $sql = @"
+SELECT TOP 1 ae.id, ae.pw_acttime, ae.pw_objguid, ae.pw_itemname, ae.pw_userno, ae.processed
+FROM audit_events ae
+WHERE ae.pw_action = 1012
+  AND ae.resolved_folder = @folderPath
+  AND ($($memberClauses -join ' OR '))
+  $newerClause
+ORDER BY ae.id ASC
+"@
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $res.IsSuccess -or -not $res.Data -or -not $res.Data.table -or $res.Data.table.Rows.Count -eq 0) {
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NOT_FOUND' -Message 'No newer DOCUMENT_STATE audit event for sheet group.' -Data $notFound
+        }
+        $r = $res.Data.table.Rows[0]
+        $data = @{
+            found = $true
+            id = if ($r.id -is [DBNull]) { $null } else { [long]$r.id }
+            pwActtime = if ($r.pw_acttime -is [DBNull]) { '' } else { [string]$r.pw_acttime }
+            documentGuid = if ($r.pw_objguid -is [DBNull]) { '' } else { [string]$r.pw_objguid }
+            documentName = if ($r.pw_itemname -is [DBNull]) { '' } else { [string]$r.pw_itemname }
+            changedByUser = if ($r.pw_userno -is [DBNull]) { $null } else { [int]$r.pw_userno }
+            processed = if ($r.processed -is [DBNull]) { $false } else { [bool]$r.processed }
+        }
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_FOUND' -Message 'Newer DOCUMENT_STATE audit event found for sheet group.' -Data $data
+    } catch {
+        return New-QCFailureResult -Code 'NEWER_STATE_AUDIT_QUERY_FAILED' -Message $_.Exception.Message -Data $notFound
+    }
+}
+
 function Get-QCUnprocessedAuditEvents {
     <#
     .SYNOPSIS
@@ -3281,4 +3371,4 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

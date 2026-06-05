@@ -991,6 +991,112 @@ function _PWD-NormalizeSheetIndexValue {
     return ([string]$Value).Trim().ToLowerInvariant()
 }
 
+function _PWD-GetSheetMemberDocRole {
+    param([string]$DocumentName)
+    $dn = [string]$DocumentName
+    if ($dn -match '(?i)-qc\.pdf$') { return 'qcPdf' }
+    if ($dn -match '(?i)\.dgn$') { return 'dgn' }
+    if ($dn -match '(?i)\.pdf$') { return 'pdf' }
+    return 'other'
+}
+
+function _PWD-WriteDocumentStateLiveVerificationLog {
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$SourceDocumentGuid = '',
+        [string]$SourceDocumentName = '',
+        [string]$FolderPath = '',
+        [string]$CanonicalState = '',
+        [string]$CanonicalStateSource = 'liveProjectWise',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = @{},
+        [hashtable]$Config = $null
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+
+    $byRole = @{ dgn = $null; pdf = $null; qcPdf = $null }
+    $associatedStates = [System.Collections.Generic.List[object]]::new()
+    foreach ($member in $Members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dn) { continue }
+        $role = _PWD-GetSheetMemberDocRole -DocumentName $dn
+        $liveState = ''
+        $stateSource = 'liveProjectWise'
+        $key = $dg.ToLowerInvariant()
+        if ($dg -and $StateByGuid.ContainsKey($key)) {
+            $liveState = [string]$StateByGuid[$key]
+        } else {
+            $liveState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+            if (-not $liveState) { $stateSource = 'memberDocumentRow' }
+        }
+        $sheetIndexState = ''
+        if ($dg -and $Config -and (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+            $sheetIndexState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        }
+        $entry = @{
+            role           = $role
+            documentGuid   = $dg
+            documentName   = $dn
+            livePwState    = $liveState
+            liveStateSource = $stateSource
+            sheetIndexState = $sheetIndexState
+        }
+        [void]$associatedStates.Add($entry)
+        if ($byRole.ContainsKey($role)) { $byRole[$role] = $entry }
+    }
+
+    Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_DOCUMENT_STATE_LIVE_VERIFY' `
+        -Message 'Live associated document workflow states before DOCUMENT_STATE sibling sync.' -Data @{
+        auditEventId = $AuditEventId
+        sourceDocumentGuid = $SourceDocumentGuid
+        sourceDocumentName = $SourceDocumentName
+        folderPath = $FolderPath
+        pwStateName = $CanonicalState
+        pwStateNameSource = $CanonicalStateSource
+        changedByUser = $ChangedByUser
+        changedByUsername = $ChangedByUsername
+        associatedStates = @($associatedStates)
+    } | Out-Null
+
+    $dgnState = if ($byRole.dgn) { [string]$byRole.dgn.livePwState } else { '' }
+    $pdfState = if ($byRole.pdf) { [string]$byRole.pdf.livePwState } else { '' }
+    $qcState = if ($byRole.qcPdf) { [string]$byRole.qcPdf.livePwState } else { '' }
+    $dgnName = if ($byRole.dgn) { [string]$byRole.dgn.documentName } else { '' }
+    $pdfName = if ($byRole.pdf) { [string]$byRole.pdf.documentName } else { '' }
+    $qcName = if ($byRole.qcPdf) { [string]$byRole.qcPdf.documentName } else { '' }
+
+    $divergences = [System.Collections.Generic.List[string]]::new()
+    if ($dgnState -and $pdfState -and ((_PWD-NormalizeSheetIndexValue $dgnState) -ne (_PWD-NormalizeSheetIndexValue $pdfState))) {
+        [void]$divergences.Add('dgn_vs_pdf')
+    }
+    if ($pdfState -and $qcState -and ((_PWD-NormalizeSheetIndexValue $pdfState) -ne (_PWD-NormalizeSheetIndexValue $qcState))) {
+        [void]$divergences.Add('pdf_vs_qcPdf')
+    }
+    if ($divergences.Count -gt 0) {
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_DIVERGENCE' `
+            -Message 'Associated sheet workflow states diverge before DOCUMENT_STATE evaluation.' -Data @{
+            auditEventId = $AuditEventId
+            sourceDocumentGuid = $SourceDocumentGuid
+            sourceDocumentName = $SourceDocumentName
+            folderPath = $FolderPath
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            divergences = @($divergences)
+            dgnDocumentName = $dgnName
+            dgnState = $dgnState
+            pdfDocumentName = $pdfName
+            pdfState = $pdfState
+            qcPdfDocumentName = $qcName
+            qcPdfState = $qcState
+            canonicalState = $CanonicalState
+            canonicalStateSource = $CanonicalStateSource
+        } | Out-Null
+    }
+}
+
 function _PWD-GetSheetIndexDocumentNameFromRow {
     param([Parameter(Mandatory)][object]$DocRow)
     $name = $null
@@ -1867,10 +1973,27 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         }
         if ((_PWD-NormalizeSheetIndexValue $pwCurrent) -ne $canonical) { continue }
 
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STALE_INDEX_STATE_TRIGGER' `
+                -Message 'Firing workflow triggers for member already at canonical PW state but stale sheet_index.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $dg
+                documentName = $dn
+                folderPath = $FolderPath
+                previousState = $prevDb
+                previousStateSource = 'sheet_index'
+                currentState = $CanonicalState
+                currentStateSource = 'liveProjectWise'
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+            } | Out-Null
+        }
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
             -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
             -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
-            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
+            -PreviousStateSource 'sheet_index' -CurrentStateSource 'liveProjectWise' `
+            -StaleCheckMembers $Members -StaleCheckStateByGuid $StateByGuid -StaleCheckCanonicalState $CanonicalState | Out-Null
     }
 }
 
@@ -2260,6 +2383,10 @@ function Sync-PWAssociatedSheetWorkflowState {
         }
     }
 
+    $triggerSheetIndexState = ''
+    if (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue) {
+        $triggerSheetIndexState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+    }
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SOURCE' `
             -Message 'DOCUMENT_STATE sibling sync source state resolved from live ProjectWise state.' -Data @{
@@ -2267,9 +2394,14 @@ function Sync-PWAssociatedSheetWorkflowState {
             sourceDocumentGuid = $DocumentGuid
             sourceDocumentName = $DocumentName
             folderPath = $FolderPath
+            pwStateName = $sourcePwState
+            pwStateNameSource = 'liveProjectWise'
             sourceCurrentPwState = $sourcePwState
+            sheetIndexState = $triggerSheetIndexState
+            sheetIndexStateSource = 'sheet_index'
             auditTargetState = $auditTargetState
             canonicalState = $canonicalState
+            canonicalStateSource = 'liveProjectWise'
             sourceAuditActionTime = $LastAuditEventAt
             changedByUser = $ChangedByUser
             changedByUsername = $ChangedByUsername
@@ -2346,6 +2478,69 @@ function Sync-PWAssociatedSheetWorkflowState {
         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
     }
 
+    _PWD-WriteDocumentStateLiveVerificationLog -AuditEventId $AuditEventId `
+        -SourceDocumentGuid $DocumentGuid -SourceDocumentName $DocumentName -FolderPath $FolderPath `
+        -CanonicalState $canonicalState -CanonicalStateSource 'liveProjectWise' `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+        -Members $members -StateByGuid $stateByGuid -Config $Config
+
+    if ($guids.Count -gt 0) {
+        try {
+            $liveRefresh = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
+            if ($liveRefresh) {
+                foreach ($k in @($liveRefresh.Keys)) { $stateByGuid[$k] = $liveRefresh[$k] }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH' `
+                    -Message 'Re-read live ProjectWise workflow states before DOCUMENT_STATE recency evaluation.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    memberCount = $members.Count
+                    stateCount = if ($liveRefresh) { @($liveRefresh.Keys).Count } else { 0 }
+                    sourceAuditActionTime = $LastAuditEventAt
+                    changedByUser = $ChangedByUser
+                    changedByUsername = $ChangedByUsername
+                } | Out-Null
+            }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH_FAILED' `
+                    -Message 'Failed to re-read live ProjectWise workflow states before DOCUMENT_STATE recency evaluation.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    error = [string]$_.Exception.Message
+                } | Out-Null
+            }
+        }
+    }
+
+    if (Get-Command -Name 'Test-QCDocumentStateAuditEventIsStale' -ErrorAction SilentlyContinue) {
+        $staleDecision = Test-QCDocumentStateAuditEventIsStale -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -CanonicalState $canonicalState `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -Members $members -StateByGuid $stateByGuid -SheetStem $sheetStemForPrepend
+        if ($staleDecision -and [bool]$staleDecision.isStale) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                $staleLog = @{
+                    decision = 'skipped'
+                    sync = 'skipped'
+                    notify = 'skipped'
+                    canonicalState = $canonicalState
+                    canonicalStateSource = 'liveProjectWise'
+                }
+                foreach ($k in @($staleDecision.Keys)) { $staleLog[$k] = $staleDecision[$k] }
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SKIPPED_STALE_EVENT' `
+                    -Message 'Skipped DOCUMENT_STATE sibling sync for superseded audit event.' -Data $staleLog | Out-Null
+            }
+            return
+        }
+    }
+
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
         try {
             $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
@@ -2380,40 +2575,6 @@ function Sync-PWAssociatedSheetWorkflowState {
     $dbEnabled = $false
     if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
-    }
-
-    if ($guids.Count -gt 0) {
-        try {
-            $liveRefresh = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
-            if ($liveRefresh) {
-                foreach ($k in @($liveRefresh.Keys)) { $stateByGuid[$k] = $liveRefresh[$k] }
-            }
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Information' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH' `
-                    -Message 'Re-read live ProjectWise workflow states before applying sibling sync.' -Data @{
-                    auditEventId = $AuditEventId
-                    sourceDocumentGuid = $DocumentGuid
-                    sourceDocumentName = $DocumentName
-                    folderPath = $FolderPath
-                    memberCount = $members.Count
-                    stateCount = if ($liveRefresh) { @($liveRefresh.Keys).Count } else { 0 }
-                    sourceAuditActionTime = $LastAuditEventAt
-                    changedByUser = $ChangedByUser
-                    changedByUsername = $ChangedByUsername
-                } | Out-Null
-            }
-        } catch {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH_FAILED' `
-                    -Message 'Failed to re-read live ProjectWise workflow states before sibling sync.' -Data @{
-                    auditEventId = $AuditEventId
-                    sourceDocumentGuid = $DocumentGuid
-                    sourceDocumentName = $DocumentName
-                    folderPath = $FolderPath
-                    error = [string]$_.Exception.Message
-                } | Out-Null
-            }
-        }
     }
 
     _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
@@ -2507,7 +2668,10 @@ WHERE document_guid = @docGuid
                 -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
                 -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
                 -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
+                -PreviousStateSource 'liveProjectWise' -CurrentStateSource 'canonicalLiveTrigger' `
+                -StaleCheckMembers $members -StaleCheckStateByGuid $stateByGuid -StaleCheckSheetStem $sheetStemForPrepend `
+                -StaleCheckCanonicalState $canonicalState | Out-Null
         }
 
         $change = @{
@@ -2539,16 +2703,20 @@ WHERE document_guid = @docGuid
                     Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_CHANGE' `
                         -Message 'Sibling workflow state changed from DOCUMENT_STATE audit event.' -Data @{
                         sourceAuditId = $AuditEventId
+                        sourceDocument = $DocumentName
                         sourceDocumentGuid = $DocumentGuid
                         sourceDocumentName = $DocumentName
-                        sourceCurrentPwState = $sourcePwState
                         sourceState = [string]$canonicalState
+                        sourceCurrentPwState = $sourcePwState
                         sourceAuditActionTime = $LastAuditEventAt
                         sourceActorUserNo = $ChangedByUser
                         sourceActorUsername = $ChangedByUsername
+                        actor = $ChangedByUsername
                         sourceActorIsAutomation = $actorIsAutomation
+                        targetDocument = $dn
                         targetDocumentGuid = $dg
                         targetDocumentName = $dn
+                        targetState = [string]$canonicalState
                         previousTargetState = [string]$currentState
                         targetPreviousPwState = [string]$currentState
                         newTargetState = [string]$canonicalState

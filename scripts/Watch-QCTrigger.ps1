@@ -1073,6 +1073,12 @@ if ($statusSetRules.Count -ge 0) {
                                             $acTextParam = ''
                                             try { if ($null -ne $ac.itemdesc) { $acItemDesc = [string]$ac.itemdesc } } catch { }
                                             try { if ($null -ne $ac.textparam) { $acTextParam = [string]$ac.textparam } } catch { }
+                                            $acLivePwState = ''
+                                            if (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue) {
+                                                try {
+                                                    $acLivePwState = [string](Get-PWDocumentWorkflowStateName -FolderPath $fp -DocumentName $itemName -DocumentGuid ([string]$ac.objGuid))
+                                                } catch { }
+                                            }
                                             _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_DOCUMENT_STATE_CONTEXT' -Message 'DOCUMENT_STATE audit context resolved before sibling sync.' -Data @{
                                                 auditEventId = $acAuditIdSync
                                                 documentGuid = [string]$ac.objGuid
@@ -1084,6 +1090,8 @@ if ($statusSetRules.Count -ge 0) {
                                                 changedByUsername = $acUsername
                                                 itemdesc = $acItemDesc
                                                 textparam = $acTextParam
+                                                pwStateName = $acLivePwState
+                                                pwStateNameSource = 'liveProjectWise'
                                             }
                                             Sync-PWAssociatedSheetWorkflowState -Config $config `
                                                 -DocumentGuid ([string]$ac.objGuid) `

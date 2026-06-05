@@ -591,6 +591,216 @@ function _QCAT-WriteWorkflowEventMirror {
         -QcReviewType $QcReviewType | Out-Null
 }
 
+function _QCAT-ResolveSheetStemFromDocumentName {
+    param([string]$DocumentName)
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        try { return [string](Get-PWSheetStemFromDocumentName -DocumentName $DocumentName) } catch { }
+    }
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$DocumentName)
+    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    return $stem
+}
+
+function _QCAT-ResolveAssociatedSheetMemberNames {
+    param([string]$SheetStem)
+    if ([string]::IsNullOrWhiteSpace($SheetStem)) { return @() }
+    if (Get-Command -Name 'Get-PWAssociatedSheetDocumentNames' -ErrorAction SilentlyContinue) {
+        try { return @(Get-PWAssociatedSheetDocumentNames -SheetStem $SheetStem) } catch { }
+    }
+    return @(
+        ($SheetStem + '.pdf')
+        ($SheetStem + '.dgn')
+        ($SheetStem + '-qc.pdf')
+    )
+}
+
+function _QCAT-BuildAssociatedStateDiagnostics {
+    param(
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = @{},
+        [hashtable]$Config = $null
+    )
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($member in @($Members)) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dn) { continue }
+        $role = 'other'
+        if ($dn -match '(?i)-qc\.pdf$') { $role = 'qcPdf' }
+        elseif ($dn -match '(?i)\.dgn$') { $role = 'dgn' }
+        elseif ($dn -match '(?i)\.pdf$') { $role = 'pdf' }
+        $liveState = ''
+        $key = $dg.ToLowerInvariant()
+        if ($dg -and $StateByGuid -and $StateByGuid.ContainsKey($key)) {
+            $liveState = [string]$StateByGuid[$key]
+        } elseif ($member.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
+            $liveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
+        }
+        $sheetIndexState = ''
+        if ($dg -and $Config -and (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+            $sheetIndexState = [string](_PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg)
+        }
+        [void]$rows.Add(@{
+            role = $role
+            documentGuid = $dg
+            documentName = $dn
+            livePwState = $liveState
+            sheetIndexState = $sheetIndexState
+        })
+    }
+    return @($rows)
+}
+
+function _QCAT-TestSheetPdfWouldRegressFromCanonical {
+    param(
+        [hashtable]$Config,
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = @{},
+        [string]$CanonicalState = '',
+        [string]$LastAuditEventAt = ''
+    )
+    $canonical = _QCAT-NormalizeValue $CanonicalState
+    if ([string]::IsNullOrWhiteSpace($canonical)) { return $null }
+    $currentAt = _QCAT-ParsePwActTimeUtc -ActTime $LastAuditEventAt
+    foreach ($member in @($Members)) {
+        $dn = [string]$member.documentName
+        if (-not (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$'))) { continue }
+        $dg = [string]$member.documentGuid
+        if (-not $dg) { break }
+
+        $indexState = ''
+        $indexAtRaw = ''
+        if (Get-Command -Name '_PWD-GetSheetIndexStateSnapshot' -ErrorAction SilentlyContinue) {
+            $snap = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $dg
+            if ($snap) {
+                $indexState = _QCAT-NormalizeValue ([string]$snap.pwStateName)
+                if ($snap.lastAuditEventAt) { $indexAtRaw = [string]$snap.lastAuditEventAt }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($indexState)) { break }
+
+        $liveState = ''
+        $key = $dg.ToLowerInvariant()
+        if ($StateByGuid -and $StateByGuid.ContainsKey($key)) {
+            $liveState = _QCAT-NormalizeValue ([string]$StateByGuid[$key])
+        }
+        if ([string]::IsNullOrWhiteSpace($liveState)) { $liveState = $indexState }
+
+        $indexAt = _QCAT-ParsePwActTimeUtc -ActTime $indexAtRaw
+        if ($null -eq $indexAt) { break }
+        if ($currentAt -and ($indexAt -le $currentAt)) { break }
+        if ($indexState -eq $canonical) { break }
+        if ($liveState -ne $indexState -and $liveState -eq $canonical) { break }
+
+        return @{
+            pdfDocumentGuid = $dg
+            pdfDocumentName = $dn
+            pdfLiveState = $liveState
+            pdfIndexState = $indexState
+            pdfLastAuditEventAt = $indexAtRaw
+        }
+    }
+    return $null
+}
+
+function Test-QCDocumentStateAuditEventIsStale {
+    <#
+    .SYNOPSIS
+    True when a DOCUMENT_STATE audit event is superseded by a newer sheet state event or would regress a newer manual PDF state.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [string]$CanonicalState = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = @{},
+        [string]$SheetStem = ''
+    )
+
+    $sheetStem = ([string]$SheetStem).Trim()
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) {
+        $sheetStem = _QCAT-ResolveSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+
+    $memberNames = @()
+    $memberGuids = @()
+    foreach ($member in @($Members)) {
+        if ($member.documentName) { $memberNames += [string]$member.documentName }
+        if ($member.documentGuid) { $memberGuids += [string]$member.documentGuid }
+    }
+    if ($memberNames.Count -eq 0) {
+        $memberNames = @(_QCAT-ResolveAssociatedSheetMemberNames -SheetStem $sheetStem)
+    }
+    if ($DocumentGuid -and ($memberGuids -notcontains $DocumentGuid)) {
+        $memberGuids += [string]$DocumentGuid
+    }
+
+    $actorIsAutomation = $false
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        try { $actorIsAutomation = Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername } catch { }
+    }
+
+    $decision = @{
+        isStale = $false
+        reason = ''
+        decision = 'process'
+        currentAuditEventId = $AuditEventId
+        currentAuditTime = $LastAuditEventAt
+        newerAuditEventId = $null
+        newerAuditTime = ''
+        actor = $ChangedByUsername
+        actorIsAutomation = $actorIsAutomation
+        triggerDocument = $DocumentName
+        triggerDocumentGuid = $DocumentGuid
+        sheetStem = $sheetStem
+        liveSourceState = $CanonicalState
+        associatedStates = @(_QCAT-BuildAssociatedStateDiagnostics -Members $Members -StateByGuid $StateByGuid -Config $Config)
+    }
+
+    if ($null -eq $AuditEventId -or $AuditEventId -le 0) {
+        if ([string]::IsNullOrWhiteSpace($LastAuditEventAt)) { return $decision }
+    }
+
+    if (Get-Command -Name 'Get-QCNewerSheetDocumentStateAuditEvent' -ErrorAction SilentlyContinue) {
+        try {
+            $newerRes = Get-QCNewerSheetDocumentStateAuditEvent -Config $Config -FolderPath $FolderPath `
+                -MemberDocumentNames $memberNames -MemberDocumentGuids $memberGuids `
+                -CurrentAuditEventId $AuditEventId -CurrentAuditEventAt $LastAuditEventAt
+            if ($newerRes.IsSuccess -and $newerRes.Data -and $newerRes.Data.found -eq $true) {
+                $decision.isStale = $true
+                $decision.reason = 'newer_audit_event'
+                $decision.decision = 'skipped'
+                try { $decision.newerAuditEventId = [long]$newerRes.Data.id } catch { }
+                $decision.newerAuditTime = [string]$newerRes.Data.pwActtime
+                $decision.newerAuditDocumentName = [string]$newerRes.Data.documentName
+                $decision.newerAuditDocumentGuid = [string]$newerRes.Data.documentGuid
+                $decision.newerAuditProcessed = [bool]$newerRes.Data.processed
+                return $decision
+            }
+        } catch { }
+    }
+
+    $regression = _QCAT-TestSheetPdfWouldRegressFromCanonical -Config $Config -Members $Members -StateByGuid $StateByGuid `
+        -CanonicalState $CanonicalState -LastAuditEventAt $LastAuditEventAt
+    if ($regression) {
+        $decision.isStale = $true
+        $decision.reason = 'regressive_pdf_state'
+        $decision.decision = 'skipped'
+        $decision.pdfDocumentName = [string]$regression.pdfDocumentName
+        $decision.pdfLiveState = [string]$regression.pdfLiveState
+        $decision.pdfIndexState = [string]$regression.pdfIndexState
+        $decision.pdfLastAuditEventAt = [string]$regression.pdfLastAuditEventAt
+    }
+    return $decision
+}
+
 function Invoke-QCAuditWorkflowStateChangeTriggers {
     <#
     .SYNOPSIS
@@ -611,7 +821,13 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
         [string]$LastAuditEventAt = '',
-        [Nullable[long]]$AuditEventId = $null
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$PreviousStateSource = '',
+        [string]$CurrentStateSource = '',
+        [array]$StaleCheckMembers = @(),
+        [hashtable]$StaleCheckStateByGuid = @{},
+        [string]$StaleCheckSheetStem = '',
+        [string]$StaleCheckCanonicalState = ''
     )
 
     $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
@@ -620,6 +836,23 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     $prev = _QCAT-NormalizeValue $PreviousState
     $curr = _QCAT-NormalizeValue $CurrentState
     if ($prev -eq $curr) { return }
+
+    $isDocumentStateAudit = ([string]$AuditActionName).Trim() -eq 'DOCUMENT_STATE'
+    $staleDecision = $null
+    $skipStaleSideEffects = $false
+    if ($isDocumentStateAudit) {
+        $canonicalForStale = if (-not [string]::IsNullOrWhiteSpace($StaleCheckCanonicalState)) {
+            [string]$StaleCheckCanonicalState
+        } else {
+            $curr
+        }
+        $staleDecision = Test-QCDocumentStateAuditEventIsStale -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -CanonicalState $canonicalForStale `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -Members $StaleCheckMembers -StateByGuid $StaleCheckStateByGuid -SheetStem $StaleCheckSheetStem
+        if ($staleDecision -and [bool]$staleDecision.isStale) { $skipStaleSideEffects = $true }
+    }
 
     if (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $Config -PreviousState $prev -CurrentState $curr) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -651,6 +884,25 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
             -FolderPath $FolderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
             -FieldName 'pw_state_name' -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
             -SourceAuditId $AuditEventId | Out-Null
+    }
+
+    if ($skipStaleSideEffects) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            $staleLog = @{
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                previousState = $prev
+                currentState = $curr
+                decision = 'skipped'
+                notify = 'skipped'
+                sync = 'skipped'
+            }
+            foreach ($k in @($staleDecision.Keys)) { $staleLog[$k] = $staleDecision[$k] }
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_NOTIFICATION_SKIPPED_STALE_STATE_EVENT' `
+                -Message 'Skipped workflow notification for superseded DOCUMENT_STATE audit event.' -Data $staleLog | Out-Null
+        }
+        return
     }
 
     $transitionId = $null
@@ -711,6 +963,31 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         $notifyUsername = [string]$ChangedByUsername.Trim()
     }
 
+    $notificationStateSource = if (-not [string]::IsNullOrWhiteSpace($CurrentStateSource)) {
+        [string]$CurrentStateSource
+    } elseif (-not [string]::IsNullOrWhiteSpace($PreviousStateSource)) {
+        [string]$PreviousStateSource
+    } else {
+        'auditTriggerParameter'
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_STATE' `
+            -Message 'Workflow notification state resolved for DOCUMENT_STATE trigger.' -Data @{
+            auditEventId = $AuditEventId
+            documentGuid = $DocumentGuid
+            documentName = $DocumentName
+            folderPath = $FolderPath
+            previousState = $prev
+            previousStateSource = if ($PreviousStateSource) { [string]$PreviousStateSource } else { 'auditTriggerParameter' }
+            currentState = $curr
+            currentStateSource = if ($CurrentStateSource) { [string]$CurrentStateSource } else { 'auditTriggerParameter' }
+            notificationStateSource = $notificationStateSource
+            notificationStateValue = $curr
+            changedByUser = $ChangedByUser
+            changedByUsername = $notifyUsername
+        } | Out-Null
+    }
+
     try {
         $notifyParams = @{
             Config = $Config
@@ -723,6 +1000,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
             StateTransitionKey = $stateTransitionKey
             ChangedByUser = $ChangedByUser
             ChangedByUsername = $notifyUsername
+            NotificationStateSource = $notificationStateSource
         }
         if ($null -ne $transitionId -and $transitionId -gt 0) {
             $notifyParams['TransitionId'] = $transitionId
@@ -965,7 +1243,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCIsAutomationPwActor, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

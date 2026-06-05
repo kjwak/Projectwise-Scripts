@@ -2204,6 +2204,7 @@ function Invoke-QCNotificationForStateChange {
         [string]$ChangedByUsername = '',
         [string]$SubmittedBy = '',
         [Nullable[int]]$TransitionId = $null,
+        [string]$NotificationStateSource = '',
         [switch]$Force
     )
 
@@ -2419,6 +2420,24 @@ function Invoke-QCNotificationForStateChange {
     }
     if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0) {
         $event['transitionId'] = $resolvedTransitionId
+    }
+
+    $resolvedNotificationStateSource = if (-not (_QCN-IsBlank $NotificationStateSource)) {
+        [string]$NotificationStateSource
+    } else {
+        'currentStateParameter'
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_STATE_RESOLVED' `
+            -Message 'Notification template state resolved before send.' -Data @{
+            documentGuid = $DocumentGuid
+            documentName = $DocumentName
+            previousState = $prev
+            notificationStateSource = $resolvedNotificationStateSource
+            notificationStateValue = $curr
+            eventType = $eventType
+            transitionId = $resolvedTransitionId
+        } | Out-Null
     }
 
     $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config

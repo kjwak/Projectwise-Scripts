@@ -111,6 +111,31 @@ Assert-True (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -Document
 $cfgAutoOff = @{ auditPoller = @{ workflowTriggers = @{ ignoreStateChangeFromAutomation = $false; automationPwUsernames = @('srv_typsa_archivist') } } }
 Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAutoOff -ChangedByUsername 'srv_typsa_archivist')) 'ignore flag off'
 
+$staleNoAnchor = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'Documents\P\Sheets\S1' `
+    -DocumentName '0818000063ea509.pdf' -CanonicalState 'Redlines Received'
+Assert-True (-not $staleNoAnchor.isStale) 'missing audit anchor is not stale'
+Assert-Eq $staleNoAnchor.decision 'process' 'missing anchor keeps process decision'
+
+$staleMembers = @(
+    @{ documentGuid = 'pdf-guid'; documentName = '0818000063ea509.pdf' }
+    @{ documentGuid = 'dgn-guid'; documentName = '0818000063ea509.dgn' }
+)
+$staleStateByGuid = @{ 'pdf-guid' = 'Corrections Received'; 'dgn-guid' = 'Redlines Received' }
+function _PWD-GetSheetIndexStateSnapshot {
+    param([hashtable]$Config, [string]$DocumentGuid)
+    if ($DocumentGuid -eq 'pdf-guid') {
+        return @{ pwStateName = 'Corrections Received'; lastAuditEventAt = '2026-06-04T22:10:00Z' }
+    }
+    return @{ pwStateName = ''; lastAuditEventAt = $null }
+}
+$staleRegression = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'Documents\P\Sheets\S1' `
+    -DocumentName '0818000063ea509.pdf' -DocumentGuid 'pdf-guid' -AuditEventId 39093 `
+    -LastAuditEventAt '2026-06-04T22:00:00Z' -CanonicalState 'Redlines Received' `
+    -Members $staleMembers -StateByGuid $staleStateByGuid -SheetStem '0818000063ea509'
+Assert-True $staleRegression.isStale 'newer pdf index state blocks regressive canonical'
+Assert-Eq $staleRegression.reason 'regressive_pdf_state' 'regression reason is regressive_pdf_state'
+Assert-Eq $staleRegression.decision 'skipped' 'regression decision is skipped'
+
 # Final QC prepend success must record QC Finalizing -> QC Complete in transition_events.
 $script:finalPrependTransitions = [System.Collections.Generic.List[object]]::new()
 $script:finalPrependWorkflowEvents = [System.Collections.Generic.List[object]]::new()
