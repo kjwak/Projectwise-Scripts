@@ -1120,24 +1120,28 @@ function _QCN-ResolveQcPdfNotificationTarget {
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
     if (_QCN-IsBlank $triggerName) { $triggerName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName')) }
 
-    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $triggerName) -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $triggerName)) {
         $guid = $DocumentGuid
         if (_QCN-IsBlank $guid) { $guid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID','DocumentGuid','GUID')) }
-        try {
-            $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
-            foreach ($m in $members) {
-                $dn = [string]$m.documentName
-                if ($dn -match '(?i)-qc\.pdf$') {
-                    $out.documentName = $dn
-                    $resolvedGuid = [string]$m.documentGuid
-                    if (-not (_QCN-IsBlank $resolvedGuid)) {
-                        $out.documentGuid = $resolvedGuid.Trim()
+        if (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue) {
+            try {
+                $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
+                foreach ($m in $members) {
+                    $dn = [string]$m.documentName
+                    if ($dn -match '(?i)-qc\.pdf$') {
+                        $out.documentName = $dn
+                        $resolvedGuid = [string]$m.documentGuid
+                        if (-not (_QCN-IsBlank $resolvedGuid)) {
+                            $out.documentGuid = $resolvedGuid.Trim()
+                        }
+                        $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
+                        if ($m.document) { $out.document = $m.document }
+                        return $out
                     }
-                    $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
-                    if ($m.document) { $out.document = $m.document }
-                    return $out
                 }
-            }
+            } catch { }
+        }
+        if ($out.documentName -notmatch '(?i)-qc\.pdf$') {
             $stem = [System.IO.Path]::GetFileNameWithoutExtension($triggerName)
             if ($stem) {
                 $qcName = $stem + '-qc.pdf'
@@ -1153,7 +1157,7 @@ function _QCN-ResolveQcPdfNotificationTarget {
                 $pwGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $folderPath -QcPdfName $out.documentName
                 if (-not (_QCN-IsBlank $pwGuid)) { $out.documentGuid = $pwGuid }
             }
-        } catch { }
+        }
     }
     return $out
 }
@@ -1660,6 +1664,31 @@ function _QCN-TestNotificationDedupeInStore {
     return $false
 }
 
+function _QCN-TestNotificationJobActuallySent {
+    param([hashtable]$Job)
+
+    if (-not $Job) { return $false }
+    $result = _QCN-ToHashtable $Job.result
+    if (-not $result) { return $false }
+
+    $data = _QCN-ToHashtable $result.data
+    if ($data -and $data.notification) {
+        $notif = _QCN-ToHashtable $data.notification
+        if ($notif) {
+            if ($notif.ContainsKey('skipped') -and [bool]$notif.skipped) { return $false }
+            if ($notif.ContainsKey('success') -and $notif.success -eq $true) { return $true }
+            return $false
+        }
+    }
+
+    $code = if ($result.code) { [string]$result.code } else { '' }
+    if ($code -match '^QC_NOTIFICATION_(SENT|MOCK|GRAPH|JOB_OK)$') {
+        if ($data -and $data.skipped) { return $false }
+        return $true
+    }
+    return $false
+}
+
 function Test-QCNotificationDedupe {
     [CmdletBinding()]
     param(
@@ -1712,7 +1741,15 @@ WHERE transition_id = @transitionId AND success = 1
                     try { $matchJobId = [string]$match.jobId } catch { }
                     try { $matchState = [string]$match.state } catch { }
                     if (-not (_QCN-IsBlank $ExcludeJobId) -and $matchJobId -eq $ExcludeJobId) { continue }
-                    if ($matchState -in @('pending', 'running', 'succeeded')) { return $true }
+                    if ($matchState -in @('pending', 'running')) { return $true }
+                    if ($matchState -eq 'succeeded') {
+                        $jobObj = $null
+                        if ($match.ContainsKey('path') -and $match.path -and (Test-Path -LiteralPath ([string]$match.path))) {
+                            try { $jobObj = Get-Content -LiteralPath ([string]$match.path) -Raw | ConvertFrom-Json -ErrorAction Stop } catch { }
+                        }
+                        if ($null -eq $jobObj) { continue }
+                        if (_QCN-TestNotificationJobActuallySent -Job (_QCN-ToHashtable $jobObj)) { return $true }
+                    }
                 }
             }
         } catch { }
@@ -2800,28 +2837,6 @@ function Invoke-QCNotificationForStateChange {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_EVENT' -Message $skipped.message -Data $skipped
     }
 
-    $gateDocName = [string]$DocumentName
-    if (_QCN-IsBlank $gateDocName) { $gateDocName = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
-    if (_QCN-IsBlank $gateDocName -and $Job) {
-        $gateDocName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
-    }
-    if (-not $Force -and -not (_QCN-IsBlank $gateDocName) -and (Get-Command -Name 'Test-QCShouldNotifyForSheetPackageMember' -ErrorAction SilentlyContinue)) {
-        if (-not (Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $gateDocName)) {
-            $skipped = @{
-                success = $false
-                skipped = $true
-                message = 'Notification skipped: sheet package notifies from QC PDF only.'
-                documentName = $gateDocName
-                currentState = $curr
-                timestampUtc = Get-QCTimestamp
-            }
-            Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Level 'Information' -Message $skipped.message -Result $skipped -Event @{
-                documentName = $gateDocName; currentState = $curr; previousState = $prev
-            }
-            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Message $skipped.message -Data $skipped
-        }
-    }
-
     if (-not $Force -and (Get-Command -Name 'Test-QCShouldDeferReadyForQcNotification' -ErrorAction SilentlyContinue)) {
         if (Test-QCShouldDeferReadyForQcNotification -Config $Config -CurrentState $curr) {
             $skipped = @{
@@ -2907,6 +2922,23 @@ function Invoke-QCNotificationForStateChange {
     $DocumentName = [string]$qcTarget.documentName
     $DocumentGuid = [string]$qcTarget.documentGuid
     if (-not (_QCN-IsBlank $qcTarget.documentPath)) { $DocumentPath = [string]$qcTarget.documentPath }
+
+    if (-not $Force -and -not (_QCN-IsBlank $DocumentName) -and (Get-Command -Name 'Test-QCShouldNotifyForSheetPackageMember' -ErrorAction SilentlyContinue)) {
+        if (-not (Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $DocumentName)) {
+            $skipped = @{
+                success = $false
+                skipped = $true
+                message = 'Notification skipped: sheet package notifies from QC PDF only.'
+                documentName = $DocumentName
+                currentState = $curr
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Level 'Information' -Message $skipped.message -Result $skipped -Event @{
+                documentName = $DocumentName; currentState = $curr; previousState = $prev
+            }
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Message $skipped.message -Data $skipped
+        }
+    }
 
     $folderForRoles = ''
     $sourceForRoles = $DocumentName

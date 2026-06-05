@@ -445,6 +445,20 @@ function _QCW-InvokeStateChangeNotification {
                 $notifJob.metadata['attributes'] = $attrsForNotif
             }
         }
+        if (Get-Command -Name '_QCN-ResolveQcPdfNotificationTarget' -ErrorAction SilentlyContinue) {
+            try {
+                $docGuidForResolve = if ($notifJob.metadata.documentGuid) { [string]$notifJob.metadata.documentGuid } else { '' }
+                $qcEnqueueTarget = _QCN-ResolveQcPdfNotificationTarget -Document $Document -Config $Config -Job $notifJob `
+                    -DocumentName ([string]$notifJob.sourceName) -DocumentGuid $docGuidForResolve `
+                    -DocumentPath ([string]$notifJob.sourcePath)
+                if ($qcEnqueueTarget -and ([string]$qcEnqueueTarget.documentName -match '(?i)-qc\.pdf$')) {
+                    $notifJob.sourceName = [string]$qcEnqueueTarget.documentName
+                    if (-not (_QCW-IsNullOrWhiteSpace $qcEnqueueTarget.documentGuid)) {
+                        $notifJob.metadata['documentGuid'] = [string]$qcEnqueueTarget.documentGuid
+                    }
+                }
+            } catch { }
+        }
         if (-not (_QCW-IsNullOrWhiteSpace $notifJob.sourceFolder) -and -not (_QCW-IsNullOrWhiteSpace $notifJob.sourceName)) {
             $notifJob.sourcePath = Join-Path ([string]$notifJob.sourceFolder) ([string]$notifJob.sourceName)
         }

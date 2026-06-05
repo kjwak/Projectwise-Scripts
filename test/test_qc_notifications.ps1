@@ -385,6 +385,39 @@ $re2 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousSta
 Assert-True $re2.Data.skipped 'Second Redlines audit echo should dedupe'
 Assert-Eq $re2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Redlines audit echo duplicate should use skip code'
 
+# Prepend writeback enqueues from sheet PDF; notification should resolve to *-qc.pdf and send
+$prependCompleteCfg = New-NotifyConfig -Enabled $true
+$prependCompleteCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-prepend-complete\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $prependCompleteCfg.notifications.dedupe.storePath) -Force | Out-Null
+$prependCompleteCfg.notifications.events['QC Complete'] = @{
+    enabled = $true
+    eventType = 'QC_COMPLETE'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'QC review cycle is complete.'
+}
+$prependCompleteCfg.auditPoller = @{ workflowTriggers = @{ qcPdfNotificationsOnly = $true } }
+$sheetPdfDoc = [pscustomobject]@{
+    Name = '0818000063ea500.pdf'
+    DocumentGUID = 'guid-prepend-sheet-pdf'
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$prependNotifJob = @{
+    id = 'qc_notification_prepend_writeback_test'
+    sourceName = '0818000063ea500.pdf'
+    sourceFolder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+    metadata = @{
+        previousState = 'QC Finalizing'
+        currentState = 'QC Complete'
+        parentJobId = 'qc_qcprepend_test'
+    }
+}
+$prependCompleteSend = Invoke-QCNotificationForStateChange -Config $prependCompleteCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $sheetPdfDoc -Job $prependNotifJob -DocumentGuid 'guid-prepend-sheet-pdf'
+Assert-True $prependCompleteSend.IsSuccess 'Prepend QC Complete notification should succeed'
+Assert-True (-not $prependCompleteSend.Data.skipped) 'Prepend QC Complete from sheet PDF should not be suppressed as package member'
+
 # New transition to same state should not dedupe (repeat QC cycle)
 $cycleDedupe = Join-Path $testRoot 'dedupe-cycle\sent-keys.jsonl'
 New-Item -ItemType Directory -Path (Split-Path $cycleDedupe) -Force | Out-Null
