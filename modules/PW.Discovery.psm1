@@ -1923,6 +1923,26 @@ function _PWD-TestShouldBlockStaleRestartOverwrite {
     return $true
 }
 
+function _PWD-ResolveSheetPackageNotificationDocumentGuid {
+    param([array]$Members)
+
+    foreach ($m in @($Members)) {
+        $dn = [string]$m.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
+            if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { return [string]$m.documentGuid }
+        } elseif ($dn -match '(?i)-qc\.pdf$') {
+            return [string]$m.documentGuid
+        }
+    }
+    foreach ($m in @($Members)) {
+        $dn = [string]$m.documentName
+        if ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-qc\.pdf$') { return [string]$m.documentGuid }
+    }
+    if (@($Members).Count -gt 0) { return [string]$Members[0].documentGuid }
+    return ''
+}
+
 function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
     <#
     .SYNOPSIS
@@ -1956,6 +1976,8 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
 
     $canonical = _PWD-NormalizeSheetIndexValue $CanonicalState
     if ([string]::IsNullOrWhiteSpace($canonical)) { return }
+
+    $packageNotifyGuid = _PWD-ResolveSheetPackageNotificationDocumentGuid -Members $Members
 
     foreach ($member in $Members) {
         $dg = [string]$member.documentGuid
@@ -1994,7 +2016,8 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
             -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
             -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
             -PreviousStateSource 'sheet_index' -CurrentStateSource 'liveProjectWise' `
-            -StaleCheckMembers $Members -StaleCheckStateByGuid $StateByGuid -StaleCheckCanonicalState $CanonicalState | Out-Null
+            -StaleCheckMembers $Members -StaleCheckStateByGuid $StateByGuid -StaleCheckCanonicalState $CanonicalState `
+            -SuppressNotification:((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid)) | Out-Null
     }
 }
 
@@ -2582,6 +2605,8 @@ function Sync-PWAssociatedSheetWorkflowState {
         -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
         -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
 
+    $packageNotifyGuid = _PWD-ResolveSheetPackageNotificationDocumentGuid -Members $members
+
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -2672,7 +2697,8 @@ WHERE document_guid = @docGuid
                 -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
                 -PreviousStateSource 'liveProjectWise' -CurrentStateSource 'canonicalLiveTrigger' `
                 -StaleCheckMembers $members -StaleCheckStateByGuid $stateByGuid -StaleCheckSheetStem $sheetStemForPrepend `
-                -StaleCheckCanonicalState $canonicalState | Out-Null
+                -StaleCheckCanonicalState $canonicalState `
+                -SuppressNotification:((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid)) | Out-Null
         }
 
         $change = @{

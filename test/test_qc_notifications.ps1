@@ -195,7 +195,7 @@ Assert-Eq $key1 $key2 'Dedupe keys should be stable for the same event'
 
 # Placeholder document names should not fork dedupe when folder + sheet stem align
 $folderDedupeCfg = New-NotifyConfig -Enabled $true
-$folderDedupeCfg.notifications.dedupe.keyFields = @('transitionId', 'stateTransitionKey', 'folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState')
+$folderDedupeCfg.notifications.dedupe.keyFields = @('stateTransitionKey', 'folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState')
 $folderDedupeSettings = Get-QCNotificationSettings -Config $folderDedupeCfg
 $sharedFolder = 'documents\caltrans\proj\cadd\sheets\seg_1'
 $keyUnknown = Get-QCNotificationDedupeKey -Event @{

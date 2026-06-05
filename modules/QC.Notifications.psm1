@@ -2576,6 +2576,28 @@ function Invoke-QCNotificationForStateChange {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_EVENT' -Message $skipped.message -Data $skipped
     }
 
+    $gateDocName = [string]$DocumentName
+    if (_QCN-IsBlank $gateDocName) { $gateDocName = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
+    if (_QCN-IsBlank $gateDocName -and $Job) {
+        $gateDocName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+    }
+    if (-not $Force -and -not (_QCN-IsBlank $gateDocName) -and (Get-Command -Name 'Test-QCShouldNotifyForSheetPackageMember' -ErrorAction SilentlyContinue)) {
+        if (-not (Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $gateDocName)) {
+            $skipped = @{
+                success = $false
+                skipped = $true
+                message = 'Notification skipped: sheet package notifies from QC PDF only.'
+                documentName = $gateDocName
+                currentState = $curr
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Level 'Information' -Message $skipped.message -Result $skipped -Event @{
+                documentName = $gateDocName; currentState = $curr; previousState = $prev
+            }
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Message $skipped.message -Data $skipped
+        }
+    }
+
     if (-not $Force -and (Get-Command -Name 'Test-QCShouldDeferReadyForQcNotification' -ErrorAction SilentlyContinue)) {
         if (Test-QCShouldDeferReadyForQcNotification -Config $Config -CurrentState $curr) {
             $skipped = @{

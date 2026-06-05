@@ -17,6 +17,17 @@ function Assert-True($cond, $msg) {
 Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-qc.pdf') 'qc pdf suffix'
 Assert-True (-not (Test-QCIsQcPdfDocumentName -DocumentName 'sheet.pdf')) 'plain pdf is not qc pdf'
 
+$cfgNotify = @{
+    auditPoller = @{
+        workflowTriggers = @{
+            notifyOnStateChange = $true
+            qcPdfNotificationsOnly = $true
+        }
+    }
+}
+Assert-True (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-qc.pdf') 'qc pdf member may notify'
+Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00.pdf')) 'sheet pdf member suppressed when qcPdfNotificationsOnly'
+
 $cfg = @{
     auditPoller = @{
         workflowTriggers = @{

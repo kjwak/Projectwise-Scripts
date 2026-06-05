@@ -840,6 +840,27 @@ function Test-QCDocumentStateAuditEventIsStale {
     return $decision
 }
 
+function Test-QCShouldNotifyForSheetPackageMember {
+    <#
+    .SYNOPSIS
+    True when a workflow state-change notification should be sent for this document (one notify per sheet package when qcPdfNotificationsOnly is enabled).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [bool]$NotifyOnStateChange = $true
+    )
+
+    if (-not $NotifyOnStateChange) { return $false }
+    $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if (-not [bool]$settings.notifyOnStateChange) { return $false }
+    if ([bool]$settings.qcPdfNotificationsOnly -and -not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
+        return $false
+    }
+    return $true
+}
+
 function Invoke-QCAuditWorkflowStateChangeTriggers {
     <#
     .SYNOPSIS
@@ -866,7 +887,8 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         [array]$StaleCheckMembers = @(),
         [hashtable]$StaleCheckStateByGuid = @{},
         [string]$StaleCheckSheetStem = '',
-        [string]$StaleCheckCanonicalState = ''
+        [string]$StaleCheckCanonicalState = '',
+        [switch]$SuppressNotification
     )
 
     $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
@@ -903,10 +925,9 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         return
     }
 
-    $shouldNotify = [bool]$settings.notifyOnStateChange
-    if ($shouldNotify -and [bool]$settings.qcPdfNotificationsOnly -and -not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
-        $shouldNotify = $false
-    }
+    $shouldNotify = Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $DocumentName `
+        -NotifyOnStateChange ([bool]$settings.notifyOnStateChange)
+    if ($SuppressNotification) { $shouldNotify = $false }
     if ($shouldNotify -and (Test-QCShouldSuppressAuditStateChangeNotification -Config $Config -ChangedByUser $ChangedByUser)) {
         $shouldNotify = $false
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -1355,7 +1376,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry
