@@ -2145,37 +2145,50 @@ function Sync-PWAssociatedSheetWorkflowState {
     if ([string]::IsNullOrWhiteSpace($sourcePwState)) { return }
     $auditTargetState = _PWD-ResolveAuditWorkflowTargetStateName -Config $Config `
         -AuditTargetStateName $AuditTargetStateName -AuditRawItemDesc $AuditRawItemDesc -AuditRawTextParam $AuditRawTextParam
+    # DOCUMENT_STATE audit rows are sparse: the parsed audit state is only a diagnostic hint.
+    # Live ProjectWise state remains authoritative for sibling sync and workflow actions.
     $canonicalState = $sourcePwState
     $actorIsAutomation = $false
     if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
         try { $actorIsAutomation = Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername } catch { $actorIsAutomation = $false }
     }
-    if ((-not $actorIsAutomation) -and -not [string]::IsNullOrWhiteSpace($auditTargetState) `
-            -and (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) `
-            -and (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $sourcePwState -CurrentState $auditTargetState)) {
-        $canonicalState = $auditTargetState
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_RESTART_TARGET_ACCEPTED' `
-                -Message 'Manual DOCUMENT_STATE audit target accepted as QC restart/intake state.' -Data @{
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($auditTargetState)) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_TARGET_UNAVAILABLE' `
+                -Message 'DOCUMENT_STATE audit row did not include a usable target state; using live ProjectWise state.' -Data @{
                 auditEventId = $AuditEventId
-                sourceDocumentGuid = $DocumentGuid
-                sourceDocumentName = $DocumentName
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
                 folderPath = $FolderPath
-                sourceCurrentPwState = $sourcePwState
-                auditTargetState = $auditTargetState
-                sourceAuditActionTime = $LastAuditEventAt
                 changedByUser = $ChangedByUser
                 changedByUsername = $ChangedByUsername
+                auditTimestamp = $LastAuditEventAt
                 rawItemDesc = $AuditRawItemDesc
                 rawTextParam = $AuditRawTextParam
-                reason = 'manual_restart_intake_audit_target'
+                liveWorkflowState = $sourcePwState
+            } | Out-Null
+        } else {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_TARGET_HINT' `
+                -Message 'DOCUMENT_STATE audit row included a target-state hint; live ProjectWise state remains authoritative.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+                auditTimestamp = $LastAuditEventAt
+                rawItemDesc = $AuditRawItemDesc
+                rawTextParam = $AuditRawTextParam
+                auditTargetStateHint = $auditTargetState
+                liveWorkflowState = $sourcePwState
             } | Out-Null
         }
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SOURCE' `
-            -Message 'DOCUMENT_STATE sibling sync source state resolved.' -Data @{
+            -Message 'DOCUMENT_STATE sibling sync source state resolved from live ProjectWise state.' -Data @{
             auditEventId = $AuditEventId
             sourceDocumentGuid = $DocumentGuid
             sourceDocumentName = $DocumentName
@@ -2295,10 +2308,6 @@ function Sync-PWAssociatedSheetWorkflowState {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
 
-    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
-        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
-
     if ($guids.Count -gt 0) {
         try {
             $liveRefresh = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
@@ -2332,6 +2341,10 @@ function Sync-PWAssociatedSheetWorkflowState {
             }
         }
     }
+
+    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
+        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
 
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
@@ -2681,6 +2694,7 @@ function Sync-PWSheetIndexOwnership {
         [Nullable[long]]$AuditEventId = $null,
         [string]$AuditActionName = '',
         [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
         [switch]$SkipQcInitiatedFallback
     )
 
@@ -2726,6 +2740,21 @@ WHERE document_guid = @docGuid
 
     $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
+    if ($isDocumentAttr -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_ATTR_LIVE_READ' `
+            -Message 'DOCUMENT_ATTR audit signal resolved by live ProjectWise attribute read.' -Data @{
+            auditEventId = $AuditEventId
+            documentGuid = $DocumentGuid
+            documentName = $DocumentName
+            folderPath = $FolderPath
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            auditTimestamp = $LastAuditEventAt
+            liveAttributeReadStatus = if ($read.found) { 'found' } else { 'not_found' }
+            liveWorkflowState = if ($read.pwStateName) { [string]$read.pwStateName } else { '' }
+            error = if ($read.error) { [string]$read.error } else { '' }
+        } | Out-Null
+    }
     if (-not $read.found) { return }
 
     $fieldsRaw = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
@@ -2807,7 +2836,8 @@ WHERE document_guid = @docGuid
         }
         if ($fieldChanges.Count -gt 0) {
             Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
-                -DocumentName $DocumentName -FolderPath $FolderPath -FieldChanges $fieldChanges | Out-Null
+                -DocumentName $DocumentName -FolderPath $FolderPath -FieldChanges $fieldChanges `
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername | Out-Null
         }
     }
 
@@ -2849,7 +2879,8 @@ WHERE document_guid = @docGuid
     if ($IsSheetsFolder -and $isDocumentAttr -and -not $SkipQcInitiatedFallback) {
         _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf -Config $Config -FolderPath $FolderPath `
             -DocumentName $DocumentName -DocumentGuid $DocumentGuid -IsSheetsFolder:$IsSheetsFolder `
-            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser
+            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername
     }
 }
 

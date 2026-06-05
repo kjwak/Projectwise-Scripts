@@ -1110,6 +1110,32 @@ if ($statusSetRules.Count -ge 0) {
                                         try {
                                             if ($null -ne $ac.auditEventId) { $acAuditIdAttr = [long]$ac.auditEventId }
                                         } catch { $acAuditIdAttr = $null }
+                                        $acUsernameAttr = ''
+                                        try { if ($ac.username) { $acUsernameAttr = [string]$ac.username } } catch { }
+                                        if ([string]::IsNullOrWhiteSpace($acUsernameAttr) -and $null -ne $acAuditIdAttr -and (Get-Command -Name 'Get-QCAuditEventActor' -ErrorAction SilentlyContinue)) {
+                                            try {
+                                                $actor = Get-QCAuditEventActor -Config $config -AuditEventId $acAuditIdAttr
+                                                if ($actor -and $actor.changedByUsername) { $acUsernameAttr = [string]$actor.changedByUsername }
+                                            } catch { }
+                                        }
+                                        $acAttrItemDesc = ''
+                                        $acAttrTextParam = ''
+                                        try { if ($null -ne $ac.itemdesc) { $acAttrItemDesc = [string]$ac.itemdesc } } catch { }
+                                        try { if ($null -ne $ac.textparam) { $acAttrTextParam = [string]$ac.textparam } } catch { }
+                                        if ([string]::IsNullOrWhiteSpace($acAttrItemDesc) -and [string]::IsNullOrWhiteSpace($acAttrTextParam)) {
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_ATTR_PAYLOAD_UNAVAILABLE' -Message 'DOCUMENT_ATTR audit row did not include changed values; live ProjectWise attributes will be read.' -Data @{
+                                                auditEventId = $acAuditIdAttr
+                                                documentGuid = [string]$ac.objGuid
+                                                documentName = $itemName
+                                                folderPath = $fp
+                                                changedByUser = $acUsernoAttr
+                                                changedByUsername = $acUsernameAttr
+                                                auditTimestamp = [string]$ac.actTime
+                                                rawItemDesc = $acAttrItemDesc
+                                                rawTextParam = $acAttrTextParam
+                                                liveAttributeReadStatus = 'pending'
+                                            }
+                                        }
                                         Sync-PWSheetIndexOwnership -Config $config `
                                             -DocumentGuid ([string]$ac.objGuid) `
                                             -DocumentName $itemName `
@@ -1119,7 +1145,8 @@ if ($statusSetRules.Count -ge 0) {
                                             -LastAuditEventAt ([string]$ac.actTime) `
                                             -AuditEventId $acAuditIdAttr `
                                             -AuditActionName $acAction `
-                                            -ChangedByUser $acUsernoAttr
+                                            -ChangedByUser $acUsernoAttr `
+                                            -ChangedByUsername $acUsernameAttr
                                     }
                                 }
 
@@ -1484,11 +1511,17 @@ if ($statusSetRules.Count -ge 0) {
                                         $errMsg = [string]$_.Exception.Message
                                         $logLevel = 'Warning'
                                         $logMsg = 'Audit QC_PREPEND evaluation threw.'
+                                        $logCode = 'WATCH_AUDIT_RETRYABLE'
                                         if ($errMsg -match '(?i)StateName.*empty string') {
+                                            $auditCandidateRetryable = $false
+                                            $auditCandidateOutcome = 'terminalSkip'
+                                            $auditCandidateReason = 'empty_state_hint_ignored'
+                                            if ($errors -gt 0) { $errors-- }
                                             $logLevel = 'Information'
-                                            $logMsg = 'Audit PDF skipped (ProjectWise state lookup failed on this path).'
+                                            $logCode = 'WATCH_AUDIT_SKIPPED'
+                                            $logMsg = 'Audit PDF skipped after empty state hint; audit state payload is not authoritative.'
                                         }
-                                        _Watch-WriteJsonLog -Flush -Level $logLevel -Code 'WATCH_AUDIT_RETRYABLE' -Message $logMsg -Data @{
+                                        _Watch-WriteJsonLog -Flush -Level $logLevel -Code $logCode -Message $logMsg -Data @{
                                             auditEventId = $candidateAuditEventId
                                             path = ($fp + '\' + $itemName)
                                             actionName = $actionName

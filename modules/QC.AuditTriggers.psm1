@@ -935,7 +935,8 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
         [Parameter(Mandatory)][string]$DocumentName,
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][hashtable]$FieldChanges,
-        [Nullable[int]]$ChangedByUser = $null
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
     )
 
     $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
@@ -952,7 +953,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
         if ([bool]$settings.recordAttributeHistory) {
             Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
                 -FolderPath $FolderPath -EventType 'ATTR_CHANGE' -OldValue $oldVal -NewValue $newVal `
-                -FieldName ([string]$field) -ChangedByUser $ChangedByUser | Out-Null
+                -FieldName ([string]$field) -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername | Out-Null
         }
 
         if ([bool]$settings.recordTransitions) {
