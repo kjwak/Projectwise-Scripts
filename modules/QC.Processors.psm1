@@ -1390,6 +1390,14 @@ function _QCP-EnsureQueueModulesLoaded {
     }
 }
 
+function _QCP-EnsureNotificationModulesLoaded {
+    if (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue) { return }
+    $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+    if (Test-Path -LiteralPath $notifPath) {
+        Import-Module $notifPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+}
+
 function _QCP-ResolveSheetPdfForPrependTrigger {
     param([string]$TriggerDocumentName)
     $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
@@ -1748,6 +1756,9 @@ function Invoke-QCNotificationProcessor {
         [Parameter(Mandatory)][hashtable]$Config
     )
 
+    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
+        try { _QCP-EnsureNotificationModulesLoaded } catch { }
+    }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }
