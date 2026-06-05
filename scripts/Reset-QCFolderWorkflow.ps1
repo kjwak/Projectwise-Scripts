@@ -7,18 +7,23 @@ For a single Sheets (or any) folder:
 
 1. ProjectWise — sets workflow state on every document in the folder to the target state
    (default: qcWorkflow.states.production, usually "In Production").
-2. Database — deletes folder-scoped rows from QC telemetry tables and refreshes sheet_index.
+2. Database — deletes folder-scoped rows from QC telemetry tables (not sheet_index).
 
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
-Does not delete sheet_index rows or ProjectWise documents. Does not remove queue JSON jobs
+sheet_index rows are never deleted. By default the script updates pw_state_name (and clears
+qc_stage/qc_status unless -KeepSheetIndexQcFields). Pass -SkipSheetIndexUpdate to leave
+sheet_index completely unchanged. Does not remove queue JSON jobs
 (use Purge-QCPendingByFilters or manual queue cleanup separately).
+
+Does not delete ProjectWise documents or sheet_index rows.
 
 .EXAMPLE
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath 'AZFWY1704-FD02-SR202\CADD\Sheets' -ConfirmReset
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
+.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -33,6 +38,7 @@ param(
     [switch]$SkipDatabase,
     [switch]$IncludeCommentTelemetry,
     [switch]$KeepSheetIndexQcFields,
+    [switch]$SkipSheetIndexUpdate,
     [int]$BatchSize = 5000,
     [switch]$Pretty
 )
@@ -222,42 +228,50 @@ if (-not $SkipProjectWise.IsPresent) {
     $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $normFolder
     if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $normFolder }
 
+    $script:_rqcfApiPath = $apiPath
+    $script:_rqcfTargetState = $TargetState
+    $script:_rqcfDoApply = $doApply
+
     Write-Host '[ProjectWise] Scanning folder documents...' -ForegroundColor Cyan
-    $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -ScriptBlock {
-        $docs = @(Get-PWDocumentsInFolderRaw -FolderPath $using:apiPath)
-        $needsChange = 0
-        $alreadyTarget = 0
-        $updated = 0
-        $failed = [System.Collections.Generic.List[object]]::new()
-        $samples = [System.Collections.Generic.List[object]]::new()
+    try {
+        $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -ScriptBlock {
+            $docs = @(Get-PWDocumentsInFolderRaw -FolderPath $script:_rqcfApiPath)
+            $needsChange = 0
+            $alreadyTarget = 0
+            $updated = 0
+            $failed = [System.Collections.Generic.List[object]]::new()
+            $samples = [System.Collections.Generic.List[object]]::new()
 
-        foreach ($doc in $docs) {
-            $name = ''
-            try { $name = [string]$doc.Name } catch { }
-            if (-not $name) { try { $name = [string]$doc.DocumentName } catch { } }
-            $cur = _RQCF-GetPwDocumentState -Document $doc
-            $needs = -not ($cur -ieq $using:TargetState)
-            if ($needs) { $needsChange++ } else { $alreadyTarget++ }
-            if ($samples.Count -lt 8) {
-                $samples.Add([pscustomobject]@{ name = $name; currentState = $cur; needsChange = $needs }) | Out-Null
+            foreach ($doc in $docs) {
+                $name = ''
+                try { $name = [string]$doc.Name } catch { }
+                if (-not $name) { try { $name = [string]$doc.DocumentName } catch { } }
+                $cur = _RQCF-GetPwDocumentState -Document $doc
+                $needs = -not ($cur -ieq $script:_rqcfTargetState)
+                if ($needs) { $needsChange++ } else { $alreadyTarget++ }
+                if ($samples.Count -lt 8) {
+                    $samples.Add([pscustomobject]@{ name = $name; currentState = $cur; needsChange = $needs }) | Out-Null
+                }
+                if (-not $script:_rqcfDoApply -or -not $needs) { continue }
+                try {
+                    _RQCF-SetPwDocumentState -Document $doc -StateName $script:_rqcfTargetState
+                    $updated++
+                } catch {
+                    $failed.Add([pscustomobject]@{ name = $name; error = $_.Exception.Message }) | Out-Null
+                }
             }
-            if (-not $using:doApply -or -not $needs) { continue }
-            try {
-                _RQCF-SetPwDocumentState -Document $doc -StateName $using:TargetState
-                $updated++
-            } catch {
-                $failed.Add([pscustomobject]@{ name = $name; error = $_.Exception.Message }) | Out-Null
+
+            return [pscustomobject]@{
+                documentCount = $docs.Count
+                needsChange   = $needsChange
+                alreadyTarget = $alreadyTarget
+                updated       = $updated
+                failed        = @($failed)
+                samples       = @($samples)
             }
         }
-
-        return [pscustomobject]@{
-            documentCount = $docs.Count
-            needsChange   = $needsChange
-            alreadyTarget = $alreadyTarget
-            updated       = $updated
-            failed        = @($failed)
-            samples       = @($samples)
-        }
+    } finally {
+        Remove-Variable -Name _rqcfApiPath, _rqcfTargetState, _rqcfDoApply -Scope Script -ErrorAction SilentlyContinue
     }
 
     $summary.projectWise = @{
@@ -318,9 +332,13 @@ WHERE ($resolvedFolderClause) OR pw_objguid IN ($guidSub)
 SELECT COUNT_BIG(1) FROM processing_jobs
 WHERE ($sourceFolderClause)
 "@
-    $dbCounts.sheet_index_rows = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+
+    $sheetIndexMatched = 0L
+    if (-not $SkipSheetIndexUpdate.IsPresent) {
+        $sheetIndexMatched = _RQCF-GetScalar -Config $config -Params $params -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause)
 "@
+    }
 
     if ($IncludeCommentTelemetry.IsPresent) {
         $runSub = @"
@@ -342,9 +360,15 @@ WHERE r.document_id IN ($guidSub)
 "@
     }
 
-    $summary.database = @{ rowsMatched = $dbCounts; deleted = [ordered]@{} }
+    $summary.database = @{ rowsMatched = $dbCounts; deleted = [ordered]@{}; sheetIndexMatched = $sheetIndexMatched }
+    Write-Host '  Telemetry rows to delete:' -ForegroundColor Gray
     foreach ($k in @($dbCounts.Keys)) {
-        Write-Host ("  {0}: {1}" -f $k, $dbCounts[$k]) -ForegroundColor Gray
+        Write-Host ("    {0}: {1}" -f $k, $dbCounts[$k]) -ForegroundColor Gray
+    }
+    if ($SkipSheetIndexUpdate.IsPresent) {
+        Write-Host '  sheet_index: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
+    } else {
+        Write-Host ("  sheet_index: {0} row(s) matched — UPDATE only, rows are not deleted." -f $sheetIndexMatched) -ForegroundColor DarkGray
     }
 
     if ($doApply) {
@@ -422,21 +446,25 @@ WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($sourceFolderClause))
             $summary.totalRowsDeleted += [long]$deleted[$k]
         }
 
-        $sheetSql = @"
+        if (-not $SkipSheetIndexUpdate.IsPresent) {
+            $sheetSql = @"
 UPDATE sheet_index
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET()
 "@
-        if (-not $KeepSheetIndexQcFields.IsPresent) {
-            $sheetSql += "`r`n    qc_stage = NULL,`r`n    qc_status = NULL,`r`n    last_audit_event_at = NULL"
-        }
-        $sheetSql += "`r`nWHERE ($siFolderClause)"
+            if (-not $KeepSheetIndexQcFields.IsPresent) {
+                $sheetSql += "`r`n    qc_stage = NULL,`r`n    qc_status = NULL,`r`n    last_audit_event_at = NULL"
+            }
+            $sheetSql += "`r`nWHERE ($siFolderClause)"
 
-        if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
-            $upd = Invoke-QCDatabaseNonQuery -Config $config -Sql $sheetSql -Parameters $params
-            if (-not $upd.IsSuccess) { throw $upd.Message }
-            $summary.sheetIndexUpdated = [int]$upd.Data.rowsAffected
-            Write-Host ('  [sheet_index] updated {0} row(s).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+            if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
+                $upd = Invoke-QCDatabaseNonQuery -Config $config -Sql $sheetSql -Parameters $params
+                if (-not $upd.IsSuccess) { throw $upd.Message }
+                $summary.sheetIndexUpdated = [int]$upd.Data.rowsAffected
+                Write-Host ('  [sheet_index] updated {0} row(s) (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+            }
+        } else {
+            Write-Host '  [sheet_index] skipped (-SkipSheetIndexUpdate).' -ForegroundColor DarkGray
         }
 
         Write-Host ("Done. Deleted {0} telemetry row(s)." -f $summary.totalRowsDeleted) -ForegroundColor Green
