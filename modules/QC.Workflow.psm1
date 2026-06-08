@@ -293,27 +293,6 @@ function _QCW-ResolveNotificationRoleAttrsForEnqueue {
     $designerField = if ($attr.designerEmailField) { [string]$attr.designerEmailField } else { 'EM_Designer_Email' }
     $checkerField = if ($attr.checkerEmailField) { [string]$attr.checkerEmailField } else { 'EM_Checker_Email' }
 
-    if ($Document) {
-        $docH = _QCW-ToHashtable $Document
-        if ($docH) {
-            if ($docH.ContainsKey('designerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.designerEmail)) {
-                $out['designerEmail'] = [string]$docH.designerEmail
-            } elseif ($docH.ContainsKey($designerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$designerField])) {
-                $out['designerEmail'] = [string]$docH[$designerField]
-            }
-            if ($docH.ContainsKey('reviewerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.reviewerEmail)) {
-                $out['reviewerEmail'] = [string]$docH.reviewerEmail
-            } elseif ($docH.ContainsKey($reviewerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$reviewerField])) {
-                $out['reviewerEmail'] = [string]$docH[$reviewerField]
-            }
-            if ($docH.ContainsKey('checkerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.checkerEmail)) {
-                $out['checkerEmail'] = [string]$docH.checkerEmail
-            } elseif ($docH.ContainsKey($checkerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$checkerField])) {
-                $out['checkerEmail'] = [string]$docH[$checkerField]
-            }
-        }
-    }
-
     $srcName = [string]$SourceDocumentName
     if ((_QCW-IsNullOrWhiteSpace $srcName) -and $Document) {
         try { $srcName = [string]$Document.Name } catch { }
@@ -326,18 +305,38 @@ function _QCW-ResolveNotificationRoleAttrsForEnqueue {
         try { $folder = [string]$Document.FolderPath } catch { }
     }
 
-    $needPw = (-not $out.ContainsKey('reviewerEmail')) -or (-not $out.ContainsKey('designerEmail')) -or (-not $out.ContainsKey('checkerEmail'))
-    if ($needPw -and $Config -and -not (_QCW-IsNullOrWhiteSpace $folder) -and -not (_QCW-IsNullOrWhiteSpace $srcName)) {
+    if ($Config -and -not (_QCW-IsNullOrWhiteSpace $folder) -and -not (_QCW-IsNullOrWhiteSpace $srcName)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             try {
                 $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folder -SourceDocumentName $srcName -Config $Config
                 if ($pw.found) {
-                    if ((-not $out.ContainsKey('reviewerEmail')) -and $pw.reviewerEmail) { $out['reviewerEmail'] = [string]$pw.reviewerEmail }
-                    if ((-not $out.ContainsKey('designerEmail')) -and $pw.designerEmail) { $out['designerEmail'] = [string]$pw.designerEmail }
-                    if ((-not $out.ContainsKey('checkerEmail')) -and $pw.checkerEmail) { $out['checkerEmail'] = [string]$pw.checkerEmail }
+                    if ($pw.reviewerEmail) { $out['reviewerEmail'] = [string]$pw.reviewerEmail }
+                    if ($pw.designerEmail) { $out['designerEmail'] = [string]$pw.designerEmail }
+                    if ($pw.checkerEmail) { $out['checkerEmail'] = [string]$pw.checkerEmail }
                     if ($pw.qcReviewType) { $out['qcReviewType'] = [string]$pw.qcReviewType }
                 }
             } catch { }
+        }
+    }
+
+    if ($Document) {
+        $docH = _QCW-ToHashtable $Document
+        if ($docH) {
+            if ((-not $out.ContainsKey('designerEmail')) -and $docH.ContainsKey('designerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.designerEmail)) {
+                $out['designerEmail'] = [string]$docH.designerEmail
+            } elseif ((-not $out.ContainsKey('designerEmail')) -and $docH.ContainsKey($designerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$designerField])) {
+                $out['designerEmail'] = [string]$docH[$designerField]
+            }
+            if ((-not $out.ContainsKey('reviewerEmail')) -and $docH.ContainsKey('reviewerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.reviewerEmail)) {
+                $out['reviewerEmail'] = [string]$docH.reviewerEmail
+            } elseif ((-not $out.ContainsKey('reviewerEmail')) -and $docH.ContainsKey($reviewerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$reviewerField])) {
+                $out['reviewerEmail'] = [string]$docH[$reviewerField]
+            }
+            if ((-not $out.ContainsKey('checkerEmail')) -and $docH.ContainsKey('checkerEmail') -and -not (_QCW-IsNullOrWhiteSpace $docH.checkerEmail)) {
+                $out['checkerEmail'] = [string]$docH.checkerEmail
+            } elseif ((-not $out.ContainsKey('checkerEmail')) -and $docH.ContainsKey($checkerField) -and -not (_QCW-IsNullOrWhiteSpace $docH[$checkerField])) {
+                $out['checkerEmail'] = [string]$docH[$checkerField]
+            }
         }
     }
     return $out
