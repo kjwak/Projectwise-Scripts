@@ -1478,6 +1478,7 @@ IF OBJECT_ID('dbo.sheet_documents', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FR
 GO
 IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'sheet_package_id') IS NULL
     ALTER TABLE sheet_index ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_package')
     CREATE INDEX IX_sheet_index_package ON sheet_index (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 GO
@@ -1485,6 +1486,7 @@ IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.
     ALTER TABLE document_state_history ADD sheet_package_id UNIQUEIDENTIFIER NULL;
 IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'transition_group_id') IS NULL
     ALTER TABLE document_state_history ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_state_hist_sheet_package')
     CREATE INDEX IX_state_hist_sheet_package ON document_state_history (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 GO
@@ -1492,6 +1494,7 @@ IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.trans
     ALTER TABLE transition_events ADD sheet_package_id UNIQUEIDENTIFIER NULL;
 IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'transition_group_id') IS NULL
     ALTER TABLE transition_events ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_transition_sheet_package')
     CREATE INDEX IX_transition_sheet_package ON transition_events (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'transition_group_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_transition_group')
@@ -1501,6 +1504,7 @@ IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_w
     ALTER TABLE qc_workflow_events ADD sheet_package_id UNIQUEIDENTIFIER NULL;
 IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_group_id') IS NULL
     ALTER TABLE qc_workflow_events ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_sheet_package')
     CREATE INDEX IX_qc_workflow_events_sheet_package ON qc_workflow_events (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_group_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_transition_group')
@@ -1508,11 +1512,13 @@ IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_w
 GO
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'sheet_package_id') IS NULL
     ALTER TABLE processing_jobs ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_jobs_sheet_package')
     CREATE INDEX IX_jobs_sheet_package ON processing_jobs (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 GO
 IF OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL AND COL_LENGTH('dbo.notification_log', 'sheet_package_id') IS NULL
     ALTER TABLE notification_log ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
 IF OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL AND COL_LENGTH('dbo.notification_log', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_notif_sheet_package')
     CREATE INDEX IX_notif_sheet_package ON notification_log (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
 GO
