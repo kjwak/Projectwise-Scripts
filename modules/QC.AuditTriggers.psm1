@@ -219,10 +219,50 @@ WHERE folder_path = @folderPath
     }
 }
 
+function _QCAT-GetPackageQcCompleteTransitionFromMemberResults {
+    <#
+    Returns package-level QC Complete transition evidence from per-member telemetry.
+    Counts a completion when any member transitioned from a non-QC Complete state into QC Complete.
+    #>
+    param(
+        [array]$MemberResults = @(),
+        [Parameter(Mandatory)][string]$TargetState,
+        [hashtable]$Config = @{}
+    )
+
+    $completeState = 'QC Complete'
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and $wf.states -and $wf.states.complete) { $completeState = [string]$wf.states.complete }
+        } catch { }
+    }
+
+    $target = _QCAT-NormalizeValue $TargetState
+    $complete = _QCAT-NormalizeValue $completeState
+    if ($target -ne $complete) { return $null }
+
+    foreach ($mr in @($MemberResults)) {
+        if ([bool]$mr.skipped) { continue }
+        if (-not ([bool]$mr.transitionInserted -or [bool]$mr.transitionReused)) { continue }
+        $mPrev = _QCAT-NormalizeValue ([string]$mr.previousState)
+        $mFinal = _QCAT-NormalizeValue ([string]$mr.finalState)
+        if ($mPrev -ne $complete -and $mFinal -eq $complete) {
+            return @{
+                previousState = $mPrev
+                currentState = $mFinal
+                memberDocumentGuid = [string]$mr.documentGuid
+                memberRole = [string]$mr.role
+            }
+        }
+    }
+    return $null
+}
+
 function _QCAT-TryRecordQCCycleCompletion {
     <#
     Records a durable QC cycle completion when workflow transitions into QC Complete.
-    Excludes prepend/automation completion sources; idempotent via Ensure-QCCycleCompletion.
+    Idempotent via Ensure-QCCycleCompletion. Caller must pass a genuine non-complete -> QC Complete transition.
     #>
     [CmdletBinding()]
     param(
@@ -257,7 +297,6 @@ function _QCAT-TryRecordQCCycleCompletion {
     if ($prev -eq $completeState -or $curr -ne $completeState) { return }
 
     $source = ([string]$TransitionSource).Trim()
-    if ($source -eq 'automation_prepend_completion') { return }
 
     if (-not (Get-Command -Name 'Ensure-QCCycleCompletion' -ErrorAction SilentlyContinue)) { return }
 
@@ -768,14 +807,9 @@ function Invoke-QCSheetGroupWorkflowTransition {
         }
     }
 
-    $anyTransitionRecorded = $false
-    foreach ($mr in @($memberResults)) {
-        if (-not [bool]$mr.skipped -and ([bool]$mr.transitionInserted -or [bool]$mr.transitionReused)) {
-            $anyTransitionRecorded = $true
-            break
-        }
-    }
-    if ($anyTransitionRecorded -and $packagePreviousState -ne $target) {
+    $qcCompleteTransition = _QCAT-GetPackageQcCompleteTransitionFromMemberResults -MemberResults $memberResults `
+        -TargetState $target -Config $Config
+    if ($qcCompleteTransition) {
         $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
         if (-not $sheetPdfMember) {
             $sheetPdfMember = @{
@@ -784,7 +818,8 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 document = $null
             }
         }
-        _QCAT-TryRecordQCCycleCompletion -Config $Config -PreviousState $packagePreviousState -CurrentState $target `
+        _QCAT-TryRecordQCCycleCompletion -Config $Config `
+            -PreviousState ([string]$qcCompleteTransition.previousState) -CurrentState ([string]$qcCompleteTransition.currentState) `
             -TransitionSource $TransitionSource -DocumentGuid ([string]$sheetPdfMember.documentGuid) `
             -DocumentName ([string]$sheetPdfMember.documentName) -FolderPath $FolderPath -SheetStem $sheetStem `
             -AuditEventId $AuditEventId -TransitionEventId $notifyTransitionId -ChangedByUsername $ChangedByUsername `

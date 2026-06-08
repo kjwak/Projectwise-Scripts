@@ -220,13 +220,69 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid 
 Assert-Eq $script:completionCalls.Count 1 'Sibling retries should not multiply completion rows'
 Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_DUPLICATE' }) 'Sibling retries should log duplicates'
 
-# Prepend completion excluded
-$completionBeforePrepend = $script:completionCalls.Count
+# 1. Finalizing prepend: QC Finalizing -> QC Complete records one completion
+Reset-CompletionState
+$productionMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $sheetGuid; documentName = ($sheetStem + '.pdf'); document = [pscustomobject]@{ QC_Review_Type = 'Production QC' } }
+    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+)
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'automation_prepend_completion' `
+    -Members $productionMembers -PreviousStateByGuid $prevMap -JobId 'job-finalize-1' -JobType 'QC_PREPEND' -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 1 'Finalizing prepend should record one QC cycle completion'
+Assert-Eq $script:completionCalls[0].qcReviewType 'production' 'Finalizing prepend should store normalized production review type'
+Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_RECORDED' }) 'Finalizing prepend should log QC_CYCLE_COMPLETION_RECORDED'
+
+# 2. Prepend initiation: QC Initiated -> Ready for QC records zero completions
+Reset-CompletionState
+$prevReady = @{
+    ($dgnGuid.ToLowerInvariant()) = 'QC Initiated'
+    ($sheetGuid.ToLowerInvariant()) = 'QC Initiated'
+    ($qcGuid.ToLowerInvariant()) = 'QC Initiated'
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder `
+    -SourceState 'QC Initiated' -TargetState 'Ready for QC' -TransitionSource 'automation_prepend_completion' `
+    -Members $productionMembers -PreviousStateByGuid $prevReady -JobId 'job-prepend-intake' -JobType 'QC_PREPEND' -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 0 'Prepend initiation must not record QC cycle completion'
+Assert-Eq $script:transitionCalls.Count 3 'Prepend initiation should still record sibling transitions'
+
+# 3. Sheet PDF already QC Complete; DGN/QC PDF finalize -> one package completion
+Reset-CompletionState
+$prevLag = @{
+    ($dgnGuid.ToLowerInvariant()) = 'QC Finalizing'
+    ($sheetGuid.ToLowerInvariant()) = 'QC Complete'
+    ($qcGuid.ToLowerInvariant()) = 'QC Finalizing'
+}
+$liveComplete = @{
+    ($dgnGuid.ToLowerInvariant()) = 'QC Complete'
+    ($sheetGuid.ToLowerInvariant()) = 'QC Complete'
+    ($qcGuid.ToLowerInvariant()) = 'QC Complete'
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'automation_prepend_completion' `
+    -Members $productionMembers -PreviousStateByGuid $prevLag -StateByGuid $liveComplete `
+    -JobId 'job-finalize-lag' -JobType 'QC_PREPEND' -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 1 'Lag sheet PDF should not block package completion when siblings finalize'
+Assert-Eq $script:completionCalls[0].documentGuid $sheetGuid 'Lag finalize should still canonicalize to sheet PDF'
+Assert-Eq $script:transitionCalls.Count 2 'Only non-complete siblings should record transitions'
+
+# 4. Watcher echo after QC Complete does not create duplicate completions
+Reset-CompletionState
+$prevEcho = @{
+    ($dgnGuid.ToLowerInvariant()) = 'QC Complete'
+    ($sheetGuid.ToLowerInvariant()) = 'QC Complete'
+    ($qcGuid.ToLowerInvariant()) = 'QC Complete'
+}
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $sheetGuid `
     -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder `
-    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'automation_prepend_completion' `
-    -Members $members -PreviousStateByGuid $prevMap -JobId 'job-prepend-1'
-Assert-Eq $script:completionCalls.Count $completionBeforePrepend 'Prepend completion must not record QC cycle completion'
+    -SourceState 'QC Complete' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $members -PreviousStateByGuid $prevEcho -StateByGuid $prevEcho -AuditEventId 9050 | Out-Null
+Assert-Eq $script:completionCalls.Count 0 'Watcher echo QC Complete -> QC Complete must not record completion'
+Assert-Eq $script:transitionCalls.Count 0 'Watcher echo must not record new transitions'
 
 # Unknown review type skipped
 Reset-CompletionState
@@ -250,6 +306,23 @@ Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfg -DocumentGuid $dgnGuid `
 Assert-Eq $script:completionCalls.Count 1 'Audit trigger path should record one canonical completion'
 Assert-Eq $script:completionCalls[0].documentGuid $sheetGuid 'Audit trigger should canonicalize DGN to sheet PDF'
 Assert-Eq $script:completionCalls[0].qcReviewType 'independent_check' 'Audit trigger should store normalized review type'
+
+# 5. Duplicate suppression via unique key (prepend finalize then watcher retry)
+Reset-CompletionState
+$script:cycleByGuid[$sheetGuid] = @{ cycleId = 'cycle-2026-001'; cycleNumber = '3' }
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'automation_prepend_completion' `
+    -Members $members -PreviousStateByGuid $prevMap -JobId 'job-dup-1' -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 1 'First finalize should insert one completion'
+$beforeDup = $script:completionCalls.Count
+$script:jsonLogs.Clear()
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid `
+    -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9060 | Out-Null
+Assert-Eq $script:completionCalls.Count $beforeDup 'Duplicate suppression must keep one completion row'
+Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_DUPLICATE' }) 'Retry should log QC_CYCLE_COMPLETION_DUPLICATE'
 
 # Dual-path duplicate: sheet group then audit trigger for same cycle/review type
 Reset-CompletionState
