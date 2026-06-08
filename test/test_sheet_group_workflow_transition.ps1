@@ -19,6 +19,12 @@ $script:historyCalls = [System.Collections.Generic.List[object]]::new()
 $script:workflowEvents = [System.Collections.Generic.List[object]]::new()
 $script:notificationCalls = 0
 $script:transitionReuseCount = 0
+$script:mockSheetPackageId = [guid]::Parse('11111111-1111-1111-1111-111111111111')
+
+function Resolve-SheetPackageIdForSheetGroup {
+    param([hashtable]$Config, [string]$FolderPath = '', [string]$SheetStem = '', [string]$DocumentGuid = '', [string]$DocumentName = '')
+    return $script:mockSheetPackageId
+}
 
 function Write-QCDocumentStateHistoryRow {
     param(
@@ -26,7 +32,9 @@ function Write-QCDocumentStateHistoryRow {
         [string]$DocumentName = '', [string]$FolderPath = '',
         [string]$OldValue = '', [string]$NewValue = '', [string]$FieldName = '',
         [Nullable[int]]$ChangedByUser = $null, [string]$ChangedByUsername = '',
-        [Nullable[long]]$SourceAuditId = $null
+        [Nullable[long]]$SourceAuditId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     $script:historyCalls.Add(@{
         documentGuid = $DocumentGuid
@@ -34,6 +42,8 @@ function Write-QCDocumentStateHistoryRow {
         oldValue = $OldValue
         newValue = $NewValue
         sourceAuditId = $SourceAuditId
+        sheetPackageId = $SheetPackageId
+        transitionGroupId = $TransitionGroupId
     }) | Out-Null
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
 }
@@ -44,7 +54,9 @@ function Ensure-QCTransitionEvent {
         [string]$DocumentName = '', [string]$FolderPath = '',
         [string]$FromValue = '', [string]$ToValue = '',
         [string]$JobId = '', [string]$JobType = '',
-        [Nullable[long]]$TriggerAuditId = $null
+        [Nullable[long]]$TriggerAuditId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     $key = ($DocumentGuid + '|' + $FromValue + '|' + $ToValue + '|' + [string]$TriggerAuditId + '|' + $JobId)
     $existing = @($script:transitionCalls | Where-Object {
@@ -66,6 +78,8 @@ function Ensure-QCTransitionEvent {
         jobId = $JobId
         jobType = $JobType
         triggerAuditId = $TriggerAuditId
+        sheetPackageId = $SheetPackageId
+        transitionGroupId = $TransitionGroupId
     }) | Out-Null
     return [pscustomobject]@{
         IsSuccess = $true
@@ -78,7 +92,9 @@ function Write-QCWorkflowEventRow {
         [hashtable]$Config, [string]$DocumentId = '', [string]$JobId = '',
         [string]$EventType = '', [string]$PreviousPwState = '', [string]$TargetPwState = '',
         [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = '',
-        [Nullable[int]]$TransitionEventId = $null
+        [Nullable[int]]$TransitionEventId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     $script:workflowEvents.Add(@{
         documentId = $DocumentId
@@ -87,6 +103,8 @@ function Write-QCWorkflowEventRow {
         targetPwState = $TargetPwState
         decisionCode = $DecisionCode
         transitionEventId = $TransitionEventId
+        sheetPackageId = $SheetPackageId
+        transitionGroupId = $TransitionGroupId
     }) | Out-Null
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
 }
@@ -162,6 +180,13 @@ Assert-Eq $script:workflowEvents.Count 3 'DGN trigger: workflow mirror per sibli
 Assert-True (@($script:workflowEvents | Where-Object { $null -ne $_.transitionEventId -and $_.transitionEventId -gt 0 }).Count -eq 3) `
     'Workflow mirror rows should link to transition_events.id'
 Assert-Eq $script:notificationCalls 1 'DGN trigger: one notification per sheet group'
+Assert-True ($null -ne $r1.transitionGroupId) 'transition_group_id returned'
+Assert-Eq $r1.sheetPackageId $script:mockSheetPackageId 'sheet_package_id returned'
+$groupIds = @($script:transitionCalls | ForEach-Object { $_.transitionGroupId.ToString() } | Select-Object -Unique)
+Assert-Eq $groupIds.Count 1 'all sibling transitions share one transition_group_id'
+$pkgIds = @($script:transitionCalls | ForEach-Object { $_.sheetPackageId.ToString() } | Select-Object -Unique)
+Assert-Eq $pkgIds.Count 1 'all sibling transitions share one sheet_package_id'
+Assert-Eq $pkgIds[0] $script:mockSheetPackageId.ToString() 'transition sheet_package_id matches package'
 
 # 2. User changes Sheet PDF
 Reset-TestState

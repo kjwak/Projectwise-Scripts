@@ -230,12 +230,25 @@ function _Write-WorkerJobOutcomeTelemetry {
     $jobAttempts = 0
     try { if ($Job.ContainsKey('attempts') -and $null -ne $Job['attempts']) { $jobAttempts = [int]$Job['attempts'] } } catch { }
     $rdJson = _Build-TelemetryResultJson -ResultData $ResultData
+    $jobDocumentGuid = ''
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) {
+        foreach ($gk in @('documentGuid', 'triggerDocumentGuid', 'qcPdfGuid')) {
+            if ($Job.metadata.ContainsKey($gk) -and $Job.metadata[$gk]) {
+                $jobDocumentGuid = [string]$Job.metadata[$gk]
+                break
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($jobDocumentGuid) -and $ResultData -is [hashtable] -and $ResultData.ContainsKey('documentGuid')) {
+        $jobDocumentGuid = [string]$ResultData.documentGuid
+    }
     $telRes = Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType $JobType -Status $Status `
         -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
         -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
         -AttemptCount $jobAttempts -DurationMs $DurationMs -ResultData $rdJson `
         -ErrorCode $(if ($ErrorCode) { $ErrorCode } else { $null }) `
-        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null })
+        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
+        -DocumentGuid $jobDocumentGuid
     Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -TelemetryResult $telRes
     return $telRes
 }

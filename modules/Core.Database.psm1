@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.16.0'
+    $targetVersion = '1.17.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through qc_cycle_completions.sheet_package_id")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through package-aware reporting views")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -1596,6 +1596,72 @@ IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT
 '@
 }
 
+function _QDB-GetSchemaV1dot17Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.v_sheet_package_status', 'V') IS NOT NULL DROP VIEW v_sheet_package_status;
+GO
+CREATE VIEW v_sheet_package_status AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.pw_state_name,
+    sp.qc_review_type,
+    sp.qc_assigned_to,
+    sp.production_qc_completed_count,
+    sp.peer_review_completed_count,
+    sp.independent_check_completed_count,
+    sp.production_qc_last_completed_at,
+    sp.peer_review_last_completed_at,
+    sp.independent_check_last_completed_at,
+    sp.dgn_guid,
+    sp.sheet_pdf_guid,
+    sp.qc_pdf_guid
+FROM sheet_packages sp;
+GO
+IF OBJECT_ID('dbo.v_sheet_package_cycle_aging', 'V') IS NOT NULL DROP VIEW v_sheet_package_cycle_aging;
+GO
+CREATE VIEW v_sheet_package_cycle_aging AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.pw_state_name AS current_state,
+    sp.qc_cycle_id AS current_cycle_id,
+    sp.qc_cycle_number AS current_cycle_number,
+    CASE
+        WHEN sh.last_state_change_at IS NOT NULL
+        THEN DATEDIFF(day, CAST(sh.last_state_change_at AS datetimeoffset), SYSDATETIMEOFFSET())
+        ELSE DATEDIFF(day, sp.last_updated_at, SYSDATETIMEOFFSET())
+    END AS days_in_current_state,
+    CASE
+        WHEN lc.last_completion_at IS NOT NULL
+        THEN DATEDIFF(day, lc.last_completion_at, CAST(SYSDATETIMEOFFSET() AS datetime2))
+        ELSE NULL
+    END AS days_since_last_completion,
+    sp.production_qc_completed_count AS production_completion_count,
+    sp.peer_review_completed_count AS peer_completion_count,
+    sp.independent_check_completed_count AS independent_completion_count
+FROM sheet_packages sp
+OUTER APPLY (
+    SELECT MAX(dsh.captured_at) AS last_state_change_at
+    FROM document_state_history dsh
+    WHERE dsh.sheet_package_id = sp.sheet_package_id
+      AND dsh.field_name = 'pw_state_name'
+      AND ISNULL(dsh.new_value, '') = ISNULL(sp.pw_state_name, '')
+) sh
+OUTER APPLY (
+    SELECT MAX(v) AS last_completion_at
+    FROM (VALUES
+        (sp.production_qc_last_completed_at),
+        (sp.peer_review_last_completed_at),
+        (sp.independent_check_last_completed_at)
+    ) AS t(v)
+    WHERE v IS NOT NULL
+) lc;
+'@
+}
+
 function _QDB-GetSchemaV1dot9Additive {
     return @'
 GO
@@ -2050,7 +2116,68 @@ function Write-QCStateChangeJobTelemetry {
         -SourcePath $sourcePath -SourceFolder $SourceFolder -TriggerSource $TriggerSource `
         -DurationMs $(if ($DurationMs -gt 0) { $DurationMs } else { $null }) `
         -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
-        -ResultData $resultJson
+        -ResultData $resultJson -DocumentGuid $DocumentGuid
+}
+
+function _QDB-IsSheetScopedProcessingJobType {
+    param([Parameter(Mandatory)][string]$JobType)
+    $t = ([string]$JobType).Trim()
+    if ($t -match '^(QC_PREPEND|QC_FINALIZE|QC_STATE|QC_NOTIFICATION)$') { return $true }
+    if ($t -match '^QC_COMMENT') { return $true }
+    return $false
+}
+
+function _QDB-ExtractDocumentGuidFromTelemetryJson {
+    param([string]$JsonText)
+    if ([string]::IsNullOrWhiteSpace($JsonText)) { return '' }
+    try {
+        $obj = $JsonText | ConvertFrom-Json
+        foreach ($name in @('documentGuid', 'document_guid', 'triggerDocumentGuid', 'qcPdfGuid')) {
+            try {
+                if ($obj.PSObject.Properties[$name] -and -not [string]::IsNullOrWhiteSpace([string]$obj.$name)) {
+                    return ([string]$obj.$name).Trim()
+                }
+            } catch { }
+        }
+    } catch { }
+    return ''
+}
+
+function _QDB-ResolveSheetPackageIdForJobTelemetry {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobType,
+        [string]$DocumentGuid = '',
+        [string]$SourcePath = '',
+        [string]$SourceFolder = '',
+        [string]$ResultData = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if (-not (_QDB-IsSheetScopedProcessingJobType -JobType $JobType)) { return $null }
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+
+    $docGuid = ([string]$DocumentGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($docGuid)) {
+        $docGuid = _QDB-ExtractDocumentGuidFromTelemetryJson -JsonText $ResultData
+    }
+    if ($docGuid) {
+        $pkg = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $docGuid
+        if ($pkg) { return $pkg }
+    }
+
+    $folder = _QDB-NormalizeTelemetryPath -Path $SourceFolder
+    $docName = ''
+    if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+        $docName = [System.IO.Path]::GetFileName(([string]$SourcePath).Trim())
+    }
+    if ($folder -and $docName) {
+        $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $docGuid -DocumentName $docName -FolderPath $folder
+        if ($resolved.isSheetPackageMember) {
+            return (Resolve-SheetPackageIdForSheetGroup -Config $Config -FolderPath $folder `
+                -SheetStem $resolved.sheetStem -DocumentGuid $docGuid -DocumentName $docName)
+        }
+    }
+    return $null
 }
 
 function Write-QCJobTelemetry {
@@ -2074,7 +2201,9 @@ function Write-QCJobTelemetry {
         [Nullable[int]]$DurationMs,
         [string]$ErrorCode,
         [string]$ErrorMessage,
-        [string]$ResultData
+        [string]$ResultData,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; reason = 'database_disabled' }
@@ -2086,6 +2215,9 @@ function Write-QCJobTelemetry {
     $SourcePath = _QDB-NormalizeTelemetryPath -Path $SourcePath
     $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
     $resultPayload = _QDB-TruncateTelemetryPayload -Text $ResultData
+    $resolvedPackageId = _QDB-ResolveSheetPackageIdForJobTelemetry -Config $Config -JobType $telemetryJobType `
+        -DocumentGuid $DocumentGuid -SourcePath $SourcePath -SourceFolder $SourceFolder `
+        -ResultData $resultPayload -SheetPackageId $SheetPackageId
     $startedAt = $null
     if (-not [string]::IsNullOrWhiteSpace($StartedAtUtc)) {
         try { $startedAt = [DateTimeOffset]::Parse($StartedAtUtc) } catch { $startedAt = $null }
@@ -2102,11 +2234,12 @@ WHEN MATCHED THEN UPDATE SET
     duration_ms = @durationMs,
     error_code = @errorCode,
     error_message = @errorMessage,
-    result_data = @resultData
+    result_data = @resultData,
+    sheet_package_id = COALESCE(@sheetPackageId, tgt.sheet_package_id)
 WHEN NOT MATCHED THEN INSERT
-    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data)
+    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data, sheet_package_id)
 VALUES
-    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData);
+    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData, @sheetPackageId);
 "@
         $params = @{
             jobId         = $JobId
@@ -2122,6 +2255,7 @@ VALUES
             errorCode     = if ($ErrorCode)     { $ErrorCode }     else { $null }
             errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
             resultData    = if ($resultPayload) { $resultPayload } else { $null }
+            sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2295,7 +2429,9 @@ function Write-QCDocumentStateHistoryRow {
         [string]$FieldName = '',
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
-        [Nullable[long]]$SourceAuditId = $null
+        [Nullable[long]]$SourceAuditId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'STATE_HISTORY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
@@ -2307,9 +2443,9 @@ function Write-QCDocumentStateHistoryRow {
     try {
         $sql = @"
 INSERT INTO document_state_history
-    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user, changed_by_username)
+    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user, changed_by_username, sheet_package_id, transition_group_id)
 VALUES
-    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser, @changedByUsername)
+    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser, @changedByUsername, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             documentGuid  = $DocumentGuid
@@ -2322,6 +2458,8 @@ VALUES
             fieldName     = if ($FieldName) { $FieldName } else { $null }
             changedByUser = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
             changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2352,6 +2490,8 @@ function Write-QCWorkflowEventRow {
         [string]$QcReviewType = '',
         [string]$PayloadJson = '',
         [Nullable[int]]$TransitionEventId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null,
         [switch]$PlannedOnly
     )
 
@@ -2380,9 +2520,9 @@ function Write-QCWorkflowEventRow {
     try {
         $sql = @"
 INSERT INTO qc_workflow_events
-    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json, transition_event_id)
+    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json, transition_event_id, sheet_package_id, transition_group_id)
 VALUES
-    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload, @transitionEventId)
+    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload, @transitionEventId, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             runId = if ($null -ne $RunId -and $RunId -gt 0) { $RunId } else { [DBNull]::Value }
@@ -2396,6 +2536,8 @@ VALUES
             qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
             payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
             transitionEventId = if ($null -ne $TransitionEventId -and $TransitionEventId -gt 0) { [int]$TransitionEventId } else { [DBNull]::Value }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2429,7 +2571,9 @@ function Ensure-QCTransitionEvent {
         [string]$JobType = '',
         [Nullable[long]]$TriggerAuditId = $null,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
 
     if (-not (_QDB-IsEnabled -Config $Config)) {
@@ -2528,7 +2672,7 @@ ORDER BY id DESC
     return Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -TransitionType $TransitionType `
         -DocumentName $DocumentName -FolderPath $FolderPath -FromValue $FromValue -ToValue $ToValue `
         -JobId $JobId -JobType $JobType -TriggerAuditId $TriggerAuditId -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername
+        -ChangedByUsername $ChangedByUsername -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId
 }
 
 function Test-QCTransitionEventNotificationSent {
@@ -2570,7 +2714,9 @@ function Write-QCTransitionEvent {
         [string]$JobType = '',
         [Nullable[long]]$TriggerAuditId = $null,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'TRANSITION_EVENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; transitionId = $null }
@@ -2582,10 +2728,10 @@ function Write-QCTransitionEvent {
     try {
         $sql = @"
 INSERT INTO transition_events
-    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type, changed_by_user, changed_by_username)
+    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type, changed_by_user, changed_by_username, sheet_package_id, transition_group_id)
 OUTPUT INSERTED.id
 VALUES
-    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType, @changedByUser, @changedByUsername)
+    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType, @changedByUser, @changedByUsername, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             documentGuid   = $DocumentGuid
@@ -2599,6 +2745,8 @@ VALUES
             jobType        = if ($JobType) { $JobType } else { $null }
             changedByUser  = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
             changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
         $transitionId = $null
@@ -2735,16 +2883,21 @@ function Write-QCNotificationTelemetry {
         [string]$Provider,
         [bool]$Success = $true,
         [string]$ErrorMessage,
-        [Nullable[int]]$TransitionId
+        [Nullable[int]]$TransitionId,
+        [Nullable[guid]]$SheetPackageId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'NOTIFICATION_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $resolvedPackageId = $SheetPackageId
+    if ($null -eq $resolvedPackageId -and -not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        $resolvedPackageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+    }
     try {
         $sql = @"
 INSERT INTO notification_log
-    (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id)
+    (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id, sheet_package_id)
 VALUES
-    (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId)
+    (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId, @sheetPackageId)
 "@
         $params = @{
             eventType    = $EventType
@@ -2758,6 +2911,7 @@ VALUES
             success      = if ($Success) { 1 } else { 0 }
             errorMessage = if ($ErrorMessage) { $ErrorMessage } else { $null }
             transitionId = if ($null -ne $TransitionId) { $TransitionId } else { $null }
+            sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2847,6 +3001,53 @@ WHERE document_guid = @docGuid
             if ($val -isnot [DBNull]) { return [guid]$val }
         }
     } catch { }
+    return $null
+}
+
+function Resolve-SheetPackageIdForSheetGroup {
+    <#
+    .SYNOPSIS
+    Resolves sheet_package_id for a logical sheet group from document identity or folder/stem.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+    if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        $pkg = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+        if ($pkg) { return $pkg }
+    }
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $stem = ([string]$SheetStem).Trim()
+    if ($folder -and $stem -and (_QDB-IsEnabled -Config $Config)) {
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sheet_package_id
+FROM sheet_packages
+WHERE folder_path = @folderPath AND sheet_stem = @sheetStem
+"@ -Parameters @{ folderPath = $folder; sheetStem = $stem }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $val = $res.Data.table.Rows[0].sheet_package_id
+                if ($val -isnot [DBNull]) { return [guid]$val }
+            }
+        } catch { }
+    }
+    if ($folder -and $DocumentName) {
+        $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $folder
+        if ($resolved.isSheetPackageMember) {
+            $ensure = Ensure-SheetPackage -Config $Config -FolderPath $folder -SheetStem $resolved.sheetStem `
+                -DocumentRole $resolved.documentRole -DocumentGuid $DocumentGuid -DocumentName $DocumentName
+            if ($ensure.IsSuccess -and $ensure.Data -and $ensure.Data.sheetPackageId) {
+                try { return [guid]$ensure.Data.sheetPackageId } catch { }
+            }
+        }
+    }
     return $null
 }
 
@@ -4788,4 +4989,4 @@ WHERE sheet_package_id = @sheetPackageId
     }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

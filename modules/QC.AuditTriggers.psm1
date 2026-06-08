@@ -568,7 +568,9 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
         [string]$ChangedByUsername = '',
         [object]$Document = $null,
         [hashtable]$Context = $null,
-        [bool]$DryRun = $false
+        [bool]$DryRun = $false,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
 
     $prev = _QCAT-NormalizeValue $PreviousState
@@ -603,7 +605,7 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
         $hist = Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
             -FieldName 'pw_state_name' -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-            -SourceAuditId $AuditEventId
+            -SourceAuditId $AuditEventId -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId
         try {
             if ($hist.IsSuccess -and $hist.Data -and $hist.Data.written -eq $true) { $result.historyInserted = $true }
         } catch { }
@@ -614,7 +616,8 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
         $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
             -JobId $JobId -JobType $jobTypeValue -TriggerAuditId $AuditEventId `
-            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId
         if ($tr.IsSuccess -and $tr.Data) {
             try {
                 if ($null -ne $tr.Data.transitionId) { $result.transitionId = [int]$tr.Data.transitionId }
@@ -629,7 +632,7 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
                 -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobId $JobId -JobType $jobTypeValue `
                 -EventType 'STATE_CHANGE' -AuditActionName $AuditActionName -Context $Context -Document $Document `
                 -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-                -TransitionEventId $result.transitionId
+                -TransitionEventId $result.transitionId -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId
             $result.mirrorInserted = $true
         }
     }
@@ -811,6 +814,13 @@ function Invoke-QCSheetGroupWorkflowTransition {
     }
 
     $notifyTransitionId = $null
+    $transitionGroupId = [guid]::NewGuid()
+    $sheetPackageId = $null
+    if (Get-Command -Name 'Resolve-SheetPackageIdForSheetGroup' -ErrorAction SilentlyContinue) {
+        $sheetPackageId = Resolve-SheetPackageIdForSheetGroup -Config $Config -FolderPath $FolderPath `
+            -SheetStem $sheetStem -DocumentGuid $TriggerDocumentGuid -DocumentName $TriggerDocumentName
+    }
+
     foreach ($member in @($Members)) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -879,7 +889,8 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 -PreviousState $prevState -CurrentState $target -TransitionSource $TransitionSource `
                 -AuditActionName $AuditActionName -AuditEventId $AuditEventId -JobId $JobId -JobType $JobType `
                 -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-                -Document $member.document -Context $Context -DryRun:$DryRun
+                -Document $member.document -Context $Context -DryRun:$DryRun `
+                -SheetPackageId $sheetPackageId -TransitionGroupId $transitionGroupId
             $telemetry.skipped = [bool]$rec.skipped
             $telemetry.skipReason = if ($rec.skipReason) { [string]$rec.skipReason } else { '' }
             $telemetry.historyInserted = [bool]$rec.historyInserted
@@ -997,6 +1008,8 @@ function Invoke-QCSheetGroupWorkflowTransition {
             triggerFileType = $triggerRole
             sheetStem = $sheetStem
             folderPath = $FolderPath
+            sheetPackageId = if ($sheetPackageId) { $sheetPackageId.ToString() } else { '' }
+            transitionGroupId = $transitionGroupId.ToString()
             targetState = $target
             sourceState = $packagePreviousState
             transitionSource = $TransitionSource
@@ -1013,6 +1026,8 @@ function Invoke-QCSheetGroupWorkflowTransition {
         triggerDocumentName = $TriggerDocumentName
         triggerFileType = $triggerRole
         sheetStem = $sheetStem
+        sheetPackageId = $sheetPackageId
+        transitionGroupId = $transitionGroupId
         targetState = $target
         transitionSource = $TransitionSource
         auditEventId = $AuditEventId
@@ -1542,7 +1557,9 @@ function _QCAT-WriteWorkflowEventMirror {
         [object]$Document = $null,
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
-        [Nullable[int]]$TransitionEventId = $null
+        [Nullable[int]]$TransitionEventId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
 
     if (-not (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue)) { return }
@@ -1560,7 +1577,8 @@ function _QCAT-WriteWorkflowEventMirror {
     try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
     Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
         -PreviousPwState $FromValue -TargetPwState $ToValue -DecisionCode $JobType -PayloadJson $payloadJson `
-        -QcReviewType $QcReviewType -TransitionEventId $TransitionEventId | Out-Null
+        -QcReviewType $QcReviewType -TransitionEventId $TransitionEventId `
+        -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId | Out-Null
 }
 
 function _QCAT-ResolveSheetStemFromDocumentName {
