@@ -1757,7 +1757,7 @@ function Advance-QCWorkflowCycleForRedlinesResubmit {
         [Parameter(Mandatory)][hashtable]$Settings,
         [Parameter(Mandatory)][hashtable]$Context,
         [hashtable]$Config = $null,
-        [Parameter(Mandatory)][string]$PreviousState,
+        [AllowEmptyString()][string]$PreviousState = '',
         [Parameter(Mandatory)][string]$CurrentState,
         [bool]$DryRun = $false
     )

@@ -395,7 +395,7 @@ function _QCAT-TryRecordQCCycleCompletion {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$PreviousState,
+        [AllowEmptyString()][string]$PreviousState = '',
         [Parameter(Mandatory)][string]$CurrentState,
         [string]$TransitionSource = '',
         [Parameter(Mandatory)][string]$DocumentGuid,
@@ -422,7 +422,7 @@ function _QCAT-TryRecordQCCycleCompletion {
 
     $prev = _QCAT-NormalizeValue $PreviousState
     $curr = _QCAT-NormalizeValue $CurrentState
-    if ($prev -eq $completeState -or $curr -ne $completeState) { return }
+    if ([string]::IsNullOrWhiteSpace($prev) -or $prev -eq $completeState -or $curr -ne $completeState) { return }
 
     $source = ([string]$TransitionSource).Trim()
 

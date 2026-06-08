@@ -1815,7 +1815,7 @@ function Write-QCStateChangeJobTelemetry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$PreviousState,
+        [AllowEmptyString()][string]$PreviousState = '',
         [Parameter(Mandatory)][string]$CurrentState,
         [string]$JobId = '',
         [string]$ParentJobId = '',

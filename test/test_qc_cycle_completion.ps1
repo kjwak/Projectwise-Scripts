@@ -394,4 +394,17 @@ Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Processor finalize s
 Assert-Eq $script:completionCalls[0].qcCycleId 'qc_qcprepend_d0ca0819859b391d' 'Processor finalize should use context cycle id'
 Assert-Eq $script:summaryCalls[0] $dgnGuid 'Processor finalize rollup should target DGN row'
 
+# Empty sheet_index previous state must not throw or count as QC Complete (index baseline)
+Reset-CompletionState
+$emptyPrevMap = @{
+    ($dgnGuid.ToLowerInvariant()) = ''
+    ($sheetGuid.ToLowerInvariant()) = ''
+    ($qcGuid.ToLowerInvariant()) = ''
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $sheetGuid `
+    -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder `
+    -SourceState '' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $members -PreviousStateByGuid $emptyPrevMap -AuditEventId 9070 -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 0 'Empty previous state must not record QC cycle completion'
+
 Write-Host 'ALL PASSED' -ForegroundColor Green
