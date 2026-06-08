@@ -122,39 +122,60 @@ function _RQCF-PathLikeClause {
     return "REPLACE(LOWER(LTRIM(RTRIM(ISNULL($ColumnSql, '')))), '\', '/') LIKE @$ParamName"
 }
 
-function _RQCF-GetScopeInitSql {
+function _RQCF-InPackageScope {
     param(
-        [string]$SheetIndexFolderClause,
-        [string]$SheetPackageFolderClause
+        [Parameter(Mandatory)][string]$PackageIdColumn,
+        [Parameter(Mandatory)][string]$SheetPackageFolderClause
+    )
+    return "EXISTS (SELECT 1 FROM sheet_packages sp WHERE sp.sheet_package_id = $PackageIdColumn AND ($SheetPackageFolderClause))"
+}
+
+function _RQCF-InDocumentScope {
+    param(
+        [Parameter(Mandatory)][string]$DocumentGuidColumn,
+        [Parameter(Mandatory)][string]$SheetIndexFolderClause,
+        [Parameter(Mandatory)][string]$SheetPackageFolderClause
     )
     return @"
-IF OBJECT_ID('tempdb..#rqcf_pkg') IS NOT NULL DROP TABLE #rqcf_pkg;
-CREATE TABLE #rqcf_pkg (sheet_package_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY);
-INSERT INTO #rqcf_pkg (sheet_package_id)
-SELECT sp.sheet_package_id
-FROM sheet_packages sp
-WHERE ($SheetPackageFolderClause);
-
-IF OBJECT_ID('tempdb..#rqcf_doc') IS NOT NULL DROP TABLE #rqcf_doc;
-CREATE TABLE #rqcf_doc (document_guid NVARCHAR(50) NOT NULL PRIMARY KEY);
-INSERT INTO #rqcf_doc (document_guid)
-SELECT DISTINCT v.document_guid
-FROM (
-    SELECT LTRIM(RTRIM(CAST(sd.document_guid AS NVARCHAR(50)))) AS document_guid
-    FROM sheet_documents sd
-    INNER JOIN #rqcf_pkg p ON p.sheet_package_id = sd.sheet_package_id
-    WHERE sd.document_guid IS NOT NULL
-    UNION ALL
-    SELECT LTRIM(RTRIM(si.document_guid))
-    FROM sheet_index si
-    WHERE si.document_guid IS NOT NULL AND ($SheetIndexFolderClause)
-    UNION ALL
-    SELECT LTRIM(RTRIM(si.qc_pdf_guid))
-    FROM sheet_index si
-    WHERE si.qc_pdf_guid IS NOT NULL AND ($SheetIndexFolderClause)
-) v
-WHERE v.document_guid <> '';
+(
+    EXISTS (
+        SELECT 1
+        FROM sheet_documents sd
+        INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
+        WHERE ($SheetPackageFolderClause)
+          AND LTRIM(RTRIM(CAST(sd.document_guid AS NVARCHAR(50)))) = LTRIM(RTRIM($DocumentGuidColumn))
+    )
+    OR EXISTS (
+        SELECT 1 FROM sheet_index si
+        WHERE ($SheetIndexFolderClause)
+          AND LTRIM(RTRIM(si.document_guid)) = LTRIM(RTRIM($DocumentGuidColumn))
+    )
+    OR EXISTS (
+        SELECT 1 FROM sheet_index si
+        WHERE ($SheetIndexFolderClause)
+          AND LTRIM(RTRIM(si.qc_pdf_guid)) = LTRIM(RTRIM($DocumentGuidColumn))
+    )
+)
 "@
+}
+
+function _RQCF-TelemetryScopeClause {
+    param(
+        [string]$FolderClause = '',
+        [string]$PackageIdColumn = '',
+        [string]$DocumentGuidColumn = '',
+        [Parameter(Mandatory)][string]$SheetIndexFolderClause,
+        [Parameter(Mandatory)][string]$SheetPackageFolderClause
+    )
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($FolderClause)) { [void]$parts.Add("($FolderClause)") }
+    if (-not [string]::IsNullOrWhiteSpace($PackageIdColumn)) {
+        [void]$parts.Add((_RQCF-InPackageScope -PackageIdColumn $PackageIdColumn -SheetPackageFolderClause $SheetPackageFolderClause))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DocumentGuidColumn)) {
+        [void]$parts.Add((_RQCF-InDocumentScope -DocumentGuidColumn $DocumentGuidColumn -SheetIndexFolderClause $SheetIndexFolderClause -SheetPackageFolderClause $SheetPackageFolderClause))
+    }
+    return ($parts -join ' OR ')
 }
 
 function _RQCF-GetScalarConn {
@@ -250,13 +271,30 @@ $params = @{
 }
 $siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
 $spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
-$scopeInitSql = _RQCF-GetScopeInitSql -SheetIndexFolderClause $siFolderClause -SheetPackageFolderClause $spFolderClause
 $nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
 $histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
 $trFolderClause = _RQCF-PathLikeClause -ColumnSql 't.folder_path' -Params $params -ParamName 'folderLike'
 $actFolderClause = _RQCF-PathLikeClause -ColumnSql 'd.folder_path' -Params $params -ParamName 'folderLike'
 $auditFolderClause = _RQCF-PathLikeClause -ColumnSql 'a.resolved_folder' -Params $params -ParamName 'folderLike'
 $jobFolderClause = _RQCF-PathLikeClause -ColumnSql 'j.source_folder' -Params $params -ParamName 'folderLike'
+$scopeArgs = @{
+    SheetIndexFolderClause = $siFolderClause
+    SheetPackageFolderClause = $spFolderClause
+}
+$whereNotification = _RQCF-TelemetryScopeClause -FolderClause $nlFolderClause -PackageIdColumn 'n.sheet_package_id' -DocumentGuidColumn 'n.document_guid' @scopeArgs
+$whereHistory = _RQCF-TelemetryScopeClause -FolderClause $histFolderClause -PackageIdColumn 'h.sheet_package_id' -DocumentGuidColumn 'h.document_guid' @scopeArgs
+$whereTransition = _RQCF-TelemetryScopeClause -FolderClause $trFolderClause -PackageIdColumn 't.sheet_package_id' -DocumentGuidColumn 't.document_guid' @scopeArgs
+$whereActivity = _RQCF-TelemetryScopeClause -FolderClause $actFolderClause -DocumentGuidColumn 'd.document_guid' @scopeArgs
+$whereWorkflow = _RQCF-TelemetryScopeClause -PackageIdColumn 'w.sheet_package_id' -DocumentGuidColumn 'w.document_id' @scopeArgs
+$whereCompletion = _RQCF-TelemetryScopeClause -PackageIdColumn 'c.sheet_package_id' -DocumentGuidColumn 'CAST(c.document_guid AS NVARCHAR(50))' @scopeArgs
+$whereAudit = "($auditFolderClause) OR " + (_RQCF-InDocumentScope -DocumentGuidColumn 'a.pw_objguid' @scopeArgs)
+$whereJobs = _RQCF-TelemetryScopeClause -FolderClause $jobFolderClause -PackageIdColumn 'j.sheet_package_id' @scopeArgs
+$whereCommentDoc = _RQCF-InDocumentScope -DocumentGuidColumn 'r.document_id' @scopeArgs
+$commentRunSub = @"
+SELECT r.run_id FROM qc_comment_runs r
+WHERE ($whereCommentDoc)
+   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
+"@
 
 $summary = [ordered]@{
     dryRun            = $DryRun.IsPresent
@@ -358,63 +396,45 @@ if (-not $SkipDatabase.IsPresent) {
     if (-not $sessionRes.IsSuccess) { throw $sessionRes.Message }
     $dbConn = $sessionRes.Data.session.connection
     try {
-        Write-Host '[Database] Building folder scope (#rqcf_pkg / #rqcf_doc)...' -ForegroundColor Cyan
-        $null = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $scopeInitSql -Params $params -CommandTimeout $QueryTimeoutSeconds
-
-        $scopePkgIn = 'IN (SELECT sheet_package_id FROM #rqcf_pkg)'
-        $scopeDocIn = 'IN (SELECT document_guid FROM #rqcf_doc)'
-        $commentRunSub = @"
-SELECT r.run_id FROM qc_comment_runs r
-WHERE r.document_id $scopeDocIn
-   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
-"@
-
         $dbCounts = [ordered]@{}
         if (-not $SkipPreviewCounts.IsPresent) {
             Write-Host '[Database] Counting folder-scoped telemetry rows...' -ForegroundColor Cyan
             $dbCounts.notification_log = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM notification_log n
-WHERE n.sheet_package_id $scopePkgIn OR ($nlFolderClause) OR n.document_guid $scopeDocIn
+SELECT COUNT_BIG(1) FROM notification_log n WHERE ($whereNotification)
 "@
             $dbCounts.document_state_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM document_state_history h
-WHERE h.sheet_package_id $scopePkgIn OR ($histFolderClause) OR h.document_guid $scopeDocIn
+SELECT COUNT_BIG(1) FROM document_state_history h WHERE ($whereHistory)
 "@
             $dbCounts.transition_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM transition_events t
-WHERE t.sheet_package_id $scopePkgIn OR ($trFolderClause) OR t.document_guid $scopeDocIn
+SELECT COUNT_BIG(1) FROM transition_events t WHERE ($whereTransition)
 "@
             $dbCounts.document_activity = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM document_activity d
-WHERE d.document_guid $scopeDocIn OR ($actFolderClause)
+SELECT COUNT_BIG(1) FROM document_activity d WHERE ($whereActivity)
 "@
             $dbCounts.qc_workflow_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM qc_workflow_events w
-WHERE w.sheet_package_id $scopePkgIn OR w.document_id $scopeDocIn
+SELECT COUNT_BIG(1) FROM qc_workflow_events w WHERE ($whereWorkflow)
 "@
             $dbCounts.qc_cycle_completions = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM qc_cycle_completions c
-WHERE c.sheet_package_id $scopePkgIn OR CAST(c.document_guid AS NVARCHAR(50)) $scopeDocIn
+SELECT COUNT_BIG(1) FROM qc_cycle_completions c WHERE ($whereCompletion)
 "@
             $dbCounts.audit_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM audit_events a
-WHERE ($auditFolderClause) OR a.pw_objguid $scopeDocIn
+SELECT COUNT_BIG(1) FROM audit_events a WHERE ($whereAudit)
 "@
             $dbCounts.processing_jobs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM processing_jobs j
-WHERE ($jobFolderClause) OR j.sheet_package_id $scopePkgIn
+SELECT COUNT_BIG(1) FROM processing_jobs j WHERE ($whereJobs)
 "@
             if ($IncludeCommentTelemetry.IsPresent) {
+                $whereCommentHistory = _RQCF-TelemetryScopeClause -DocumentGuidColumn 'h.document_id' @scopeArgs
                 $dbCounts.qc_comment_status_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM qc_comment_status_history h
-WHERE h.document_id $scopeDocIn OR h.detected_run_id IN ($commentRunSub)
+WHERE ($whereCommentHistory) OR h.detected_run_id IN ($commentRunSub)
 "@
                 $dbCounts.qc_comments = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($commentRunSub)
 "@
                 $dbCounts.qc_comment_runs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM qc_comment_runs r
-WHERE r.document_id $scopeDocIn
+WHERE ($whereCommentDoc)
    OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
 "@
             }
@@ -423,10 +443,12 @@ WHERE r.document_id $scopeDocIn
         }
 
         $sheetPackagesMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM #rqcf_pkg
+SELECT COUNT_BIG(1) FROM sheet_packages sp WHERE ($spFolderClause)
 "@
         $sheetDocumentsMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
-SELECT COUNT_BIG(1) FROM sheet_documents sd WHERE sd.sheet_package_id $scopePkgIn
+SELECT COUNT_BIG(1) FROM sheet_documents sd
+INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
+WHERE ($spFolderClause)
 "@
 
         $sheetIndexMatched = 0L
@@ -500,11 +522,12 @@ WHERE ($spFolderClause)
             $deleted = $summary.database.deleted
 
             if ($IncludeCommentTelemetry.IsPresent) {
+                $whereCommentHistory = _RQCF-TelemetryScopeClause -DocumentGuidColumn 'h.document_id' @scopeArgs
                 $deleted.qc_comment_status_history = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_comment_status_history' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_comment_status_history
 WHERE history_id IN (
   SELECT h.history_id FROM qc_comment_status_history h
-  WHERE h.document_id $scopeDocIn OR h.detected_run_id IN ($commentRunSub)
+  WHERE ($whereCommentHistory) OR h.detected_run_id IN ($commentRunSub)
 )
 "@
                 $deleted.qc_comments = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_comments' -CommandTimeout $QueryTimeoutSeconds -Sql @"
@@ -519,59 +542,35 @@ WHERE run_id IN ($commentRunSub)
 
             $deleted.notification_log = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'notification_log' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM notification_log
-WHERE id IN (
-  SELECT n.id FROM notification_log n
-  WHERE n.sheet_package_id $scopePkgIn OR ($nlFolderClause) OR n.document_guid $scopeDocIn
-)
+WHERE id IN (SELECT n.id FROM notification_log n WHERE ($whereNotification))
 "@
             $deleted.qc_workflow_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_workflow_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_workflow_events
-WHERE event_id IN (
-  SELECT w.event_id FROM qc_workflow_events w
-  WHERE w.sheet_package_id $scopePkgIn OR w.document_id $scopeDocIn
-)
+WHERE event_id IN (SELECT w.event_id FROM qc_workflow_events w WHERE ($whereWorkflow))
 "@
             $deleted.qc_cycle_completions = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_cycle_completions' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_cycle_completions
-WHERE id IN (
-  SELECT c.id FROM qc_cycle_completions c
-  WHERE c.sheet_package_id $scopePkgIn OR CAST(c.document_guid AS NVARCHAR(50)) $scopeDocIn
-)
+WHERE id IN (SELECT c.id FROM qc_cycle_completions c WHERE ($whereCompletion))
 "@
             $deleted.transition_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'transition_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM transition_events
-WHERE id IN (
-  SELECT t.id FROM transition_events t
-  WHERE t.sheet_package_id $scopePkgIn OR ($trFolderClause) OR t.document_guid $scopeDocIn
-)
+WHERE id IN (SELECT t.id FROM transition_events t WHERE ($whereTransition))
 "@
             $deleted.document_state_history = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'document_state_history' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM document_state_history
-WHERE id IN (
-  SELECT h.id FROM document_state_history h
-  WHERE h.sheet_package_id $scopePkgIn OR ($histFolderClause) OR h.document_guid $scopeDocIn
-)
+WHERE id IN (SELECT h.id FROM document_state_history h WHERE ($whereHistory))
 "@
             $deleted.document_activity = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'document_activity' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM document_activity
-WHERE id IN (
-  SELECT d.id FROM document_activity d
-  WHERE d.document_guid $scopeDocIn OR ($actFolderClause)
-)
+WHERE id IN (SELECT d.id FROM document_activity d WHERE ($whereActivity))
 "@
             $deleted.audit_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'audit_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM audit_events
-WHERE id IN (
-  SELECT a.id FROM audit_events a
-  WHERE ($auditFolderClause) OR a.pw_objguid $scopeDocIn
-)
+WHERE id IN (SELECT a.id FROM audit_events a WHERE ($whereAudit))
 "@
             $deleted.processing_jobs = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'processing_jobs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM processing_jobs
-WHERE id IN (
-  SELECT j.id FROM processing_jobs j
-  WHERE ($jobFolderClause) OR j.sheet_package_id $scopePkgIn
-)
+WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($whereJobs))
 "@
 
             foreach ($k in @($deleted.Keys)) {
