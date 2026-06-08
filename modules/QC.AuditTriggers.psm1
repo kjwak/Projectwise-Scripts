@@ -219,6 +219,18 @@ WHERE folder_path = @folderPath
     }
 }
 
+function _QCAT-GetQcCompleteStateName {
+    param([hashtable]$Config = @{})
+    $completeState = 'QC Complete'
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and $wf.states -and $wf.states.complete) { $completeState = [string]$wf.states.complete }
+        } catch { }
+    }
+    return _QCAT-NormalizeValue $completeState
+}
+
 function _QCAT-GetPackageQcCompleteTransitionFromMemberResults {
     <#
     Returns package-level QC Complete transition evidence from per-member telemetry.
@@ -230,16 +242,8 @@ function _QCAT-GetPackageQcCompleteTransitionFromMemberResults {
         [hashtable]$Config = @{}
     )
 
-    $completeState = 'QC Complete'
-    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
-        try {
-            $wf = Get-QCWorkflowSettings -Config $Config
-            if ($wf -and $wf.states -and $wf.states.complete) { $completeState = [string]$wf.states.complete }
-        } catch { }
-    }
-
+    $complete = _QCAT-GetQcCompleteStateName -Config $Config
     $target = _QCAT-NormalizeValue $TargetState
-    $complete = _QCAT-NormalizeValue $completeState
     if ($target -ne $complete) { return $null }
 
     foreach ($mr in @($MemberResults)) {
@@ -253,6 +257,120 @@ function _QCAT-GetPackageQcCompleteTransitionFromMemberResults {
                 currentState = $mFinal
                 memberDocumentGuid = [string]$mr.documentGuid
                 memberRole = [string]$mr.role
+                evidenceSource = 'member_results'
+            }
+        }
+    }
+    return $null
+}
+
+function _QCAT-GetPackageQcCompleteTransitionFromSheetStateSync {
+    <#
+    Fallback for prepend writeback: sibling sync records pre-write fromState even when sheet_index
+    was already updated to QC Complete before per-member telemetry runs.
+    #>
+    param(
+        [hashtable]$Context = $null,
+        [Parameter(Mandatory)][string]$TargetState,
+        [hashtable]$Config = @{}
+    )
+
+    if (-not $Context -or -not $Context.ContainsKey('sheetStateSync')) { return $null }
+
+    $complete = _QCAT-GetQcCompleteStateName -Config $Config
+    $target = _QCAT-NormalizeValue $TargetState
+    if ($target -ne $complete) { return $null }
+
+    $sync = _QCAT-ToHashtable $Context.sheetStateSync
+    if (-not $sync -or -not $sync.ContainsKey('updates')) { return $null }
+
+    foreach ($upd in @($sync.updates)) {
+        $u = _QCAT-ToHashtable $upd
+        if (-not $u) { continue }
+        $from = _QCAT-NormalizeValue ([string]$u.fromState)
+        $to = if ($u.ContainsKey('toState') -and $u.toState) { _QCAT-NormalizeValue ([string]$u.toState) } else { $target }
+        if ($from -ne $complete -and $to -eq $complete) {
+            return @{
+                previousState = $from
+                currentState = $to
+                memberDocumentGuid = [string]$u.documentGuid
+                memberRole = ''
+                evidenceSource = 'sheet_state_sync'
+            }
+        }
+    }
+    return $null
+}
+
+function _QCAT-ResolveQCCycleIdForCompletion {
+    param(
+        [hashtable]$Config = @{},
+        [hashtable]$Context = $null,
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = ''
+    )
+
+    if (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue) {
+        try {
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $DocumentGuid -FolderPath $FolderPath -SheetStem $SheetStem
+            if ($cycle -and -not [string]::IsNullOrWhiteSpace([string]$cycle.cycleId)) {
+                $cycleNumber = $null
+                if ($null -ne $cycle.cycleNumber -and -not [string]::IsNullOrWhiteSpace([string]$cycle.cycleNumber)) {
+                    try { $cycleNumber = [int][string]$cycle.cycleNumber } catch { $cycleNumber = $null }
+                }
+                return @{
+                    cycleId = [string]$cycle.cycleId.Trim()
+                    cycleNumber = $cycleNumber
+                    source = 'sheet_index'
+                }
+            }
+        } catch { }
+    }
+
+    $sources = [System.Collections.Generic.List[object]]::new()
+    if ($Context) {
+        $sources.Add($Context) | Out-Null
+        if ($Context.ContainsKey('attributes') -and $Context.attributes) {
+            $sources.Add((_QCAT-ToHashtable $Context.attributes)) | Out-Null
+        }
+        if ($Context.ContainsKey('job') -and $Context.job) {
+            $job = _QCAT-ToHashtable $Context.job
+            if ($job) {
+                $sources.Add($job) | Out-Null
+                if ($job.ContainsKey('metadata') -and $job.metadata) {
+                    $md = _QCAT-ToHashtable $job.metadata
+                    if ($md) {
+                        $sources.Add($md) | Out-Null
+                        if ($md.ContainsKey('attributes') -and $md.attributes) {
+                            $sources.Add((_QCAT-ToHashtable $md.attributes)) | Out-Null
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    foreach ($source in @($sources)) {
+        if (-not $source) { continue }
+        $src = _QCAT-ToHashtable $source
+        if (-not $src) { continue }
+        foreach ($key in @('cycleId', 'qcCycleId', 'QC_Cycle_ID')) {
+            if (-not $src.ContainsKey($key)) { continue }
+            $value = [string]$src[$key]
+            if ([string]::IsNullOrWhiteSpace($value)) { continue }
+            if ($value -match '^(audit:|transition:)') { continue }
+            $cycleNumber = $null
+            foreach ($numKey in @('cycleNumber', 'qcCycleNumber', 'QC_Cycle_Number')) {
+                if ($src.ContainsKey($numKey) -and -not [string]::IsNullOrWhiteSpace([string]$src[$numKey])) {
+                    try { $cycleNumber = [int][string]$src[$numKey] } catch { $cycleNumber = $null }
+                    break
+                }
+            }
+            return @{
+                cycleId = $value.Trim()
+                cycleNumber = $cycleNumber
+                source = 'context'
             }
         }
     }
@@ -317,19 +435,10 @@ function _QCAT-TryRecordQCCycleCompletion {
     $docName = [string]$canonical.documentName
     $docObject = if ($canonical.document) { $canonical.document } else { $Document }
 
-    $cycleId = ''
-    $cycleNumber = $null
-    if (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue) {
-        try {
-            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $docGuid -FolderPath $FolderPath -SheetStem $SheetStem
-            if ($cycle) {
-                if ($cycle.cycleId) { $cycleId = [string]$cycle.cycleId }
-                if ($null -ne $cycle.cycleNumber -and -not [string]::IsNullOrWhiteSpace([string]$cycle.cycleNumber)) {
-                    try { $cycleNumber = [int][string]$cycle.cycleNumber } catch { $cycleNumber = $null }
-                }
-            }
-        } catch { }
-    }
+    $resolvedCycle = _QCAT-ResolveQCCycleIdForCompletion -Config $Config -Context $Context `
+        -DocumentGuid $docGuid -FolderPath $FolderPath -SheetStem $SheetStem
+    $cycleId = if ($resolvedCycle) { [string]$resolvedCycle.cycleId } else { '' }
+    $cycleNumber = if ($resolvedCycle) { $resolvedCycle.cycleNumber } else { $null }
     if ([string]::IsNullOrWhiteSpace($cycleId)) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
@@ -537,6 +646,28 @@ function Invoke-QCSheetGroupWorkflowTransition {
     $triggerRole = _QCAT-ResolveMemberFileRole -DocumentName $TriggerDocumentName
     $sheetStem = _QCAT-ResolveSheetStemFromDocumentName -DocumentName $TriggerDocumentName
 
+    if ($Context -and $Context.ContainsKey('sheetStateSync')) {
+        $syncForMembers = _QCAT-ToHashtable $Context.sheetStateSync
+        if ($syncForMembers -and $syncForMembers.ContainsKey('updates') -and @($syncForMembers.updates).Count -gt 0) {
+            $syncMembers = [System.Collections.Generic.List[object]]::new()
+            foreach ($upd in @($syncForMembers.updates)) {
+                $u = _QCAT-ToHashtable $upd
+                if (-not $u) { continue }
+                $ug = [string]$u.documentGuid
+                $un = [string]$u.documentName
+                if ([string]::IsNullOrWhiteSpace($ug) -and [string]::IsNullOrWhiteSpace($un)) { continue }
+                [void]$syncMembers.Add(@{
+                    documentGuid = $ug
+                    documentName = $un
+                    document = $null
+                })
+            }
+            if ($syncMembers.Count -gt @($Members).Count) {
+                $Members = @($syncMembers)
+            }
+        }
+    }
+
     if (@($Members).Count -eq 0 -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
         try {
             $Members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
@@ -583,7 +714,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
     if (-not $StateByGuid) { $StateByGuid = @{} }
     if (-not $PreviousStateByGuid) { $PreviousStateByGuid = @{} }
 
-    if ($PreviousStateByGuid.Keys.Count -eq 0 -and $Context -and $Context.ContainsKey('sheetStateSync')) {
+    if ($Context -and $Context.ContainsKey('sheetStateSync')) {
         $sync = _QCAT-ToHashtable $Context.sheetStateSync
         if ($sync -and $sync.ContainsKey('updates')) {
             foreach ($upd in @($sync.updates)) {
@@ -809,6 +940,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
 
     $qcCompleteTransition = _QCAT-GetPackageQcCompleteTransitionFromMemberResults -MemberResults $memberResults `
         -TargetState $target -Config $Config
+    if (-not $qcCompleteTransition) {
+        $qcCompleteTransition = _QCAT-GetPackageQcCompleteTransitionFromSheetStateSync -Context $Context `
+            -TargetState $target -Config $Config
+    }
     if ($qcCompleteTransition) {
         $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
         if (-not $sheetPdfMember) {

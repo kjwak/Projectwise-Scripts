@@ -324,6 +324,39 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid
 Assert-Eq $script:completionCalls.Count $beforeDup 'Duplicate suppression must keep one completion row'
 Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_DUPLICATE' }) 'Retry should log QC_CYCLE_COMPLETION_DUPLICATE'
 
+# Processor finalize: stale sheet_index but sheetStateSync proves package finalized
+Reset-CompletionState
+$script:cycleByGuid.Clear()
+$processorCtx = @{
+    sheetStateSync = @{
+        updates = @(
+            @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); fromState = 'QC Finalizing'; toState = 'QC Complete'; applied = $true }
+            @{ documentGuid = $sheetGuid; documentName = ($sheetStem + '.pdf'); fromState = 'QC Complete'; toState = 'QC Complete'; skipped = 'already_at_target' }
+            @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-qc.pdf'); fromState = 'QC Finalizing'; toState = 'QC Complete'; applied = $true }
+        )
+    }
+    attributes = @{
+        cycleId = 'qc_qcprepend_d0ca0819859b391d'
+        cycleNumber = '1'
+        qcReviewType = 'Production QC'
+    }
+}
+$staleIndex = @{
+    ($dgnGuid.ToLowerInvariant()) = 'QC Complete'
+    ($sheetGuid.ToLowerInvariant()) = 'QC Complete'
+    ($qcGuid.ToLowerInvariant()) = 'QC Complete'
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'automation_prepend_completion' `
+    -Members $productionMembers -PreviousStateByGuid $staleIndex -Context $processorCtx `
+    -JobId 'qc_qcprepend_d0ca0819859b391d' -JobType 'QC_PREPEND' -SuppressNotification | Out-Null
+Assert-Eq $script:completionCalls.Count 1 'Processor finalize should record completion via sheetStateSync fallback'
+Assert-Eq $script:completionCalls[0].qcCycleId 'qc_qcprepend_d0ca0819859b391d' 'Processor finalize should use context cycle id'
+Assert-Eq $script:completionCalls[0].qcReviewType 'production' 'Processor finalize should store production review type'
+Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_RECORDED' }) 'Processor finalize should log QC_CYCLE_COMPLETION_RECORDED'
+Assert-Eq $script:transitionCalls.Count 2 'Finalize should still record transitions for siblings that moved from QC Finalizing'
+
 # Dual-path duplicate: sheet group then audit trigger for same cycle/review type
 Reset-CompletionState
 $script:cycleByGuid[$sheetGuid] = @{ cycleId = 'cycle-2026-001'; cycleNumber = '3' }
