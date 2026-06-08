@@ -145,6 +145,228 @@ function _QCAT-ResolveSheetPackageNotificationMember {
     return $null
 }
 
+function _QCAT-ResolveSheetPackageSheetPdfMember {
+    param([array]$Members)
+    foreach ($member in @($Members)) {
+        $dn = [string]$member.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) { return $member }
+    }
+    return $null
+}
+
+function _QCAT-ResolveCanonicalSheetPackageIdentity {
+    <#
+    Resolves the canonical sheet PDF identity used for qc_cycle_completions and sheet_index rollups.
+    #>
+    param(
+        [hashtable]$Config = @{},
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [array]$Members = @()
+    )
+
+    $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
+    if ($sheetPdfMember) {
+        return @{
+            documentGuid = [string]$sheetPdfMember.documentGuid
+            documentName = [string]$sheetPdfMember.documentName
+            document = $sheetPdfMember.document
+            resolved = $true
+            resolution = 'sheet_package_member'
+        }
+    }
+
+    $dn = ([string]$DocumentName).Trim()
+    $dg = ([string]$DocumentGuid).Trim()
+    if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+        return @{ documentGuid = $dg; documentName = $dn; document = $null; resolved = $true; resolution = 'sheet_pdf_input' }
+    }
+
+    $stem = if (-not [string]::IsNullOrWhiteSpace($SheetStem)) { [string]$SheetStem.Trim() } else { _QCAT-ResolveSheetStemFromDocumentName -DocumentName $dn }
+    $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+    $folder = ([string]$FolderPath).Trim()
+
+    if ($folder.Length -gt 0 -and $Config -and (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue)) {
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_guid, document_name
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@pdfName)
+"@ -Parameters @{ folderPath = $folder; pdfName = $pdfName }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $row = $res.Data.table.Rows[0]
+                return @{
+                    documentGuid = [string]$row.document_guid
+                    documentName = [string]$row.document_name
+                    document = $null
+                    resolved = $true
+                    resolution = 'sheet_index_lookup'
+                }
+            }
+        } catch { }
+    }
+
+    return @{
+        documentGuid = $dg
+        documentName = $pdfName
+        document = $null
+        resolved = $false
+        resolution = 'unresolved_fallback'
+    }
+}
+
+function _QCAT-TryRecordQCCycleCompletion {
+    <#
+    Records a durable QC cycle completion when workflow transitions into QC Complete.
+    Excludes prepend/automation completion sources; idempotent via Ensure-QCCycleCompletion.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$PreviousState,
+        [Parameter(Mandatory)][string]$CurrentState,
+        [string]$TransitionSource = '',
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [Nullable[int]]$TransitionEventId = $null,
+        [string]$ChangedByUsername = '',
+        [hashtable]$Context = $null,
+        [hashtable]$PwAttributes = $null,
+        [object]$Document = $null,
+        [array]$Members = @(),
+        [bool]$DryRun = $false
+    )
+
+    $completeState = 'QC Complete'
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and $wf.states -and $wf.states.complete) { $completeState = [string]$wf.states.complete }
+        } catch { }
+    }
+
+    $prev = _QCAT-NormalizeValue $PreviousState
+    $curr = _QCAT-NormalizeValue $CurrentState
+    if ($prev -eq $completeState -or $curr -ne $completeState) { return }
+
+    $source = ([string]$TransitionSource).Trim()
+    if ($source -eq 'automation_prepend_completion') { return }
+
+    if (-not (Get-Command -Name 'Ensure-QCCycleCompletion' -ErrorAction SilentlyContinue)) { return }
+
+    $canonical = _QCAT-ResolveCanonicalSheetPackageIdentity -Config $Config -DocumentGuid $DocumentGuid `
+        -DocumentName $DocumentName -FolderPath $FolderPath -SheetStem $SheetStem -Members $Members
+    if (-not [bool]$canonical.resolved) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
+                -Message 'Skipped QC cycle completion: canonical sheet PDF identity unresolved.' -Data @{
+                documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
+                sheetStem = $SheetStem; transitionSource = $source; resolution = $canonical.resolution
+            } | Out-Null
+        }
+        return
+    }
+
+    $docGuid = [string]$canonical.documentGuid
+    $docName = [string]$canonical.documentName
+    $docObject = if ($canonical.document) { $canonical.document } else { $Document }
+
+    $cycleId = ''
+    $cycleNumber = $null
+    if (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue) {
+        try {
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $docGuid -FolderPath $FolderPath -SheetStem $SheetStem
+            if ($cycle) {
+                if ($cycle.cycleId) { $cycleId = [string]$cycle.cycleId }
+                if ($null -ne $cycle.cycleNumber -and -not [string]::IsNullOrWhiteSpace([string]$cycle.cycleNumber)) {
+                    try { $cycleNumber = [int][string]$cycle.cycleNumber } catch { $cycleNumber = $null }
+                }
+            }
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($cycleId)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
+                -Message 'Skipped QC cycle completion: qc_cycle_id unavailable.' -Data @{
+                documentGuid = $docGuid; documentName = $docName; transitionSource = $source
+            } | Out-Null
+        }
+        return
+    }
+
+    $reviewType = ''
+    if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
+        try {
+            $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $docGuid `
+                -FolderPath $FolderPath -DocumentName $docName -Context $Context -PwAttributes $PwAttributes -Document $docObject
+        } catch { }
+    }
+
+    $normalizedReviewType = $null
+    if (-not [string]::IsNullOrWhiteSpace($reviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
+        $normalizedReviewType = Get-QCReviewTypeBucket -ReviewType $reviewType
+    }
+    if (-not $normalizedReviewType) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
+                -Message 'Skipped QC cycle completion: unrecognized review type.' -Data @{
+                documentGuid = $docGuid; reviewType = $reviewType; transitionSource = $source
+            } | Out-Null
+        }
+        return
+    }
+
+    if ($DryRun) { return }
+
+    $completedBy = if ($ChangedByUsername) { [string]$ChangedByUsername.Trim() } else { '' }
+    $result = Ensure-QCCycleCompletion -Config $Config -DocumentGuid $docGuid -DocumentName $docName `
+        -QcCycleId $cycleId -QcCycleNumber $cycleNumber -QcReviewType $normalizedReviewType `
+        -TransitionEventId $TransitionEventId -AuditEventId $AuditEventId -CompletedBy $completedBy
+
+    $inserted = $false
+    $reused = $false
+    $completedAt = $null
+    if ($result.IsSuccess -and $result.Data) {
+        try { $inserted = [bool]$result.Data.inserted } catch { }
+        try { $reused = [bool]$result.Data.reused } catch { }
+        try {
+            if ($null -ne $result.Data.completedAt) { $completedAt = [datetime]$result.Data.completedAt }
+        } catch { }
+    }
+    if ($inserted -and (Get-Command -Name 'Update-QCSheetCycleCompletionSummary' -ErrorAction SilentlyContinue)) {
+        try { Update-QCSheetCycleCompletionSummary -Config $Config -DocumentGuid $docGuid | Out-Null } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        $logData = @{
+            documentGuid = $docGuid
+            cycleId = $cycleId
+            cycleNumber = $cycleNumber
+            reviewType = $reviewType
+            normalizedReviewType = $normalizedReviewType
+            completedAt = if ($completedAt) { $completedAt.ToString('o') } else { [datetime]::UtcNow.ToString('o') }
+            inserted = $inserted
+            transitionSource = $source
+            auditEventId = $AuditEventId
+            transitionEventId = $TransitionEventId
+        }
+        if ($inserted) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_CYCLE_COMPLETION_RECORDED' `
+                -Message 'QC cycle completion recorded.' -Data $logData | Out-Null
+        } elseif ($reused) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_CYCLE_COMPLETION_DUPLICATE' `
+                -Message 'QC cycle completion duplicate suppressed.' -Data $logData | Out-Null
+        }
+    }
+}
+
 function _QCAT-WriteSheetGroupMemberWorkflowEvents {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
@@ -544,6 +766,29 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 }
             }
         }
+    }
+
+    $anyTransitionRecorded = $false
+    foreach ($mr in @($memberResults)) {
+        if (-not [bool]$mr.skipped -and ([bool]$mr.transitionInserted -or [bool]$mr.transitionReused)) {
+            $anyTransitionRecorded = $true
+            break
+        }
+    }
+    if ($anyTransitionRecorded -and $packagePreviousState -ne $target) {
+        $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
+        if (-not $sheetPdfMember) {
+            $sheetPdfMember = @{
+                documentGuid = $TriggerDocumentGuid
+                documentName = $TriggerDocumentName
+                document = $null
+            }
+        }
+        _QCAT-TryRecordQCCycleCompletion -Config $Config -PreviousState $packagePreviousState -CurrentState $target `
+            -TransitionSource $TransitionSource -DocumentGuid ([string]$sheetPdfMember.documentGuid) `
+            -DocumentName ([string]$sheetPdfMember.documentName) -FolderPath $FolderPath -SheetStem $sheetStem `
+            -AuditEventId $AuditEventId -TransitionEventId $notifyTransitionId -ChangedByUsername $ChangedByUsername `
+            -Context $Context -Document $sheetPdfMember.document -Members $Members -DryRun:$DryRun
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -1493,6 +1738,13 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
             -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
             -AuditActionName $AuditActionName -PwAttributes $attrs -Document $Document `
             -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+
+        $sheetStem = _QCAT-ResolveSheetStemFromDocumentName -DocumentName $DocumentName
+        _QCAT-TryRecordQCCycleCompletion -Config $Config -PreviousState $prev -CurrentState $curr `
+            -TransitionSource 'audit_trigger' -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -SheetStem $sheetStem -AuditEventId $AuditEventId -TransitionEventId $transitionId `
+            -ChangedByUsername $ChangedByUsername -PwAttributes $attrs -Document $Document `
+            -Members $StaleCheckMembers -DryRun:$DryRun
     }
 
     if (-not $shouldNotify) { return }

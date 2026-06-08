@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.12.0'
+    $targetVersion = '1.13.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1360,6 +1360,47 @@ IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
    )
 BEGIN
     ALTER TABLE sheet_index ALTER COLUMN qc_cycle_number NVARCHAR(16) NULL;
+END
+'@
+}
+
+function _QDB-GetSchemaV1dot13Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NULL
+CREATE TABLE qc_cycle_completions (
+    id bigint IDENTITY(1,1) PRIMARY KEY,
+    document_guid uniqueidentifier NOT NULL,
+    document_name nvarchar(260) NULL,
+    qc_cycle_id nvarchar(100) NOT NULL,
+    qc_cycle_number int NULL,
+    qc_review_type nvarchar(100) NOT NULL,
+    completed_at datetime2 NOT NULL,
+    completed_by nvarchar(256) NULL,
+    transition_event_id bigint NULL,
+    audit_event_id bigint NULL,
+    created_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT UQ_qc_cycle_completions_cycle UNIQUE (document_guid, qc_cycle_id, qc_review_type)
+);
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_cycle_completions_document')
+    CREATE INDEX IX_qc_cycle_completions_document ON qc_cycle_completions (document_guid);
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_cycle_completions_completed_at')
+    CREATE INDEX IX_qc_cycle_completions_completed_at ON qc_cycle_completions (completed_at);
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.sheet_index', 'production_qc_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD production_qc_completed_count int NOT NULL CONSTRAINT DF_sheet_index_production_qc_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'production_qc_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD production_qc_last_completed_at datetime2 NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'peer_review_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD peer_review_completed_count int NOT NULL CONSTRAINT DF_sheet_index_peer_review_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'peer_review_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD peer_review_last_completed_at datetime2 NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'independent_check_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD independent_check_completed_count int NOT NULL CONSTRAINT DF_sheet_index_independent_check_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'independent_check_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD independent_check_last_completed_at datetime2 NULL;
 END
 '@
 }
@@ -3552,4 +3593,226 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+function Get-QCReviewTypeBucket {
+    <#
+    .SYNOPSIS
+    Maps QC review type labels to reporting buckets: production, peer_review, independent_check.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ReviewType
+    )
+
+    $norm = ([string]$ReviewType).Trim().ToLowerInvariant()
+    switch -Regex ($norm) {
+        '^production(\s+qc)?$|^production$|^qc$' { return 'production' }
+        '^peer(\s+review)?$|^peer_review$|^peer$' { return 'peer_review' }
+        '^independent(\s+(check|review))?$|^independent_check$|^independent$|^ic$' { return 'independent_check' }
+        default { return $null }
+    }
+}
+
+function Ensure-QCCycleCompletion {
+    <#
+    .SYNOPSIS
+    Idempotently records a completed QC cycle. Reuses existing row when unique key matches.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$QcCycleId,
+        [Parameter(Mandatory)][string]$QcReviewType,
+        [string]$DocumentName = '',
+        [Nullable[int]]$QcCycleNumber = $null,
+        [Nullable[long]]$TransitionEventId = $null,
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$CompletedBy = '',
+        [Nullable[datetime]]$CompletedAt = $null
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ inserted = $false; reused = $false; completionId = $null }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_PLANNED' -Message 'Dry-run: QC cycle completion not written.' -Data @{ inserted = $false; planned = $true; reused = $false; completionId = $null }
+    }
+
+    $docGuid = ([string]$DocumentGuid).Trim().Trim('{}')
+    $cycleId = ([string]$QcCycleId).Trim()
+    $reviewType = ([string]$QcReviewType).Trim()
+    if ([string]::IsNullOrWhiteSpace($docGuid) -or [string]::IsNullOrWhiteSpace($cycleId) -or [string]::IsNullOrWhiteSpace($reviewType)) {
+        return New-QCFailureResult -Code 'QC_CYCLE_COMPLETION_INVALID' -Message 'DocumentGuid, QcCycleId, and QcReviewType are required.' -Data @{ inserted = $false; reused = $false; completionId = $null }
+    }
+
+    try {
+        $existing = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, completed_at
+FROM qc_cycle_completions
+WHERE document_guid = @documentGuid
+  AND qc_cycle_id = @qcCycleId
+  AND qc_review_type = @qcReviewType
+"@ -Parameters @{
+            documentGuid = $docGuid
+            qcCycleId = $cycleId
+            qcReviewType = $reviewType
+        }
+        if ($existing.IsSuccess -and $existing.Data.table -and $existing.Data.table.Rows.Count -gt 0) {
+            $row = $existing.Data.table.Rows[0]
+            return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_REUSED' -Message 'Existing qc_cycle_completions row reused.' -Data @{
+                inserted = $false; reused = $true; completionId = [long]$row.id
+                completedAt = if ($row.completed_at -is [DBNull]) { $null } else { [datetime]$row.completed_at }
+            }
+        }
+    } catch { }
+
+    $completedAtValue = if ($null -ne $CompletedAt) { $CompletedAt } else { [datetime]::UtcNow }
+    try {
+        $sql = @"
+INSERT INTO qc_cycle_completions
+    (document_guid, document_name, qc_cycle_id, qc_cycle_number, qc_review_type, completed_at, completed_by, transition_event_id, audit_event_id)
+OUTPUT INSERTED.id
+VALUES
+    (@documentGuid, @documentName, @qcCycleId, @qcCycleNumber, @qcReviewType, @completedAt, @completedBy, @transitionEventId, @auditEventId)
+"@
+        $params = @{
+            documentGuid = $docGuid
+            documentName = if ($DocumentName) { $DocumentName } else { $null }
+            qcCycleId = $cycleId
+            qcCycleNumber = if ($null -ne $QcCycleNumber) { $QcCycleNumber } else { $null }
+            qcReviewType = $reviewType
+            completedAt = $completedAtValue
+            completedBy = if ($CompletedBy) { $CompletedBy } else { $null }
+            transitionEventId = if ($null -ne $TransitionEventId) { $TransitionEventId } else { $null }
+            auditEventId = if ($null -ne $AuditEventId) { $AuditEventId } else { $null }
+        }
+        $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            $msg = [string]$dbRes.Message
+            if ($msg -match 'UQ_qc_cycle_completions_cycle|duplicate key|2601|2627') {
+                try {
+                    $dup = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, completed_at FROM qc_cycle_completions
+WHERE document_guid = @documentGuid AND qc_cycle_id = @qcCycleId AND qc_review_type = @qcReviewType
+"@ -Parameters @{ documentGuid = $docGuid; qcCycleId = $cycleId; qcReviewType = $reviewType }
+                    if ($dup.IsSuccess -and $dup.Data.table -and $dup.Data.table.Rows.Count -gt 0) {
+                        $dupRow = $dup.Data.table.Rows[0]
+                        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_REUSED' -Message 'QC cycle completion duplicate suppressed by unique constraint.' -Data @{
+                            inserted = $false; reused = $true; completionId = [long]$dupRow.id
+                            completedAt = if ($dupRow.completed_at -is [DBNull]) { $null } else { [datetime]$dupRow.completed_at }
+                        }
+                    }
+                } catch { }
+            }
+            return New-QCErrorResult -Code 'QC_CYCLE_COMPLETION_WRITE_FAILED' -Message $msg -Data @{ inserted = $false; reused = $false; completionId = $null }
+        }
+        $completionId = $null
+        if ($null -ne $dbRes.Data.value) {
+            try { $completionId = [long]$dbRes.Data.value } catch { $completionId = $null }
+        }
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_WRITTEN' -Message 'qc_cycle_completions row inserted.' -Data @{
+            inserted = $true; reused = $false; completionId = $completionId; completedAt = $completedAtValue
+        }
+    } catch {
+        return New-QCErrorResult -Code 'QC_CYCLE_COMPLETION_EXCEPTION' -Message $_.Exception.Message -Data @{ inserted = $false; reused = $false; completionId = $null }
+    }
+}
+
+function Update-QCSheetCycleCompletionSummary {
+    <#
+    .SYNOPSIS
+    Rebuilds sheet_index QC completion summary columns from qc_cycle_completions for one document.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_PLANNED' -Message 'Dry-run: sheet_index completion summary not updated.' -Data @{ written = $false; planned = $true }
+    }
+
+    $docGuid = ([string]$DocumentGuid).Trim().Trim('{}')
+    if ([string]::IsNullOrWhiteSpace($docGuid)) {
+        return New-QCFailureResult -Code 'QC_CYCLE_SUMMARY_INVALID' -Message 'DocumentGuid is required.' -Data @{ written = $false }
+    }
+
+    try {
+        $aggRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_review_type, COUNT(*) AS completed_count, MAX(completed_at) AS last_completed_at
+FROM qc_cycle_completions
+WHERE document_guid = @documentGuid
+GROUP BY qc_review_type
+"@ -Parameters @{ documentGuid = $docGuid }
+
+        $productionCount = 0; $productionLast = $null
+        $peerCount = 0; $peerLast = $null
+        $independentCount = 0; $independentLast = $null
+
+        if ($aggRes.IsSuccess -and $aggRes.Data.table) {
+            foreach ($row in @($aggRes.Data.table.Rows)) {
+                $rt = if ($row.qc_review_type -is [DBNull]) { '' } else { [string]$row.qc_review_type }
+                $bucket = Get-QCReviewTypeBucket -ReviewType $rt
+                if (-not $bucket) { continue }
+                $cnt = 0
+                try { $cnt = [int]$row.completed_count } catch { $cnt = 0 }
+                $lastAt = $null
+                if ($row.last_completed_at -isnot [DBNull]) {
+                    try { $lastAt = [datetime]$row.last_completed_at } catch { $lastAt = $null }
+                }
+                switch ($bucket) {
+                    'production' {
+                        $productionCount += $cnt
+                        if ($null -eq $productionLast -or ($null -ne $lastAt -and $lastAt -gt $productionLast)) { $productionLast = $lastAt }
+                    }
+                    'peer_review' {
+                        $peerCount += $cnt
+                        if ($null -eq $peerLast -or ($null -ne $lastAt -and $lastAt -gt $peerLast)) { $peerLast = $lastAt }
+                    }
+                    'independent_check' {
+                        $independentCount += $cnt
+                        if ($null -eq $independentLast -or ($null -ne $lastAt -and $lastAt -gt $independentLast)) { $independentLast = $lastAt }
+                    }
+                }
+            }
+        }
+
+        $upd = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET production_qc_completed_count = @productionCount,
+    production_qc_last_completed_at = @productionLast,
+    peer_review_completed_count = @peerCount,
+    peer_review_last_completed_at = @peerLast,
+    independent_check_completed_count = @independentCount,
+    independent_check_last_completed_at = @independentLast,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @documentGuid
+"@ -Parameters @{
+            documentGuid = $docGuid
+            productionCount = $productionCount
+            productionLast = if ($null -ne $productionLast) { $productionLast } else { $null }
+            peerCount = $peerCount
+            peerLast = if ($null -ne $peerLast) { $peerLast } else { $null }
+            independentCount = $independentCount
+            independentLast = if ($null -ne $independentLast) { $independentLast } else { $null }
+        }
+
+        if (-not $upd.IsSuccess) {
+            return New-QCErrorResult -Code 'QC_CYCLE_SUMMARY_UPDATE_FAILED' -Message $upd.Message -Data @{ written = $false }
+        }
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_UPDATED' -Message 'sheet_index completion summary rebuilt from qc_cycle_completions.' -Data @{
+            written = $true
+            productionQcCompletedCount = $productionCount
+            peerReviewCompletedCount = $peerCount
+            independentCheckCompletedCount = $independentCount
+        }
+    } catch {
+        return New-QCErrorResult -Code 'QC_CYCLE_SUMMARY_EXCEPTION' -Message $_.Exception.Message -Data @{ written = $false }
+    }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
