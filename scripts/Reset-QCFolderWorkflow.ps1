@@ -492,7 +492,7 @@ WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($sourceFolderClause))
 "@
             if (-not $KeepSheetIndexQcFields.IsPresent) {
                 $sheetSql = @"
-UPDATE sheet_index
+UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
     qc_stage = NULL,
@@ -501,16 +501,18 @@ SET pw_state_name = @targetState,
 $completionResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
+FROM sheet_index si
 WHERE ($siFolderClause)
 "@
             } else {
                 $sheetSql = @"
-UPDATE sheet_index
+UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
 $completionResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
+FROM sheet_index si
 WHERE ($siFolderClause)
 "@
             }
