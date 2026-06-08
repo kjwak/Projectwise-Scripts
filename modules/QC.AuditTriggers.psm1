@@ -608,7 +608,8 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
             _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
                 -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobId $JobId -JobType $jobTypeValue `
                 -EventType 'STATE_CHANGE' -AuditActionName $AuditActionName -Context $Context -Document $Document `
-                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+                -TransitionEventId $result.transitionId
             $result.mirrorInserted = $true
         }
     }
@@ -1520,7 +1521,8 @@ function _QCAT-WriteWorkflowEventMirror {
         [hashtable]$PwAttributes = $null,
         [object]$Document = $null,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [Nullable[int]]$TransitionEventId = $null
     )
 
     if (-not (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue)) { return }
@@ -1538,7 +1540,7 @@ function _QCAT-WriteWorkflowEventMirror {
     try { $payloadJson = ($payload | ConvertTo-Json -Compress) } catch { }
     Write-QCWorkflowEventRow -Config $Config -DocumentId $DocumentGuid -JobId $JobId -EventType $EventType `
         -PreviousPwState $FromValue -TargetPwState $ToValue -DecisionCode $JobType -PayloadJson $payloadJson `
-        -QcReviewType $QcReviewType | Out-Null
+        -QcReviewType $QcReviewType -TransitionEventId $TransitionEventId | Out-Null
 }
 
 function _QCAT-ResolveSheetStemFromDocumentName {
@@ -1914,7 +1916,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobType 'audit_trigger' -EventType 'STATE_CHANGE' `
             -AuditActionName $AuditActionName -PwAttributes $attrs -Document $Document `
-            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername -TransitionEventId $transitionId
 
         $sheetStem = _QCAT-ResolveSheetStemFromDocumentName -DocumentName $DocumentName
         _QCAT-TryRecordQCCycleCompletion -Config $Config -PreviousState $prev -CurrentState $curr `
@@ -2232,9 +2234,14 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
                 if ($tr.IsSuccess -and $tr.Data -and $tr.Data.reused -eq $true) { $reused = $true }
             } catch { }
             if ($written -or $reused) {
+                $mirrorTransitionId = $null
+                if ($tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
+                    try { $mirrorTransitionId = [int]$tr.Data.transitionId } catch { }
+                }
                 _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
                     -FolderPath $id.folderPath -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType `
-                    -EventType 'STATE_CHANGE' -Context $Context -Document $(if ($Context -and $Context.document) { $Context.document } else { $null })
+                    -EventType 'STATE_CHANGE' -Context $Context -Document $(if ($Context -and $Context.document) { $Context.document } else { $null }) `
+                    -TransitionEventId $mirrorTransitionId
             }
         }
     }

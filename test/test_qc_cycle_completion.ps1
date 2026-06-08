@@ -60,7 +60,8 @@ function Write-QCWorkflowEventRow {
     param(
         [hashtable]$Config, [string]$DocumentId = '', [string]$JobId = '',
         [string]$EventType = '', [string]$PreviousPwState = '', [string]$TargetPwState = '',
-        [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = ''
+        [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = '',
+        [Nullable[int]]$TransitionEventId = $null
     )
     $script:workflowEvents.Add(@{ documentId = $DocumentId; eventType = $EventType }) | Out-Null
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }

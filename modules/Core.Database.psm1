@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.13.0'
+    $targetVersion = '1.14.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through processing_jobs.dedupe_key NVARCHAR(500)")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through qc_workflow_events.transition_event_id")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -1405,6 +1405,16 @@ END
 '@
 }
 
+function _QDB-GetSchemaV1dot14Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_event_id') IS NULL
+    ALTER TABLE qc_workflow_events ADD transition_event_id INT NULL;
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_transition_event')
+    CREATE INDEX IX_qc_workflow_events_transition_event ON qc_workflow_events (transition_event_id);
+'@
+}
+
 function _QDB-GetSchemaV1dot9Additive {
     return @'
 GO
@@ -2160,6 +2170,7 @@ function Write-QCWorkflowEventRow {
         [string]$ProcessorVersion = '',
         [string]$QcReviewType = '',
         [string]$PayloadJson = '',
+        [Nullable[int]]$TransitionEventId = $null,
         [switch]$PlannedOnly
     )
 
@@ -2188,9 +2199,9 @@ function Write-QCWorkflowEventRow {
     try {
         $sql = @"
 INSERT INTO qc_workflow_events
-    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json)
+    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json, transition_event_id)
 VALUES
-    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload)
+    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload, @transitionEventId)
 "@
         $params = @{
             runId = if ($null -ne $RunId -and $RunId -gt 0) { $RunId } else { [DBNull]::Value }
@@ -2203,6 +2214,7 @@ VALUES
             procVer = if ($ProcessorVersion) { $ProcessorVersion } else { [DBNull]::Value }
             qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
             payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
+            transitionEventId = if ($null -ne $TransitionEventId -and $TransitionEventId -gt 0) { [int]$TransitionEventId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {

@@ -77,7 +77,8 @@ function Write-QCWorkflowEventRow {
     param(
         [hashtable]$Config, [string]$DocumentId = '', [string]$JobId = '',
         [string]$EventType = '', [string]$PreviousPwState = '', [string]$TargetPwState = '',
-        [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = ''
+        [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = '',
+        [Nullable[int]]$TransitionEventId = $null
     )
     $script:workflowEvents.Add(@{
         documentId = $DocumentId
@@ -85,6 +86,7 @@ function Write-QCWorkflowEventRow {
         previousPwState = $PreviousPwState
         targetPwState = $TargetPwState
         decisionCode = $DecisionCode
+        transitionEventId = $TransitionEventId
     }) | Out-Null
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
 }
@@ -156,6 +158,9 @@ $r1 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $d
     -PreviousStateByGuid $prevMap -AuditEventId 5001 -ChangedByUser 7 -ChangedByUsername 'human.user'
 Assert-Eq $script:historyCalls.Count 3 'DGN trigger: history for all siblings'
 Assert-Eq $script:transitionCalls.Count 3 'DGN trigger: transitions for all siblings'
+Assert-Eq $script:workflowEvents.Count 3 'DGN trigger: workflow mirror per sibling'
+Assert-True (@($script:workflowEvents | Where-Object { $null -ne $_.transitionEventId -and $_.transitionEventId -gt 0 }).Count -eq 3) `
+    'Workflow mirror rows should link to transition_events.id'
 Assert-Eq $script:notificationCalls 1 'DGN trigger: one notification per sheet group'
 
 # 2. User changes Sheet PDF

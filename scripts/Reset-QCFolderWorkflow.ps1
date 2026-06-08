@@ -12,9 +12,11 @@ For a single Sheets (or any) folder:
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
 sheet_index rows are never deleted. By default the script updates pw_state_name (and clears
-qc_stage/qc_status unless -KeepSheetIndexQcFields), zeros QC cycle completion summary columns,
-and deletes qc_cycle_completions rows for the folder. Pass -SkipSheetIndexUpdate to leave
-sheet_index completely unchanged. Does not remove queue JSON jobs
+qc_stage/qc_status unless -KeepSheetIndexQcFields), clears qc_cycle_id/qc_cycle_number, zeros
+production_qc_completed_count, production_qc_last_completed_at, peer_review_completed_count,
+peer_review_last_completed_at, independent_check_completed_count, and
+independent_check_last_completed_at, and deletes qc_cycle_completions rows for the folder.
+Pass -SkipSheetIndexUpdate to leave sheet_index completely unchanged. Does not remove queue JSON jobs
 (use Purge-QCPendingByFilters or manual queue cleanup separately).
 
 Does not delete ProjectWise documents or sheet_index rows.
@@ -339,10 +341,28 @@ WHERE ($sourceFolderClause)
 "@
 
     $sheetIndexMatched = 0L
+    $sheetIndexCompletionData = 0L
     if (-not $SkipSheetIndexUpdate.IsPresent) {
         $sheetIndexMatched = _RQCF-GetScalar -Config $config -Params $params -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause)
 "@
+        try {
+            $sheetIndexCompletionData = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_index si
+WHERE ($siFolderClause)
+  AND (
+    si.qc_cycle_id IS NOT NULL
+    OR ISNULL(si.production_qc_completed_count, 0) > 0
+    OR si.production_qc_last_completed_at IS NOT NULL
+    OR ISNULL(si.peer_review_completed_count, 0) > 0
+    OR si.peer_review_last_completed_at IS NOT NULL
+    OR ISNULL(si.independent_check_completed_count, 0) > 0
+    OR si.independent_check_last_completed_at IS NOT NULL
+  )
+"@
+        } catch {
+            $sheetIndexCompletionData = 0L
+        }
     }
 
     if ($IncludeCommentTelemetry.IsPresent) {
@@ -365,7 +385,12 @@ WHERE r.document_id IN ($guidSub)
 "@
     }
 
-    $summary.database = @{ rowsMatched = $dbCounts; deleted = [ordered]@{}; sheetIndexMatched = $sheetIndexMatched }
+    $summary.database = @{
+        rowsMatched = $dbCounts
+        deleted = [ordered]@{}
+        sheetIndexMatched = $sheetIndexMatched
+        sheetIndexCompletionData = $sheetIndexCompletionData
+    }
     Write-Host '  Telemetry rows to delete:' -ForegroundColor Gray
     foreach ($k in @($dbCounts.Keys)) {
         Write-Host ("    {0}: {1}" -f $k, $dbCounts[$k]) -ForegroundColor Gray
@@ -374,6 +399,7 @@ WHERE r.document_id IN ($guidSub)
         Write-Host '  sheet_index: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
     } else {
         Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
+        Write-Host ('  sheet_index completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetIndexCompletionData) -ForegroundColor DarkGray
     }
 
     if ($doApply) {
@@ -493,7 +519,7 @@ WHERE ($siFolderClause)
                 $upd = Invoke-QCDatabaseNonQuery -Config $config -Sql $sheetSql -Parameters $params
                 if (-not $upd.IsSuccess) { throw $upd.Message }
                 $summary.sheetIndexUpdated = [int]$upd.Data.rowsAffected
-                Write-Host ('  [sheet_index] updated {0} row(s) (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_cycle_id/number, production/peer/independent completion counts and last_completed_at cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
             }
         } else {
             Write-Host '  [sheet_index] skipped (-SkipSheetIndexUpdate).' -ForegroundColor DarkGray
