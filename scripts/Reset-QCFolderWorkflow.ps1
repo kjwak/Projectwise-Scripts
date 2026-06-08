@@ -359,7 +359,7 @@ if (-not $SkipDatabase.IsPresent) {
     $dbConn = $sessionRes.Data.session.connection
     try {
         Write-Host '[Database] Building folder scope (#rqcf_pkg / #rqcf_doc)...' -ForegroundColor Cyan
-        [void]_RQCF-RunNonQueryConn -Connection $dbConn -Sql $scopeInitSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+        $null = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $scopeInitSql -Params $params -CommandTimeout $QueryTimeoutSeconds
 
         $scopePkgIn = 'IN (SELECT sheet_package_id FROM #rqcf_pkg)'
         $scopeDocIn = 'IN (SELECT document_guid FROM #rqcf_doc)'
