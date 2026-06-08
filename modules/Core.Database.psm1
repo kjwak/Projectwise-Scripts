@@ -3721,7 +3721,7 @@ WHERE document_guid = @documentGuid AND qc_cycle_id = @qcCycleId AND qc_review_t
 function Update-QCSheetCycleCompletionSummary {
     <#
     .SYNOPSIS
-    Rebuilds sheet_index QC completion summary columns from qc_cycle_completions for one document.
+    Rebuilds sheet_index QC completion summary columns from qc_cycle_completions for the canonical DGN document.
     #>
     [CmdletBinding()]
     param(

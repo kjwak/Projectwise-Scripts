@@ -155,9 +155,19 @@ function _QCAT-ResolveSheetPackageSheetPdfMember {
     return $null
 }
 
+function _QCAT-ResolveSheetPackageDgnMember {
+    param([array]$Members)
+    foreach ($member in @($Members)) {
+        $dn = [string]$member.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if ($dn -match '(?i)\.dgn$') { return $member }
+    }
+    return $null
+}
+
 function _QCAT-ResolveCanonicalSheetPackageIdentity {
     <#
-    Resolves the canonical sheet PDF identity used for qc_cycle_completions and sheet_index rollups.
+    Resolves the canonical DGN identity used for qc_cycle_completions and sheet_index rollups.
     #>
     param(
         [hashtable]$Config = @{},
@@ -168,25 +178,25 @@ function _QCAT-ResolveCanonicalSheetPackageIdentity {
         [array]$Members = @()
     )
 
-    $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
-    if ($sheetPdfMember) {
+    $dgnMember = _QCAT-ResolveSheetPackageDgnMember -Members $Members
+    if ($dgnMember -and -not [string]::IsNullOrWhiteSpace([string]$dgnMember.documentGuid)) {
         return @{
-            documentGuid = [string]$sheetPdfMember.documentGuid
-            documentName = [string]$sheetPdfMember.documentName
-            document = $sheetPdfMember.document
+            documentGuid = [string]$dgnMember.documentGuid
+            documentName = [string]$dgnMember.documentName
+            document = $dgnMember.document
             resolved = $true
-            resolution = 'sheet_package_member'
+            resolution = 'sheet_package_dgn_member'
         }
     }
 
     $dn = ([string]$DocumentName).Trim()
     $dg = ([string]$DocumentGuid).Trim()
-    if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
-        return @{ documentGuid = $dg; documentName = $dn; document = $null; resolved = $true; resolution = 'sheet_pdf_input' }
+    if (($dn -match '(?i)\.dgn$') -and -not [string]::IsNullOrWhiteSpace($dg)) {
+        return @{ documentGuid = $dg; documentName = $dn; document = $null; resolved = $true; resolution = 'dgn_input' }
     }
 
     $stem = if (-not [string]::IsNullOrWhiteSpace($SheetStem)) { [string]$SheetStem.Trim() } else { _QCAT-ResolveSheetStemFromDocumentName -DocumentName $dn }
-    $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+    $dgnName = if ($stem -match '(?i)\.dgn$') { $stem } else { $stem + '.dgn' }
     $folder = ([string]$FolderPath).Trim()
 
     if ($folder.Length -gt 0 -and $Config -and (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue)) {
@@ -195,8 +205,8 @@ function _QCAT-ResolveCanonicalSheetPackageIdentity {
 SELECT TOP 1 document_guid, document_name
 FROM sheet_index
 WHERE folder_path = @folderPath
-  AND LOWER(document_name) = LOWER(@pdfName)
-"@ -Parameters @{ folderPath = $folder; pdfName = $pdfName }
+  AND LOWER(document_name) = LOWER(@dgnName)
+"@ -Parameters @{ folderPath = $folder; dgnName = $dgnName }
             if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
                 $row = $res.Data.table.Rows[0]
                 return @{
@@ -204,7 +214,7 @@ WHERE folder_path = @folderPath
                     documentName = [string]$row.document_name
                     document = $null
                     resolved = $true
-                    resolution = 'sheet_index_lookup'
+                    resolution = 'sheet_index_dgn_lookup'
                 }
             }
         } catch { }
@@ -212,10 +222,10 @@ WHERE folder_path = @folderPath
 
     return @{
         documentGuid = $dg
-        documentName = $pdfName
+        documentName = $dgnName
         document = $null
         resolved = $false
-        resolution = 'unresolved_fallback'
+        resolution = 'canonical_dgn_not_found'
     }
 }
 
@@ -423,9 +433,10 @@ function _QCAT-TryRecordQCCycleCompletion {
     if (-not [bool]$canonical.resolved) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
-                -Message 'Skipped QC cycle completion: canonical sheet PDF identity unresolved.' -Data @{
+                -Message 'Skipped QC cycle completion: canonical DGN identity unresolved.' -Data @{
                 documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-                sheetStem = $SheetStem; transitionSource = $source; resolution = $canonical.resolution
+                sheetStem = $SheetStem; transitionSource = $source; reason = 'canonical_dgn_not_found'
+                resolution = $canonical.resolution
             } | Out-Null
         }
         return
@@ -450,10 +461,14 @@ function _QCAT-TryRecordQCCycleCompletion {
     }
 
     $reviewType = ''
+    $reviewSourceMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
+    $reviewDocGuid = if ($reviewSourceMember) { [string]$reviewSourceMember.documentGuid } else { $docGuid }
+    $reviewDocName = if ($reviewSourceMember) { [string]$reviewSourceMember.documentName } else { $docName }
+    $reviewDocObject = if ($reviewSourceMember -and $reviewSourceMember.document) { $reviewSourceMember.document } else { $docObject }
     if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
         try {
-            $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $docGuid `
-                -FolderPath $FolderPath -DocumentName $docName -Context $Context -PwAttributes $PwAttributes -Document $docObject
+            $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $reviewDocGuid `
+                -FolderPath $FolderPath -DocumentName $reviewDocName -Context $Context -PwAttributes $PwAttributes -Document $reviewDocObject
         } catch { }
     }
 
@@ -945,20 +960,12 @@ function Invoke-QCSheetGroupWorkflowTransition {
             -TargetState $target -Config $Config
     }
     if ($qcCompleteTransition) {
-        $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
-        if (-not $sheetPdfMember) {
-            $sheetPdfMember = @{
-                documentGuid = $TriggerDocumentGuid
-                documentName = $TriggerDocumentName
-                document = $null
-            }
-        }
         _QCAT-TryRecordQCCycleCompletion -Config $Config `
             -PreviousState ([string]$qcCompleteTransition.previousState) -CurrentState ([string]$qcCompleteTransition.currentState) `
-            -TransitionSource $TransitionSource -DocumentGuid ([string]$sheetPdfMember.documentGuid) `
-            -DocumentName ([string]$sheetPdfMember.documentName) -FolderPath $FolderPath -SheetStem $sheetStem `
+            -TransitionSource $TransitionSource -DocumentGuid $TriggerDocumentGuid `
+            -DocumentName $TriggerDocumentName -FolderPath $FolderPath -SheetStem $sheetStem `
             -AuditEventId $AuditEventId -TransitionEventId $notifyTransitionId -ChangedByUsername $ChangedByUsername `
-            -Context $Context -Document $sheetPdfMember.document -Members $Members -DryRun:$DryRun
+            -Context $Context -Members $Members -DryRun:$DryRun
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

@@ -12,7 +12,8 @@ For a single Sheets (or any) folder:
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
 sheet_index rows are never deleted. By default the script updates pw_state_name (and clears
-qc_stage/qc_status unless -KeepSheetIndexQcFields). Pass -SkipSheetIndexUpdate to leave
+qc_stage/qc_status unless -KeepSheetIndexQcFields), zeros QC cycle completion summary columns,
+and deletes qc_cycle_completions rows for the folder. Pass -SkipSheetIndexUpdate to leave
 sheet_index completely unchanged. Does not remove queue JSON jobs
 (use Purge-QCPendingByFilters or manual queue cleanup separately).
 
@@ -324,6 +325,10 @@ WHERE document_guid IN ($guidSub) OR ($folderPathClause)
 SELECT COUNT_BIG(1) FROM qc_workflow_events w
 WHERE w.document_id IN ($guidSub)
 "@
+    $dbCounts.qc_cycle_completions = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+SELECT COUNT_BIG(1) FROM qc_cycle_completions
+WHERE document_guid IN ($guidSub)
+"@
     $dbCounts.audit_events = _RQCF-GetScalar -Config $config -Params $params -Sql @"
 SELECT COUNT_BIG(1) FROM audit_events
 WHERE ($resolvedFolderClause) OR pw_objguid IN ($guidSub)
@@ -409,6 +414,10 @@ WHERE id IN (
 DELETE TOP (@batchSize) FROM qc_workflow_events
 WHERE event_id IN (SELECT w.event_id FROM qc_workflow_events w WHERE w.document_id IN ($guidSub))
 "@
+        $deleted.qc_cycle_completions = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_cycle_completions' -Sql @"
+DELETE TOP (@batchSize) FROM qc_cycle_completions
+WHERE id IN (SELECT c.id FROM qc_cycle_completions c WHERE c.document_guid IN ($guidSub))
+"@
         $deleted.transition_events = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'transition_events' -Sql @"
 DELETE TOP (@batchSize) FROM transition_events
 WHERE id IN (
@@ -447,6 +456,14 @@ WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($sourceFolderClause))
         }
 
         if (-not $SkipSheetIndexUpdate.IsPresent) {
+            $completionResetSql = @"
+    production_qc_completed_count = 0,
+    production_qc_last_completed_at = NULL,
+    peer_review_completed_count = 0,
+    peer_review_last_completed_at = NULL,
+    independent_check_completed_count = 0,
+    independent_check_last_completed_at = NULL,
+"@
             if (-not $KeepSheetIndexQcFields.IsPresent) {
                 $sheetSql = @"
 UPDATE sheet_index
@@ -454,14 +471,20 @@ SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
     qc_stage = NULL,
     qc_status = NULL,
-    last_audit_event_at = NULL
+    last_audit_event_at = NULL,
+$completionResetSql
+    qc_cycle_id = NULL,
+    qc_cycle_number = NULL
 WHERE ($siFolderClause)
 "@
             } else {
                 $sheetSql = @"
 UPDATE sheet_index
 SET pw_state_name = @targetState,
-    last_updated_at = SYSDATETIMEOFFSET()
+    last_updated_at = SYSDATETIMEOFFSET(),
+$completionResetSql
+    qc_cycle_id = NULL,
+    qc_cycle_number = NULL
 WHERE ($siFolderClause)
 "@
             }
