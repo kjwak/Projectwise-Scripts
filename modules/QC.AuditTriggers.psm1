@@ -90,6 +90,495 @@ function Get-QCPrependStateTransitionDedupeKey {
     return ('sheet:' + $stem + '|' + $triggerPart + 'from:' + $from + '|to:' + $to)
 }
 
+function Get-QCSheetGroupTransitionKey {
+    <#
+    .SYNOPSIS
+    Stable logical transition key for one sheet-group member (idempotency across siblings and retries).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$SheetStem = '',
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$TargetState,
+        [string]$TransitionSource = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$JobId = ''
+    )
+    $stem = ([string]$SheetStem).Trim().ToLowerInvariant()
+    $guid = ([string]$DocumentGuid).Trim().ToLowerInvariant()
+    $to = ([string]$TargetState).Trim().ToLowerInvariant()
+    $src = ([string]$TransitionSource).Trim().ToLowerInvariant()
+    if ($guid.Length -eq 0 -or $to.Length -eq 0) { return $null }
+    $anchor = ''
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
+        $anchor = 'audit:' + [string]$AuditEventId
+    } elseif (-not [string]::IsNullOrWhiteSpace($JobId)) {
+        $anchor = 'job:' + ([string]$JobId).Trim().ToLowerInvariant()
+    }
+    if ($anchor.Length -eq 0) { return $null }
+    if ($stem.Length -eq 0) { $stem = '_' }
+    return ('sg|' + $stem + '|' + $guid + '|' + $to + '|' + $anchor + '|' + $src)
+}
+
+function _QCAT-ResolveMemberFileRole {
+    param([string]$DocumentName)
+    $dn = [string]$DocumentName
+    if ($dn -match '(?i)-qc\.pdf$') { return 'qcPdf' }
+    if ($dn -match '(?i)\.dgn$') { return 'dgn' }
+    if ($dn -match '(?i)\.pdf$') { return 'pdf' }
+    return 'other'
+}
+
+function _QCAT-ResolveSheetPackageNotificationMember {
+    param([array]$Members)
+    $qcPdf = $null
+    $sheetPdf = $null
+    foreach ($member in @($Members)) {
+        $dn = [string]$member.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { $qcPdf = $member; break }
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$') -and -not $sheetPdf) { $sheetPdf = $member }
+    }
+    if ($qcPdf) { return $qcPdf }
+    if ($sheetPdf) { return $sheetPdf }
+    if (@($Members).Count -gt 0) { return $Members[0] }
+    return $null
+}
+
+function _QCAT-WriteSheetGroupMemberWorkflowEvents {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [AllowEmptyString()][string]$PreviousState = '',
+        [Parameter(Mandatory)][string]$CurrentState,
+        [string]$TransitionSource = '',
+        [string]$AuditActionName = 'DOCUMENT_STATE',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [object]$Document = $null,
+        [hashtable]$Context = $null,
+        [bool]$DryRun = $false
+    )
+
+    $prev = _QCAT-NormalizeValue $PreviousState
+    $curr = _QCAT-NormalizeValue $CurrentState
+    $result = @{
+        documentGuid = $DocumentGuid
+        documentName = $DocumentName
+        previousState = $prev
+        currentState = $curr
+        historyInserted = $false
+        transitionInserted = $false
+        transitionReused = $false
+        mirrorInserted = $false
+        skipped = $false
+        skipReason = ''
+        transitionId = $null
+    }
+
+    if ($prev -eq $curr) {
+        $result.skipped = $true
+        $result.skipReason = 'no_state_change'
+        return $result
+    }
+
+    if (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $Config -PreviousState $prev -CurrentState $curr) {
+        $result.skipped = $true
+        $result.skipReason = 'baseline_seed_suppressed'
+        return $result
+    }
+
+    if ([bool]$Settings.recordStateHistory) {
+        $hist = Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
+            -FieldName 'pw_state_name' -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -SourceAuditId $AuditEventId
+        try {
+            if ($hist.IsSuccess -and $hist.Data -and $hist.Data.written -eq $true) { $result.historyInserted = $true }
+        } catch { }
+    }
+
+    if ([bool]$Settings.recordTransitions) {
+        $jobTypeValue = if ($JobType) { $JobType } elseif ($TransitionSource -eq 'automation_prepend_completion') { 'QC_PREPEND' } else { 'audit_trigger' }
+        $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
+            -JobId $JobId -JobType $jobTypeValue -TriggerAuditId $AuditEventId `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+        if ($tr.IsSuccess -and $tr.Data) {
+            try {
+                if ($null -ne $tr.Data.transitionId) { $result.transitionId = [int]$tr.Data.transitionId }
+            } catch { }
+            try {
+                if ($tr.Data.written -eq $true) { $result.transitionInserted = $true }
+                if ($tr.Data.reused -eq $true) { $result.transitionReused = $true }
+            } catch { }
+        }
+        if ($result.transitionInserted -or $result.transitionReused) {
+            _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+                -FolderPath $FolderPath -FromValue $prev -ToValue $curr -JobId $JobId -JobType $jobTypeValue `
+                -EventType 'STATE_CHANGE' -AuditActionName $AuditActionName -Context $Context -Document $Document `
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+            $result.mirrorInserted = $true
+        }
+    }
+
+    return $result
+}
+
+function Invoke-QCSheetGroupWorkflowTransition {
+    <#
+    .SYNOPSIS
+    Records workflow telemetry and optional notifications for every resolved sheet-group sibling.
+    .DESCRIPTION
+    Pairs workflow state synchronization with lifecycle event recording across DGN, sheet PDF, and QC PDF.
+    The triggering document may be any sibling; notifications emit once per logical sheet-group transition.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$TriggerDocumentGuid,
+        [Parameter(Mandatory)][string]$TriggerDocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$SourceState = '',
+        [Parameter(Mandatory)][string]$TargetState,
+        [Parameter(Mandatory)][string]$TransitionSource,
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = $null,
+        [hashtable]$PreviousStateByGuid = $null,
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$JobId = '',
+        [string]$JobType = '',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false,
+        [switch]$SuppressNotification,
+        [hashtable]$Context = $null,
+        [string]$AuditActionName = 'DOCUMENT_STATE'
+    )
+
+    $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if (-not [bool]$settings.enabled) {
+        return @{ skipped = $true; skipReason = 'workflow_triggers_disabled'; members = @() }
+    }
+
+    $target = _QCAT-NormalizeValue $TargetState
+    if ([string]::IsNullOrWhiteSpace($target)) {
+        return @{ skipped = $true; skipReason = 'empty_target_state'; members = @() }
+    }
+
+    $triggerRole = _QCAT-ResolveMemberFileRole -DocumentName $TriggerDocumentName
+    $sheetStem = _QCAT-ResolveSheetStemFromDocumentName -DocumentName $TriggerDocumentName
+
+    if (@($Members).Count -eq 0 -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
+        try {
+            $Members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+                -DocumentName $TriggerDocumentName -DocumentGuid $TriggerDocumentGuid)
+        } catch { $Members = @() }
+    }
+
+    if (@($Members).Count -eq 0) {
+        if (-not [string]::IsNullOrWhiteSpace($TriggerDocumentGuid)) {
+            $Members = @(@{
+                documentGuid = $TriggerDocumentGuid
+                documentName = $TriggerDocumentName
+                document = $null
+            })
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'SHEET_GROUP_TRANSITION_TRIGGER_ONLY' `
+                    -Message 'No associated members resolved; recording transition for trigger document only.' -Data @{
+                    triggerDocumentGuid = $TriggerDocumentGuid
+                    triggerDocumentName = $TriggerDocumentName
+                    triggerFileType = $triggerRole
+                    folderPath = $FolderPath
+                    targetState = $target
+                    transitionSource = $TransitionSource
+                } | Out-Null
+            }
+        } else {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'SHEET_GROUP_TRANSITION_NO_MEMBERS' `
+                    -Message 'Sheet-group transition skipped: no associated members resolved.' -Data @{
+                    triggerDocumentGuid = $TriggerDocumentGuid
+                    triggerDocumentName = $TriggerDocumentName
+                    triggerFileType = $triggerRole
+                    folderPath = $FolderPath
+                    targetState = $target
+                    transitionSource = $TransitionSource
+                    auditEventId = $AuditEventId
+                    jobId = $JobId
+                } | Out-Null
+            }
+            return @{ skipped = $true; skipReason = 'no_members'; members = @() }
+        }
+    }
+
+    if (-not $StateByGuid) { $StateByGuid = @{} }
+    if (-not $PreviousStateByGuid) { $PreviousStateByGuid = @{} }
+
+    if ($PreviousStateByGuid.Keys.Count -eq 0 -and $Context -and $Context.ContainsKey('sheetStateSync')) {
+        $sync = _QCAT-ToHashtable $Context.sheetStateSync
+        if ($sync -and $sync.ContainsKey('updates')) {
+            foreach ($upd in @($sync.updates)) {
+                $u = _QCAT-ToHashtable $upd
+                if (-not $u) { continue }
+                $ug = [string]$u.documentGuid
+                if ($ug) { $PreviousStateByGuid[$ug.ToLowerInvariant()] = [string]$u.fromState }
+            }
+        }
+    }
+
+    foreach ($member in @($Members)) {
+        $dg = [string]$member.documentGuid
+        if (-not $dg) { continue }
+        $key = $dg.ToLowerInvariant()
+        if (-not $PreviousStateByGuid.ContainsKey($key)) {
+            $prev = ''
+            if (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue) {
+                $prev = [string](_PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg)
+            }
+            if ([string]::IsNullOrWhiteSpace($prev) -and $StateByGuid.ContainsKey($key)) {
+                $prev = [string]$StateByGuid[$key]
+            } elseif ([string]::IsNullOrWhiteSpace($prev) -and $member.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
+                $prev = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
+            }
+            $PreviousStateByGuid[$key] = $prev
+        }
+    }
+
+    $memberResults = [System.Collections.Generic.List[object]]::new()
+    $notifyMember = _QCAT-ResolveSheetPackageNotificationMember -Members $Members
+    $notifyGuid = if ($notifyMember) { [string]$notifyMember.documentGuid } else { '' }
+    $notifyName = if ($notifyMember) { [string]$notifyMember.documentName } else { '' }
+    $packagePreviousState = _QCAT-NormalizeValue $SourceState
+    if ([string]::IsNullOrWhiteSpace($packagePreviousState) -and $notifyGuid) {
+        $notifyKey = $notifyGuid.ToLowerInvariant()
+        if ($PreviousStateByGuid.ContainsKey($notifyKey)) {
+            $packagePreviousState = _QCAT-NormalizeValue ([string]$PreviousStateByGuid[$notifyKey])
+        }
+    }
+
+    $expectedRoles = @('dgn', 'pdf', 'qcPdf')
+    $resolvedRoles = @{}
+    foreach ($member in @($Members)) {
+        $role = _QCAT-ResolveMemberFileRole -DocumentName ([string]$member.documentName)
+        if ($expectedRoles -contains $role) { $resolvedRoles[$role] = $member }
+    }
+    foreach ($role in @($expectedRoles)) {
+        if (-not $resolvedRoles.ContainsKey($role)) {
+            [void]$memberResults.Add(@{
+                role = $role
+                skipped = $true
+                skipReason = 'sibling_missing'
+                documentGuid = ''
+                documentName = ''
+            })
+        }
+    }
+
+    $notifyTransitionId = $null
+    foreach ($member in @($Members)) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dg) {
+            [void]$memberResults.Add(@{
+                role = (_QCAT-ResolveMemberFileRole -DocumentName $dn)
+                skipped = $true
+                skipReason = 'missing_document_guid'
+                documentGuid = ''
+                documentName = $dn
+            })
+            continue
+        }
+
+        $role = _QCAT-ResolveMemberFileRole -DocumentName $dn
+        $key = $dg.ToLowerInvariant()
+        $prevState = if ($PreviousStateByGuid.ContainsKey($key)) { [string]$PreviousStateByGuid[$key] } else { '' }
+        if ([string]::IsNullOrWhiteSpace($prevState) -and -not [string]::IsNullOrWhiteSpace($packagePreviousState)) {
+            $prevState = $packagePreviousState
+        }
+        $liveState = if ($StateByGuid.ContainsKey($key)) { [string]$StateByGuid[$key] } else { '' }
+        if ([string]::IsNullOrWhiteSpace($liveState) -and $member.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
+            $liveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
+        }
+        $finalState = $target
+        if (-not [string]::IsNullOrWhiteSpace($liveState)) { $finalState = _QCAT-NormalizeValue $liveState }
+
+        $logicalKey = Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $dg -TargetState $target `
+            -TransitionSource $TransitionSource -AuditEventId $AuditEventId -JobId $JobId
+
+        $shouldRecord = (_QCAT-NormalizeValue $prevState) -ne $target
+
+        $telemetry = @{
+            role = $role
+            documentGuid = $dg
+            documentName = $dn
+            previousState = _QCAT-NormalizeValue $prevState
+            liveState = _QCAT-NormalizeValue $liveState
+            finalState = $finalState
+            logicalTransitionKey = $logicalKey
+            skipped = $true
+            skipReason = 'no_state_change'
+            historyInserted = $false
+            transitionInserted = $false
+            transitionReused = $false
+            mirrorInserted = $false
+            transitionId = $null
+        }
+
+        if ($shouldRecord) {
+            $recordSettings = $settings
+            if ($TransitionSource -eq 'automation_prepend_completion') {
+                if (-not [bool]$settings.recordFromProcessor) {
+                    $telemetry.skipReason = 'processor_telemetry_disabled'
+                    [void]$memberResults.Add($telemetry)
+                    continue
+                }
+            } elseif (-not [bool]$settings.recordStateHistory -and -not [bool]$settings.recordTransitions) {
+                $telemetry.skipReason = 'telemetry_disabled'
+                [void]$memberResults.Add($telemetry)
+                continue
+            }
+
+            $rec = _QCAT-WriteSheetGroupMemberWorkflowEvents -Config $Config -Settings $settings `
+                -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
+                -PreviousState $prevState -CurrentState $target -TransitionSource $TransitionSource `
+                -AuditActionName $AuditActionName -AuditEventId $AuditEventId -JobId $JobId -JobType $JobType `
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+                -Document $member.document -Context $Context -DryRun:$DryRun
+            $telemetry.skipped = [bool]$rec.skipped
+            $telemetry.skipReason = if ($rec.skipReason) { [string]$rec.skipReason } else { '' }
+            $telemetry.historyInserted = [bool]$rec.historyInserted
+            $telemetry.transitionInserted = [bool]$rec.transitionInserted
+            $telemetry.transitionReused = [bool]$rec.transitionReused
+            $telemetry.mirrorInserted = [bool]$rec.mirrorInserted
+            $telemetry.transitionId = $rec.transitionId
+            if ($dg -eq $notifyGuid -and $null -ne $rec.transitionId) { $notifyTransitionId = $rec.transitionId }
+        }
+
+        [void]$memberResults.Add($telemetry)
+    }
+
+    $notificationEmitted = $false
+    $shouldNotify = -not $SuppressNotification
+    if ($shouldNotify) {
+        $shouldNotify = Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $notifyName `
+            -NotifyOnStateChange ([bool]$settings.notifyOnStateChange)
+        if ($shouldNotify -and (Test-QCShouldSuppressAuditStateChangeNotification -Config $Config -ChangedByUser $ChangedByUser)) {
+            $shouldNotify = $false
+        }
+        if ($shouldNotify -and (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $Config `
+                -PreviousState $packagePreviousState -CurrentState $target)) {
+            $shouldNotify = $false
+        }
+    }
+
+    if ($shouldNotify -and -not [string]::IsNullOrWhiteSpace($notifyGuid) -and $packagePreviousState -ne $target) {
+        if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) {
+            try { Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
+        }
+        if (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue) {
+            $stateTransitionKey = $null
+            if (Get-Command -Name 'Get-QCAuditStateTransitionKey' -ErrorAction SilentlyContinue) {
+                $stateTransitionKey = Get-QCAuditStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+                    -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid -TransitionId $notifyTransitionId
+            }
+            $sheetPdfName = $notifyName
+            if ($notifyName -match '(?i)-qc\.pdf$') {
+                $sheetPdfName = [System.IO.Path]::GetFileNameWithoutExtension($notifyName) + '.pdf'
+            }
+            $notifyContext = @{
+                config = $Config
+                folderPath = $FolderPath
+                documentPath = ($FolderPath + '\' + $notifyName)
+                sourceName = $sheetPdfName
+                stateTransitionKey = $stateTransitionKey
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+                notificationStateSource = 'sheet_group_transition'
+            }
+            if ($null -ne $notifyTransitionId -and $notifyTransitionId -gt 0) {
+                $notifyContext['transitionId'] = $notifyTransitionId
+            }
+            if ($Context -and $Context.ContainsKey('attributes')) {
+                $notifyContext['attributes'] = $Context.attributes
+            }
+            if (-not $DryRun) {
+                try {
+                    $doc = _QCAT-BuildNotificationDocument -Config $Config -FolderPath $FolderPath `
+                        -DocumentName $notifyName -DocumentGuid $notifyGuid -Attributes @{}
+                    $notif = Invoke-QCWorkflowStateChangeNotification -Config $Config -Context $notifyContext `
+                        -PreviousState $packagePreviousState -CurrentState $target -Document $doc
+                    $notificationEmitted = $true
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Level 'Information' -Code 'SHEET_GROUP_TRANSITION_NOTIFY' `
+                            -Message 'Sheet-group workflow notification evaluated once per logical transition.' -Data @{
+                            triggerDocumentGuid = $TriggerDocumentGuid
+                            triggerDocumentName = $TriggerDocumentName
+                            triggerFileType = $triggerRole
+                            notifyDocumentGuid = $notifyGuid
+                            notifyDocumentName = $notifyName
+                            previousState = $packagePreviousState
+                            currentState = $target
+                            transitionSource = $TransitionSource
+                            auditEventId = $AuditEventId
+                            jobId = $JobId
+                            notificationCode = if ($notif) { [string]$notif.Code } else { '' }
+                        } | Out-Null
+                    }
+                } catch {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'SHEET_GROUP_TRANSITION_NOTIFY_FAILED' `
+                            -Message $_.Exception.Message -Data @{
+                            notifyDocumentGuid = $notifyGuid
+                            notifyDocumentName = $notifyName
+                            transitionSource = $TransitionSource
+                        } | Out-Null
+                    }
+                }
+            }
+        }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'SHEET_GROUP_TRANSITION_COMPLETE' `
+            -Message 'Sheet-group workflow transition telemetry completed.' -Data @{
+            triggerDocumentGuid = $TriggerDocumentGuid
+            triggerDocumentName = $TriggerDocumentName
+            triggerFileType = $triggerRole
+            sheetStem = $sheetStem
+            folderPath = $FolderPath
+            targetState = $target
+            sourceState = $packagePreviousState
+            transitionSource = $TransitionSource
+            auditEventId = $AuditEventId
+            jobId = $JobId
+            notificationEmitted = $notificationEmitted
+            members = @($memberResults)
+        } | Out-Null
+    }
+
+    return @{
+        skipped = $false
+        triggerDocumentGuid = $TriggerDocumentGuid
+        triggerDocumentName = $TriggerDocumentName
+        triggerFileType = $triggerRole
+        sheetStem = $sheetStem
+        targetState = $target
+        transitionSource = $TransitionSource
+        auditEventId = $AuditEventId
+        jobId = $JobId
+        notificationEmitted = $notificationEmitted
+        members = @($memberResults)
+    }
+}
+
 function Test-QCIsQcPdfDocumentName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentName)
@@ -990,12 +1479,14 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         if ($tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
             try { $transitionId = [int]$tr.Data.transitionId } catch { $transitionId = $null }
         }
+        $transitionReused = $false
         try {
             if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $transitionWritten = $true }
+            if ($tr.IsSuccess -and $tr.Data -and $tr.Data.reused -eq $true) { $transitionReused = $true }
         } catch { }
     }
 
-    if ($transitionWritten) {
+    if ($transitionWritten -or $transitionReused) {
         $attrs = @{}
         if ($PwAttributes) { $attrs = $PwAttributes }
         _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
@@ -1277,26 +1768,45 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
     if ($id.job -and $id.job.ContainsKey('id')) { $jobId = [string]$id.job.id }
     $actor = _QCAT-GetContextStateChangeActor -Context $Context
 
-    if ([bool]$settings.recordStateHistory) {
-        Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
-            -FolderPath $id.folderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
-            -FieldName 'pw_state_name' -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername | Out-Null
-    }
-    if ([bool]$settings.recordTransitions) {
-        $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
-            -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
-            -JobId $jobId -JobType $JobType -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername
-        if ($Context -and $tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
-            try { $Context['transitionId'] = [int]$tr.Data.transitionId } catch { }
+    $transitionSource = if ($JobType -eq 'QC_PREPEND') { 'automation_prepend_completion' } else { 'processor' }
+    $sgResult = $null
+    if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+        $sgResult = Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $id.documentGuid `
+            -TriggerDocumentName $id.documentName -FolderPath $id.folderPath -SourceState $prev -TargetState $curr `
+            -TransitionSource $transitionSource -JobId $jobId -JobType $JobType -Context $Context `
+            -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername -SuppressNotification
+        if ($Context -and $sgResult -and $sgResult.members) {
+            foreach ($m in @($sgResult.members)) {
+                if ($null -ne $m.transitionId -and $m.documentGuid -eq $id.documentGuid) {
+                    try { $Context['transitionId'] = [int]$m.transitionId } catch { }
+                    break
+                }
+            }
         }
-        $written = $false
-        try {
-            if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $written = $true }
-        } catch { }
-        if ($written) {
-            _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
-                -FolderPath $id.folderPath -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType `
-                -EventType 'STATE_CHANGE' -Context $Context -Document $(if ($Context -and $Context.document) { $Context.document } else { $null })
+    } else {
+        if ([bool]$settings.recordStateHistory) {
+            Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+                -FolderPath $id.folderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
+                -FieldName 'pw_state_name' -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername | Out-Null
+        }
+        if ([bool]$settings.recordTransitions) {
+            $tr = Ensure-QCTransitionEvent -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+                -FolderPath $id.folderPath -TransitionType 'STATE_CHANGE' -FromValue $prev -ToValue $curr `
+                -JobId $jobId -JobType $JobType -ChangedByUser $actor.changedByUser -ChangedByUsername $actor.changedByUsername
+            if ($Context -and $tr.IsSuccess -and $tr.Data -and $null -ne $tr.Data.transitionId) {
+                try { $Context['transitionId'] = [int]$tr.Data.transitionId } catch { }
+            }
+            $written = $false
+            $reused = $false
+            try {
+                if ($tr.IsSuccess -and $tr.Data -and $tr.Data.written -eq $true) { $written = $true }
+                if ($tr.IsSuccess -and $tr.Data -and $tr.Data.reused -eq $true) { $reused = $true }
+            } catch { }
+            if ($written -or $reused) {
+                _QCAT-WriteWorkflowEventMirror -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
+                    -FolderPath $id.folderPath -FromValue $prev -ToValue $curr -JobId $jobId -JobType $JobType `
+                    -EventType 'STATE_CHANGE' -Context $Context -Document $(if ($Context -and $Context.document) { $Context.document } else { $null })
+            }
         }
     }
 
@@ -1394,8 +1904,8 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     }
 }
 
-Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Test-QCIsQcPdfDocumentName, `
+Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Get-QCSheetGroupTransitionKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
-    Resolve-QCWorkflowEventQcReviewType, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
+    Resolve-QCWorkflowEventQcReviewType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

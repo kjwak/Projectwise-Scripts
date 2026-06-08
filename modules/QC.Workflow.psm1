@@ -1554,7 +1554,7 @@ function Set-PWQCWorkflowState {
             }
         }
 
-        if ($cfg -and (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue)) {
+        if ($cfg) {
             $previousForTelemetry = [string]$info.Data.stateName
             if (_QCW-IsNullOrWhiteSpace $previousForTelemetry -and $Context) {
                 if ($Context.ContainsKey('previousState') -and -not (_QCW-IsNullOrWhiteSpace $Context.previousState)) {
@@ -1563,8 +1563,20 @@ function Set-PWQCWorkflowState {
                     $previousForTelemetry = [string]$Context.lifecycleState
                 }
             }
-            Invoke-QCProcessorWorkflowStateTelemetry -Config $cfg -Context $Context `
-                -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
+            $jobId = ''
+            if ($Context -and $Context.ContainsKey('job') -and $Context.job -and $Context.job.ContainsKey('id')) {
+                $jobId = [string]$Context.job.id
+            }
+            if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+                if ($Context -and $data.sheetStateSync) { $Context['sheetStateSync'] = $data.sheetStateSync }
+                Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $docGuid -TriggerDocumentName $docName `
+                    -FolderPath $folderPath -SourceState $previousForTelemetry -TargetState $StateName `
+                    -TransitionSource 'automation_prepend_completion' -JobId $jobId -JobType 'QC_PREPEND' `
+                    -Context $Context -SuppressNotification -DryRun:$DryRun | Out-Null
+            } elseif (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue) {
+                Invoke-QCProcessorWorkflowStateTelemetry -Config $cfg -Context $Context `
+                    -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
+            }
         }
         $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $info.Data.stateName -CurrentState $StateName -Document $document
         if ($notify) { $data.notification = $notify }

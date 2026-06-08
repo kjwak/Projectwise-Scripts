@@ -44,6 +44,7 @@ $need = @(
     'Write-QCSheetIndexBatch'
     'Invoke-AuditTrailScan'
     'Sync-PWAssociatedSheetWorkflowState'
+    'Invoke-QCSheetGroupWorkflowTransition'
     'Test-QCNotificationsEnqueueAsJob'
     'Invoke-QCNotificationForStateChange'
     'Get-QCNotificationDedupeKey'

@@ -2502,6 +2502,14 @@ function Sync-PWAssociatedSheetWorkflowState {
         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
     }
 
+    $previousStateByGuid = @{}
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        if (-not $dg) { continue }
+        $prevIndex = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        $previousStateByGuid[$dg.ToLowerInvariant()] = [string]$prevIndex
+    }
+
     _PWD-WriteDocumentStateLiveVerificationLog -AuditEventId $AuditEventId `
         -SourceDocumentGuid $DocumentGuid -SourceDocumentName $DocumentName -FolderPath $FolderPath `
         -CanonicalState $canonicalState -CanonicalStateSource 'liveProjectWise' `
@@ -2601,12 +2609,6 @@ function Sync-PWAssociatedSheetWorkflowState {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
 
-    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
-        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
-
-    $packageNotifyGuid = _PWD-ResolveSheetPackageNotificationDocumentGuid -Members $members
-
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -2687,18 +2689,6 @@ WHERE document_guid = @docGuid
                 } catch { }
             }
             continue
-        }
-
-        if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
-            Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
-                -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
-                -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
-                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
-                -PreviousStateSource 'liveProjectWise' -CurrentStateSource 'canonicalLiveTrigger' `
-                -StaleCheckMembers $members -StaleCheckStateByGuid $stateByGuid -StaleCheckSheetStem $sheetStemForPrepend `
-                -StaleCheckCanonicalState $canonicalState `
-                -SuppressNotification:((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid)) | Out-Null
         }
 
         $change = @{
@@ -2807,6 +2797,15 @@ WHERE document_guid = @docGuid
             updates             = @($stateUpdates)
             dryRun              = [bool]$DryRun
         }
+    }
+
+    if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+        Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $DocumentGuid `
+            -TriggerDocumentName $DocumentName -FolderPath $FolderPath -SourceState $previousSheetState `
+            -TargetState $canonicalState -TransitionSource 'user_audit' -Members $members `
+            -StateByGuid $stateByGuid -PreviousStateByGuid $previousStateByGuid `
+            -AuditEventId $AuditEventId -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -LastAuditEventAt $LastAuditEventAt -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' | Out-Null
     }
 
     $qcInitiated = $false
