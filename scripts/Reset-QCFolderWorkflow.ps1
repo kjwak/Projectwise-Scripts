@@ -28,6 +28,7 @@ Does not delete ProjectWise documents, sheet_index rows, sheet_packages rows, or
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
+.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipPreviewCounts -QueryTimeoutSeconds 600
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -44,6 +45,8 @@ param(
     [switch]$KeepSheetIndexQcFields,
     [switch]$SkipSheetIndexUpdate,
     [int]$BatchSize = 5000,
+    [int]$QueryTimeoutSeconds = 300,
+    [switch]$SkipPreviewCounts,
     [switch]$Pretty
 )
 
@@ -119,80 +122,66 @@ function _RQCF-PathLikeClause {
     return "REPLACE(LOWER(LTRIM(RTRIM(ISNULL($ColumnSql, '')))), '\', '/') LIKE @$ParamName"
 }
 
-function _RQCF-SheetIndexGuidSubquery {
-    param([string]$FolderLikeClause)
-    return @"
-SELECT LTRIM(RTRIM(si.document_guid))
-FROM sheet_index si
-WHERE si.document_guid IS NOT NULL AND ($FolderLikeClause)
-UNION
-SELECT LTRIM(RTRIM(si.qc_pdf_guid))
-FROM sheet_index si
-WHERE si.qc_pdf_guid IS NOT NULL AND ($FolderLikeClause)
-"@
-}
-
-function _RQCF-SheetPackageIdSubquery {
-    param([string]$FolderLikeClause)
-    return @"
-SELECT sp.sheet_package_id
-FROM sheet_packages sp
-WHERE ($FolderLikeClause)
-"@
-}
-
-function _RQCF-FolderDocumentGuidSubquery {
+function _RQCF-GetScopeInitSql {
     param(
         [string]$SheetIndexFolderClause,
         [string]$SheetPackageFolderClause
     )
     return @"
-SELECT LTRIM(RTRIM(si.document_guid))
-FROM sheet_index si
-WHERE si.document_guid IS NOT NULL AND ($SheetIndexFolderClause)
-UNION
-SELECT LTRIM(RTRIM(si.qc_pdf_guid))
-FROM sheet_index si
-WHERE si.qc_pdf_guid IS NOT NULL AND ($SheetIndexFolderClause)
-UNION
-SELECT LTRIM(RTRIM(CAST(sp.dgn_guid AS NVARCHAR(50))))
+IF OBJECT_ID('tempdb..#rqcf_pkg') IS NOT NULL DROP TABLE #rqcf_pkg;
+CREATE TABLE #rqcf_pkg (sheet_package_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY);
+INSERT INTO #rqcf_pkg (sheet_package_id)
+SELECT sp.sheet_package_id
 FROM sheet_packages sp
-WHERE sp.dgn_guid IS NOT NULL AND ($SheetPackageFolderClause)
-UNION
-SELECT LTRIM(RTRIM(CAST(sp.sheet_pdf_guid AS NVARCHAR(50))))
-FROM sheet_packages sp
-WHERE sp.sheet_pdf_guid IS NOT NULL AND ($SheetPackageFolderClause)
-UNION
-SELECT LTRIM(RTRIM(CAST(sp.qc_pdf_guid AS NVARCHAR(50))))
-FROM sheet_packages sp
-WHERE sp.qc_pdf_guid IS NOT NULL AND ($SheetPackageFolderClause)
-UNION
-SELECT LTRIM(RTRIM(CAST(sd.document_guid AS NVARCHAR(50))))
-FROM sheet_documents sd
-INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
-WHERE sd.document_guid IS NOT NULL AND ($SheetPackageFolderClause)
+WHERE ($SheetPackageFolderClause);
+
+IF OBJECT_ID('tempdb..#rqcf_doc') IS NOT NULL DROP TABLE #rqcf_doc;
+CREATE TABLE #rqcf_doc (document_guid NVARCHAR(50) NOT NULL PRIMARY KEY);
+INSERT INTO #rqcf_doc (document_guid)
+SELECT DISTINCT v.document_guid
+FROM (
+    SELECT LTRIM(RTRIM(CAST(sd.document_guid AS NVARCHAR(50)))) AS document_guid
+    FROM sheet_documents sd
+    INNER JOIN #rqcf_pkg p ON p.sheet_package_id = sd.sheet_package_id
+    WHERE sd.document_guid IS NOT NULL
+    UNION ALL
+    SELECT LTRIM(RTRIM(si.document_guid))
+    FROM sheet_index si
+    WHERE si.document_guid IS NOT NULL AND ($SheetIndexFolderClause)
+    UNION ALL
+    SELECT LTRIM(RTRIM(si.qc_pdf_guid))
+    FROM sheet_index si
+    WHERE si.qc_pdf_guid IS NOT NULL AND ($SheetIndexFolderClause)
+) v
+WHERE v.document_guid <> '';
 "@
 }
 
-function _RQCF-GetScalar {
-    param([hashtable]$Config, [string]$Sql, [hashtable]$Params)
-    $res = Invoke-QCDatabaseScalar -Config $Config -Sql $Sql -Parameters $Params
+function _RQCF-GetScalarConn {
+    param(
+        [System.Data.SqlClient.SqlConnection]$Connection,
+        [string]$Sql,
+        [hashtable]$Params,
+        [int]$CommandTimeout
+    )
+    $res = Invoke-QCDatabaseScalarWithConnection -Connection $Connection -Sql $Sql -Parameters $Params -CommandTimeout $CommandTimeout
     if (-not $res.IsSuccess) { throw $res.Message }
     return [long]$res.Data.value
 }
 
-function _RQCF-RunDeleteLoop {
+function _RQCF-RunDeleteLoopConn {
     param(
-        [hashtable]$Config,
+        [System.Data.SqlClient.SqlConnection]$Connection,
         [string]$Sql,
         [hashtable]$Params,
-        [string]$Label
+        [string]$Label,
+        [int]$CommandTimeout
     )
     $total = 0L
     do {
         $batch = 0
         if ($PSCmdlet.ShouldProcess($Label, 'DELETE batch')) {
-            $res = Invoke-QCDatabaseNonQuery -Config $Config -Sql $Sql -Parameters $Params
+            $res = Invoke-QCDatabaseNonQueryWithConnection -Connection $Connection -Sql $Sql -Parameters $Params -CommandTimeout $CommandTimeout
             if (-not $res.IsSuccess) { throw $res.Message }
             $batch = [int]$res.Data.rowsAffected
             $total += $batch
@@ -204,6 +193,18 @@ function _RQCF-RunDeleteLoop {
         }
     } while ($batch -ge $BatchSize)
     return $total
+}
+
+function _RQCF-RunNonQueryConn {
+    param(
+        [System.Data.SqlClient.SqlConnection]$Connection,
+        [string]$Sql,
+        [hashtable]$Params,
+        [int]$CommandTimeout
+    )
+    $res = Invoke-QCDatabaseNonQueryWithConnection -Connection $Connection -Sql $Sql -Parameters $Params -CommandTimeout $CommandTimeout
+    if (-not $res.IsSuccess) { throw $res.Message }
+    return [int]$res.Data.rowsAffected
 }
 
 function _RQCF-GetPwDocumentState {
@@ -249,11 +250,13 @@ $params = @{
 }
 $siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
 $spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
-$folderPathClause = _RQCF-PathLikeClause -ColumnSql 'folder_path' -Params $params -ParamName 'folderLike'
-$resolvedFolderClause = _RQCF-PathLikeClause -ColumnSql 'resolved_folder' -Params $params -ParamName 'folderLike'
-$sourceFolderClause = _RQCF-PathLikeClause -ColumnSql 'source_folder' -Params $params -ParamName 'folderLike'
-$guidSub = _RQCF-FolderDocumentGuidSubquery -SheetIndexFolderClause $siFolderClause -SheetPackageFolderClause $spFolderClause
-$packageIdSub = _RQCF-SheetPackageIdSubquery -FolderLikeClause $spFolderClause
+$scopeInitSql = _RQCF-GetScopeInitSql -SheetIndexFolderClause $siFolderClause -SheetPackageFolderClause $spFolderClause
+$nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
+$histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
+$trFolderClause = _RQCF-PathLikeClause -ColumnSql 't.folder_path' -Params $params -ParamName 'folderLike'
+$actFolderClause = _RQCF-PathLikeClause -ColumnSql 'd.folder_path' -Params $params -ParamName 'folderLike'
+$auditFolderClause = _RQCF-PathLikeClause -ColumnSql 'a.resolved_folder' -Params $params -ParamName 'folderLike'
+$jobFolderClause = _RQCF-PathLikeClause -ColumnSql 'j.source_folder' -Params $params -ParamName 'folderLike'
 
 $summary = [ordered]@{
     dryRun            = $DryRun.IsPresent
@@ -351,67 +354,90 @@ if (-not $SkipProjectWise.IsPresent) {
 
 # --- Database ---
 if (-not $SkipDatabase.IsPresent) {
-    Write-Host '[Database] Counting folder-scoped telemetry rows...' -ForegroundColor Cyan
-
-    $dbCounts = [ordered]@{}
-    $dbCounts.notification_log = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM notification_log
-WHERE document_guid IN ($guidSub) OR ($folderPathClause) OR sheet_package_id IN ($packageIdSub)
-"@
-    $dbCounts.document_state_history = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM document_state_history
-WHERE document_guid IN ($guidSub) OR ($folderPathClause) OR sheet_package_id IN ($packageIdSub)
-"@
-    $dbCounts.transition_events = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM transition_events
-WHERE document_guid IN ($guidSub) OR ($folderPathClause) OR sheet_package_id IN ($packageIdSub)
-"@
-    $dbCounts.document_activity = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM document_activity
-WHERE document_guid IN ($guidSub) OR ($folderPathClause)
-"@
-    $dbCounts.qc_workflow_events = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM qc_workflow_events w
-WHERE w.document_id IN ($guidSub) OR w.sheet_package_id IN ($packageIdSub)
-"@
-    $dbCounts.qc_cycle_completions = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM qc_cycle_completions
-WHERE document_guid IN ($guidSub) OR sheet_package_id IN ($packageIdSub)
-"@
-    $dbCounts.audit_events = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM audit_events
-WHERE ($resolvedFolderClause) OR pw_objguid IN ($guidSub)
-"@
-    $dbCounts.processing_jobs = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM processing_jobs
-WHERE ($sourceFolderClause) OR sheet_package_id IN ($packageIdSub)
-"@
-
-    $sheetPackagesMatched = 0L
-    $sheetDocumentsMatched = 0L
-    $sheetPackageCompletionData = 0L
+    $sessionRes = New-QCDatabaseSession -Config $config
+    if (-not $sessionRes.IsSuccess) { throw $sessionRes.Message }
+    $dbConn = $sessionRes.Data.session.connection
     try {
-        $sheetPackagesMatched = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM sheet_packages sp WHERE ($spFolderClause)
-"@
-        $sheetDocumentsMatched = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM sheet_documents sd
-INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
-WHERE ($spFolderClause)
-"@
-    } catch {
-        $sheetPackagesMatched = 0L
-        $sheetDocumentsMatched = 0L
-    }
+        Write-Host '[Database] Building folder scope (#rqcf_pkg / #rqcf_doc)...' -ForegroundColor Cyan
+        [void]_RQCF-RunNonQueryConn -Connection $dbConn -Sql $scopeInitSql -Params $params -CommandTimeout $QueryTimeoutSeconds
 
-    $sheetIndexMatched = 0L
-    $sheetIndexCompletionData = 0L
-    if (-not $SkipSheetIndexUpdate.IsPresent) {
-        $sheetIndexMatched = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+        $scopePkgIn = 'IN (SELECT sheet_package_id FROM #rqcf_pkg)'
+        $scopeDocIn = 'IN (SELECT document_guid FROM #rqcf_doc)'
+        $commentRunSub = @"
+SELECT r.run_id FROM qc_comment_runs r
+WHERE r.document_id $scopeDocIn
+   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
+"@
+
+        $dbCounts = [ordered]@{}
+        if (-not $SkipPreviewCounts.IsPresent) {
+            Write-Host '[Database] Counting folder-scoped telemetry rows...' -ForegroundColor Cyan
+            $dbCounts.notification_log = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM notification_log n
+WHERE n.sheet_package_id $scopePkgIn OR ($nlFolderClause) OR n.document_guid $scopeDocIn
+"@
+            $dbCounts.document_state_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM document_state_history h
+WHERE h.sheet_package_id $scopePkgIn OR ($histFolderClause) OR h.document_guid $scopeDocIn
+"@
+            $dbCounts.transition_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM transition_events t
+WHERE t.sheet_package_id $scopePkgIn OR ($trFolderClause) OR t.document_guid $scopeDocIn
+"@
+            $dbCounts.document_activity = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM document_activity d
+WHERE d.document_guid $scopeDocIn OR ($actFolderClause)
+"@
+            $dbCounts.qc_workflow_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_workflow_events w
+WHERE w.sheet_package_id $scopePkgIn OR w.document_id $scopeDocIn
+"@
+            $dbCounts.qc_cycle_completions = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_cycle_completions c
+WHERE c.sheet_package_id $scopePkgIn OR CAST(c.document_guid AS NVARCHAR(50)) $scopeDocIn
+"@
+            $dbCounts.audit_events = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM audit_events a
+WHERE ($auditFolderClause) OR a.pw_objguid $scopeDocIn
+"@
+            $dbCounts.processing_jobs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM processing_jobs j
+WHERE ($jobFolderClause) OR j.sheet_package_id $scopePkgIn
+"@
+            if ($IncludeCommentTelemetry.IsPresent) {
+                $dbCounts.qc_comment_status_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_comment_status_history h
+WHERE h.document_id $scopeDocIn OR h.detected_run_id IN ($commentRunSub)
+"@
+                $dbCounts.qc_comments = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($commentRunSub)
+"@
+                $dbCounts.qc_comment_runs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_comment_runs r
+WHERE r.document_id $scopeDocIn
+   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
+"@
+            }
+        } else {
+            Write-Host '[Database] Preview counts skipped (-SkipPreviewCounts).' -ForegroundColor DarkGray
+        }
+
+        $sheetPackagesMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM #rqcf_pkg
+"@
+        $sheetDocumentsMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_documents sd WHERE sd.sheet_package_id $scopePkgIn
+"@
+
+        $sheetIndexMatched = 0L
+        $sheetIndexCompletionData = 0L
+        $sheetPackageCompletionData = 0L
+        if (-not $SkipSheetIndexUpdate.IsPresent) {
+            $sheetIndexMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause)
 "@
-        try {
-            $sheetIndexCompletionData = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+            try {
+                $sheetIndexCompletionData = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si
 WHERE ($siFolderClause)
   AND (
@@ -424,11 +450,7 @@ WHERE ($siFolderClause)
     OR si.independent_check_last_completed_at IS NOT NULL
   )
 "@
-        } catch {
-            $sheetIndexCompletionData = 0L
-        }
-        try {
-            $sheetPackageCompletionData = _RQCF-GetScalar -Config $config -Params $params -Sql @"
+                $sheetPackageCompletionData = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_packages sp
 WHERE ($spFolderClause)
   AND (
@@ -441,144 +463,123 @@ WHERE ($spFolderClause)
     OR sp.independent_check_last_completed_at IS NOT NULL
   )
 "@
-        } catch {
-            $sheetPackageCompletionData = 0L
+            } catch {
+                $sheetIndexCompletionData = 0L
+                $sheetPackageCompletionData = 0L
+            }
         }
-    }
 
-    if ($IncludeCommentTelemetry.IsPresent) {
-        $runSub = @"
-SELECT r.run_id FROM qc_comment_runs r
-WHERE r.document_id IN ($guidSub)
-   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
-"@
-        $dbCounts.qc_comment_status_history = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM qc_comment_status_history h
-WHERE h.document_id IN ($guidSub) OR h.detected_run_id IN ($runSub)
-"@
-        $dbCounts.qc_comments = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM qc_comments c WHERE c.run_id IN ($runSub)
-"@
-        $dbCounts.qc_comment_runs = _RQCF-GetScalar -Config $config -Params $params -Sql @"
-SELECT COUNT_BIG(1) FROM qc_comment_runs r
-WHERE r.document_id IN ($guidSub)
-   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
-"@
-    }
+        $summary.database = @{
+            rowsMatched = $dbCounts
+            deleted = [ordered]@{}
+            sheetIndexMatched = $sheetIndexMatched
+            sheetIndexCompletionData = $sheetIndexCompletionData
+            sheetPackagesMatched = $sheetPackagesMatched
+            sheetDocumentsMatched = $sheetDocumentsMatched
+            sheetPackageCompletionData = $sheetPackageCompletionData
+            queryTimeoutSeconds = $QueryTimeoutSeconds
+        }
+        if (-not $SkipPreviewCounts.IsPresent) {
+            Write-Host '  Telemetry rows to delete:' -ForegroundColor Gray
+            foreach ($k in @($dbCounts.Keys)) {
+                Write-Host ("    {0}: {1}" -f $k, $dbCounts[$k]) -ForegroundColor Gray
+            }
+        }
+        if ($SkipSheetIndexUpdate.IsPresent) {
+            Write-Host '  sheet_index / sheet_packages / sheet_documents: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
+        } else {
+            Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
+            Write-Host ('  sheet_index completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetIndexCompletionData) -ForegroundColor DarkGray
+            Write-Host ('  sheet_packages: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetPackagesMatched) -ForegroundColor DarkGray
+            Write-Host ('  sheet_packages completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetPackageCompletionData) -ForegroundColor DarkGray
+            Write-Host ('  sheet_documents: {0} row(s) matched - pw_state_name UPDATE only, rows are not deleted.' -f $sheetDocumentsMatched) -ForegroundColor DarkGray
+        }
 
-    $summary.database = @{
-        rowsMatched = $dbCounts
-        deleted = [ordered]@{}
-        sheetIndexMatched = $sheetIndexMatched
-        sheetIndexCompletionData = $sheetIndexCompletionData
-        sheetPackagesMatched = $sheetPackagesMatched
-        sheetDocumentsMatched = $sheetDocumentsMatched
-        sheetPackageCompletionData = $sheetPackageCompletionData
-    }
-    Write-Host '  Telemetry rows to delete:' -ForegroundColor Gray
-    foreach ($k in @($dbCounts.Keys)) {
-        Write-Host ("    {0}: {1}" -f $k, $dbCounts[$k]) -ForegroundColor Gray
-    }
-    if ($SkipSheetIndexUpdate.IsPresent) {
-        Write-Host '  sheet_index / sheet_packages / sheet_documents: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
-    } else {
-        Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
-        Write-Host ('  sheet_index completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetIndexCompletionData) -ForegroundColor DarkGray
-        Write-Host ('  sheet_packages: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetPackagesMatched) -ForegroundColor DarkGray
-        Write-Host ('  sheet_packages completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetPackageCompletionData) -ForegroundColor DarkGray
-        Write-Host ('  sheet_documents: {0} row(s) matched - pw_state_name UPDATE only, rows are not deleted.' -f $sheetDocumentsMatched) -ForegroundColor DarkGray
-    }
+        if ($doApply) {
+            Write-Host '[Database] Deleting telemetry rows...' -ForegroundColor Cyan
+            $deleted = $summary.database.deleted
 
-    if ($doApply) {
-        Write-Host '[Database] Deleting telemetry rows...' -ForegroundColor Cyan
-        $deleted = $summary.database.deleted
-
-        if ($IncludeCommentTelemetry.IsPresent) {
-            $runSub = @"
-SELECT r.run_id FROM qc_comment_runs r
-WHERE r.document_id IN ($guidSub)
-   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
-"@
-            $deleted.qc_comment_status_history = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_comment_status_history' -Sql @"
+            if ($IncludeCommentTelemetry.IsPresent) {
+                $deleted.qc_comment_status_history = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_comment_status_history' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_comment_status_history
 WHERE history_id IN (
   SELECT h.history_id FROM qc_comment_status_history h
-  WHERE h.document_id IN ($guidSub) OR h.detected_run_id IN ($runSub)
+  WHERE h.document_id $scopeDocIn OR h.detected_run_id IN ($commentRunSub)
 )
 "@
-            $deleted.qc_comments = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_comments' -Sql @"
+                $deleted.qc_comments = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_comments' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_comments
-WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE c.run_id IN ($runSub))
+WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE c.run_id IN ($commentRunSub))
 "@
-            $deleted.qc_comment_runs = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_comment_runs' -Sql @"
+                $deleted.qc_comment_runs = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_comment_runs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_comment_runs
-WHERE run_id IN ($runSub)
+WHERE run_id IN ($commentRunSub)
 "@
-        }
+            }
 
-        $deleted.notification_log = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'notification_log' -Sql @"
+            $deleted.notification_log = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'notification_log' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM notification_log
 WHERE id IN (
   SELECT n.id FROM notification_log n
-  WHERE n.document_guid IN ($guidSub) OR ($folderPathClause) OR n.sheet_package_id IN ($packageIdSub)
+  WHERE n.sheet_package_id $scopePkgIn OR ($nlFolderClause) OR n.document_guid $scopeDocIn
 )
 "@
-        $deleted.qc_workflow_events = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_workflow_events' -Sql @"
+            $deleted.qc_workflow_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_workflow_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_workflow_events
 WHERE event_id IN (
   SELECT w.event_id FROM qc_workflow_events w
-  WHERE w.document_id IN ($guidSub) OR w.sheet_package_id IN ($packageIdSub)
+  WHERE w.sheet_package_id $scopePkgIn OR w.document_id $scopeDocIn
 )
 "@
-        $deleted.qc_cycle_completions = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'qc_cycle_completions' -Sql @"
+            $deleted.qc_cycle_completions = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_cycle_completions' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM qc_cycle_completions
 WHERE id IN (
   SELECT c.id FROM qc_cycle_completions c
-  WHERE c.document_guid IN ($guidSub) OR c.sheet_package_id IN ($packageIdSub)
+  WHERE c.sheet_package_id $scopePkgIn OR CAST(c.document_guid AS NVARCHAR(50)) $scopeDocIn
 )
 "@
-        $deleted.transition_events = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'transition_events' -Sql @"
+            $deleted.transition_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'transition_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM transition_events
 WHERE id IN (
   SELECT t.id FROM transition_events t
-  WHERE t.document_guid IN ($guidSub) OR ($folderPathClause) OR t.sheet_package_id IN ($packageIdSub)
+  WHERE t.sheet_package_id $scopePkgIn OR ($trFolderClause) OR t.document_guid $scopeDocIn
 )
 "@
-        $deleted.document_state_history = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'document_state_history' -Sql @"
+            $deleted.document_state_history = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'document_state_history' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM document_state_history
 WHERE id IN (
   SELECT h.id FROM document_state_history h
-  WHERE h.document_guid IN ($guidSub) OR ($folderPathClause) OR h.sheet_package_id IN ($packageIdSub)
+  WHERE h.sheet_package_id $scopePkgIn OR ($histFolderClause) OR h.document_guid $scopeDocIn
 )
 "@
-        $deleted.document_activity = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'document_activity' -Sql @"
+            $deleted.document_activity = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'document_activity' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM document_activity
 WHERE id IN (
   SELECT d.id FROM document_activity d
-  WHERE d.document_guid IN ($guidSub) OR ($folderPathClause)
+  WHERE d.document_guid $scopeDocIn OR ($actFolderClause)
 )
 "@
-        $deleted.audit_events = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'audit_events' -Sql @"
+            $deleted.audit_events = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'audit_events' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM audit_events
 WHERE id IN (
   SELECT a.id FROM audit_events a
-  WHERE ($resolvedFolderClause) OR a.pw_objguid IN ($guidSub)
+  WHERE ($auditFolderClause) OR a.pw_objguid $scopeDocIn
 )
 "@
-        $deleted.processing_jobs = _RQCF-RunDeleteLoop -Config $config -Params $params -Label 'processing_jobs' -Sql @"
+            $deleted.processing_jobs = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'processing_jobs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM processing_jobs
 WHERE id IN (
   SELECT j.id FROM processing_jobs j
-  WHERE ($sourceFolderClause) OR j.sheet_package_id IN ($packageIdSub)
+  WHERE ($jobFolderClause) OR j.sheet_package_id $scopePkgIn
 )
 "@
 
-        foreach ($k in @($deleted.Keys)) {
-            $summary.totalRowsDeleted += [long]$deleted[$k]
-        }
+            foreach ($k in @($deleted.Keys)) {
+                $summary.totalRowsDeleted += [long]$deleted[$k]
+            }
 
-        if (-not $SkipSheetIndexUpdate.IsPresent) {
-            $completionResetSql = @"
+            if (-not $SkipSheetIndexUpdate.IsPresent) {
+                $completionResetSql = @"
     production_qc_completed_count = 0,
     production_qc_last_completed_at = NULL,
     peer_review_completed_count = 0,
@@ -586,8 +587,8 @@ WHERE id IN (
     independent_check_completed_count = 0,
     independent_check_last_completed_at = NULL,
 "@
-            if (-not $KeepSheetIndexQcFields.IsPresent) {
-                $sheetSql = @"
+                if (-not $KeepSheetIndexQcFields.IsPresent) {
+                    $sheetSql = @"
 UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -600,8 +601,8 @@ $completionResetSql
 FROM sheet_index si
 WHERE ($siFolderClause)
 "@
-            } else {
-                $sheetSql = @"
+                } else {
+                    $sheetSql = @"
 UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -611,16 +612,14 @@ $completionResetSql
 FROM sheet_index si
 WHERE ($siFolderClause)
 "@
-            }
+                }
 
-            if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
-                $upd = Invoke-QCDatabaseNonQuery -Config $config -Sql $sheetSql -Parameters $params
-                if (-not $upd.IsSuccess) { throw $upd.Message }
-                $summary.sheetIndexUpdated = [int]$upd.Data.rowsAffected
-                Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_cycle_id/number, production/peer/independent completion counts and last_completed_at cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
-            }
+                if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
+                    $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                    Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_cycle_id/number, production/peer/independent completion counts and last_completed_at cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                }
 
-            $packageResetSql = @"
+                $packageResetSql = @"
     production_qc_completed_count = 0,
     production_qc_last_completed_at = NULL,
     peer_review_completed_count = 0,
@@ -628,7 +627,7 @@ WHERE ($siFolderClause)
     independent_check_completed_count = 0,
     independent_check_last_completed_at = NULL,
 "@
-            $packageSql = @"
+                $packageSql = @"
 UPDATE sp
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -640,14 +639,12 @@ $packageResetSql
 FROM sheet_packages sp
 WHERE ($spFolderClause)
 "@
-            if ($PSCmdlet.ShouldProcess('sheet_packages', 'UPDATE pw_state_name')) {
-                $pkgUpd = Invoke-QCDatabaseNonQuery -Config $config -Sql $packageSql -Parameters $params
-                if (-not $pkgUpd.IsSuccess) { throw $pkgUpd.Message }
-                $summary.sheetPackagesUpdated = [int]$pkgUpd.Data.rowsAffected
-                Write-Host ('  [sheet_packages] updated {0} row(s): pw_state_name, qc_cycle_id/number, review fields, completion counts/timestamps cleared (not deleted).' -f $summary.sheetPackagesUpdated) -ForegroundColor Green
-            }
+                if ($PSCmdlet.ShouldProcess('sheet_packages', 'UPDATE pw_state_name')) {
+                    $summary.sheetPackagesUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $packageSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                    Write-Host ('  [sheet_packages] updated {0} row(s): pw_state_name, qc_cycle_id/number, review fields, completion counts/timestamps cleared (not deleted).' -f $summary.sheetPackagesUpdated) -ForegroundColor Green
+                }
 
-            $docSql = @"
+                $docSql = @"
 UPDATE sd
 SET pw_state_name = @targetState,
     last_seen_at = SYSDATETIMEOFFSET()
@@ -655,19 +652,20 @@ FROM sheet_documents sd
 INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
 WHERE ($spFolderClause)
 "@
-            if ($PSCmdlet.ShouldProcess('sheet_documents', 'UPDATE pw_state_name')) {
-                $docUpd = Invoke-QCDatabaseNonQuery -Config $config -Sql $docSql -Parameters $params
-                if (-not $docUpd.IsSuccess) { throw $docUpd.Message }
-                $summary.sheetDocumentsUpdated = [int]$docUpd.Data.rowsAffected
-                Write-Host ('  [sheet_documents] updated {0} row(s): pw_state_name reset (not deleted).' -f $summary.sheetDocumentsUpdated) -ForegroundColor Green
+                if ($PSCmdlet.ShouldProcess('sheet_documents', 'UPDATE pw_state_name')) {
+                    $summary.sheetDocumentsUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $docSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                    Write-Host ('  [sheet_documents] updated {0} row(s): pw_state_name reset (not deleted).' -f $summary.sheetDocumentsUpdated) -ForegroundColor Green
+                }
+            } else {
+                Write-Host '  [sheet_index / sheet_packages / sheet_documents] skipped (-SkipSheetIndexUpdate).' -ForegroundColor DarkGray
             }
-        } else {
-            Write-Host '  [sheet_index / sheet_packages / sheet_documents] skipped (-SkipSheetIndexUpdate).' -ForegroundColor DarkGray
-        }
 
-        Write-Host ("Done. Deleted {0} telemetry row(s)." -f $summary.totalRowsDeleted) -ForegroundColor Green
-    } else {
-        Write-Host 'Dry run: no database rows deleted. Pass -ConfirmReset to apply.' -ForegroundColor Yellow
+            Write-Host ("Done. Deleted {0} telemetry row(s)." -f $summary.totalRowsDeleted) -ForegroundColor Green
+        } else {
+            Write-Host 'Dry run: no database rows deleted. Pass -ConfirmReset to apply.' -ForegroundColor Yellow
+        }
+    } finally {
+        try { $sessionRes.Data.session.Dispose() } catch { }
     }
 } else {
     Write-Host '[Database] Skipped (-SkipDatabase).' -ForegroundColor DarkGray
