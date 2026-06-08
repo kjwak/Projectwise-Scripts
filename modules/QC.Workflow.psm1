@@ -867,6 +867,69 @@ function _QCW-DefaultAttributeMap {
     }
 }
 
+function Get-QCWorkflowAttributeWritebackExcludeDefaults {
+    <#
+    .SYNOPSIS
+    Internal keys excluded from ProjectWise attribute writeback (Phase 1: DB/telemetry holds these).
+    #>
+    [CmdletBinding()]
+    param()
+    return @(
+        'qcActive'
+        'lastActionBy'
+        'lastActionDate'
+        'historyPdfPath'
+        'latestOverlayPdfPath'
+        'sourceDocumentPath'
+        'automationLastRun'
+        'automationResult'
+        'automationError'
+    )
+}
+
+function _QCW-ResolveAttributeWritebackExcludeSet {
+    param([hashtable]$Settings)
+
+    if ($Settings -and $Settings.ContainsKey('attributeWritebackExcludeDisabled')) {
+        try {
+            if ([bool]$Settings.attributeWritebackExcludeDisabled) { return @() }
+        } catch { }
+    }
+
+    $exclude = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($key in @(Get-QCWorkflowAttributeWritebackExcludeDefaults)) {
+        if (-not [string]::IsNullOrWhiteSpace($key)) { [void]$exclude.Add([string]$key) }
+    }
+    if ($Settings -and $Settings.ContainsKey('attributeWritebackExclude') -and $Settings.attributeWritebackExclude) {
+        foreach ($key in @($Settings.attributeWritebackExclude)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$key)) { [void]$exclude.Add(([string]$key).Trim()) }
+        }
+    }
+    return @($exclude)
+}
+
+function _QCW-FilterAttributeWritebackValues {
+    param(
+        [hashtable]$Values,
+        [hashtable]$Settings
+    )
+
+    $filtered = @{}
+    $skipped = [System.Collections.Generic.List[string]]::new()
+    if (-not $Values) { return @{ values = $filtered; skippedKeys = @() } }
+
+    $exclude = _QCW-ResolveAttributeWritebackExcludeSet -Settings $Settings
+    foreach ($key in @($Values.Keys)) {
+        $k = [string]$key
+        if ($exclude -contains $k) {
+            [void]$skipped.Add($k)
+            continue
+        }
+        $filtered[$k] = $Values[$k]
+    }
+    return @{ values = $filtered; skippedKeys = @($skipped) }
+}
+
 function Get-QCWorkflowDeprecationWarnings {
     [CmdletBinding()]
     param([hashtable]$RawWorkflowConfig)
@@ -1108,6 +1171,8 @@ function Get-QCWorkflowSettings {
         autoSetState = $false
         autoWriteAttributes = $true
         attributeMap = _QCW-DefaultAttributeMap
+        attributeWritebackExcludeDisabled = $false
+        attributeWritebackExclude = @()
     }
     foreach ($k in $defaultStates.Keys) { $settings.states[$k] = $defaultStates[$k] }
     foreach ($k in $defaultReviewTypes.Keys) { $settings.reviewTypes[$k] = $defaultReviewTypes[$k] }
@@ -1170,8 +1235,13 @@ function Get-QCWorkflowSettings {
     if (_QCW-IsNullOrWhiteSpace $settings.workflowName -and -not (_QCW-IsNullOrWhiteSpace $settings.expectedWorkflowName)) {
         $settings.workflowName = $settings.expectedWorkflowName
     }
-    foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoSetState','autoWriteAttributes')) {
+    foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoSetState','autoWriteAttributes','attributeWritebackExcludeDisabled')) {
         try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { }
+    }
+    if ($settings.attributeWritebackExclude -isnot [System.Array] -and $null -ne $settings.attributeWritebackExclude) {
+        $settings.attributeWritebackExclude = @($settings.attributeWritebackExclude)
+    } elseif ($null -eq $settings.attributeWritebackExclude) {
+        $settings.attributeWritebackExclude = @()
     }
     return $settings
 }
@@ -1602,16 +1672,34 @@ function Set-PWQCAttributes {
         $normValues = _QCW-ToHashtable $Context.attributes
         if ($normValues) { $values = $normValues }
     }
+    $filterResult = _QCW-FilterAttributeWritebackValues -Values $values -Settings $Settings
+    $writebackValues = $filterResult.values
+    $skippedKeys = @($filterResult.skippedKeys)
+
     $mapped = @{}
     if ($attributeMap) {
         foreach ($internalKey in $attributeMap.Keys) {
-            if ($values.ContainsKey($internalKey) -and -not (_QCW-IsNullOrWhiteSpace $attributeMap[$internalKey])) {
-                $mapped[[string]$attributeMap[$internalKey]] = $values[$internalKey]
+            if ($writebackValues.ContainsKey($internalKey) -and -not (_QCW-IsNullOrWhiteSpace $attributeMap[$internalKey])) {
+                $mapped[[string]$attributeMap[$internalKey]] = $writebackValues[$internalKey]
             }
         }
     }
 
-    $data = @{ attributes = $mapped; internalAttributes = $values; planned = $false; changed = $false; warnings = @() }
+    $data = @{
+        attributes = $mapped
+        internalAttributes = $values
+        writebackAttributes = $writebackValues
+        skippedWritebackKeys = $skippedKeys
+        planned = $false
+        changed = $false
+        warnings = @()
+    }
+    if ($skippedKeys.Count -gt 0) {
+        _QCW-Log -Event 'QC_WORKFLOW_ATTRIBUTE_WRITEBACK_EXCLUDED' -Level 'Information' -Message 'Excluded attributes from ProjectWise writeback (DB/telemetry retains full context).' -Data @{
+            skippedWritebackKeys = $skippedKeys
+            writebackAttributes = $writebackValues
+        }
+    }
     if (-not $attributeMap -or $attributeMap.Keys.Count -eq 0) {
         $data.warnings = @('Attribute map is missing or empty; no attribute writeback was made.')
         _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message $data.warnings[0] -Data $data
@@ -1621,6 +1709,11 @@ function Set-PWQCAttributes {
         $data.planned = $true
         _QCW-Log -Event 'QC_WORKFLOW_ATTRIBUTES_PLANNED' -Level 'Information' -Message 'Dry-run: QC attribute writes planned.' -Data $data
         return New-QCSuccessResult -Code 'QC_WORKFLOW_ATTRIBUTES_PLANNED' -Message 'Dry-run: would write configured ProjectWise attributes.' -Data $data
+    }
+
+    if ($mapped.Keys.Count -eq 0) {
+        _QCW-Log -Event 'QC_WORKFLOW_ATTRIBUTES_SKIPPED' -Level 'Information' -Message 'No ProjectWise attributes to write after writeback exclude filter.' -Data $data
+        return New-QCSuccessResult -Code 'QC_WORKFLOW_ATTRIBUTES_SKIPPED' -Message 'No ProjectWise attributes to write after writeback exclude filter.' -Data $data
     }
 
     $document = if ($Context -and $Context.ContainsKey('document')) { $Context.document } else { $null }
@@ -1962,4 +2055,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

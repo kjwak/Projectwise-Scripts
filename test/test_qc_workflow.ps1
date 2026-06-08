@@ -211,6 +211,36 @@ Assert-Eq $attrs.Data.attributes['QC_Cycle_ID'] 'cycle-1' 'cycleId should map to
 Assert-Eq $attrs.Data.attributes['QC_Review_Type'] 'Production QC' 'reviewType should map to configured PW attribute'
 Assert-True (-not $attrs.Data.attributes.ContainsKey('QC_Stage')) 'QC_Stage must not be written'
 
+# Phase 1: automation-only attributes stay in context but are excluded from PW writeback
+$phase1ExcludedPw = @(
+    'QC_Active'
+    'QC_Last_Action_By'
+    'QC_Last_Action_Date'
+    'QC_History_PDF_Path'
+    'QC_Latest_Overlay_PDF_Path'
+    'QC_Source_Document_Path'
+    'QC_Automation_Last_Run'
+    'QC_Automation_Result'
+    'QC_Automation_Error'
+)
+foreach ($pwAttr in $phase1ExcludedPw) {
+    Assert-True (-not $attrs.Data.attributes.ContainsKey($pwAttr)) "Phase 1 excluded PW attribute must not be written: $pwAttr"
+}
+Assert-Eq $attrs.Data.internalAttributes['historyPdfPath'] 'C:\history\a.pdf' 'Full context should retain historyPdfPath internally'
+$expectedSkipped = @('qcActive','historyPdfPath','latestOverlayPdfPath','sourceDocumentPath','automationLastRun','automationResult','automationError')
+foreach ($key in $expectedSkipped) {
+    Assert-True ($attrs.Data.skippedWritebackKeys -contains $key) "skippedWritebackKeys should include $key"
+}
+$defaults = Get-QCWorkflowAttributeWritebackExcludeDefaults
+Assert-True ($defaults -contains 'automationResult') 'Default exclude list should include automationResult'
+
+$legacyCfg = New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$true
+$legacyCfg.qcWorkflow.attributeWritebackExcludeDisabled = $true
+$legacySettings = Get-QCWorkflowSettings -Config $legacyCfg
+$legacyAttrs = Set-PWQCAttributes -Settings $legacySettings -Context (New-WorkflowContext) -DryRun:$true
+Assert-True $legacyAttrs.Data.attributes.ContainsKey('QC_History_PDF_Path') 'Legacy mode should write historyPdfPath to PW'
+Assert-Eq $legacyAttrs.Data.skippedWritebackKeys.Count 0 'Legacy mode should not skip writeback keys'
+
 # prepend trigger selects target state when autoSetState runs
 $triggerSettings = Get-QCWorkflowSettings -Config $writeCfg
 Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'Ready for QC' 'initialQcPdf -> Ready for QC'
