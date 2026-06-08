@@ -446,6 +446,25 @@ function _QCAT-TryRecordQCCycleCompletion {
     $docName = [string]$canonical.documentName
     $docObject = if ($canonical.document) { $canonical.document } else { $Document }
 
+    $sheetPackageId = $null
+    if (Get-Command -Name 'Resolve-QCCycleCompletionSheetPackageId' -ErrorAction SilentlyContinue) {
+        try {
+            $sheetPackageId = Resolve-QCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $docGuid
+        } catch { }
+    } elseif (Get-Command -Name 'Get-SheetPackageIdForDocument' -ErrorAction SilentlyContinue) {
+        try { $sheetPackageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $docGuid } catch { }
+    }
+    if (-not $sheetPackageId) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
+                -Message 'Skipped QC cycle completion: sheet_package_id unresolved.' -Data @{
+                documentGuid = $docGuid; documentName = $docName; folderPath = $FolderPath
+                sheetStem = $SheetStem; transitionSource = $source; reason = 'sheet_package_not_found'
+            } | Out-Null
+        }
+        return
+    }
+
     $resolvedCycle = _QCAT-ResolveQCCycleIdForCompletion -Config $Config -Context $Context `
         -DocumentGuid $docGuid -FolderPath $FolderPath -SheetStem $SheetStem
     $cycleId = if ($resolvedCycle) { [string]$resolvedCycle.cycleId } else { '' }
@@ -490,7 +509,7 @@ function _QCAT-TryRecordQCCycleCompletion {
 
     $completedBy = if ($ChangedByUsername) { [string]$ChangedByUsername.Trim() } else { '' }
     $result = Ensure-QCCycleCompletion -Config $Config -DocumentGuid $docGuid -DocumentName $docName `
-        -QcCycleId $cycleId -QcCycleNumber $cycleNumber -QcReviewType $normalizedReviewType `
+        -SheetPackageId $sheetPackageId -QcCycleId $cycleId -QcCycleNumber $cycleNumber -QcReviewType $normalizedReviewType `
         -TransitionEventId $TransitionEventId -AuditEventId $AuditEventId -CompletedBy $completedBy
 
     $inserted = $false
@@ -504,12 +523,13 @@ function _QCAT-TryRecordQCCycleCompletion {
         } catch { }
     }
     if ($inserted -and (Get-Command -Name 'Update-QCSheetCycleCompletionSummary' -ErrorAction SilentlyContinue)) {
-        try { Update-QCSheetCycleCompletionSummary -Config $Config -DocumentGuid $docGuid | Out-Null } catch { }
+        try { Update-QCSheetCycleCompletionSummary -Config $Config -SheetPackageId $sheetPackageId | Out-Null } catch { }
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         $logData = @{
             documentGuid = $docGuid
+            sheetPackageId = $sheetPackageId.ToString()
             cycleId = $cycleId
             cycleNumber = $cycleNumber
             reviewType = $reviewType

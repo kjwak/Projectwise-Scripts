@@ -19,6 +19,7 @@ Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Peer Review') 'peer_review' 'Peer
 Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Independent Check') 'independent_check' 'Independent Check -> independent_check'
 Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Unknown Type') $null 'Unknown review type returns null'
 
+$packageId = [guid]'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 $script:completionCalls = [System.Collections.Generic.List[object]]::new()
 $script:summaryCalls = [System.Collections.Generic.List[string]]::new()
 $script:transitionCalls = [System.Collections.Generic.List[object]]::new()
@@ -67,25 +68,45 @@ function Write-QCWorkflowEventRow {
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
 }
 
+function Resolve-QCCycleCompletionSheetPackageId {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+    if ([string]$DocumentGuid -eq $dgnGuid) { return $packageId }
+    return $null
+}
+
 function Ensure-QCCycleCompletion {
     param(
         [hashtable]$Config, [string]$DocumentGuid, [string]$QcCycleId, [string]$QcReviewType,
+        [Nullable[guid]]$SheetPackageId = $null,
         [string]$DocumentName = '', [Nullable[int]]$QcCycleNumber = $null,
         [Nullable[long]]$TransitionEventId = $null, [Nullable[long]]$AuditEventId = $null,
         [string]$CompletedBy = '', [Nullable[datetime]]$CompletedAt = $null
     )
-    $key = ($DocumentGuid + '|' + $QcCycleId + '|' + $QcReviewType)
+    $pkg = Resolve-QCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $DocumentGuid -SheetPackageId $SheetPackageId
+    if (-not $pkg) {
+        return [pscustomobject]@{
+            IsSuccess = $true
+            Data = @{ inserted = $false; reused = $false; completionId = $null; sheetPackageId = $null; reason = 'sheet_package_not_found' }
+        }
+    }
+    $key = ($pkg.ToString() + '|' + $QcCycleId + '|' + $QcReviewType)
     $existing = @($script:completionCalls | Where-Object {
-        ($_.documentGuid + '|' + $_.qcCycleId + '|' + $_.qcReviewType) -eq $key
+        ($_.sheetPackageId.ToString() + '|' + $_.qcCycleId + '|' + $_.qcReviewType) -eq $key
     })
     if ($existing.Count -gt 0) {
         return [pscustomobject]@{
             IsSuccess = $true
-            Data = @{ inserted = $false; reused = $true; completionId = 1; completedAt = [datetime]::UtcNow }
+            Data = @{ inserted = $false; reused = $true; completionId = 1; completedAt = [datetime]::UtcNow; sheetPackageId = $pkg }
         }
     }
     $script:completionCalls.Add(@{
         documentGuid = $DocumentGuid
+        sheetPackageId = $pkg
         documentName = $DocumentName
         qcCycleId = $QcCycleId
         qcCycleNumber = $QcCycleNumber
@@ -96,14 +117,19 @@ function Ensure-QCCycleCompletion {
     }) | Out-Null
     return [pscustomobject]@{
         IsSuccess = $true
-        Data = @{ inserted = $true; reused = $false; completionId = $script:completionCalls.Count; completedAt = [datetime]::UtcNow }
+        Data = @{ inserted = $true; reused = $false; completionId = $script:completionCalls.Count; completedAt = [datetime]::UtcNow; sheetPackageId = $pkg }
     }
 }
 
 function Update-QCSheetCycleCompletionSummary {
-    param([hashtable]$Config, [string]$DocumentGuid)
-    $script:summaryCalls.Add([string]$DocumentGuid) | Out-Null
-    return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    $pkg = Resolve-QCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $DocumentGuid -SheetPackageId $SheetPackageId
+    if ($pkg) { $script:summaryCalls.Add($pkg.ToString()) | Out-Null }
+    return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = [bool]$pkg; sheetPackageId = $pkg } }
 }
 
 function Get-QCSheetIndexCycle {
@@ -194,10 +220,11 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid
     -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
     -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9001 -ChangedByUsername 'reviewer@example.com'
 Assert-Eq $script:completionCalls.Count 1 'DGN trigger should record one package completion'
-Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'DGN trigger should use DGN GUID'
+Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'DGN trigger should keep audit document_guid'
+Assert-Eq $script:completionCalls[0].sheetPackageId.ToString() $packageId.ToString() 'DGN trigger should resolve sheet_package_id'
 Assert-Eq $script:completionCalls[0].qcReviewType 'peer_review' 'Stored review type should be normalized'
 Assert-Eq $script:summaryCalls.Count 1 'Rollup should run after insert'
-Assert-Eq $script:summaryCalls[0] $dgnGuid 'Rollup should target DGN sheet_index row'
+Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Rollup should target sheet_packages'
 Assert-Eq $script:historyCalls.Count 3 'Sibling history must remain per-member'
 Assert-Eq $script:transitionCalls.Count 3 'Sibling transitions must remain per-member'
 
@@ -209,7 +236,7 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $sheetGu
     -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9003
 Assert-Eq $script:completionCalls.Count 1 'Sheet PDF trigger should record one package completion'
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Sheet PDF trigger should canonicalize to DGN GUID'
-Assert-Eq $script:summaryCalls[0] $dgnGuid 'Sheet PDF trigger rollup should target DGN row'
+Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Sheet PDF trigger rollup should target sheet_packages'
 
 # 3. QC PDF-triggered completion resolves to DGN GUID
 Reset-CompletionState
@@ -238,16 +265,16 @@ Assert-Eq $script:completionCalls.Count 1 'Sibling retries should not multiply c
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Sibling retries should keep DGN identity'
 Assert-True ($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_DUPLICATE' }) 'Sibling retries should log duplicates'
 
-# 5. Rollup updates DGN only; sheet PDF and QC PDF rows are not updated
+# 5. Rollup updates sheet_packages only once per package
 Reset-CompletionState
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid `
     -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder `
     -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
     -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9015 | Out-Null
 Assert-Eq $script:summaryCalls.Count 1 'Only one rollup should run'
-Assert-Eq $script:summaryCalls[0] $dgnGuid 'Rollup should update DGN sheet_index row only'
-Assert-Eq @($script:summaryCalls | Where-Object { $_ -eq $sheetGuid }).Count 0 'Sheet PDF row should not receive rollup'
-Assert-Eq @($script:summaryCalls | Where-Object { $_ -eq $qcGuid }).Count 0 'QC PDF row should not receive rollup'
+Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Rollup should update sheet_packages row only'
+Assert-Eq @($script:summaryCalls | Where-Object { $_ -eq $sheetGuid }).Count 0 'Sheet PDF guid should not receive rollup'
+Assert-Eq @($script:summaryCalls | Where-Object { $_ -eq $qcGuid }).Count 0 'QC PDF guid should not receive rollup'
 
 # 6. Finalizing prepend counts once
 Reset-CompletionState
@@ -334,6 +361,26 @@ $skipLog = @($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_
 Assert-True ($skipLog.Count -gt 0) 'Missing DGN should log skip'
 Assert-Eq $skipLog[0].data.reason 'canonical_dgn_not_found' 'Missing DGN skip reason should be canonical_dgn_not_found'
 
+# DGN resolvable but sheet_package_id missing -> sheet_package_not_found
+Reset-CompletionState
+function Resolve-QCCycleCompletionSheetPackageId {
+    param([hashtable]$Config, [string]$DocumentGuid = '', [Nullable[guid]]$SheetPackageId = $null)
+    return $null
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid `
+    -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9022
+Assert-Eq $script:completionCalls.Count 0 'Missing sheet_package_id should not insert completion'
+$pkgSkip = @($script:jsonLogs | Where-Object { $_.code -eq 'QC_CYCLE_COMPLETION_SKIPPED' -and $_.data.reason -eq 'sheet_package_not_found' })
+Assert-True ($pkgSkip.Count -gt 0) 'Missing package should log sheet_package_not_found'
+function Resolve-QCCycleCompletionSheetPackageId {
+    param([hashtable]$Config, [string]$DocumentGuid = '', [Nullable[guid]]$SheetPackageId = $null)
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+    if ([string]$DocumentGuid -eq $dgnGuid) { return $packageId }
+    return $null
+}
+
 # Audit trigger path canonicalizes via StaleCheckMembers to DGN
 Reset-CompletionState
 Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfg -DocumentGuid $dgnGuid `
@@ -393,7 +440,7 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid 
 Assert-Eq $script:completionCalls.Count 1 'Processor finalize should record completion via sheetStateSync fallback'
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Processor finalize should use DGN GUID'
 Assert-Eq $script:completionCalls[0].qcCycleId 'qc_qcprepend_d0ca0819859b391d' 'Processor finalize should use context cycle id'
-Assert-Eq $script:summaryCalls[0] $dgnGuid 'Processor finalize rollup should target DGN row'
+Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Processor finalize rollup should target sheet_packages'
 
 # Empty sheet_index previous state must not throw or count as QC Complete (index baseline)
 Reset-CompletionState
