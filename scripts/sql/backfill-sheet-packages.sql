@@ -103,15 +103,13 @@ stemmed AS (
 INSERT INTO sheet_package_backfill_conflicts (conflict_type, folder_path, sheet_stem, document_role, document_guid, document_name, details)
 SELECT 'missing_folder_path', NULL, NULL, NULL, norm_document_guid, norm_document_name, 'sheet_index row has blank folder_path'
 FROM stemmed
-WHERE NULLIF(norm_folder_path, '') IS NULL;
-
-INSERT INTO sheet_package_backfill_conflicts (conflict_type, folder_path, sheet_stem, document_role, document_guid, document_name, details)
+WHERE NULLIF(norm_folder_path, '') IS NULL
+UNION ALL
 SELECT 'missing_document_name', norm_folder_path, NULL, NULL, norm_document_guid, NULL, 'sheet_index row has blank document_name'
 FROM stemmed
 WHERE NULLIF(norm_folder_path, '') IS NOT NULL
-  AND NULLIF(norm_document_name, '') IS NULL;
-
-INSERT INTO sheet_package_backfill_conflicts (conflict_type, folder_path, sheet_stem, document_role, document_guid, document_name, details)
+  AND NULLIF(norm_document_name, '') IS NULL
+UNION ALL
 SELECT 'invalid_guid', norm_folder_path, sheet_stem, document_role, norm_document_guid, norm_document_name, 'document_guid is not a valid UNIQUEIDENTIFIER'
 FROM stemmed
 WHERE NULLIF(norm_folder_path, '') IS NOT NULL
