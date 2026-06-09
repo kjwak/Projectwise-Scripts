@@ -261,6 +261,7 @@ function _AuditPoller-ExtractFolderGuidFromPwFolder {
     param([object]$Folder)
     if ($null -eq $Folder) { return $null }
     if ($Folder -is [string]) { return $null }
+    $Folder = _AuditPoller-PreparePwFolderObject -Folder $Folder
     foreach ($prop in @('FolderGUID', 'GUID', 'ObjectGUID', 'o_objguid', 'folderGUID', 'FolderGuid')) {
         $v = _AuditPoller-GetPwObjectProperty -Object $Folder -Name $prop
         if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
@@ -941,22 +942,23 @@ function _AuditPoller-GetWatchListFolderEntriesFromConfig {
     return @($out.ToArray())
 }
 
-function _AuditPoller-TryRegisterAuditCacheFolderPath {
-    param(
-        [hashtable]$Config,
-        [Parameter(Mandatory)][string]$FolderPath,
-        [string]$WatchRoot = '',
-        [Parameter(Mandatory)][hashtable]$SeenPaths,
-        [ref]$StatsRef
-    )
-    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
-    if (-not $canonical) { return $false }
-    if (_AuditPoller-TestAuditCacheWarmFolderPathExcluded -FolderPath $canonical) { return $false }
-    $pathKey = $canonical.ToLowerInvariant()
-    if ($SeenPaths.ContainsKey($pathKey)) { return $false }
-    $SeenPaths[$pathKey] = $true
+function _AuditPoller-GetPwFolderPathCandidatesForCmdlet {
+    param([Parameter(Mandatory)][string]$FolderPath)
+    $seen = @{}
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    function _AddCandidate([string]$p) {
+        if ([string]::IsNullOrWhiteSpace($p)) { return }
+        $t = $p.Trim().TrimEnd('\')
+        $k = $t.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { return }
+        $seen[$k] = $true
+        [void]$candidates.Add($t)
+    }
 
-    if (-not (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue)) { return $false }
+    _AddCandidate $FolderPath
+    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if ($canonical) { _AddCandidate $canonical }
+
     $apiPath = $FolderPath
     if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
         try {
@@ -964,16 +966,60 @@ function _AuditPoller-TryRegisterAuditCacheFolderPath {
             if (-not [string]::IsNullOrWhiteSpace($converted)) { $apiPath = $converted }
         } catch { }
     }
-    try {
-        $f = Get-PWFolders -FolderPath $apiPath -JustOne -ErrorAction Stop
-        $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
-        $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $f
-        if (-not $fp) { $fp = $canonical }
-        if ($fg -and $fp) {
-            _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $fg -FolderPath $fp -WatchRoot $WatchRoot -StatsRef $StatsRef
-            return $true
-        }
-    } catch { }
+    _AddCandidate $apiPath
+    if (-not [string]::IsNullOrWhiteSpace($apiPath)) {
+        _AddCandidate ('Documents\' + $apiPath.TrimStart('\'))
+    }
+    return @($candidates.ToArray())
+}
+
+function _AuditPoller-GetPwFolderByPathForCacheWarm {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [object]$PrefetchedFolder = $null
+    )
+    if ($PrefetchedFolder) {
+        $prepared = _AuditPoller-PreparePwFolderObject -Folder $PrefetchedFolder
+        if (_AuditPoller-ExtractFolderGuidFromPwFolder -Folder $prepared) { return $prepared }
+    }
+    if (-not (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue)) { return $null }
+    foreach ($p in @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $FolderPath)) {
+        try {
+            $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction Stop
+            if (-not $f) { continue }
+            $prepared = _AuditPoller-PreparePwFolderObject -Folder $f
+            if (_AuditPoller-ExtractFolderGuidFromPwFolder -Folder $prepared) { return $prepared }
+        } catch { }
+    }
+    return $null
+}
+
+function _AuditPoller-TryRegisterAuditCacheFolderPath {
+    param(
+        [hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [Parameter(Mandatory)][hashtable]$SeenPaths,
+        [ref]$StatsRef,
+        [object]$PrefetchedFolder = $null
+    )
+    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if (-not $canonical) { return $false }
+    if (_AuditPoller-TestAuditCacheWarmFolderPathExcluded -FolderPath $canonical) { return $false }
+    $pathKey = $canonical.ToLowerInvariant()
+    if ($SeenPaths.ContainsKey($pathKey)) { return $false }
+
+    $f = _AuditPoller-GetPwFolderByPathForCacheWarm -FolderPath $FolderPath -PrefetchedFolder $PrefetchedFolder
+    if (-not $f) { return $false }
+
+    $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
+    $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $f
+    if (-not $fp) { $fp = $canonical }
+    if ($fg -and $fp) {
+        $SeenPaths[$pathKey] = $true
+        _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $fg -FolderPath $fp -WatchRoot $WatchRoot -StatsRef $StatsRef
+        return $true
+    }
     return $false
 }
 
@@ -1075,6 +1121,12 @@ function Get-QCAuditWatchListFolderEntriesFromConfig {
     return _AuditPoller-GetWatchListFolderEntriesFromConfig -Config $Config
 }
 
+function Get-QCAuditCacheWarmFolderPathCandidates {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FolderPath)
+    return @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $FolderPath)
+}
+
 function Sync-AuditPollerWatchFolderGuidCache {
     <#
     .SYNOPSIS
@@ -1122,17 +1174,17 @@ function Sync-AuditPollerWatchFolderGuidCache {
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
-        $apiRoot = $rootPath
-        if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
-            try {
-                $converted = ConvertTo-PWCmdletFolderPath -InternalFolderPath $rootPath
-                if (-not [string]::IsNullOrWhiteSpace($converted)) { $apiRoot = $converted }
-            } catch { }
-        }
         if (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue) {
             try {
-                $f = Get-PWFolders -FolderPath $apiRoot -JustOne -ErrorAction SilentlyContinue
-                if (_AuditPoller-TryRegisterAuditCacheFolderPath -Config $Config -FolderPath $rootPath -WatchRoot $rootPath -SeenPaths $seenPaths -StatsRef $statsRef) {
+                $f = $null
+                foreach ($p in @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $rootPath)) {
+                    try {
+                        $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction SilentlyContinue
+                        if ($f) { break }
+                    } catch { }
+                }
+                if (_AuditPoller-TryRegisterAuditCacheFolderPath -Config $Config -FolderPath $rootPath -WatchRoot $rootPath `
+                        -SeenPaths $seenPaths -StatsRef $statsRef -PrefetchedFolder $f) {
                     $rootGuidCount++
                     if ($debugLogPaths) { [void]$debugPaths.Add((_AuditPoller-NormalizeFolderPath -FolderPath $rootPath)) }
                 }
@@ -2619,4 +2671,4 @@ function Test-QCAuditIngestAllowedActionCode {
     return _AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $ActionCode
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Get-QCAuditParentGuidFilterSkipReason, Resolve-QCAuditSheetsDiscoveryFolderPath, Get-QCAuditSheetsDiscoveryOneLevelDeep, Get-QCAuditWatchListFolderEntriesFromConfig, Test-QCAuditCacheWarmFolderPathExcluded, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode
+Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Get-QCAuditParentGuidFilterSkipReason, Resolve-QCAuditSheetsDiscoveryFolderPath, Get-QCAuditSheetsDiscoveryOneLevelDeep, Get-QCAuditWatchListFolderEntriesFromConfig, Get-QCAuditCacheWarmFolderPathCandidates, Test-QCAuditCacheWarmFolderPathExcluded, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode

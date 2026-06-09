@@ -4,6 +4,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force
 
 function _Assert($cond, $msg) {
@@ -42,6 +43,11 @@ $cfgFolders = @{
 $entries = @(Get-QCAuditWatchListFolderEntriesFromConfig -Config $cfgFolders)
 _Assert ($entries.Count -eq 2) 'two watchList.folders entries'
 _Assert ($entries[0].FolderPath -eq 'Documents\Root\Proj\CADD\Sheets') 'joined folder path'
+
+# Path candidates include cmdlet + Documents\ forms (matches Find-PWSheetsFoldersUnderRoot)
+$candidates = @(Get-QCAuditCacheWarmFolderPathCandidates -FolderPath 'Documents\AZDOT 2024\Project\CADD\Sheets')
+_Assert ($candidates -contains 'AZDOT 2024\Project\CADD\Sheets') 'stripped cmdlet path'
+_Assert ($candidates -contains 'Documents\AZDOT 2024\Project\CADD\Sheets') 'Documents\ prefixed path'
 
 # Child folder GUID in cache -> normal PDF passes parent GUID gate
 $cfg = @{ auditPoller = @{ folderGuidCache = @{ filterByParentGuidCache = $true } } }
