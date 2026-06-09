@@ -48,6 +48,8 @@ _Assert ($entries[0].FolderPath -eq 'Documents\Root\Proj\CADD\Sheets') 'joined f
 $candidates = @(Get-QCAuditCacheWarmFolderPathCandidates -FolderPath 'Documents\AZDOT 2024\Project\CADD\Sheets')
 _Assert ($candidates -contains 'AZDOT 2024\Project\CADD\Sheets') 'stripped cmdlet path'
 _Assert ($candidates -contains 'Documents\AZDOT 2024\Project\CADD\Sheets') 'Documents\ prefixed path'
+$lowerCandidate = @($candidates | Where-Object { $_ -ceq 'documents\azdot 2024\project\cadd\sheets' })
+_Assert ($lowerCandidate.Count -eq 0) 'no lowercase API path candidates'
 
 # Child folder GUID in cache -> normal PDF passes parent GUID gate
 $cfg = @{ auditPoller = @{ folderGuidCache = @{ filterByParentGuidCache = $true } } }

@@ -271,6 +271,87 @@ function _AuditPoller-ExtractFolderGuidFromPwFolder {
     return $null
 }
 
+function _AuditPoller-CoerceSinglePwFolderObject {
+    param([object]$Folder)
+    if ($null -eq $Folder) { return $null }
+    if ($Folder -is [string]) { return $Folder }
+    if ($Folder -is [System.Collections.IEnumerable]) {
+        foreach ($item in @($Folder)) {
+            if ($null -ne $item) { return $item }
+        }
+        return $null
+    }
+    return $Folder
+}
+
+function _AuditPoller-ExtractProjectNoFromPwFolder {
+    param([object]$Folder)
+    $f = _AuditPoller-CoerceSinglePwFolderObject -Folder $Folder
+    if ($null -eq $f) { return $null }
+    $f = _AuditPoller-PreparePwFolderObject -Folder $f
+    foreach ($prop in @('ProjectNo', 'FolderID', 'ID', 'ProjectNumber', 'o_projectno', 'FolderNo')) {
+        $v = _AuditPoller-GetPwObjectProperty -Object $f -Name $prop
+        if ($null -eq $v) { continue }
+        try {
+            $n = [int]$v
+            if ($n -gt 0) { return $n }
+        } catch { }
+    }
+    return $null
+}
+
+function _AuditPoller-TryResolveFolderGuidViaProjectNo {
+    param([int]$ProjectNo)
+    if ($ProjectNo -lt 1) { return $null }
+    if (-not (Get-Command -Name 'Select-PWSQL' -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $dt = Select-PWSQL -SQLSelectStatement "SELECT o_projguid FROM dms_proj WHERE o_projectno = $ProjectNo" -ErrorAction Stop
+        if ($dt -and $dt.Rows -and $dt.Rows.Count -gt 0) {
+            $g = [string]$dt.Rows[0].o_projguid
+            if (-not [string]::IsNullOrWhiteSpace($g)) { return ([string]$g).Trim().Trim('{}') }
+        }
+    } catch { }
+    return $null
+}
+
+function _AuditPoller-ResolveFolderGuidFromPwFolder {
+    param([object]$Folder)
+    $f = _AuditPoller-CoerceSinglePwFolderObject -Folder $Folder
+    if ($null -eq $f) { return $null }
+    $f = _AuditPoller-PreparePwFolderObject -Folder $f
+    $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
+    if ($fg) { return $fg }
+    $projNo = _AuditPoller-ExtractProjectNoFromPwFolder -Folder $f
+    if ($projNo) {
+        if (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue) {
+            try {
+                $f2 = Get-PWFolders -FolderID $projNo -JustOne -ErrorAction Stop
+                $f2 = _AuditPoller-PreparePwFolderObject -Folder (_AuditPoller-CoerceSinglePwFolderObject -Folder $f2)
+                $fg2 = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f2
+                if ($fg2) { return $fg2 }
+            } catch { }
+        }
+        $fgSql = _AuditPoller-TryResolveFolderGuidViaProjectNo -ProjectNo $projNo
+        if ($fgSql) { return $fgSql }
+    }
+    return $null
+}
+
+function _AuditPoller-BuildDocumentsFolderPath {
+    param(
+        [Parameter(Mandatory)][string]$BasePath,
+        [string]$RelativePath = ''
+    )
+    $root = ($BasePath -as [string]).Trim().TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($root)) { return '' }
+    if ($root -notmatch '^(?i)Documents\\') {
+        $root = ('Documents\' + $root.TrimStart('\')).TrimEnd('\')
+    }
+    $rel = ($RelativePath -as [string]).Trim().TrimStart('\').TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($rel)) { return $root }
+    return ($root + '\' + $rel).TrimEnd('\')
+}
+
 function _AuditPoller-TryApplyFolderLookup {
     param(
         [hashtable]$Config,
@@ -956,8 +1037,6 @@ function _AuditPoller-GetPwFolderPathCandidatesForCmdlet {
     }
 
     _AddCandidate $FolderPath
-    $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
-    if ($canonical) { _AddCandidate $canonical }
 
     $apiPath = $FolderPath
     if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
@@ -979,16 +1058,15 @@ function _AuditPoller-GetPwFolderByPathForCacheWarm {
         [object]$PrefetchedFolder = $null
     )
     if ($PrefetchedFolder) {
-        $prepared = _AuditPoller-PreparePwFolderObject -Folder $PrefetchedFolder
-        if (_AuditPoller-ExtractFolderGuidFromPwFolder -Folder $prepared) { return $prepared }
+        $prepared = _AuditPoller-PreparePwFolderObject -Folder (_AuditPoller-CoerceSinglePwFolderObject -Folder $PrefetchedFolder)
+        if ($prepared) { return $prepared }
     }
     if (-not (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue)) { return $null }
     foreach ($p in @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $FolderPath)) {
         try {
             $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction Stop
-            if (-not $f) { continue }
-            $prepared = _AuditPoller-PreparePwFolderObject -Folder $f
-            if (_AuditPoller-ExtractFolderGuidFromPwFolder -Folder $prepared) { return $prepared }
+            $prepared = _AuditPoller-PreparePwFolderObject -Folder (_AuditPoller-CoerceSinglePwFolderObject -Folder $f)
+            if ($prepared) { return $prepared }
         } catch { }
     }
     return $null
@@ -1001,24 +1079,48 @@ function _AuditPoller-TryRegisterAuditCacheFolderPath {
         [string]$WatchRoot = '',
         [Parameter(Mandatory)][hashtable]$SeenPaths,
         [ref]$StatsRef,
-        [object]$PrefetchedFolder = $null
+        [object]$PrefetchedFolder = $null,
+        [ref]$WarmDiag = $null
     )
     $canonical = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
-    if (-not $canonical) { return $false }
-    if (_AuditPoller-TestAuditCacheWarmFolderPathExcluded -FolderPath $canonical) { return $false }
+    if (-not $canonical) {
+        if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) { $WarmDiag.Value.invalidPath++ }
+        return $false
+    }
+    if (_AuditPoller-TestAuditCacheWarmFolderPathExcluded -FolderPath $canonical) {
+        if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) { $WarmDiag.Value.excluded++ }
+        return $false
+    }
     $pathKey = $canonical.ToLowerInvariant()
     if ($SeenPaths.ContainsKey($pathKey)) { return $false }
 
-    $f = _AuditPoller-GetPwFolderByPathForCacheWarm -FolderPath $FolderPath -PrefetchedFolder $PrefetchedFolder
-    if (-not $f) { return $false }
+    if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) { $WarmDiag.Value.attempts++ }
 
-    $fg = _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $f
+    $f = _AuditPoller-GetPwFolderByPathForCacheWarm -FolderPath $FolderPath -PrefetchedFolder $PrefetchedFolder
+    if (-not $f) {
+        if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) {
+            $WarmDiag.Value.noFolder++
+            if ($WarmDiag.Value.failedSamples.Count -lt 5) {
+                [void]$WarmDiag.Value.failedSamples.Add(@{ path = $FolderPath; reason = 'no_folder_object' })
+            }
+        }
+        return $false
+    }
+
+    $fg = _AuditPoller-ResolveFolderGuidFromPwFolder -Folder $f
     $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $f
     if (-not $fp) { $fp = $canonical }
     if ($fg -and $fp) {
         $SeenPaths[$pathKey] = $true
         _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $fg -FolderPath $fp -WatchRoot $WatchRoot -StatsRef $StatsRef
+        if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) { $WarmDiag.Value.resolved++ }
         return $true
+    }
+    if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) {
+        $WarmDiag.Value.noGuid++
+        if ($WarmDiag.Value.failedSamples.Count -lt 5) {
+            [void]$WarmDiag.Value.failedSamples.Add(@{ path = $FolderPath; reason = 'no_folder_guid' })
+        }
     }
     return $false
 }
@@ -1034,7 +1136,8 @@ function _AuditPoller-RegisterAuditCacheOneLevelChildren {
         [ref]$SheetsBudgetUsed,
         [ref]$OneLevelChildGuidCount,
         [bool]$DebugLogPaths = $false,
-        [System.Collections.Generic.List[string]]$DebugPaths = $null
+        [System.Collections.Generic.List[string]]$DebugPaths = $null,
+        [ref]$WarmDiag = $null
     )
     if ($SheetsBudgetUsed.Value -ge $MaxSheets) { return }
     if (-not (Get-Command -Name 'Get-PWImmediateChildFolders' -ErrorAction SilentlyContinue)) { return }
@@ -1045,8 +1148,14 @@ function _AuditPoller-RegisterAuditCacheOneLevelChildren {
             if (-not [string]::IsNullOrWhiteSpace($converted)) { $apiPath = $converted }
         } catch { }
     }
+    $kids = @()
+    foreach ($p in @($apiPath, ('Documents\' + $apiPath.TrimStart('\')), $SheetsParentPath)) {
+        try {
+            $kids = @(Get-PWImmediateChildFolders -FolderPath $p)
+            if ($kids.Count -gt 0) { break }
+        } catch { }
+    }
     try {
-        $kids = @(Get-PWImmediateChildFolders -FolderPath $apiPath)
         foreach ($k in @($kids)) {
             if ($SheetsBudgetUsed.Value -ge $MaxSheets) { break }
             $kp = $null
@@ -1062,7 +1171,7 @@ function _AuditPoller-RegisterAuditCacheOneLevelChildren {
                 } catch { }
             }
             if (_AuditPoller-TryRegisterAuditCacheFolderPath -Config $Config -FolderPath $canonical -WatchRoot $WatchRoot `
-                    -SeenPaths $SeenPaths -StatsRef $StatsRef) {
+                    -SeenPaths $SeenPaths -StatsRef $StatsRef -WarmDiag $WarmDiag) {
                 $OneLevelChildGuidCount.Value++
                 $SheetsBudgetUsed.Value++
                 if ($DebugLogPaths -and $DebugPaths) {
@@ -1085,14 +1194,15 @@ function _AuditPoller-RegisterAuditCacheSheetsFolderEntry {
         [ref]$SheetsParentGuidCount,
         [ref]$OneLevelChildGuidCount,
         [bool]$DebugLogPaths = $false,
-        [System.Collections.Generic.List[string]]$DebugPaths = $null
+        [System.Collections.Generic.List[string]]$DebugPaths = $null,
+        [ref]$WarmDiag = $null
     )
     $sheetPath = _AuditPoller-ResolveSheetsDiscoveryFolderPath -Entry $Entry
     if ([string]::IsNullOrWhiteSpace($sheetPath)) { return }
     if ($SheetsBudgetUsed.Value -ge $MaxSheets) { return }
 
     if (_AuditPoller-TryRegisterAuditCacheFolderPath -Config $Config -FolderPath $sheetPath -WatchRoot $WatchRoot `
-            -SeenPaths $SeenPaths -StatsRef $StatsRef) {
+            -SeenPaths $SeenPaths -StatsRef $StatsRef -WarmDiag $WarmDiag) {
         $SheetsParentGuidCount.Value++
         $SheetsBudgetUsed.Value++
         if ($DebugLogPaths -and $DebugPaths) {
@@ -1103,7 +1213,7 @@ function _AuditPoller-RegisterAuditCacheSheetsFolderEntry {
     if (-not (_AuditPoller-GetSheetsDiscoveryOneLevelDeep -Entry $Entry)) { return }
     _AuditPoller-RegisterAuditCacheOneLevelChildren -Config $Config -SheetsParentPath $sheetPath -WatchRoot $WatchRoot `
         -SeenPaths $SeenPaths -StatsRef $StatsRef -MaxSheets $MaxSheets -SheetsBudgetUsed $SheetsBudgetUsed `
-        -OneLevelChildGuidCount $OneLevelChildGuidCount -DebugLogPaths:$DebugLogPaths -DebugPaths $DebugPaths | Out-Null
+        -OneLevelChildGuidCount $OneLevelChildGuidCount -DebugLogPaths:$DebugLogPaths -DebugPaths $DebugPaths -WarmDiag $WarmDiag | Out-Null
 }
 
 function Get-QCAuditSheetsDiscoveryOneLevelDeep {
@@ -1169,7 +1279,18 @@ function Sync-AuditPollerWatchFolderGuidCache {
     $sheetsParentGuidCount = 0
     $oneLevelChildGuidCount = 0
     $sheetsBudgetUsed = 0
+    $discoveryEntryCount = 0
     $debugPaths = [System.Collections.Generic.List[string]]::new()
+    $warmDiag = @{
+        attempts      = 0
+        resolved      = 0
+        noFolder      = 0
+        noGuid        = 0
+        excluded      = 0
+        invalidPath   = 0
+        failedSamples = [System.Collections.Generic.List[object]]::new()
+    }
+    $warmDiagRef = [ref]$warmDiag
 
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
@@ -1184,7 +1305,7 @@ function Sync-AuditPollerWatchFolderGuidCache {
                     } catch { }
                 }
                 if (_AuditPoller-TryRegisterAuditCacheFolderPath -Config $Config -FolderPath $rootPath -WatchRoot $rootPath `
-                        -SeenPaths $seenPaths -StatsRef $statsRef -PrefetchedFolder $f) {
+                        -SeenPaths $seenPaths -StatsRef $statsRef -PrefetchedFolder $f -WarmDiag $warmDiagRef) {
                     $rootGuidCount++
                     if ($debugLogPaths) { [void]$debugPaths.Add((_AuditPoller-NormalizeFolderPath -FolderPath $rootPath)) }
                 }
@@ -1207,7 +1328,7 @@ function Sync-AuditPollerWatchFolderGuidCache {
         elseif ($cfg.PSObject -and $cfg.datasourceName) { $ds = [string]$cfg.datasourceName }
 
         $discoveryEntries = [System.Collections.Generic.List[object]]::new()
-        $directSheets = _AuditPoller-NormalizeFolderPath -FolderPath (($rootPath.TrimEnd('\')) + '\' + $suffix)
+        $directSheets = _AuditPoller-BuildDocumentsFolderPath -BasePath $rootPath -RelativePath $suffix
         if ($directSheets) { [void]$discoveryEntries.Add(@{ FolderPath = $directSheets; OneLevelDeep = $true }) }
 
         if (Get-Command -Name 'Find-PWSheetsFoldersUnderRoot' -ErrorAction SilentlyContinue) {
@@ -1218,24 +1339,27 @@ function Sync-AuditPollerWatchFolderGuidCache {
             } catch { }
         }
 
+        $discoveryEntryCount += @($discoveryEntries).Count
+
         foreach ($entry in @($discoveryEntries)) {
             if ($sheetsBudgetUsed -ge $maxSheets) { break }
             _AuditPoller-RegisterAuditCacheSheetsFolderEntry -Config $Config -Entry $entry -WatchRoot $rootPath `
                 -SeenPaths $seenPaths -StatsRef $statsRef -MaxSheets $maxSheets -SheetsBudgetUsed ([ref]$sheetsBudgetUsed) `
                 -SheetsParentGuidCount ([ref]$sheetsParentGuidCount) -OneLevelChildGuidCount ([ref]$oneLevelChildGuidCount) `
-                -DebugLogPaths $debugLogPaths -DebugPaths $debugPaths | Out-Null
+                -DebugLogPaths $debugLogPaths -DebugPaths $debugPaths -WarmDiag $warmDiagRef | Out-Null
         }
     }
 
     if ($warmSheets) {
         foreach ($folderEntry in @(_AuditPoller-GetWatchListFolderEntriesFromConfig -Config $Config)) {
             if ($sheetsBudgetUsed -ge $maxSheets) { break }
+            $discoveryEntryCount++
             $watchRoot = ''
             try { if ($folderEntry.watchRoot) { $watchRoot = [string]$folderEntry.watchRoot } } catch { }
             _AuditPoller-RegisterAuditCacheSheetsFolderEntry -Config $Config -Entry $folderEntry -WatchRoot $watchRoot `
                 -SeenPaths $seenPaths -StatsRef $statsRef -MaxSheets $maxSheets -SheetsBudgetUsed ([ref]$sheetsBudgetUsed) `
                 -SheetsParentGuidCount ([ref]$sheetsParentGuidCount) -OneLevelChildGuidCount ([ref]$oneLevelChildGuidCount) `
-                -DebugLogPaths $debugLogPaths -DebugPaths $debugPaths | Out-Null
+                -DebugLogPaths $debugLogPaths -DebugPaths $debugPaths -WarmDiag $warmDiagRef | Out-Null
         }
     }
 
@@ -1250,6 +1374,15 @@ function Sync-AuditPollerWatchFolderGuidCache {
         rootGuidCount = $rootGuidCount
         sheetsParentGuidCount = $sheetsParentGuidCount
         oneLevelChildGuidCount = $oneLevelChildGuidCount
+        discoveryEntryCount = $discoveryEntryCount
+        warmRegisterAttempts = [int]$warmDiag.attempts
+        warmRegisterResolved = [int]$warmDiag.resolved
+        warmRegisterNoFolder = [int]$warmDiag.noFolder
+        warmRegisterNoGuid = [int]$warmDiag.noGuid
+        warmRegisterExcluded = [int]$warmDiag.excluded
+    }
+    if (@($warmDiag.failedSamples).Count -gt 0) {
+        $warmLogData.warmRegisterFailedSamples = @($warmDiag.failedSamples.ToArray())
     }
     if ($debugLogPaths -and $debugPaths.Count -gt 0) {
         $warmLogData.debugPaths = @($debugPaths | Select-Object -Unique)
