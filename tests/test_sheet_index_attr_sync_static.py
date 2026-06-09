@@ -55,6 +55,17 @@ def test_document_attr_propagates_qc_review_type_to_associated_sheet():
     assert "pwWritesEnabled" in text
 
 
+def test_document_attr_propagates_role_emails_to_associated_sheet():
+    text = DISCOVERY.read_text(encoding="utf-8")
+    assert "function Sync-PWAssociatedSheetEmailAttributes" in text
+    assert "Sync-PWAssociatedSheetEmailAttributes -Config $Config" in text
+    assert "WATCH_SHEET_EMAIL_SYNC" in text
+    assert "roleEmailsNeedSiblingSync" in text
+    assert "checkerEmailColumn" in text or "CheckerEmailColumn" in text
+    assert "EM_Checker_Email" in text
+    assert "Get-PWQcPrependRoleFieldsFromSourcePdf" in text
+
+
 def test_watcher_audit_loop_calls_sync_on_document_attr():
     text = WATCHER.read_text(encoding="utf-8")
     assert "Sync-PWSheetIndexOwnership -Config $config" in text
@@ -93,6 +104,7 @@ def test_document_state_propagates_to_associated_sheet_files():
     discovery = DISCOVERY.read_text(encoding="utf-8")
     assert "function Sync-PWAssociatedSheetWorkflowState" in discovery
     assert "function Sync-PWAssociatedSheetReviewTypeAttributes" in discovery
+    assert "function Sync-PWAssociatedSheetEmailAttributes" in discovery
     assert "function Get-PWAssociatedSheetMembers" in discovery
     assert "function Get-PWSheetStemFromDocumentName" in discovery
     assert "_PWD-InvokeSetPwDocumentState" in discovery

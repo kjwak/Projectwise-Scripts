@@ -19,6 +19,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Revert-PWAssociatedSheetWorkflowStates'
         'Sync-PWAssociatedSheetMembersToWorkflowState'
         'Sync-PWAssociatedSheetReviewTypeAttributes'
+        'Sync-PWAssociatedSheetEmailAttributes'
         'Sync-PWSheetIndexOwnership'
         'Get-PWDocumentsInFolder'
         'ConvertTo-PWCmdletFolderPath'
@@ -955,30 +956,61 @@ function Get-PWDocumentAttributesByColumns {
     }
 }
 
+function _PWD-GetSheetRoleEmailColumnNames {
+    param([hashtable]$Config = @{})
+
+    $designer = 'EM_Designer_Email'
+    $reviewer = 'EM_Reviewer_Email'
+    $checker = 'EM_Checker_Email'
+    try {
+        if ($Config) {
+            $na = $Config['notifications']['attributes']
+            if ($na) {
+                if ($na['designerEmailField']) { $designer = [string]$na['designerEmailField'] }
+                if ($na['reviewerEmailField']) { $reviewer = [string]$na['reviewerEmailField'] }
+                if ($na['checkerEmailField']) { $checker = [string]$na['checkerEmailField'] }
+            }
+            $pw = $Config['projectWise']
+            if ($pw -and $pw['environmentEmailAttributes']) {
+                $ea = $pw['environmentEmailAttributes']
+                if ($ea['default']) {
+                    if ($ea['default']['designerEmailColumn']) { $designer = [string]$ea['default']['designerEmailColumn'] }
+                    if ($ea['default']['reviewerEmailColumn']) { $reviewer = [string]$ea['default']['reviewerEmailColumn'] }
+                    if ($ea['default']['checkerEmailColumn']) { $checker = [string]$ea['default']['checkerEmailColumn'] }
+                }
+            }
+        }
+    } catch { }
+    return @{ designer = $designer; reviewer = $reviewer; checker = $checker }
+}
+
 function Get-PWDocumentEmailContacts {
     <#
     .SYNOPSIS
-    Reads EM_Designer_Email and EM_Reviewer_Email from a document in a folder via search-with-columns API.
+    Reads EM_Designer_Email, EM_Reviewer_Email, and EM_Checker_Email from a document in a folder via search-with-columns API.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$DocumentName,
         [string]$DesignerEmailColumn = 'EM_Designer_Email',
-        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
+        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email',
+        [string]$CheckerEmailColumn = 'EM_Checker_Email'
     )
 
-    $cols = @($DesignerEmailColumn, $ReviewerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $cols = @($DesignerEmailColumn, $ReviewerEmailColumn, $CheckerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
     if (-not $read.found) {
-        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = $read.error }
+        return @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; found = $false; error = $read.error }
     }
 
     $designer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $DesignerEmailColumn
     $reviewer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $ReviewerEmailColumn
+    $checker = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $CheckerEmailColumn
     return @{
         designerEmail = $designer
         reviewerEmail = $reviewer
+        checkerEmail  = $checker
         pwStateName   = [string]$read.pwStateName
         found         = $true
         document      = $read.document
@@ -1752,6 +1784,184 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
             canonicalReviewType = $canonical
             reviewTypeColumn    = $reviewCol
             pwWritesEnabled     = $pwWritesEnabled
+            memberCount         = $members.Count
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+        }
+    }
+}
+
+function Sync-PWAssociatedSheetEmailAttributes {
+    <#
+    .SYNOPSIS
+    Propagates role emails from the DGN-first canonical source to associated DGN, sheet PDF, and QC PDF siblings.
+    .DESCRIPTION
+    Updates ProjectWise environment attributes and sheet_index role email columns for every associated member
+    when canonical designer, reviewer, or checker emails differ. Mirrors sibling QC_Review_Type sync.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false
+    )
+
+    $emailCols = _PWD-GetSheetRoleEmailColumnNames -Config $Config
+    $designerCol = [string]$emailCols.designer
+    $reviewerCol = [string]$emailCols.reviewer
+    $checkerCol = [string]$emailCols.checker
+
+    $canonical = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $DocumentName -Config $Config
+    if (-not $canonical.found) { return }
+
+    $canonicalDesigner = [string]$canonical.designerEmail
+    $canonicalReviewer = [string]$canonical.reviewerEmail
+    $canonicalChecker = [string]$canonical.checkerEmail
+
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) { return }
+
+    $readCols = @($designerCol, $reviewerCol, $checkerCol) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $stateUpdates = @()
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        $doc = $member.document
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+
+        $prevDbDesigner = ''
+        $prevDbReviewer = ''
+        $prevDbChecker = ''
+        if ($dg -and (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue) -and (Test-QCDatabaseEnabled -Config $Config)) {
+            try {
+                $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $dg }
+                if ($dbRes.IsSuccess -and $dbRes.Data.table -and $dbRes.Data.table.Rows.Count -gt 0) {
+                    $r = $dbRes.Data.table.Rows[0]
+                    if (-not ($r.designer_email -is [DBNull])) { $prevDbDesigner = [string]$r.designer_email }
+                    if (-not ($r.reviewer_email -is [DBNull])) { $prevDbReviewer = [string]$r.reviewer_email }
+                    if ($r.Table.Columns.Contains('checker_email') -and -not ($r.checker_email -is [DBNull])) { $prevDbChecker = [string]$r.checker_email }
+                }
+            } catch { }
+        }
+
+        $currentDesigner = ''
+        $currentReviewer = ''
+        $currentChecker = ''
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn $readCols
+        if ($attrRead.found) {
+            $currentDesigner = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $designerCol
+            $currentReviewer = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewerCol
+            $currentChecker = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $checkerCol
+            if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
+        }
+        if (-not $doc) {
+            $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+        if (-not $doc) { continue }
+
+        $toWrite = @{}
+        if ((_PWD-NormalizeSheetIndexValue $currentDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner)) {
+            $toWrite[$designerCol] = $canonicalDesigner
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer)) {
+            $toWrite[$reviewerCol] = $canonicalReviewer
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)) {
+            $toWrite[$checkerCol] = $canonicalChecker
+        }
+
+        $indexNeedsWrite = (_PWD-NormalizeSheetIndexValue $prevDbDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner) `
+            -or (_PWD-NormalizeSheetIndexValue $prevDbReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer) `
+            -or (_PWD-NormalizeSheetIndexValue $prevDbChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)
+        if ($toWrite.Keys.Count -eq 0 -and -not $indexNeedsWrite) { continue }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromValue    = @{ designer = $currentDesigner; reviewer = $currentReviewer; checker = $currentChecker }
+            toValue      = @{ designer = $canonicalDesigner; reviewer = $canonicalReviewer; checker = $canonicalChecker }
+            applied      = $false
+            planned      = $false
+            indexUpdated = $false
+            attributesWritten = @($toWrite.Keys)
+        }
+
+        if ($toWrite.Keys.Count -gt 0) {
+            if ($DryRun) {
+                $change.planned = $true
+            } else {
+                try {
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $toWrite)
+                    $change.applied = $true
+                } catch {
+                    $change.error = [string]$_.Exception.Message
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_EMAIL_SYNC_FAILED' `
+                            -Message 'Failed to align associated sheet role emails.' -Data @{
+                            documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                            toValue = $change.toValue; error = [string]$_.Exception.Message
+                        }
+                    }
+                    continue
+                }
+            }
+        }
+
+        if ($indexNeedsWrite -and (Get-Command -Name 'Write-QCSheetIndex' -ErrorAction SilentlyContinue)) {
+            if (-not $DryRun) {
+                try {
+                    $ext = [System.IO.Path]::GetExtension($dn)
+                    if ($ext) { $ext = $ext.ToLowerInvariant() }
+                    $sourceType = $null
+                    if ($ext -eq '.pdf') { $sourceType = 'pdf' }
+                    elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
+                    Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
+                        -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType `
+                        -DesignerEmail $canonicalDesigner -ReviewerEmail $canonicalReviewer -CheckerEmail $canonicalChecker `
+                        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                    $change.indexUpdated = $true
+                } catch { }
+            }
+        }
+
+        if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {
+            $fieldChanges = @{}
+            if ((_PWD-NormalizeSheetIndexValue $currentDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner)) {
+                $fieldChanges['designer_email'] = @{ oldValue = [string]$currentDesigner; newValue = $canonicalDesigner }
+            }
+            if ((_PWD-NormalizeSheetIndexValue $currentReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer)) {
+                $fieldChanges['reviewer_email'] = @{ oldValue = [string]$currentReviewer; newValue = $canonicalReviewer }
+            }
+            if ((_PWD-NormalizeSheetIndexValue $currentChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)) {
+                $fieldChanges['checker_email'] = @{ oldValue = [string]$currentChecker; newValue = $canonicalChecker }
+            }
+            if ($fieldChanges.Count -gt 0) {
+                Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
+                    -FolderPath $FolderPath -FieldChanges $fieldChanges | Out-Null
+            }
+        }
+
+        $stateUpdates += $change
+    }
+
+    if ($stateUpdates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_EMAIL_SYNC' `
+            -Message 'Associated sheet role emails aligned from DOCUMENT_ATTR audit event.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath          = $FolderPath
+            canonicalDesigner   = $canonicalDesigner
+            canonicalReviewer   = $canonicalReviewer
+            canonicalChecker    = $canonicalChecker
             memberCount         = $members.Count
             updates             = @($stateUpdates)
             dryRun              = [bool]$DryRun
@@ -3164,6 +3374,15 @@ WHERE document_guid = @docGuid
         }
     }
 
+    $checkerEmailDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker)
+    $roleEmailsNeedSiblingSync = $emailsDiffer -or $checkerEmailDiffer
+
+    if ($isDocumentAttr -and $roleEmailsNeedSiblingSync) {
+        Sync-PWAssociatedSheetEmailAttributes -Config $Config -DocumentGuid $DocumentGuid `
+            -DocumentName $DocumentName -FolderPath $FolderPath -WatchRoot $WatchRoot `
+            -LastAuditEventAt $LastAuditEventAt -DryRun:$false
+    }
+
     if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($pwReviewType)) {
         Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
             -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $pwReviewType `
@@ -3220,7 +3439,7 @@ function _PWD-InvokeUpdatePWDocumentAttributes {
 function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     <#
     .SYNOPSIS
-    Copies EM_Designer_Email and EM_Reviewer_Email from the source sheet PDF to the matching *-qc.pdf document.
+    Copies EM_Designer_Email, EM_Reviewer_Email, and EM_Checker_Email from the source sheet PDF to the matching *-qc.pdf document.
     .DESCRIPTION
     The source .pdf is the source of truth. When the QC PDF is missing these values or they differ,
     updates the QC PDF environment attributes to match the source.
@@ -3230,10 +3449,19 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$SourceDocumentName,
         [Parameter(Mandatory)][string]$QcDocumentName,
+        [hashtable]$Config = @{},
         [string]$DesignerEmailColumn = 'EM_Designer_Email',
         [string]$ReviewerEmailColumn = 'EM_Reviewer_Email',
+        [string]$CheckerEmailColumn = 'EM_Checker_Email',
         [switch]$PassThru
     )
+
+    if ($Config -and $Config.Count -gt 0) {
+        $emailCols = _PWD-GetSheetRoleEmailColumnNames -Config $Config
+        if ($emailCols.designer) { $DesignerEmailColumn = [string]$emailCols.designer }
+        if ($emailCols.reviewer) { $ReviewerEmailColumn = [string]$emailCols.reviewer }
+        if ($emailCols.checker) { $CheckerEmailColumn = [string]$emailCols.checker }
+    }
 
     $result = @{
         updated = $false
@@ -3241,24 +3469,45 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
         reason = ''
         sourceDesignerEmail = ''
         sourceReviewerEmail = ''
+        sourceCheckerEmail = ''
         qcDesignerEmailBefore = ''
         qcReviewerEmailBefore = ''
+        qcCheckerEmailBefore = ''
         attributesWritten = @()
     }
 
-    $source = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $SourceDocumentName `
-        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
-    if (-not $source.found) {
-        $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
-        if ($PassThru) { return $result }
-        return
+    $sourceDesigner = ''
+    $sourceReviewer = ''
+    $sourceChecker = ''
+    if ($Config -and $Config.Count -gt 0) {
+        $roleFields = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $Config
+        if ($roleFields.found) {
+            $sourceDesigner = [string]$roleFields.designerEmail
+            $sourceReviewer = [string]$roleFields.reviewerEmail
+            $sourceChecker = [string]$roleFields.checkerEmail
+        }
+    }
+    if (-not $sourceDesigner -and -not $sourceReviewer -and -not $sourceChecker) {
+        $source = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $SourceDocumentName `
+            -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn `
+            -CheckerEmailColumn $CheckerEmailColumn
+        if (-not $source.found) {
+            $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
+            if ($PassThru) { return $result }
+            return
+        }
+        $sourceDesigner = [string]$source.designerEmail
+        $sourceReviewer = [string]$source.reviewerEmail
+        $sourceChecker = [string]$source.checkerEmail
     }
 
-    $result.sourceDesignerEmail = [string]$source.designerEmail
-    $result.sourceReviewerEmail = [string]$source.reviewerEmail
+    $result.sourceDesignerEmail = $sourceDesigner
+    $result.sourceReviewerEmail = $sourceReviewer
+    $result.sourceCheckerEmail = $sourceChecker
 
     $qc = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $QcDocumentName `
-        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
+        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn `
+        -CheckerEmailColumn $CheckerEmailColumn
     if (-not $qc.found) {
         $result.reason = if ($qc.error) { "QC PDF not found or unreadable: $($qc.error)" } else { 'QC PDF not found.' }
         if ($PassThru) { return $result }
@@ -3268,12 +3517,12 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     $qcDoc = $qc.document
     $result.qcDesignerEmailBefore = [string]$qc.designerEmail
     $result.qcReviewerEmailBefore = [string]$qc.reviewerEmail
+    $result.qcCheckerEmailBefore = [string]$qc.checkerEmail
 
     $toWrite = @{}
-    $sourceDesigner = [string]$source.designerEmail
-    $sourceReviewer = [string]$source.reviewerEmail
     $qcDesigner = [string]$qc.designerEmail
     $qcReviewer = [string]$qc.reviewerEmail
+    $qcChecker = [string]$qc.checkerEmail
 
     if ($sourceDesigner -ne $qcDesigner) {
         $toWrite[$DesignerEmailColumn] = $sourceDesigner
@@ -3282,6 +3531,10 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     if ($sourceReviewer -ne $qcReviewer) {
         $toWrite[$ReviewerEmailColumn] = $sourceReviewer
         $result.attributesWritten += $ReviewerEmailColumn
+    }
+    if ($sourceChecker -ne $qcChecker) {
+        $toWrite[$CheckerEmailColumn] = $sourceChecker
+        $result.attributesWritten += $CheckerEmailColumn
     }
 
     if ($toWrite.Keys.Count -eq 0) {
@@ -3828,7 +4081,7 @@ function Sync-PWQcPdfReviewTypeFromSourcePdf {
 function Sync-PrependQcPdfAttributesFromSource {
     <#
     .SYNOPSIS
-    Syncs email and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
+    Syncs role emails (designer, reviewer, checker) and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
     When QC_Review_Type is unset on the source sheet PDF, sets Production QC on DGN, sheet PDF, and QC PDF.
     #>
     [CmdletBinding()]
@@ -3841,7 +4094,7 @@ function Sync-PrependQcPdfAttributesFromSource {
 
     if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
         Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
-            -QcDocumentName $QcDocumentName | Out-Null
+            -QcDocumentName $QcDocumentName -Config $Config | Out-Null
     }
     Sync-PWQcPdfReviewTypeFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
         -QcDocumentName $QcDocumentName -Config $Config | Out-Null

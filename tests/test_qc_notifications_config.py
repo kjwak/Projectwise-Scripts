@@ -20,9 +20,13 @@ def test_appsettings_notifications_production_delivery_defaults():
     assert rendition["deferReadyForQcNotification"] is False
     assert notifications["dedupe"]["enabled"] is True
     assert notifications["dedupe"]["keyFields"] == [
+        "sheetStem",
         "documentGuid",
-        "eventType",
+        "previousState",
         "currentState",
+        "transitionSource",
+        "logicalTransitionAnchor",
+        "recipientKey",
     ]
 
 

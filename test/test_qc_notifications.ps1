@@ -29,7 +29,7 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
             dedupe = @{
                 enabled = $true
                 storePath = $dedupePath
-                keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
+                keyFields = @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
             }
             graph = @{
                 tenantId = ''
@@ -407,7 +407,7 @@ $ae1 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 
     -Document $auditEchoDoc -StateTransitionKey 'audit:9001'
 Assert-True $ae1.IsSuccess 'First QC Complete send should succeed'
 $ae2 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
-    -Document $auditEchoDoc -StateTransitionKey 'audit:9002'
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9001'
 Assert-True $ae2.Data.skipped 'Second audit echo for same sheet transition should dedupe'
 Assert-Eq $ae2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Audit echo duplicate should use skip code'
 
@@ -425,7 +425,7 @@ $re1 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousSta
     -Document $auditEchoDoc -StateTransitionKey 'audit:9101'
 Assert-True $re1.IsSuccess 'First Redlines Received send should succeed'
 $re2 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousState '' -CurrentState 'Redlines Received' `
-    -Document $auditEchoDoc -StateTransitionKey 'audit:9102'
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9101'
 Assert-True $re2.Data.skipped 'Second Redlines audit echo should dedupe'
 Assert-Eq $re2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Redlines audit echo duplicate should use skip code'
 
@@ -484,6 +484,71 @@ $r2 = Invoke-QCNotificationForStateChange -Config $cycleCfg -PreviousState 'Corr
 Assert-True $r2.IsSuccess 'Second cycle Redlines Received should succeed with new transition key'
 Assert-True (-not $r2.Data.skipped) 'Second cycle should not be deduped'
 
+# Logical transition dedupe keys must distinguish different transitions on the same sheet
+$logicalCfg = New-NotifyConfig -Enabled $true
+$logicalSettings = Get-QCNotificationSettings -Config $logicalCfg
+$sharedStem = '080J082001ca001'
+$sharedGuid = 'guid-logical-transition'
+$sharedRecipients = @{ to = @('designer@company.com'); cc = @('reviewer@company.com') }
+$keyRedlines = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:40597'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+$keyCorrections = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'CORRECTIONS_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Redlines Received'
+    currentState = 'Corrections Received'
+    stateTransitionKey = 'audit:40598'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+Assert-True ($keyRedlines -ne $keyCorrections) 'Redlines and Corrections transitions should use different dedupe keys'
+Assert-True ($keyCorrections -match 'audit:40598') 'Corrections dedupe key should include audit event id in logical anchor'
+
+# Same logical transition with a new audit event id should not reuse the prior dedupe key
+$keyCorrections2 = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'CORRECTIONS_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Redlines Received'
+    currentState = 'Corrections Received'
+    stateTransitionKey = 'audit:40600'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+Assert-True ($keyCorrections -ne $keyCorrections2) 'Different audit ids for the same from/to should produce different dedupe keys'
+
+# Duplicate suppression for the exact same logical transition
+$sameTransitionCfg = New-NotifyConfig -Enabled $true
+$sameTransitionCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-same-logical\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $sameTransitionCfg.notifications.dedupe.storePath) -Force | Out-Null
+$sameTransitionCfg.notifications.events['Corrections Received'] = @{
+    enabled = $true
+    eventType = 'CORRECTIONS_RECEIVED'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'Reviewer verification.'
+}
+$sameDoc = [pscustomobject]@{
+    Name = ($sharedStem + '-qc.pdf')
+    DocumentGUID = $sharedGuid
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$corr1 = Invoke-QCNotificationForStateChange -Config $sameTransitionCfg -PreviousState 'Redlines Received' -CurrentState 'Corrections Received' `
+    -Document $sameDoc -StateTransitionKey 'audit:40598' -NotificationStateSource 'user_audit'
+Assert-True $corr1.IsSuccess 'First Corrections Received send should succeed'
+$corr2 = Invoke-QCNotificationForStateChange -Config $sameTransitionCfg -PreviousState 'Redlines Received' -CurrentState 'Corrections Received' `
+    -Document $sameDoc -StateTransitionKey 'audit:40598' -NotificationStateSource 'user_audit'
+Assert-True $corr2.Data.skipped 'Exact same logical transition should dedupe'
+Assert-Eq $corr2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Duplicate Corrections transition should use skip code'
+Assert-True (-not (Test-QCNotificationResultSent -Result $corr2)) 'Skipped duplicate should not count as sent'
+
 # Transition id drives dedupe key and suppresses echo retries for the same transition
 $tidDedupe = Join-Path $testRoot 'dedupe-transition-id\sent-keys.jsonl'
 New-Item -ItemType Directory -Path (Split-Path $tidDedupe) -Force | Out-Null
@@ -510,7 +575,7 @@ $t1 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Fin
     -Document $tidDoc -StateTransitionKey 'audit:9101' -TransitionId 42
 Assert-True $t1.IsSuccess 'First send with transition id should succeed'
 $t2 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
-    -Document $tidDoc -StateTransitionKey 'audit:9102' -TransitionId 42
+    -Document $tidDoc -StateTransitionKey 'audit:9101' -TransitionId 42
 Assert-True $t2.Data.skipped 'Same transition id with different audit echo should dedupe'
 $t3 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'Corrections Received' -CurrentState 'QC Complete' `
     -Document $tidDoc -StateTransitionKey 'audit:9103' -TransitionId 43

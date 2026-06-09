@@ -413,7 +413,7 @@ function Invoke-PrependQcPdfAttributeSync {
   if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
     try {
       $sync = Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath `
-        -SourceDocumentName $SourceDocumentName -QcDocumentName $QcDocumentName -PassThru
+        -SourceDocumentName $SourceDocumentName -QcDocumentName $QcDocumentName -Config $cfg -PassThru
       if ($sync.updated) {
         $written = @($sync.attributesWritten) -join ', '
         Write-Log "Synced QC PDF email attributes from source PDF ($written)."

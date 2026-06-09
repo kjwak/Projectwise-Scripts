@@ -433,6 +433,23 @@ function _QCW-InvokeStateChangeNotification {
                     $stKeyForDedupe = [string]$job.metadata.stateTransitionKey
                 }
                 if (-not (_QCW-IsNullOrWhiteSpace $stKeyForDedupe)) { $eventForDedupe['stateTransitionKey'] = $stKeyForDedupe }
+                if ($Context -and $Context.ContainsKey('transitionSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionSource)) {
+                    $eventForDedupe['transitionSource'] = [string]$Context.transitionSource
+                } elseif ($Context -and $Context.ContainsKey('notificationStateSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationStateSource)) {
+                    $eventForDedupe['transitionSource'] = [string]$Context.notificationStateSource
+                }
+                if ($Context -and $Context.ContainsKey('transitionGroupId') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionGroupId)) {
+                    $eventForDedupe['transitionGroupId'] = [string]$Context.transitionGroupId
+                }
+                if ($Context -and $Context.ContainsKey('sheetPackageId') -and -not (_QCW-IsNullOrWhiteSpace $Context.sheetPackageId)) {
+                    $eventForDedupe['sheetPackageId'] = [string]$Context.sheetPackageId
+                }
+                if ($Context -and $Context.ContainsKey('auditEventId') -and $null -ne $Context.auditEventId) {
+                    try {
+                        $ctxAudit = [long]$Context.auditEventId
+                        if ($ctxAudit -gt 0) { $eventForDedupe['auditEventId'] = $ctxAudit }
+                    } catch { }
+                }
                 if ($job -and $job.metadata -is [hashtable]) {
                     $wfMdForDedupe = _QCW-ToHashtable $job.metadata
                     if ($wfMdForDedupe -and $wfMdForDedupe.attributes) {
@@ -539,6 +556,23 @@ function _QCW-InvokeStateChangeNotification {
                 parentJobId = if ($Context -and $Context.jobId) { [string]$Context.jobId } elseif ($job -and $job.id) { [string]$job.id } else { '' }
                 stateTransitionKey = $wfTransitionKey
             }
+        }
+        if ($Context -and $Context.ContainsKey('transitionSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionSource)) {
+            $notifJob.metadata['transitionSource'] = [string]$Context.transitionSource
+        } elseif ($Context -and $Context.ContainsKey('notificationStateSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationStateSource)) {
+            $notifJob.metadata['transitionSource'] = [string]$Context.notificationStateSource
+        }
+        if ($Context -and $Context.ContainsKey('transitionGroupId') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionGroupId)) {
+            $notifJob.metadata['transitionGroupId'] = [string]$Context.transitionGroupId
+        }
+        if ($Context -and $Context.ContainsKey('sheetPackageId') -and -not (_QCW-IsNullOrWhiteSpace $Context.sheetPackageId)) {
+            $notifJob.metadata['sheetPackageId'] = [string]$Context.sheetPackageId
+        }
+        if ($Context -and $Context.ContainsKey('auditEventId') -and $null -ne $Context.auditEventId) {
+            try {
+                $ctxAuditMd = [long]$Context.auditEventId
+                if ($ctxAuditMd -gt 0) { $notifJob.metadata['auditEventId'] = $ctxAuditMd }
+            } catch { }
         }
         if ($null -ne $wfChangedByUser) { $notifJob.metadata['changedByUser'] = $wfChangedByUser }
         if (-not (_QCW-IsNullOrWhiteSpace $wfChangedByUsername)) { $notifJob.metadata['changedByUsername'] = $wfChangedByUsername }

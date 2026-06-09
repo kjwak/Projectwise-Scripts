@@ -292,4 +292,48 @@ Assert-Eq (Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $pd
     ('sg|' + $sheetStem.ToLowerInvariant() + '|' + $pdfGuid.ToLowerInvariant() + '|qc initiated|audit:42|user_audit') `
     'stable sheet-group transition key'
 
+# 9. Member telemetry: finalState is logical target; preSyncLiveState captures PW before sync
+Reset-TestState
+$redlinesPrev = @{
+    ($dgnGuid.ToLowerInvariant()) = 'Redlines Received'
+    ($pdfGuid.ToLowerInvariant()) = 'Redlines Received'
+    ($qcGuid.ToLowerInvariant()) = 'Redlines Received'
+}
+$preSync = @{
+    ($dgnGuid.ToLowerInvariant()) = 'Redlines Received'
+    ($pdfGuid.ToLowerInvariant()) = 'Redlines Received'
+    ($qcGuid.ToLowerInvariant()) = 'Redlines Received'
+}
+$r9 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
+    -TargetState 'Corrections Received' -TransitionSource 'user_audit' -Members $members `
+    -PreviousStateByGuid $redlinesPrev -StateByGuid $preSync -AuditEventId 40598
+$pdfMember = @($r9.members | Where-Object { $_.role -eq 'pdf' })[0]
+Assert-Eq $pdfMember.preSyncLiveState 'Redlines Received' 'preSyncLiveState should reflect PW before sibling sync'
+Assert-Eq $pdfMember.finalState 'Corrections Received' 'finalState should reflect logical target after sibling sync'
+Assert-True ($null -eq $pdfMember.liveState) 'legacy liveState field should not be emitted'
+
+# 10. Duplicate notification results should not count as sent in sheet-group telemetry
+$script:notificationResultOverride = $null
+function Invoke-QCWorkflowStateChangeNotification {
+    param([hashtable]$Config, [hashtable]$Context, [string]$PreviousState, [string]$CurrentState, $Document)
+    $script:notificationCalls++
+    if ($script:notificationResultOverride) { return $script:notificationResultOverride }
+    return [pscustomobject]@{ IsSuccess = $true; Code = 'QC_NOTIFICATION_SENT' }
+}
+Reset-TestState
+$script:notificationResultOverride = [pscustomobject]@{
+    IsSuccess = $true
+    Code = 'QC_NOTIFICATION_SKIPPED_DUPLICATE'
+    Data = @{ skipped = $true; dedupeKey = 'test-dedupe-key' }
+}
+$r10 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
+    -TargetState 'Corrections Received' -TransitionSource 'user_audit' -Members $members `
+    -PreviousStateByGuid $redlinesPrev -AuditEventId 40599
+Assert-True $r10.notificationEvaluated 'duplicate skip should still mark notification evaluated'
+Assert-True (-not $r10.notificationSent) 'duplicate skip should not mark notification sent'
+Assert-Eq $r10.notificationResultCode 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'duplicate skip should preserve result code'
+Assert-True (-not $r10.notificationEmitted) 'notificationEmitted should mirror notificationSent'
+
 Write-Host 'test_sheet_group_workflow_transition.ps1 passed'

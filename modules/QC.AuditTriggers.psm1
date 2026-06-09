@@ -841,12 +841,11 @@ function Invoke-QCSheetGroupWorkflowTransition {
         if ([string]::IsNullOrWhiteSpace($prevState) -and -not [string]::IsNullOrWhiteSpace($packagePreviousState)) {
             $prevState = $packagePreviousState
         }
-        $liveState = if ($StateByGuid.ContainsKey($key)) { [string]$StateByGuid[$key] } else { '' }
-        if ([string]::IsNullOrWhiteSpace($liveState) -and $member.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
-            $liveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
+        $preSyncLiveState = if ($StateByGuid.ContainsKey($key)) { [string]$StateByGuid[$key] } else { '' }
+        if ([string]::IsNullOrWhiteSpace($preSyncLiveState) -and $member.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
+            $preSyncLiveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
         }
-        $finalState = $target
-        if (-not [string]::IsNullOrWhiteSpace($liveState)) { $finalState = _QCAT-NormalizeValue $liveState }
+        $finalState = _QCAT-NormalizeValue $target
 
         $logicalKey = Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $dg -TargetState $target `
             -TransitionSource $TransitionSource -AuditEventId $AuditEventId -JobId $JobId
@@ -858,7 +857,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
             documentGuid = $dg
             documentName = $dn
             previousState = _QCAT-NormalizeValue $prevState
-            liveState = _QCAT-NormalizeValue $liveState
+            preSyncLiveState = _QCAT-NormalizeValue $preSyncLiveState
             finalState = $finalState
             logicalTransitionKey = $logicalKey
             skipped = $true
@@ -904,7 +903,9 @@ function Invoke-QCSheetGroupWorkflowTransition {
         [void]$memberResults.Add($telemetry)
     }
 
-    $notificationEmitted = $false
+    $notificationEvaluated = $false
+    $notificationSent = $false
+    $notificationResultCode = ''
     $shouldNotify = -not $SuppressNotification
     if ($shouldNotify) {
         $shouldNotify = Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $notifyName `
@@ -941,6 +942,12 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 changedByUser = $ChangedByUser
                 changedByUsername = $ChangedByUsername
                 notificationStateSource = 'sheet_group_transition'
+                transitionSource = $TransitionSource
+                auditEventId = $AuditEventId
+                transitionGroupId = $transitionGroupId.ToString()
+            }
+            if ($null -ne $sheetPackageId) {
+                $notifyContext['sheetPackageId'] = $sheetPackageId.ToString()
             }
             if ($null -ne $notifyTransitionId -and $notifyTransitionId -gt 0) {
                 $notifyContext['transitionId'] = $notifyTransitionId
@@ -950,11 +957,18 @@ function Invoke-QCSheetGroupWorkflowTransition {
             }
             if (-not $DryRun) {
                 try {
+                    $notificationEvaluated = $true
                     $doc = _QCAT-BuildNotificationDocument -Config $Config -FolderPath $FolderPath `
                         -DocumentName $notifyName -DocumentGuid $notifyGuid -Attributes @{}
                     $notif = Invoke-QCWorkflowStateChangeNotification -Config $Config -Context $notifyContext `
                         -PreviousState $packagePreviousState -CurrentState $target -Document $doc
-                    $notificationEmitted = $true
+                    if ($notif -is [System.Array]) { $notif = $notif[-1] }
+                    $notificationResultCode = if ($notif -and $notif.Code) { [string]$notif.Code } else { '' }
+                    if (Get-Command -Name 'Test-QCNotificationResultSent' -ErrorAction SilentlyContinue) {
+                        $notificationSent = [bool](Test-QCNotificationResultSent -Result $notif)
+                    } else {
+                        $notificationSent = ($notif -and $notif.IsSuccess -and $notificationResultCode -eq 'QC_NOTIFICATION_SENT')
+                    }
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Level 'Information' -Code 'SHEET_GROUP_TRANSITION_NOTIFY' `
                             -Message 'Sheet-group workflow notification evaluated once per logical transition.' -Data @{
@@ -968,16 +982,21 @@ function Invoke-QCSheetGroupWorkflowTransition {
                             transitionSource = $TransitionSource
                             auditEventId = $AuditEventId
                             jobId = $JobId
-                            notificationCode = if ($notif) { [string]$notif.Code } else { '' }
+                            transitionGroupId = $transitionGroupId.ToString()
+                            notificationResultCode = $notificationResultCode
+                            notificationSent = $notificationSent
                         } | Out-Null
                     }
                 } catch {
+                    $notificationResultCode = 'SHEET_GROUP_TRANSITION_NOTIFY_FAILED'
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'SHEET_GROUP_TRANSITION_NOTIFY_FAILED' `
                             -Message $_.Exception.Message -Data @{
                             notifyDocumentGuid = $notifyGuid
                             notifyDocumentName = $notifyName
                             transitionSource = $TransitionSource
+                            notificationResultCode = $notificationResultCode
+                            notificationSent = $false
                         } | Out-Null
                     }
                 }
@@ -1015,7 +1034,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
             transitionSource = $TransitionSource
             auditEventId = $AuditEventId
             jobId = $JobId
-            notificationEmitted = $notificationEmitted
+            notificationEvaluated = $notificationEvaluated
+            notificationSent = $notificationSent
+            notificationResultCode = $notificationResultCode
+            notificationEmitted = $notificationSent
             members = @($memberResults)
         } | Out-Null
     }
@@ -1032,7 +1054,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
         transitionSource = $TransitionSource
         auditEventId = $AuditEventId
         jobId = $JobId
-        notificationEmitted = $notificationEmitted
+        notificationEvaluated = $notificationEvaluated
+        notificationSent = $notificationSent
+        notificationResultCode = $notificationResultCode
+        notificationEmitted = $notificationSent
         members = @($memberResults)
     }
 }
@@ -2037,6 +2062,8 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         changedByUser = $ChangedByUser
         changedByUsername = $notifyUsername
         notificationStateSource = $notificationStateSource
+        transitionSource = 'audit_trigger'
+        auditEventId = $AuditEventId
     }
     if ($null -ne $transitionId -and $transitionId -gt 0) {
         $notifyContext['transitionId'] = $transitionId

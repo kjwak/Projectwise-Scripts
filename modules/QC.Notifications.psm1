@@ -161,7 +161,7 @@ function Get-QCNotificationSettings {
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
             # Logical sheet-transition identity.  Do not key by transitionId by default because
             # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
-            keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+            keyFields = @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
         }
         graph = @{
             tenantId = ''
@@ -1484,6 +1484,80 @@ function Get-QCNotificationSheetTransitionKey {
     return ('sheet:' + $stem.Trim().ToLowerInvariant() + '|from:' + $from.Trim().ToLowerInvariant() + '|to:' + $to.ToLowerInvariant())
 }
 
+function _QCN-ResolveNotificationTransitionSource {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Job = $null
+    )
+
+    if ($Event) {
+        foreach ($key in @('transitionSource', 'notificationStateSource', 'triggerSource')) {
+            if ($Event.ContainsKey($key) -and -not (_QCN-IsBlank $Event[$key])) {
+                return ([string]$Event[$key]).Trim().ToLowerInvariant()
+            }
+        }
+    }
+    if ($Job) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd) {
+            foreach ($key in @('transitionSource', 'notificationStateSource')) {
+                if ($jobMd.ContainsKey($key) -and -not (_QCN-IsBlank $jobMd[$key])) {
+                    return ([string]$jobMd[$key]).Trim().ToLowerInvariant()
+                }
+            }
+        }
+    }
+    return ''
+}
+
+function _QCN-ResolveNotificationLogicalTransitionAnchor {
+    <#
+    Stable anchor for one logical sheet-package transition.
+    Uses sheet|from|to plus cycle and audit id. transitionGroupId is intentionally excluded here
+    because each Invoke-QCSheetGroupWorkflowTransition call mints a new group id; sibling triggers
+    for the same audit event must share one dedupe anchor instead.
+    #>
+    param(
+        [hashtable]$Event,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null
+    )
+
+    $sheetKey = if ($Event -and $Event.sheetTransitionKey -and -not (_QCN-IsBlank $Event.sheetTransitionKey)) {
+        [string]$Event.sheetTransitionKey
+    } elseif ($Event) {
+        Get-QCNotificationSheetTransitionKey -Event $Event -Config $Config
+    } else { '' }
+
+    $cycleId = _QCN-ResolveNotificationCycleId -Event $Event -Config $Config -Job $Job
+    $cyclePart = if (-not (_QCN-IsBlank $cycleId)) { '|cycle:' + ([string]$cycleId).Trim() } else { '' }
+
+    $auditId = _QCN-GetNotificationAuditEventId -Event $Event
+    $auditPart = if ($null -ne $auditId -and $auditId -gt 0) { '|audit:' + [string]$auditId } else { '' }
+
+    if (-not (_QCN-IsBlank $sheetKey)) { return $sheetKey + $cyclePart + $auditPart }
+
+    if ($Event -and $Event.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $Event.transitionGroupId)) {
+        return 'transitionGroup:' + ([string]$Event.transitionGroupId).Trim().ToLowerInvariant()
+    }
+    if ($auditPart.Length -gt 0) { return $auditPart.TrimStart('|') }
+    return ''
+}
+
+function Test-QCNotificationResultSent {
+    [CmdletBinding()]
+    param([object]$Result)
+
+    if ($null -eq $Result) { return $false }
+    $data = _QCN-ToHashtable $Result.Data
+    if ($data -and $data.ContainsKey('skipped') -and [bool]$data.skipped) { return $false }
+    $code = if ($Result.Code) { [string]$Result.Code } else { '' }
+    if ($code -in @('QC_NOTIFICATION_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUED')) { return $false }
+    if ($code -match '^QC_NOTIFICATION_(SENT|MOCK|GRAPH|JOB_OK)$') { return $true }
+    if ($Result.IsSuccess -and $data -and $data.success -eq $true) { return $true }
+    return $false
+}
+
 function _QCN-ResolveNotificationCycleId {
     param(
         [hashtable]$Event,
@@ -1553,7 +1627,9 @@ function Get-QCNotificationDedupeKey {
     # Default to one durable notification per logical sheet transition + recipient set.  A
     # transition_events id is intentionally *not* authoritative here: sibling sync can create
     # one transition row for the DGN, sheet PDF, and *-qc.pdf for the same logical sheet action.
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('notificationType', 'folderPath', 'sheetStem', 'targetState', 'cycleId', 'recipientKey') }
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else {
+        @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
+    }
 
     $folderPath = ''
     if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
@@ -1589,6 +1665,12 @@ function Get-QCNotificationDedupeKey {
     if (-not (_QCN-IsBlank $sheetTransitionKey)) {
         $Event['sheetTransitionKey'] = $sheetTransitionKey
     }
+    $transitionSource = _QCN-ResolveNotificationTransitionSource -Event $Event -Job $Job
+    if (-not (_QCN-IsBlank $transitionSource)) { $Event['transitionSource'] = $transitionSource }
+    $logicalAnchor = _QCN-ResolveNotificationLogicalTransitionAnchor -Event $Event -Config $Config -Job $Job
+    if (-not (_QCN-IsBlank $logicalAnchor)) { $Event['logicalTransitionAnchor'] = $logicalAnchor }
+    $auditIdForKey = _QCN-GetNotificationAuditEventId -Event $Event
+    if ($null -ne $auditIdForKey -and $auditIdForKey -gt 0) { $Event['auditEventId'] = $auditIdForKey }
 
     $parts = [System.Collections.Generic.List[string]]::new()
     foreach ($field in @($fields)) {
@@ -1634,6 +1716,30 @@ function Get-QCNotificationDedupeKey {
             }
             'cycleId' { $value = [string]$Event.cycleId }
             'recipientKey' { $value = [string]$Event.recipientKey }
+            'transitionSource' {
+                $value = if ($Event.transitionSource) { [string]$Event.transitionSource } else {
+                    _QCN-ResolveNotificationTransitionSource -Event $Event -Job $Job
+                }
+            }
+            'logicalTransitionAnchor' {
+                $value = if ($Event.logicalTransitionAnchor) { [string]$Event.logicalTransitionAnchor } else {
+                    _QCN-ResolveNotificationLogicalTransitionAnchor -Event $Event -Config $Config -Job $Job
+                }
+            }
+            'auditEventId' {
+                $auditVal = _QCN-GetNotificationAuditEventId -Event $Event
+                if ($null -ne $auditVal -and $auditVal -gt 0) { $value = [string]$auditVal }
+            }
+            'transitionGroupId' {
+                if ($Event.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $Event.transitionGroupId)) {
+                    $value = ([string]$Event.transitionGroupId).Trim().ToLowerInvariant()
+                }
+            }
+            'sheetPackageId' {
+                if ($Event.ContainsKey('sheetPackageId') -and -not (_QCN-IsBlank $Event.sheetPackageId)) {
+                    $value = ([string]$Event.sheetPackageId).Trim().ToLowerInvariant()
+                }
+            }
             'transitionId' {
                 # Backward-compatible opt-in only. Not part of the default key because it is
                 # per-document-row rather than per logical sheet transition.
@@ -3042,6 +3148,34 @@ function Invoke-QCNotificationForStateChange {
     if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0) {
         $event['transitionId'] = $resolvedTransitionId
     }
+    if ($Job -and ($Job.metadata -is [hashtable])) {
+        $jobMdForEvent = _QCN-ToHashtable $Job.metadata
+        if ($jobMdForEvent) {
+            if ($jobMdForEvent.ContainsKey('transitionSource') -and -not (_QCN-IsBlank $jobMdForEvent.transitionSource)) {
+                $event['transitionSource'] = [string]$jobMdForEvent.transitionSource
+            } elseif ($jobMdForEvent.ContainsKey('notificationStateSource') -and -not (_QCN-IsBlank $jobMdForEvent.notificationStateSource)) {
+                $event['transitionSource'] = [string]$jobMdForEvent.notificationStateSource
+            }
+            if ($jobMdForEvent.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $jobMdForEvent.transitionGroupId)) {
+                $event['transitionGroupId'] = [string]$jobMdForEvent.transitionGroupId
+            }
+            if ($jobMdForEvent.ContainsKey('sheetPackageId') -and -not (_QCN-IsBlank $jobMdForEvent.sheetPackageId)) {
+                $event['sheetPackageId'] = [string]$jobMdForEvent.sheetPackageId
+            }
+            if ($jobMdForEvent.ContainsKey('auditEventId') -and $null -ne $jobMdForEvent.auditEventId) {
+                try {
+                    $jobAudit = [long]$jobMdForEvent.auditEventId
+                    if ($jobAudit -gt 0) { $event['auditEventId'] = $jobAudit }
+                } catch { }
+            }
+        }
+    }
+    if (-not (_QCN-IsBlank $NotificationStateSource)) {
+        $event['notificationStateSource'] = [string]$NotificationStateSource
+        if (-not $event.ContainsKey('transitionSource') -or (_QCN-IsBlank $event.transitionSource)) {
+            $event['transitionSource'] = [string]$NotificationStateSource
+        }
+    }
 
     $resolvedNotificationStateSource = if (-not (_QCN-IsBlank $NotificationStateSource)) {
         [string]$NotificationStateSource
@@ -3155,4 +3289,4 @@ Export-ModuleMember -Function Get-QCNotificationSettings, Test-QCNotificationsEn
     Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, Register-QCNotificationDedupeClaim, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
-    Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult
+    Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult, Test-QCNotificationResultSent
