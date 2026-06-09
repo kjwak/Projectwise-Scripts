@@ -52,12 +52,30 @@ function Invoke-Git {
         [string[]]$Arguments
     )
 
-    $output = & git @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $msg = if ($output) { ($output | Out-String).Trim() } else { "git $($Arguments -join ' ') failed." }
+    # Git writes routine status text to stderr; with $ErrorActionPreference = 'Stop'
+    # PowerShell would treat those lines as terminating errors.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & git @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
+
+    $lines = @(
+        $output | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { [string]$_ }
+        }
+    )
+
+    if ($exitCode -ne 0) {
+        $msg = if ($lines.Count -gt 0) { ($lines -join [Environment]::NewLine).Trim() } else { "git $($Arguments -join ' ') failed with exit code $exitCode." }
         throw $msg
     }
-    return $output
+
+    return $lines
 }
 
 function Write-Step {
@@ -119,10 +137,10 @@ try {
     }
 
     Write-Step "Checking out $MainBranch..."
-    Invoke-Git @('checkout', $MainBranch) | Out-Null
+    Invoke-Git @('checkout', $MainBranch) | ForEach-Object { Write-Host $_ }
 
     Write-Step "Pulling latest $MainBranch from $Remote..."
-    Invoke-Git @('pull', $Remote, $MainBranch) | Out-Null
+    Invoke-Git @('pull', $Remote, $MainBranch) | ForEach-Object { Write-Host $_ }
 
     Write-Step "Merging $DevBranch into $MainBranch..."
     Invoke-Git @('merge', $DevBranch, '-m', "Merge branch '$DevBranch' into $MainBranch") | ForEach-Object { Write-Host $_ }
@@ -131,7 +149,7 @@ try {
     Invoke-Git @('push', $Remote, $MainBranch) | ForEach-Object { Write-Host $_ }
 
     Write-Step "Returning to $DevBranch..."
-    Invoke-Git @('checkout', $DevBranch) | Out-Null
+    Invoke-Git @('checkout', $DevBranch) | ForEach-Object { Write-Host $_ }
 
     $newTip = [string](Invoke-Git @('rev-parse', '--short', 'HEAD'))
     Write-Host ""
