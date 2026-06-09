@@ -87,6 +87,7 @@ $script:AuditPoller_UnresolvedGuids = @{}
 $script:AuditPoller_FolderGuidCache = @{}
 $script:AuditPoller_UnresolvedFolderGuids = @{}
 $script:AuditPoller_WatchFolderCacheWarmed = $false
+$script:AuditPoller_PwFolderGuidByPath = $null
 
 function _AuditPoller-LoadDocFolderCache {
     param([hashtable]$Config)
@@ -262,12 +263,31 @@ function _AuditPoller-ExtractFolderGuidFromPwFolder {
     if ($null -eq $Folder) { return $null }
     if ($Folder -is [string]) { return $null }
     $Folder = _AuditPoller-PreparePwFolderObject -Folder $Folder
-    foreach ($prop in @('FolderGUID', 'GUID', 'ObjectGUID', 'o_objguid', 'folderGUID', 'FolderGuid')) {
+    foreach ($prop in @(
+        'FolderGUID', 'GUID', 'ObjectGUID', 'o_objguid', 'folderGUID', 'FolderGuid',
+        'ProjectGUID', 'InstanceGUID', 'ProjGUID', 'o_projguid'
+    )) {
         $v = _AuditPoller-GetPwObjectProperty -Object $Folder -Name $prop
-        if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
-            return ([string]$v).Trim().Trim('{}')
+        if ($null -ne $v) {
+            if ($v -is [guid]) { return $v.ToString().Trim('{}') }
+            if (-not [string]::IsNullOrWhiteSpace([string]$v)) {
+                return ([string]$v).Trim().Trim('{}')
+            }
         }
     }
+    try {
+        if ($Folder.PSObject) {
+            foreach ($p in $Folder.PSObject.Properties) {
+                $v = $p.Value
+                if ($null -eq $v) { continue }
+                if ($v -is [guid]) { return $v.ToString().Trim('{}') }
+                $s = [string]$v
+                if ($s -match '(?i)^[\{]?[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}[\}]?$') {
+                    return $s.Trim().Trim('{}')
+                }
+            }
+        }
+    } catch { }
     return $null
 }
 
@@ -289,7 +309,7 @@ function _AuditPoller-ExtractProjectNoFromPwFolder {
     $f = _AuditPoller-CoerceSinglePwFolderObject -Folder $Folder
     if ($null -eq $f) { return $null }
     $f = _AuditPoller-PreparePwFolderObject -Folder $f
-    foreach ($prop in @('ProjectNo', 'FolderID', 'ID', 'ProjectNumber', 'o_projectno', 'FolderNo')) {
+    foreach ($prop in @('ProjectNo', 'FolderID', 'ID', 'ProjectNumber', 'o_projectno', 'FolderNo', 'ProjectNumber')) {
         $v = _AuditPoller-GetPwObjectProperty -Object $f -Name $prop
         if ($null -eq $v) { continue }
         try {
@@ -297,6 +317,18 @@ function _AuditPoller-ExtractProjectNoFromPwFolder {
             if ($n -gt 0) { return $n }
         } catch { }
     }
+    try {
+        if ($f.PSObject) {
+            foreach ($p in $f.PSObject.Properties) {
+                $n = [string]$p.Name
+                if ($n -notmatch '(?i)project|folder.*id|^id$|projno|folderid') { continue }
+                try {
+                    $val = [int]$p.Value
+                    if ($val -gt 0) { return $val }
+                } catch { }
+            }
+        }
+    } catch { }
     return $null
 }
 
@@ -311,6 +343,47 @@ function _AuditPoller-TryResolveFolderGuidViaProjectNo {
             if (-not [string]::IsNullOrWhiteSpace($g)) { return ([string]$g).Trim().Trim('{}') }
         }
     } catch { }
+    return $null
+}
+
+function _AuditPoller-EnsurePwFolderGuidByPathIndex {
+    if ($null -ne $script:AuditPoller_PwFolderGuidByPath) {
+        return $script:AuditPoller_PwFolderGuidByPath
+    }
+    $index = @{}
+    if (Get-Command -Name 'Get-PWFoldersHashTableByGuid' -ErrorAction SilentlyContinue) {
+        try {
+            $ht = Get-PWFoldersHashTableByGuid -ErrorAction Stop
+            if ($ht) {
+                foreach ($k in @($ht.Keys)) {
+                    $keyStr = [string]$k
+                    $valStr = [string]$ht[$k]
+                    $guid = $null
+                    $path = $null
+                    if ($keyStr -match '(?i)^[\{]?[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}[\}]?$') {
+                        $guid = $keyStr
+                        $path = $valStr
+                    } elseif ($valStr -match '(?i)^[\{]?[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}[\}]?$') {
+                        $guid = $valStr
+                        $path = $keyStr
+                    }
+                    if (-not $guid -or [string]::IsNullOrWhiteSpace($path)) { continue }
+                    $norm = _AuditPoller-NormalizeFolderPath -FolderPath $path
+                    if ($norm) { $index[$norm] = (_AuditPoller-NormalizeFolderGuidKey -Guid $guid) }
+                }
+            }
+        } catch { }
+    }
+    $script:AuditPoller_PwFolderGuidByPath = $index
+    return $index
+}
+
+function _AuditPoller-TryResolveFolderGuidFromPathIndex {
+    param([string]$FolderPath)
+    $index = _AuditPoller-EnsurePwFolderGuidByPathIndex
+    if (-not $index -or $index.Count -eq 0) { return $null }
+    $norm = _AuditPoller-NormalizeFolderPath -FolderPath $FolderPath
+    if ($norm -and $index.ContainsKey($norm)) { return [string]$index[$norm] }
     return $null
 }
 
@@ -333,6 +406,11 @@ function _AuditPoller-ResolveFolderGuidFromPwFolder {
         }
         $fgSql = _AuditPoller-TryResolveFolderGuidViaProjectNo -ProjectNo $projNo
         if ($fgSql) { return $fgSql }
+    }
+    $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $f
+    if ($fp) {
+        $fromIndex = _AuditPoller-TryResolveFolderGuidFromPathIndex -FolderPath $fp
+        if ($fromIndex) { return $fromIndex }
     }
     return $null
 }
@@ -1062,12 +1140,23 @@ function _AuditPoller-GetPwFolderByPathForCacheWarm {
         if ($prepared) { return $prepared }
     }
     if (-not (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue)) { return $null }
+    $folderCmd = Get-Command -Name 'Get-PWFolders'
     foreach ($p in @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $FolderPath)) {
-        try {
-            $f = Get-PWFolders -FolderPath $p -JustOne -ErrorAction Stop
-            $prepared = _AuditPoller-PreparePwFolderObject -Folder (_AuditPoller-CoerceSinglePwFolderObject -Folder $f)
-            if ($prepared) { return $prepared }
-        } catch { }
+        foreach ($usePopulate in @($true, $false)) {
+            try {
+                $params = @{
+                    FolderPath  = $p
+                    JustOne     = $true
+                    ErrorAction = 'Stop'
+                }
+                if ($usePopulate -and $folderCmd.Parameters.ContainsKey('PopulatePaths')) {
+                    $params['PopulatePaths'] = $true
+                }
+                $f = Get-PWFolders @params
+                $prepared = _AuditPoller-PreparePwFolderObject -Folder (_AuditPoller-CoerceSinglePwFolderObject -Folder $f)
+                if ($prepared) { return $prepared }
+            } catch { }
+        }
     }
     return $null
 }
@@ -1098,6 +1187,13 @@ function _AuditPoller-TryRegisterAuditCacheFolderPath {
 
     $f = _AuditPoller-GetPwFolderByPathForCacheWarm -FolderPath $FolderPath -PrefetchedFolder $PrefetchedFolder
     if (-not $f) {
+        $fgFromIndex = _AuditPoller-TryResolveFolderGuidFromPathIndex -FolderPath $FolderPath
+        if ($fgFromIndex) {
+            $SeenPaths[$pathKey] = $true
+            _AuditPoller-RegisterFolderGuidPath -Config $Config -FolderGuid $fgFromIndex -FolderPath $canonical -WatchRoot $WatchRoot -StatsRef $StatsRef
+            if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) { $WarmDiag.Value.resolved++ }
+            return $true
+        }
         if ($null -ne $WarmDiag -and $null -ne $WarmDiag.Value) {
             $WarmDiag.Value.noFolder++
             if ($WarmDiag.Value.failedSamples.Count -lt 5) {
@@ -1108,6 +1204,9 @@ function _AuditPoller-TryRegisterAuditCacheFolderPath {
     }
 
     $fg = _AuditPoller-ResolveFolderGuidFromPwFolder -Folder $f
+    if (-not $fg) {
+        $fg = _AuditPoller-TryResolveFolderGuidFromPathIndex -FolderPath $FolderPath
+    }
     $fp = _AuditPoller-ExtractFolderPathFromPwFolder -Folder $f
     if (-not $fp) { $fp = $canonical }
     if ($fg -and $fp) {
@@ -1292,6 +1391,8 @@ function Sync-AuditPollerWatchFolderGuidCache {
     }
     $warmDiagRef = [ref]$warmDiag
 
+    [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
+
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
@@ -1380,6 +1481,7 @@ function Sync-AuditPollerWatchFolderGuidCache {
         warmRegisterNoFolder = [int]$warmDiag.noFolder
         warmRegisterNoGuid = [int]$warmDiag.noGuid
         warmRegisterExcluded = [int]$warmDiag.excluded
+        pathIndexSize = if ($null -ne $script:AuditPoller_PwFolderGuidByPath) { @($script:AuditPoller_PwFolderGuidByPath.Keys).Count } else { 0 }
     }
     if (@($warmDiag.failedSamples).Count -gt 0) {
         $warmLogData.warmRegisterFailedSamples = @($warmDiag.failedSamples.ToArray())

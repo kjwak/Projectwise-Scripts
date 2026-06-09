@@ -65,4 +65,26 @@ $stateRow = @{ o_action = 1012; o_parentguid = '00000000-0000-0000-0000-00000000
 $gateState = Invoke-QCAuditParentGuidCacheGate -Rows @($stateRow) -Config $cfg
 _Assert ($gateState.kept.Count -eq 1) '1012 still exempt from parent GUID filter'
 
+# GUID extraction from [guid]-typed property (pwps_dab sparse folder objects)
+$mod = Get-Module PW.AuditPoller
+$guidObj = [pscustomobject]@{ FolderPath = 'Documents\Proj\CADD\Sheets'; InstanceGUID = [guid]'9475dfe8-1a85-46de-8986-3e59744591ca' }
+$extracted = $mod.Invoke({
+    param($Folder)
+    _AuditPoller-ExtractFolderGuidFromPwFolder -Folder $Folder
+}, @($guidObj))
+_Assert ($extracted -eq '9475dfe8-1a85-46de-8986-3e59744591ca') 'extracts [guid] property from folder object'
+
+# Path index reverse lookup (Get-PWFoldersHashTableByGuid fallback)
+$indexGuid = '2addfbf1-b111-4afe-8134-8e5f9420d851'
+$indexPath = 'documents\azdot 2024\azfwy2302-027_centennial\cadd\sheets'
+$mod.Invoke({
+    param($Path, $Guid)
+    $script:AuditPoller_PwFolderGuidByPath = @{ $Path = $Guid }
+}, @($indexPath, $indexGuid)) | Out-Null
+$fromIndex = $mod.Invoke({
+    param($FolderPath)
+    _AuditPoller-TryResolveFolderGuidFromPathIndex -FolderPath $FolderPath
+}, @('Documents\AZDOT 2024\AZFWY2302-027_Centennial\CADD\Sheets'))
+_Assert ($fromIndex -eq $indexGuid) 'path index resolves normalized folder path to GUID'
+
 Write-Host 'OK: audit folder cache warm tests passed.' -ForegroundColor Green
