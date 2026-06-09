@@ -18,6 +18,19 @@ $config = @{ database = @{ enabled = $true; connectionString = 'x' } }
 InModuleScope -ModuleName QC.Notifications {
     function Test-QCDatabaseEnabled { param([hashtable]$Config) return $true }
 
+    function Get-PWDocumentsBySearch {
+        param([string]$FolderPath, [string]$DocumentName, [switch]$JustThisFolder)
+        return @([pscustomobject]@{ DocumentGUID = $staleGuid; Name = $DocumentName })
+    }
+    function Get-PWDocumentsByGUIDs {
+        param([string[]]$DocumentGUIDs)
+        $g = [string]$DocumentGUIDs[0]
+        if ($g -eq $liveGuid) {
+            return @([pscustomobject]@{ Name = $qcName; DocumentGUID = $liveGuid })
+        }
+        return @()
+    }
+
     function Invoke-QCDatabaseQuery {
         param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
 
@@ -38,7 +51,7 @@ InModuleScope -ModuleName QC.Notifications {
 
     $resolved = _QCN-ResolveLiveQcPdfDocumentGuidResult -Config $config -FolderPath $folder `
         -QcPdfName $qcName -SheetStem '0818000063ea500' -HintGuid $staleGuid
-    Assert-Eq $resolved.documentGuid $liveGuid 'package member GUID should win over stale hint and sheet_index'
+    Assert-Eq $resolved.documentGuid $liveGuid 'package member GUID should win over stale PW search, hint, and sheet_index'
     Assert-Eq $resolved.resolutionSource 'sheet_documents' 'resolution source should identify sheet_documents'
 
     $url = 'https://example.test/pwlink?objectId=6f353f6f-ad61-4c01-96fe-56bd183b71a5&objectType=doc&datasource=x&app=pwe'
