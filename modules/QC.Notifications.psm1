@@ -976,7 +976,7 @@ function _QCN-NormalizeQcPdfDocumentName {
     )
 
     $name = [string]$DocumentName
-    if (_QCN-IsBlank $name) -and (-not (_QCN-IsBlank $SheetStem)) {
+    if ((_QCN-IsBlank $name) -and (-not (_QCN-IsBlank $SheetStem))) {
         return ([string]$SheetStem + '-qc.pdf')
     }
     if (_QCN-IsBlank $name) { return '' }
@@ -996,7 +996,7 @@ function _QCN-LookupQcPdfGuidInSheetIndex {
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
-    if (_QCN-IsBlank $FolderPath) -or (_QCN-IsBlank $QcPdfName) { return '' }
+    if ((_QCN-IsBlank $FolderPath) -or (_QCN-IsBlank $QcPdfName)) { return '' }
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT TOP 1 document_guid
@@ -1018,7 +1018,7 @@ function _QCN-TestPwDocumentGuidMatchesName {
         [string]$ExpectedName
     )
 
-    if (_QCN-IsBlank $DocumentGuid) -or (_QCN-IsBlank $ExpectedName) { return $false }
+    if ((_QCN-IsBlank $DocumentGuid) -or (_QCN-IsBlank $ExpectedName)) { return $false }
     if (-not (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) { return $false }
     try {
         $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @([string]$DocumentGuid.Trim()) -ErrorAction SilentlyContinue)
