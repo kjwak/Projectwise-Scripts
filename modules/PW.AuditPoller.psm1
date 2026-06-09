@@ -2686,8 +2686,28 @@ function Invoke-AuditTrailScan {
         }
     }
     if (-not $useDbTriggers) {
-        $triggerRows = @($eventsToIngest | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
-        $stats.triggerSource = 'pw_batch'
+        $allowPwBatchFallback = $true
+        if (Test-QCDatabaseEnabled -Config $Config) {
+            if ([int]$stats.dbRowsPrepared -gt 0 -and [int]$stats.dbWrites -eq 0 -and [int]$stats.dbSkipped -gt 0) {
+                $allowPwBatchFallback = $false
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_DUPLICATE_NOOP' `
+                        -Message 'Skipped DOCUMENT_STATE trigger evaluation for duplicate ProjectWise batch event; no unprocessed audit_events row loaded.' -Data @{
+                        dbRowsPrepared = [int]$stats.dbRowsPrepared
+                        dbWrites = [int]$stats.dbWrites
+                        dbSkipped = [int]$stats.dbSkipped
+                        dbUnprocessedLoaded = [int]$stats.dbUnprocessedLoaded
+                    } | Out-Null
+                }
+            }
+        }
+        if ($allowPwBatchFallback) {
+            $triggerRows = @($eventsToIngest | Where-Object { $script:QCRelevantActions.ContainsKey((_AuditPoller-GetActionCode -Row $_)) })
+            $stats.triggerSource = 'pw_batch'
+        } else {
+            $triggerRows = @()
+            $stats.triggerSource = 'audit_events_db'
+        }
     }
 
     if ($triggerRows.Count -gt 0) {

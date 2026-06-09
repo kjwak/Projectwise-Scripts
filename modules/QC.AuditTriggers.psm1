@@ -1338,14 +1338,56 @@ function _QCAT-ParsePwActTimeUtc {
     param([string]$ActTime)
     if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
     $s = [string]$ActTime.Trim()
+    if ($s -match '(?i)[zZ]\s*$|[+-]\d{2}(:?\d{2})?\s*$') {
+        try {
+            return [DateTimeOffset]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).UtcDateTime
+        } catch { }
+    }
     try {
-        return [DateTimeOffset]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+        return [DateTimeOffset]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).UtcDateTime
     } catch { }
+    if ($s -match '^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}') {
+        try {
+            $dt = [DateTime]::ParseExact($s, @('yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd HH:mm:ss.fff'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+            return $dt.ToUniversalTime()
+        } catch { }
+    }
+    if ($s -match '^\d{1,2}/\d{1,2}/\d{4}') {
+        try {
+            $dt = [DateTime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None)
+            $local = [DateTime]::SpecifyKind($dt, [DateTimeKind]::Local)
+            return $local.ToUniversalTime()
+        } catch { }
+    }
     try {
         $dt = [DateTime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-        return [DateTimeOffset]::new($dt.ToUniversalTime())
+        return $dt.ToUniversalTime()
     } catch { }
     return $null
+}
+
+function _QCAT-FormatAuditTimeUtc {
+    param([string]$ActTime)
+    $parsed = _QCAT-ParsePwActTimeUtc -ActTime $ActTime
+    if ($null -eq $parsed) { return '' }
+    try { return $parsed.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') } catch { return '' }
+}
+
+function _QCAT-TestAuditTimeIsStrictlyAfterUtc {
+    param(
+        [string]$CandidateTime = '',
+        [string]$CurrentTime = '',
+        [Nullable[long]]$CandidateAuditEventId = $null,
+        [Nullable[long]]$CurrentAuditEventId = $null
+    )
+    if ($null -ne $CurrentAuditEventId -and $CurrentAuditEventId -gt 0 `
+            -and $null -ne $CandidateAuditEventId -and $CandidateAuditEventId -gt 0) {
+        return ([long]$CandidateAuditEventId -gt [long]$CurrentAuditEventId)
+    }
+    $candidateAt = _QCAT-ParsePwActTimeUtc -ActTime $CandidateTime
+    $currentAt = _QCAT-ParsePwActTimeUtc -ActTime $CurrentTime
+    if ($null -eq $candidateAt -or $null -eq $currentAt) { return $false }
+    return ($candidateAt -gt $currentAt)
 }
 
 function Test-QCShouldSkipAuditWorkflowProcessingForEvent {
@@ -1672,11 +1714,13 @@ function _QCAT-TestSheetPdfWouldRegressFromCanonical {
         [array]$Members = @(),
         [hashtable]$StateByGuid = @{},
         [string]$CanonicalState = '',
-        [string]$LastAuditEventAt = ''
+        [string]$LastAuditEventAt = '',
+        [string]$TriggerDocumentName = ''
     )
     $canonical = _QCAT-NormalizeValue $CanonicalState
     if ([string]::IsNullOrWhiteSpace($canonical)) { return $null }
     $currentAt = _QCAT-ParsePwActTimeUtc -ActTime $LastAuditEventAt
+    $triggerIsQcPdf = Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName
     foreach ($member in @($Members)) {
         $dn = [string]$member.documentName
         if (-not (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$'))) { continue }
@@ -1701,11 +1745,16 @@ function _QCAT-TestSheetPdfWouldRegressFromCanonical {
         }
         if ([string]::IsNullOrWhiteSpace($liveState)) { $liveState = $indexState }
 
+        if ($indexState -eq $canonical) { break }
+        if ($liveState -eq $canonical) { break }
+        if ($triggerIsQcPdf -and $liveState -eq $indexState) {
+            # QC PDF moved first; sibling PDF/DGN lag is expected package divergence, not regression.
+            break
+        }
+
         $indexAt = _QCAT-ParsePwActTimeUtc -ActTime $indexAtRaw
         if ($null -eq $indexAt) { break }
         if ($currentAt -and ($indexAt -le $currentAt)) { break }
-        if ($indexState -eq $canonical) { break }
-        if ($liveState -ne $indexState -and $liveState -eq $canonical) { break }
 
         return @{
             pdfDocumentGuid = $dg
@@ -1713,6 +1762,7 @@ function _QCAT-TestSheetPdfWouldRegressFromCanonical {
             pdfLiveState = $liveState
             pdfIndexState = $indexState
             pdfLastAuditEventAt = $indexAtRaw
+            pdfLastAuditEventAtUtc = _QCAT-FormatAuditTimeUtc -ActTime $indexAtRaw
         }
     }
     return $null
@@ -1762,14 +1812,27 @@ function Test-QCDocumentStateAuditEventIsStale {
         try { $actorIsAutomation = Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername } catch { }
     }
 
+    $currentAtUtc = _QCAT-ParsePwActTimeUtc -ActTime $LastAuditEventAt
+    $currentAuditTimeUtc = _QCAT-FormatAuditTimeUtc -ActTime $LastAuditEventAt
+    $currentAuditPersisted = ($null -ne $AuditEventId -and $AuditEventId -gt 0)
     $decision = @{
         isStale = $false
         reason = ''
         decision = 'process'
         currentAuditEventId = $AuditEventId
         currentAuditTime = $LastAuditEventAt
+        currentAuditTimeUtc = $currentAuditTimeUtc
+        currentAuditEventPersisted = $currentAuditPersisted
+        staleComparisonBasis = if ($currentAuditPersisted) { 'audit_event_id_and_time_utc' } else { 'audit_time_utc' }
         newerAuditEventId = $null
         newerAuditTime = ''
+        newerAuditTimeUtc = ''
+        blockingAuditEventId = $null
+        blockingAuditTimeUtc = ''
+        blockingDocumentName = ''
+        blockingDocumentRole = ''
+        blockingReasonValid = $false
+        rejectedBlockingReason = ''
         actor = $ChangedByUsername
         actorIsAutomation = $actorIsAutomation
         triggerDocument = $DocumentName
@@ -1779,39 +1842,59 @@ function Test-QCDocumentStateAuditEventIsStale {
         associatedStates = @(_QCAT-BuildAssociatedStateDiagnostics -Members $Members -StateByGuid $StateByGuid -Config $Config)
     }
 
-    if ($null -eq $AuditEventId -or $AuditEventId -le 0) {
-        if ([string]::IsNullOrWhiteSpace($LastAuditEventAt)) { return $decision }
-    }
+    if (-not $currentAuditPersisted -and $null -eq $currentAtUtc) { return $decision }
 
-    if (Get-Command -Name 'Get-QCNewerSheetDocumentStateAuditEvent' -ErrorAction SilentlyContinue) {
+    $canCheckNewerAuditEvent = $currentAuditPersisted -or ($null -ne $currentAtUtc)
+    if ($canCheckNewerAuditEvent -and (Get-Command -Name 'Get-QCNewerSheetDocumentStateAuditEvent' -ErrorAction SilentlyContinue)) {
         try {
             $newerRes = Get-QCNewerSheetDocumentStateAuditEvent -Config $Config -FolderPath $FolderPath `
                 -MemberDocumentNames $memberNames -MemberDocumentGuids $memberGuids `
                 -CurrentAuditEventId $AuditEventId -CurrentAuditEventAt $LastAuditEventAt
-            if ($newerRes.IsSuccess -and $newerRes.Data -and $newerRes.Data.found -eq $true) {
-                $decision.isStale = $true
-                $decision.reason = 'newer_audit_event'
-                $decision.decision = 'skipped'
-                try { $decision.newerAuditEventId = [long]$newerRes.Data.id } catch { }
-                $decision.newerAuditTime = [string]$newerRes.Data.pwActtime
-                $decision.newerAuditDocumentName = [string]$newerRes.Data.documentName
-                $decision.newerAuditDocumentGuid = [string]$newerRes.Data.documentGuid
-                $decision.newerAuditProcessed = [bool]$newerRes.Data.processed
-                return $decision
+            if ($newerRes.IsSuccess -and $newerRes.Data) {
+                if ($newerRes.Data.found -eq $true) {
+                    $decision.isStale = $true
+                    $decision.reason = 'newer_audit_event'
+                    $decision.decision = 'skipped'
+                    $decision.staleComparisonBasis = if ($currentAuditPersisted) { 'audit_event_id' } else { 'audit_time_utc' }
+                    try { $decision.newerAuditEventId = [long]$newerRes.Data.id } catch { }
+                    $decision.blockingAuditEventId = $decision.newerAuditEventId
+                    $decision.newerAuditTime = [string]$newerRes.Data.pwActtime
+                    $decision.newerAuditTimeUtc = _QCAT-FormatAuditTimeUtc -ActTime ([string]$newerRes.Data.pwActtime)
+                    $decision.blockingAuditTimeUtc = $decision.newerAuditTimeUtc
+                    $decision.newerAuditDocumentName = [string]$newerRes.Data.documentName
+                    $decision.newerAuditDocumentGuid = [string]$newerRes.Data.documentGuid
+                    $decision.blockingDocumentName = $decision.newerAuditDocumentName
+                    $decision.blockingDocumentRole = if ($decision.newerAuditDocumentName -match '(?i)-qc\.pdf$') { 'qcPdf' } elseif ($decision.newerAuditDocumentName -match '(?i)\.dgn$') { 'dgn' } elseif ($decision.newerAuditDocumentName -match '(?i)\.pdf$') { 'pdf' } else { 'other' }
+                    $decision.newerAuditProcessed = [bool]$newerRes.Data.processed
+                    $decision.blockingReasonValid = $true
+                    return $decision
+                }
+                if ($newerRes.Data.rejectedBlockingReason) {
+                    $decision.rejectedBlockingReason = [string]$newerRes.Data.rejectedBlockingReason
+                    try { $decision.blockingAuditEventId = [long]$newerRes.Data.rejectedBlockingAuditEventId } catch { }
+                    $decision.blockingAuditTimeUtc = _QCAT-FormatAuditTimeUtc -ActTime ([string]$newerRes.Data.rejectedBlockingAuditTime)
+                    $decision.blockingDocumentName = [string]$newerRes.Data.rejectedBlockingDocumentName
+                    $decision.blockingDocumentRole = if ($decision.blockingDocumentName -match '(?i)-qc\.pdf$') { 'qcPdf' } elseif ($decision.blockingDocumentName -match '(?i)\.dgn$') { 'dgn' } elseif ($decision.blockingDocumentName -match '(?i)\.pdf$') { 'pdf' } else { 'other' }
+                }
             }
         } catch { }
     }
 
     $regression = _QCAT-TestSheetPdfWouldRegressFromCanonical -Config $Config -Members $Members -StateByGuid $StateByGuid `
-        -CanonicalState $CanonicalState -LastAuditEventAt $LastAuditEventAt
+        -CanonicalState $CanonicalState -LastAuditEventAt $LastAuditEventAt -TriggerDocumentName $DocumentName
     if ($regression) {
         $decision.isStale = $true
         $decision.reason = 'regressive_pdf_state'
         $decision.decision = 'skipped'
+        $decision.staleComparisonBasis = 'sheet_index_pdf_state_and_time_utc'
         $decision.pdfDocumentName = [string]$regression.pdfDocumentName
         $decision.pdfLiveState = [string]$regression.pdfLiveState
         $decision.pdfIndexState = [string]$regression.pdfIndexState
         $decision.pdfLastAuditEventAt = [string]$regression.pdfLastAuditEventAt
+        $decision.blockingDocumentName = $decision.pdfDocumentName
+        $decision.blockingDocumentRole = 'pdf'
+        $decision.blockingAuditTimeUtc = if ($regression.pdfLastAuditEventAtUtc) { [string]$regression.pdfLastAuditEventAtUtc } else { _QCAT-FormatAuditTimeUtc -ActTime ([string]$regression.pdfLastAuditEventAt) }
+        $decision.blockingReasonValid = $true
     }
     return $decision
 }

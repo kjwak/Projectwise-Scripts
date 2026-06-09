@@ -4180,8 +4180,15 @@ function Get-QCNewerSheetDocumentStateAuditEvent {
         $newerClause = 'AND ae.id > @currentAuditEventId'
         $params['currentAuditEventId'] = [long]$CurrentAuditEventId
     } elseif (-not [string]::IsNullOrWhiteSpace($CurrentAuditEventAt)) {
+        $currentAtUtc = $null
+        if (Get-Command -Name '_QCAT-ParsePwActTimeUtc' -ErrorAction SilentlyContinue) {
+            $currentAtUtc = _QCAT-ParsePwActTimeUtc -ActTime $CurrentAuditEventAt
+        }
+        if ($null -eq $currentAtUtc) {
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NO_ANCHOR' -Message 'Current audit timestamp could not be normalized to UTC.' -Data $notFound
+        }
         $newerClause = 'AND ae.pw_acttime > @currentAuditEventAt'
-        $params['currentAuditEventAt'] = [string]$CurrentAuditEventAt
+        $params['currentAuditEventAt'] = $currentAtUtc.ToString('yyyy-MM-dd HH:mm:ss')
     } else {
         return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NO_ANCHOR' -Message 'No audit event anchor for recency comparison.' -Data $notFound
     }
@@ -4201,12 +4208,32 @@ ORDER BY ae.id ASC
             return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NOT_FOUND' -Message 'No newer DOCUMENT_STATE audit event for sheet group.' -Data $notFound
         }
         $r = $res.Data.table.Rows[0]
+        $candidateId = if ($r.id -is [DBNull]) { $null } else { [long]$r.id }
+        $candidateTime = if ($r.pw_acttime -is [DBNull]) { '' } else { [string]$r.pw_acttime }
+        $candidateName = if ($r.pw_itemname -is [DBNull]) { '' } else { [string]$r.pw_itemname }
+        $isStrictlyNewer = $false
+        if (Get-Command -Name '_QCAT-TestAuditTimeIsStrictlyAfterUtc' -ErrorAction SilentlyContinue) {
+            $isStrictlyNewer = _QCAT-TestAuditTimeIsStrictlyAfterUtc -CandidateTime $candidateTime -CurrentTime $CurrentAuditEventAt `
+                -CandidateAuditEventId $candidateId -CurrentAuditEventId $CurrentAuditEventId
+        } elseif ($null -ne $CurrentAuditEventId -and $CurrentAuditEventId -gt 0 -and $null -ne $candidateId) {
+            $isStrictlyNewer = ([long]$candidateId -gt [long]$CurrentAuditEventId)
+        }
+        if (-not $isStrictlyNewer) {
+            $rejected = @{
+                found = $false
+                rejectedBlockingReason = 'blocking_candidate_older_than_current'
+                rejectedBlockingAuditEventId = $candidateId
+                rejectedBlockingAuditTime = $candidateTime
+                rejectedBlockingDocumentName = $candidateName
+            }
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_REJECTED' -Message 'Candidate DOCUMENT_STATE audit event is not newer than current anchor.' -Data $rejected
+        }
         $data = @{
             found = $true
-            id = if ($r.id -is [DBNull]) { $null } else { [long]$r.id }
-            pwActtime = if ($r.pw_acttime -is [DBNull]) { '' } else { [string]$r.pw_acttime }
+            id = $candidateId
+            pwActtime = $candidateTime
             documentGuid = if ($r.pw_objguid -is [DBNull]) { '' } else { [string]$r.pw_objguid }
-            documentName = if ($r.pw_itemname -is [DBNull]) { '' } else { [string]$r.pw_itemname }
+            documentName = $candidateName
             changedByUser = if ($r.pw_userno -is [DBNull]) { $null } else { [int]$r.pw_userno }
             processed = if ($r.processed -is [DBNull]) { $false } else { [bool]$r.processed }
         }

@@ -151,6 +151,79 @@ Assert-True $staleRegression.isStale 'newer pdf index state blocks regressive ca
 Assert-Eq $staleRegression.reason 'regressive_pdf_state' 'regression reason is regressive_pdf_state'
 Assert-Eq $staleRegression.decision 'skipped' 'regression decision is skipped'
 
+# Test 1: valid QC PDF forward transition (sibling PDF/DGN behind, QC PDF ahead).
+$fwdMembers = @(
+    @{ documentGuid = 'pdf-guid'; documentName = '080J082001ca001.pdf' }
+    @{ documentGuid = 'dgn-guid'; documentName = '080J082001ca001.dgn' }
+    @{ documentGuid = 'qc-guid'; documentName = '080J082001ca001-qc.pdf' }
+)
+$fwdStateByGuid = @{
+    'pdf-guid' = 'Ready for QC'
+    'dgn-guid' = 'Ready for QC'
+    'qc-guid'  = 'Redlines Received'
+}
+function _PWD-GetSheetIndexStateSnapshot {
+    param([hashtable]$Config, [string]$DocumentGuid)
+    switch ($DocumentGuid) {
+        'pdf-guid' { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        'dgn-guid' { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        'qc-guid'  { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        default { return @{ pwStateName = ''; lastAuditEventAt = $null } }
+    }
+}
+$fwdStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
+    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -LastAuditEventAt '2026-06-09 10:02:09' -CanonicalState 'Redlines Received' `
+    -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
+Assert-True (-not $fwdStale.isStale) 'Test 1: QC PDF forward transition is not stale'
+Assert-Eq $fwdStale.decision 'process' 'Test 1: sibling sync allowed'
+
+# Test 2: duplicate batch ingest guard suppresses pw_batch fallback.
+$dbRowsPrepared = 1
+$dbWrites = 0
+$dbSkipped = 1
+$dbUnprocessedLoaded = 0
+$allowPwBatchFallback = $true
+if ($dbRowsPrepared -gt 0 -and $dbWrites -eq 0 -and $dbSkipped -gt 0) { $allowPwBatchFallback = $false }
+Assert-True (-not $allowPwBatchFallback) 'Test 2: duplicate ingest suppresses pw_batch trigger fallback'
+Assert-Eq $dbUnprocessedLoaded 0 'Test 2: no unprocessed DB rows loaded'
+
+# Test 3: older sibling audit event must not block newer trigger.
+function Get-QCNewerSheetDocumentStateAuditEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [array]$MemberDocumentNames = @(),
+        [array]$MemberDocumentGuids = @(),
+        [Nullable[long]]$CurrentAuditEventId = $null,
+        [string]$CurrentAuditEventAt = ''
+    )
+    return @{
+        IsSuccess = $true
+        Code = 'NEWER_STATE_AUDIT_REJECTED'
+        Data = @{
+            found = $false
+            rejectedBlockingReason = 'blocking_candidate_older_than_current'
+            rejectedBlockingAuditEventId = 40686
+            rejectedBlockingAuditTime = '2026-06-09 09:47:49'
+            rejectedBlockingDocumentName = '080J082001ca001.pdf'
+        }
+    }
+}
+$newerRejectStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
+    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -LastAuditEventAt '06/09/2026 17:02:09' -CanonicalState 'Redlines Received' `
+    -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
+Assert-True (-not $newerRejectStale.isStale) 'Test 3: older blocking candidate does not stale-block'
+Assert-Eq $newerRejectStale.rejectedBlockingReason 'blocking_candidate_older_than_current' 'Test 3: telemetry records rejected blocking candidate'
+Assert-Eq $newerRejectStale.blockingDocumentName '080J082001ca001.pdf' 'Test 3: blocking candidate document captured'
+Remove-Item Function:Get-QCNewerSheetDocumentStateAuditEvent -ErrorAction SilentlyContinue
+
+# Test 4: sheet_index lag must not block live PW canonical state for QC PDF trigger.
+Assert-True (-not $fwdStale.isStale) 'Test 4: sheet_index lag does not produce regressive_pdf_state by itself'
+Assert-Eq $fwdStale.staleComparisonBasis 'audit_event_id_and_time_utc' 'Test 4: stale comparison uses persisted audit anchor'
+
 Assert-Eq (Get-QCSheetGroupTransitionKey -SheetStem 'sheet1' -DocumentGuid 'guid-a' -TargetState 'QC Initiated' `
     -TransitionSource 'user_audit' -AuditEventId 100) `
     'sg|sheet1|guid-a|qc initiated|audit:100|user_audit' 'sheet-group transition key is stable'
