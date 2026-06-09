@@ -123,6 +123,27 @@ function _AuditPoller-GetAuditPollerBool {
     return $Default
 }
 
+function _AuditPoller-ApplyParentGuidFilterConfigTelemetryToStats {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Stats
+    )
+    $fgPresent = $false
+    try {
+        if ($Config.ContainsKey('auditPoller') -and $Config.auditPoller) {
+            $ap = $Config.auditPoller
+            if ($ap -is [hashtable] -and $ap.ContainsKey('folderGuidCache') -and $null -ne $ap.folderGuidCache) {
+                $fgPresent = $true
+            }
+            elseif ($ap.PSObject -and $null -ne $ap.folderGuidCache) {
+                $fgPresent = $true
+            }
+        }
+    } catch { }
+    $Stats.folderGuidCacheConfigPresent = $fgPresent
+    $Stats.filterByParentGuidCacheConfigured = _AuditPoller-GetAuditPollerBool -Config $Config -Key 'filterByParentGuidCache' -Default $true
+}
+
 function _AuditPoller-GetParentGuidFilterExemptActionCodes {
     param([hashtable]$Config)
     $defaults = @(1012)
@@ -591,6 +612,10 @@ function Invoke-QCAuditParentGuidCacheGate {
         [hashtable]$Stats = $null
     )
 
+    if ($Stats) {
+        _AuditPoller-ApplyParentGuidFilterConfigTelemetryToStats -Config $Config -Stats $Stats
+    }
+
     if (-not $Rows -or @($Rows).Count -eq 0) {
         return @{ kept = @(); skipped = @(); active = $false; cacheSize = 0 }
     }
@@ -600,6 +625,7 @@ function Invoke-QCAuditParentGuidCacheGate {
         if ($Stats) {
             $Stats.parentGuidFilterActive = $false
             $Stats.parentGuidFilterBypassReason = 'disabled'
+            $Stats.parentGuidFilterActivationReason = $null
         }
         return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
     }
@@ -614,6 +640,7 @@ function Invoke-QCAuditParentGuidCacheGate {
         if ($Stats) {
             $Stats.parentGuidFilterActive = $false
             $Stats.parentGuidFilterBypassReason = 'empty_cache'
+            $Stats.parentGuidFilterActivationReason = $null
             $Stats.parentGuidFilterCacheSize = 0
         }
         return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
@@ -667,6 +694,7 @@ function Invoke-QCAuditParentGuidCacheGate {
         $Stats.parentGuidFilterSkipped = $skipped.Count
         $Stats.parentGuidFilterExemptPassed = $exemptPassed
         $Stats.parentGuidFilterBypassReason = $null
+        $Stats.parentGuidFilterActivationReason = 'filter_applied'
         _AuditPoller-ApplyParentGuidFilterDiagnosticsToStats -Diagnostics $diagnosticsOut -Stats $Stats
     }
 
@@ -2098,7 +2126,12 @@ function Invoke-AuditTrailScan {
         parentGuidFilterSkippedReload = 0
         parentGuidFilterMarkedProcessed = 0
         parentGuidFilterBypassReason = $null
+        parentGuidFilterActivationReason = $null
+        filterByParentGuidCacheConfigured = $false
+        folderGuidCacheConfigPresent = $false
     }
+
+    _AuditPoller-ApplyParentGuidFilterConfigTelemetryToStats -Config $Config -Stats $stats
 
     $maxPwActTime = $null
     $maxPwActTimeUtc = $null
@@ -2177,6 +2210,12 @@ function Invoke-AuditTrailScan {
     $stats.totalEvents = $allEvents.Count
 
     if ($allEvents.Count -eq 0) {
+        if ($stats.filterByParentGuidCacheConfigured) {
+            $stats.parentGuidFilterBypassReason = 'no_qc_events_in_window'
+        } else {
+            $stats.parentGuidFilterBypassReason = 'disabled'
+        }
+        $stats.parentGuidFilterActivationReason = $null
         $sw.Stop()
         $watermarkAfterEmpty = $null
         if ($maxPwActTimeUtc -and -not [bool]$stats.eventsTruncated) {

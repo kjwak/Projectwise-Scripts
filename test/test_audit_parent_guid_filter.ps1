@@ -88,4 +88,19 @@ _Assert ($mixedGate.diagnostics.skippedSamples[0].reason) 'sample includes reaso
 _Assert ($mixedStats.passed_exempt_action -eq 1) 'stats mirror passed_exempt_action'
 _Assert ($mixedStats.skipped_non_source_extension -eq 1) 'stats mirror skipped_non_source_extension'
 
+$appliedStats = @{}
+$appliedGate = Invoke-QCAuditParentGuidCacheGate -Rows $rows -Config $cfg -Stats $appliedStats
+_Assert ($appliedGate.active) 'active gate should set filter_applied telemetry'
+_Assert ($appliedStats.filterByParentGuidCacheConfigured) 'configured true when filter enabled'
+_Assert ($appliedStats.folderGuidCacheConfigPresent) 'folderGuidCache block present'
+_Assert ($appliedStats.parentGuidFilterActivationReason -eq 'filter_applied') 'activation reason when gate runs'
+_Assert ($null -eq $appliedStats.parentGuidFilterBypassReason) 'no bypass when gate runs'
+
+$disabledStats = @{}
+$disabledGate = Invoke-QCAuditParentGuidCacheGate -Rows $rows -Config $disabledCfg -Stats $disabledStats
+_Assert (-not $disabledGate.active) 'disabled gate inactive'
+_Assert (-not $disabledStats.filterByParentGuidCacheConfigured) 'configured false when filter disabled'
+_Assert ($disabledStats.parentGuidFilterBypassReason -eq 'disabled') 'disabled bypass reason'
+_Assert ($null -eq $disabledStats.parentGuidFilterActivationReason) 'no activation when disabled'
+
 Write-Host 'OK: audit parent GUID filter tests passed.' -ForegroundColor Green

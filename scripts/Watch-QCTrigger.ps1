@@ -987,6 +987,10 @@ if ($statusSetRules.Count -ge 0) {
                             parentGuidFilterSkipped = if ($null -ne $auditData.stats.parentGuidFilterSkipped) { [int]$auditData.stats.parentGuidFilterSkipped } else { $null }
                             parentGuidFilterPassed = if ($null -ne $auditData.stats.parentGuidFilterPassed) { [int]$auditData.stats.parentGuidFilterPassed } else { $null }
                             parentGuidFilterMarkedProcessed = if ($null -ne $auditData.stats.parentGuidFilterMarkedProcessed) { [int]$auditData.stats.parentGuidFilterMarkedProcessed } else { $null }
+                            filterByParentGuidCacheConfigured = if ($null -ne $auditData.stats.filterByParentGuidCacheConfigured) { [bool]$auditData.stats.filterByParentGuidCacheConfigured } else { $null }
+                            folderGuidCacheConfigPresent = if ($null -ne $auditData.stats.folderGuidCacheConfigPresent) { [bool]$auditData.stats.folderGuidCacheConfigPresent } else { $null }
+                            parentGuidFilterBypassReason = if ($auditData.stats.parentGuidFilterBypassReason) { [string]$auditData.stats.parentGuidFilterBypassReason } else { $null }
+                            parentGuidFilterActivationReason = if ($auditData.stats.parentGuidFilterActivationReason) { [string]$auditData.stats.parentGuidFilterActivationReason } else { $null }
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.
