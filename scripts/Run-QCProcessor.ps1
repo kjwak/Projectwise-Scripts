@@ -466,7 +466,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                             }
                         }
                         $qcPdfGuid = ''
-                        if (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue) {
+                        if (Get-Command -Name 'Resolve-QCSheetQcPdfGuid' -ErrorAction SilentlyContinue) {
+                            $qcPdfGuid = [string](Resolve-QCSheetQcPdfGuid -Config $Config -FolderPath $srcFolder `
+                                -QcPdfName $qcPdfName -SourceDocumentGuid $srcGuid)
+                        } elseif (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue) {
                             try {
                                 $qcDocs = @(Get-PWDocumentsBySearch -FolderPath $srcFolder -DocumentName $qcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
                                 if ($qcDocs.Count -gt 0 -and $qcDocs[0].DocumentGUID) {

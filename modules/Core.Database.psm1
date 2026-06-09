@@ -3202,13 +3202,15 @@ function Write-SheetDocument {
         return New-QCFailureResult -Code 'SHEET_DOCUMENT_ROLE_INVALID' -Message 'document_role must be dgn, sheet_pdf, or qc_pdf.' -Data @{ documentRole = $role }
     }
     try {
+        # Upsert by (sheet_package_id, document_role) so a recreated *-qc.pdf with a new
+        # ProjectWise GUID replaces the prior member row instead of failing the role unique key.
         $sql = @"
 MERGE sheet_documents AS tgt
-USING (SELECT @docGuid AS document_guid) AS src ON tgt.document_guid = src.document_guid
+USING (SELECT @sheetPackageId AS sheet_package_id, @documentRole AS document_role) AS src
+    ON tgt.sheet_package_id = src.sheet_package_id AND tgt.document_role = src.document_role
 WHEN MATCHED THEN UPDATE SET
-    sheet_package_id = @sheetPackageId,
+    document_guid = @docGuid,
     document_name = @docName,
-    document_role = @documentRole,
     pw_state_name = COALESCE(@pwStateName, tgt.pw_state_name),
     extension = COALESCE(@extension, tgt.extension),
     source_type = COALESCE(@sourceType, tgt.source_type),
@@ -3886,6 +3888,94 @@ WHERE folder_path = @folderPath
         $msg = [string]$_.Exception.Message
         return New-QCErrorResult -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation = 'update_sheet_index_cycle' }
     }
+}
+
+function Resolve-QCSheetQcPdfGuid {
+    <#
+    .SYNOPSIS
+    Resolves the live ProjectWise GUID for a sheet's *-qc.pdf after prepend.
+    Prefers newest sheet_index / sheet_packages rows over ambiguous PW search hits.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$QcPdfName,
+        [string]$SourceDocumentGuid = ''
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return '' }
+    $folder = [string]$FolderPath
+    $qcName = [string]$QcPdfName
+    if ([string]::IsNullOrWhiteSpace($folder) -or [string]::IsNullOrWhiteSpace($qcName)) { return '' }
+    try {
+        $idxRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_guid
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@qcPdfName)
+ORDER BY
+  CASE WHEN sheet_package_id IS NOT NULL THEN 0 ELSE 1 END,
+  last_updated_at DESC
+"@ -Parameters @{ folderPath = $folder; qcPdfName = $qcName }
+        if ($idxRes.IsSuccess -and $idxRes.Data.table -and $idxRes.Data.table.Rows.Count -gt 0) {
+            $g = if ($idxRes.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$idxRes.Data.table.Rows[0].document_guid }
+            if (-not [string]::IsNullOrWhiteSpace($g)) { return $g.Trim() }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SourceDocumentGuid)) {
+            $pkgRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sp.qc_pdf_guid
+FROM sheet_packages sp
+INNER JOIN sheet_index si ON si.sheet_package_id = sp.sheet_package_id
+WHERE si.document_guid = @sourceDocGuid
+  AND sp.qc_pdf_guid IS NOT NULL
+"@ -Parameters @{ sourceDocGuid = [string]$SourceDocumentGuid }
+            if ($pkgRes.IsSuccess -and $pkgRes.Data.table -and $pkgRes.Data.table.Rows.Count -gt 0) {
+                $g2 = if ($pkgRes.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$pkgRes.Data.table.Rows[0].qc_pdf_guid }
+                if (-not [string]::IsNullOrWhiteSpace($g2)) { return $g2.Trim() }
+            }
+        }
+        $pkgNameRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_pdf_guid
+FROM sheet_packages
+WHERE folder_path = @folderPath
+  AND qc_pdf_guid IS NOT NULL
+  AND LOWER(qc_pdf_name) = LOWER(@qcPdfName)
+ORDER BY last_updated_at DESC
+"@ -Parameters @{ folderPath = $folder; qcPdfName = $qcName }
+        if ($pkgNameRes.IsSuccess -and $pkgNameRes.Data.table -and $pkgNameRes.Data.table.Rows.Count -gt 0) {
+            $g3 = if ($pkgNameRes.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$pkgNameRes.Data.table.Rows[0].qc_pdf_guid }
+            if (-not [string]::IsNullOrWhiteSpace($g3)) { return $g3.Trim() }
+        }
+    } catch { }
+    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
+    try {
+        $docs = @(Get-PWDocumentsBySearch -FolderPath $folder -DocumentName $qcName -JustThisFolder -ErrorAction SilentlyContinue)
+        if ($docs.Count -le 0) { return '' }
+        $best = $null
+        $bestTicks = [long]::MinValue
+        foreach ($doc in $docs) {
+            $dg = ''
+            try { $dg = [string]$doc.DocumentGUID } catch { }
+            if ([string]::IsNullOrWhiteSpace($dg)) { continue }
+            $ticks = [long]::MinValue
+            foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
+                $raw = $null
+                try { if ($doc.PSObject.Properties[$n]) { $raw = $doc.$n } } catch { }
+                if ($null -eq $raw) { continue }
+                try {
+                    $dt = [datetime]$raw
+                    if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
+                } catch { }
+            }
+            if ($null -eq $best -or $ticks -gt $bestTicks) {
+                $best = $dg
+                $bestTicks = $ticks
+            }
+        }
+        if ($null -ne $best) { return [string]$best.Trim() }
+        if ($docs[0].DocumentGUID) { return [string]$docs[0].DocumentGUID }
+    } catch { }
+    return ''
 }
 
 function Update-QCSheetQcPdf {
@@ -5016,4 +5106,4 @@ WHERE sheet_package_id = @sheetPackageId
     }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

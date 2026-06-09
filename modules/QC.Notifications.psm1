@@ -965,10 +965,27 @@ function _QCN-TryResolveQcPdfGuidFromPwSearch {
     if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
     try {
         $docs = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -DocumentName $QcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
-        if ($docs.Count -gt 0) {
-            $g = [string](_QCN-GetProp -Object $docs[0] -Names @('DocumentGUID','DocumentGuid','GUID'))
-            if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+        if ($docs.Count -le 0) { return '' }
+        $bestGuid = ''
+        $bestTicks = [long]::MinValue
+        foreach ($doc in $docs) {
+            $g = [string](_QCN-GetProp -Object $doc -Names @('DocumentGUID', 'DocumentGuid', 'GUID'))
+            if (_QCN-IsBlank $g) { continue }
+            $ticks = [long]::MinValue
+            foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
+                $raw = _QCN-GetProp -Object $doc -Names @($n)
+                if (_QCN-IsBlank $raw) { continue }
+                try {
+                    $dt = [datetime]$raw
+                    if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
+                } catch { }
+            }
+            if ((_QCN-IsBlank $bestGuid) -or ($ticks -gt $bestTicks)) {
+                $bestGuid = $g.Trim()
+                $bestTicks = $ticks
+            }
         }
+        if (-not (_QCN-IsBlank $bestGuid)) { return $bestGuid }
     } catch { }
     return ''
 }
@@ -1048,23 +1065,23 @@ function _QCN-LookupQcPdfGuidBySheetPackageId {
     if (_QCN-IsBlank $SheetPackageId) { return '' }
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 sd.document_guid
-FROM sheet_documents sd
-WHERE sd.sheet_package_id = @sheetPackageId
-  AND sd.document_role = 'qc_pdf'
-"@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim() }
-        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
-            $g = if ($res.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].document_guid }
-            if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
-        }
-        $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT TOP 1 qc_pdf_guid
 FROM sheet_packages
 WHERE sheet_package_id = @sheetPackageId
   AND qc_pdf_guid IS NOT NULL
 "@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim() }
+        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+            $g = if ($res.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_pdf_guid }
+            if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+        }
+        $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sd.document_guid
+FROM sheet_documents sd
+WHERE sd.sheet_package_id = @sheetPackageId
+  AND sd.document_role = 'qc_pdf'
+"@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim() }
         if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
-            $g2 = if ($res2.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].qc_pdf_guid }
+            $g2 = if ($res2.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].document_guid }
             if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
         }
     } catch { }
@@ -1259,16 +1276,21 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         }
     }
 
-    $pkgDocGuid = _QCN-LookupQcPdfGuidFromSheetDocuments -Config $Config -FolderPath $FolderPath `
-        -QcPdfName $qcName -SheetStem $stem
-    if (-not (_QCN-IsBlank $pkgDocGuid)) {
-        return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
-    }
-
     $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
         -QcPdfName $qcName -SheetStem $stem
     if (-not (_QCN-IsBlank $pkgGuid)) {
         return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages' }
+    }
+
+    $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $qcName
+    if (-not (_QCN-IsBlank $idxGuid)) {
+        return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
+    }
+
+    $pkgDocGuid = _QCN-LookupQcPdfGuidFromSheetDocuments -Config $Config -FolderPath $FolderPath `
+        -QcPdfName $qcName -SheetStem $stem
+    if (-not (_QCN-IsBlank $pkgDocGuid)) {
+        return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
     }
 
     if (-not (_QCN-IsBlank $FolderPath)) {
@@ -1278,11 +1300,6 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
                 return @{ documentGuid = $pwGuid; resolutionSource = 'pw_search' }
             }
         }
-    }
-
-    $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $qcName
-    if (-not (_QCN-IsBlank $idxGuid)) {
-        return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
     }
 
     $srcPdf = [string]$SourceSheetPdfName

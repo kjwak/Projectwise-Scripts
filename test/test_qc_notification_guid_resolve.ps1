@@ -1,4 +1,4 @@
-# QC PDF GUID resolution prefers package member tables over ambiguous sheet_index rows.
+# QC PDF GUID resolution prefers authoritative sheet_packages over stale sheet_documents.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -9,10 +9,10 @@ function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
-$liveGuid = '6f353f6f-ad61-4c01-96fe-56bd183b71a5'
-$staleGuid = 'dfd34be2-56fd-486e-8ac3-d46967ac0df2'
+$liveGuid = '0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b'
+$staleGuid = '35b253e0-a6b7-44ec-a248-09e97d454d58'
 $folder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
-$qcName = '0818000063ea500-qc.pdf'
+$qcName = '080J082001ab001-qc.pdf'
 $config = @{ database = @{ enabled = $true; connectionString = 'x' } }
 
 InModuleScope -ModuleName QC.Notifications {
@@ -34,10 +34,16 @@ InModuleScope -ModuleName QC.Notifications {
     function Invoke-QCDatabaseQuery {
         param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
 
+        if ($Sql -match 'FROM sheet_packages' -and $Sql -match 'qc_pdf_guid') {
+            $table = New-Object System.Data.DataTable
+            [void]$table.Columns.Add('qc_pdf_guid', [string])
+            [void]$table.Rows.Add($liveGuid)
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+        }
         if ($Sql -match 'sheet_documents') {
             $table = New-Object System.Data.DataTable
             [void]$table.Columns.Add('document_guid', [string])
-            [void]$table.Rows.Add($liveGuid)
+            [void]$table.Rows.Add($staleGuid)
             return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
         }
         if ($Sql -match 'FROM sheet_index' -and $Sql -match 'document_guid') {
@@ -50,11 +56,11 @@ InModuleScope -ModuleName QC.Notifications {
     }
 
     $resolved = _QCN-ResolveLiveQcPdfDocumentGuidResult -Config $config -FolderPath $folder `
-        -QcPdfName $qcName -SheetStem '0818000063ea500' -HintGuid $staleGuid
-    Assert-Eq $resolved.documentGuid $liveGuid 'package member GUID should win over stale PW search, hint, and sheet_index'
-    Assert-Eq $resolved.resolutionSource 'sheet_documents' 'resolution source should identify sheet_documents'
+        -QcPdfName $qcName -SheetStem '080J082001ab001' -HintGuid $staleGuid
+    Assert-Eq $resolved.documentGuid $liveGuid 'sheet_packages GUID should win over stale sheet_documents, PW search, hint, and sheet_index'
+    Assert-Eq $resolved.resolutionSource 'sheet_packages' 'resolution source should identify sheet_packages'
 
-    $url = 'https://example.test/pwlink?objectId=6f353f6f-ad61-4c01-96fe-56bd183b71a5&objectType=doc&datasource=x&app=pwe'
+    $url = 'https://example.test/pwlink?objectId=0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b&objectType=doc&datasource=x&app=pwe'
     Assert-Eq (_QCN-ExtractPwLinkDocumentGuid -Url $url) $liveGuid 'pwlink objectId should be extracted from URL'
 }
 
