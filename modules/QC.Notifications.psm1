@@ -256,6 +256,12 @@ function Get-QCNotificationSettings {
     if ($settings.dedupe) {
         try { $settings.dedupe.enabled = [bool]$settings.dedupe.enabled } catch { }
     }
+    if ($settings.outputRoot) {
+        $settings.outputRoot = _QCN-ResolveRepoPath -Path ([string]$settings.outputRoot)
+    }
+    if ($settings.dedupe -and $settings.dedupe.storePath) {
+        $settings.dedupe.storePath = _QCN-ResolveRepoPath -Path ([string]$settings.dedupe.storePath)
+    }
     _QCN-NormalizeNotificationSubjectTemplates -Settings $settings
     return $settings
 }
@@ -1760,7 +1766,7 @@ function _QCN-GetNotificationDedupeStorePath {
     param([hashtable]$Settings)
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
     $dedupe = _QCN-ToHashtable $Settings.dedupe
-    if ($dedupe -and $dedupe.storePath) { return [string]$dedupe.storePath }
+    if ($dedupe -and $dedupe.storePath) { return (_QCN-ResolveRepoPath -Path ([string]$dedupe.storePath)) }
     return (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
 }
 
@@ -2295,7 +2301,11 @@ function Send-QCNotification {
             $sendResult = Send-QCNotificationGraph -GraphSettings $graph -Payload $payload -DryRun:([bool]$settings.dryRun)
         }
         default {
-            $outputRoot = if ($settings.outputRoot) { [string]$settings.outputRoot } else { (Join-Path (_QCN-GetRepoRoot) 'notifications') }
+            $outputRoot = if ($settings.outputRoot) {
+                _QCN-ResolveRepoPath -Path ([string]$settings.outputRoot)
+            } else {
+                (Join-Path (_QCN-GetRepoRoot) 'notifications')
+            }
             $sendResult = Send-QCNotificationMock -Payload $payload -OutputRoot $outputRoot -DryRun:([bool]$settings.dryRun)
         }
     }
