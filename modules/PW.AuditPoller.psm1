@@ -471,6 +471,111 @@ function _AuditPoller-GetParentGuidFromRow {
     return $null
 }
 
+function _AuditPoller-NewParentGuidFilterDiagnostics {
+    return @{
+        skipped_unknown_parent = 0
+        skipped_parent_not_cached = 0
+        skipped_non_source_extension = 0
+        skipped_qc_artifact = 0
+        skipped_status_set_output = 0
+        skipped_pw_perf = 0
+        passed_exempt_action = 0
+        passed_parent_cached = 0
+        skippedSamples = [System.Collections.Generic.List[object]]::new()
+    }
+}
+
+function _AuditPoller-GetParentGuidFilterItemName {
+    param($Row)
+    $itemName = [string](_AuditPoller-GetRowValue -Row $Row -Name 'pw_itemname')
+    if ([string]::IsNullOrWhiteSpace($itemName)) { $itemName = [string](_AuditPoller-GetRowValue -Row $Row -Name 'o_itemname') }
+    return $itemName
+}
+
+function _AuditPoller-GetParentGuidFilterSkipReason {
+    <#
+    Classifies a row skipped by the parent GUID cache gate using row fields only (no PW resolution).
+    Precedence: unknown parent > PwPerfDoNotUse > status set output > QC artifact > non-source extension > parent not cached.
+    #>
+    param(
+        $Row,
+        [AllowNull()][string]$ParentGuidKey = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($ParentGuidKey)) { return 'skipped_unknown_parent' }
+
+    $name = _AuditPoller-GetParentGuidFilterItemName -Row $Row
+    if ([string]::IsNullOrWhiteSpace($name)) { return 'skipped_non_source_extension' }
+
+    $ext = ([System.IO.Path]::GetExtension($name)).ToLowerInvariant()
+    if ($ext -eq '.pwperfdonotuse') { return 'skipped_pw_perf' }
+    if ($name -match '(?i)^_StatusSet\.pdf$') { return 'skipped_status_set_output' }
+    if ($name -match '(?i)^status_set_replace_.*\.pdf$') { return 'skipped_status_set_output' }
+
+    if ($ext -eq '.pdf') {
+        if ($name -match '(?i)-qc\.pdf$') { return 'skipped_qc_artifact' }
+        if ($name -match '(?i)_qc\.pdf$') { return 'skipped_qc_artifact' }
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
+        if ($stem -and $stem.EndsWith('_QC', [StringComparison]::OrdinalIgnoreCase)) { return 'skipped_qc_artifact' }
+        return 'skipped_parent_not_cached'
+    }
+    if ($ext -eq '.dgn') { return 'skipped_parent_not_cached' }
+
+    return 'skipped_non_source_extension'
+}
+
+function Get-QCAuditParentGuidFilterSkipReason {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Row)
+    $key = _AuditPoller-NormalizeFolderGuidKey -Guid (_AuditPoller-GetParentGuidFromRow -Row $Row)
+    return _AuditPoller-GetParentGuidFilterSkipReason -Row $Row -ParentGuidKey $key
+}
+
+function _AuditPoller-AddParentGuidFilterSkipSample {
+    param(
+        [hashtable]$Diagnostics,
+        $Row,
+        [Parameter(Mandatory)][string]$Reason,
+        [int]$MaxSamples = 5
+    )
+    if ($null -eq $Diagnostics -or $null -eq $Diagnostics.skippedSamples) { return }
+    if ($Diagnostics.skippedSamples.Count -ge $MaxSamples) { return }
+
+    $itemName = _AuditPoller-GetParentGuidFilterItemName -Row $Row
+    $ext = ''
+    if (-not [string]::IsNullOrWhiteSpace($itemName)) {
+        $ext = ([System.IO.Path]::GetExtension($itemName)).ToLowerInvariant()
+    }
+    $actionCode = _AuditPoller-GetTriggerActionCode -Row $Row
+    $parentGuid = [string](_AuditPoller-GetParentGuidFromRow -Row $Row)
+    $sample = @{
+        action     = $actionCode
+        itemName   = $itemName
+        extension  = $ext
+        parentGuid = $parentGuid
+        reason     = $Reason
+    }
+    $pgKey = _AuditPoller-NormalizeFolderGuidKey -Guid $parentGuid
+    if ($pgKey -and $script:AuditPoller_FolderGuidCache.ContainsKey($pgKey)) {
+        $sample.resolvedFolder = [string]$script:AuditPoller_FolderGuidCache[$pgKey]
+    }
+    [void]$Diagnostics.skippedSamples.Add($sample)
+}
+
+function _AuditPoller-ApplyParentGuidFilterDiagnosticsToStats {
+    param(
+        [hashtable]$Diagnostics,
+        [hashtable]$Stats
+    )
+    if ($null -eq $Stats -or $null -eq $Diagnostics) { return }
+    foreach ($k in @(
+        'skipped_unknown_parent', 'skipped_parent_not_cached', 'skipped_non_source_extension',
+        'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
+        'passed_exempt_action', 'passed_parent_cached'
+    )) {
+        $Stats[$k] = [int]$Diagnostics[$k]
+    }
+}
+
 function Invoke-QCAuditParentGuidCacheGate {
     <#
     .SYNOPSIS
@@ -522,19 +627,37 @@ function Invoke-QCAuditParentGuidCacheGate {
     $kept = [System.Collections.Generic.List[object]]::new()
     $skipped = [System.Collections.Generic.List[object]]::new()
     $exemptPassed = 0
+    $diagnostics = _AuditPoller-NewParentGuidFilterDiagnostics
     foreach ($row in @($Rows)) {
         $actionCode = _AuditPoller-GetTriggerActionCode -Row $row
         if ($exemptCodes.ContainsKey($actionCode)) {
             [void]$kept.Add($row)
             $exemptPassed++
+            $diagnostics.passed_exempt_action++
             continue
         }
         $key = _AuditPoller-NormalizeFolderGuidKey -Guid (_AuditPoller-GetParentGuidFromRow -Row $row)
         if ($key -and $script:AuditPoller_FolderGuidCache.ContainsKey($key)) {
             [void]$kept.Add($row)
+            $diagnostics.passed_parent_cached++
         } else {
             [void]$skipped.Add($row)
+            $skipReason = _AuditPoller-GetParentGuidFilterSkipReason -Row $row -ParentGuidKey $key
+            $diagnostics[$skipReason] = [int]$diagnostics[$skipReason] + 1
+            _AuditPoller-AddParentGuidFilterSkipSample -Diagnostics $diagnostics -Row $row -Reason $skipReason
         }
+    }
+
+    $diagnosticsOut = @{
+        skipped_unknown_parent = [int]$diagnostics.skipped_unknown_parent
+        skipped_parent_not_cached = [int]$diagnostics.skipped_parent_not_cached
+        skipped_non_source_extension = [int]$diagnostics.skipped_non_source_extension
+        skipped_qc_artifact = [int]$diagnostics.skipped_qc_artifact
+        skipped_status_set_output = [int]$diagnostics.skipped_status_set_output
+        skipped_pw_perf = [int]$diagnostics.skipped_pw_perf
+        passed_exempt_action = [int]$diagnostics.passed_exempt_action
+        passed_parent_cached = [int]$diagnostics.passed_parent_cached
+        skippedSamples = @($diagnostics.skippedSamples.ToArray())
     }
 
     if ($Stats) {
@@ -544,13 +667,15 @@ function Invoke-QCAuditParentGuidCacheGate {
         $Stats.parentGuidFilterSkipped = $skipped.Count
         $Stats.parentGuidFilterExemptPassed = $exemptPassed
         $Stats.parentGuidFilterBypassReason = $null
+        _AuditPoller-ApplyParentGuidFilterDiagnosticsToStats -Diagnostics $diagnosticsOut -Stats $Stats
     }
 
     return @{
-        kept      = @($kept.ToArray())
-        skipped   = @($skipped.ToArray())
-        active    = $true
-        cacheSize = $cacheSize
+        kept         = @($kept.ToArray())
+        skipped      = @($skipped.ToArray())
+        active       = $true
+        cacheSize    = $cacheSize
+        diagnostics  = $diagnosticsOut
     }
 }
 
@@ -1817,12 +1942,23 @@ function Invoke-AuditTrailScan {
     $eventsToIngest = @($ingestGate.kept)
 
     if ($ingestGate.active -and $ingestGate.skipped.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER' -Message "Skipped $($ingestGate.skipped.Count) QC events (parent GUID not in watch cache)." -Data @{
+        $filterLogData = @{
             cacheSize = [int]$ingestGate.cacheSize
             passed = [int]$ingestGate.kept.Count
             skipped = [int]$ingestGate.skipped.Count
             totalQcEvents = [int]$allEvents.Count
         }
+        if ($ingestGate.diagnostics) {
+            foreach ($dk in @(
+                'skipped_unknown_parent', 'skipped_parent_not_cached', 'skipped_non_source_extension',
+                'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
+                'passed_exempt_action', 'passed_parent_cached'
+            )) {
+                $filterLogData[$dk] = [int]$ingestGate.diagnostics[$dk]
+            }
+            $filterLogData.skippedSamples = @($ingestGate.diagnostics.skippedSamples)
+        }
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_PARENT_GUID_FILTER' -Message "Skipped $($ingestGate.skipped.Count) QC events (parent GUID not in watch cache)." -Data $filterLogData
     }
 
     if ($eventsToIngest.Count -eq 0) {
@@ -2184,4 +2320,4 @@ function Test-QCAuditIngestAllowedActionCode {
     return _AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $ActionCode
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode
+Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Get-QCAuditParentGuidFilterSkipReason, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode

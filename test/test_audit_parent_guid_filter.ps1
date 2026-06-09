@@ -57,4 +57,35 @@ $emptyGate = Invoke-QCAuditParentGuidCacheGate -Rows @() -Config $cfg
 _Assert ($emptyGate.kept.Count -eq 0) 'empty input should return empty kept'
 _Assert ($emptyGate.skipped.Count -eq 0) 'empty input should return empty skipped'
 
+# Skip-reason classification (row fields only; parent not in cache unless noted)
+$uncachedParent = '00000000-0000-0000-0000-000000000099'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = ''; o_itemname = 'a.dgn' }) -eq 'skipped_unknown_parent') 'blank parent'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'template.itl' }) -eq 'skipped_non_source_extension') 'itl'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '0818000063ea502-qc.pdf' }) -eq 'skipped_qc_artifact') 'dash-qc pdf'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '_StatusSet.pdf' }) -eq 'skipped_status_set_output') 'status set output'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'e1eb559eef1b9bb9_2265_001_of_001.PwPerfDoNotUse' }) -eq 'skipped_pw_perf') 'PwPerfDoNotUse'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '080J082001ab001.dgn' }) -eq 'skipped_parent_not_cached') 'dgn uncached parent'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '080J082001ab001.pdf' }) -eq 'skipped_parent_not_cached') 'normal pdf uncached parent'
+
+# Gate diagnostics counters and samples (behavior unchanged)
+$mixedRows = @(
+    @{ o_action = 1007; o_parentguid = $uncachedParent; o_itemname = '080J082001ab001.dgn' },
+    @{ o_action = 1007; o_parentguid = $uncachedParent; o_itemname = 'F0893 US 60 Schulze to Allred_ORD Templatel.itl' },
+    @{ o_action = 1012; o_parentguid = $uncachedParent; o_itemname = '0818000063ea515-qc.pdf' },
+    @{ o_action = 1007; o_parentguid = $watchGuid; o_itemname = '080J082001ab001.pdf' }
+)
+$mixedStats = @{}
+$mixedGate = Invoke-QCAuditParentGuidCacheGate -Rows $mixedRows -Config $cfg -Stats $mixedStats
+_Assert ($mixedGate.kept.Count -eq 2) "expected 2 kept (1012 exempt + cached parent), got $($mixedGate.kept.Count)"
+_Assert ($mixedGate.skipped.Count -eq 2) "expected 2 skipped, got $($mixedGate.skipped.Count)"
+_Assert ($mixedGate.diagnostics.passed_exempt_action -eq 1) 'one exempt 1012'
+_Assert ($mixedGate.diagnostics.passed_parent_cached -eq 1) 'one cached parent pass'
+_Assert ($mixedGate.diagnostics.skipped_parent_not_cached -eq 1) 'one uncached dgn'
+_Assert ($mixedGate.diagnostics.skipped_non_source_extension -eq 1) 'one itl'
+_Assert (($mixedGate.diagnostics.skipped_parent_not_cached + $mixedGate.diagnostics.skipped_non_source_extension) -eq $mixedGate.skipped.Count) 'skip counters sum to skipped'
+_Assert ($mixedGate.diagnostics.skippedSamples.Count -le 5) 'at most 5 skipped samples'
+_Assert ($mixedGate.diagnostics.skippedSamples[0].reason) 'sample includes reason'
+_Assert ($mixedStats.passed_exempt_action -eq 1) 'stats mirror passed_exempt_action'
+_Assert ($mixedStats.skipped_non_source_extension -eq 1) 'stats mirror skipped_non_source_extension'
+
 Write-Host 'OK: audit parent GUID filter tests passed.' -ForegroundColor Green

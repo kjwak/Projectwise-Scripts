@@ -101,6 +101,56 @@ function Test-QCIsStatusSetOutputPdfName {
     return $false
 }
 
+function Test-QCStatusSetSourceDocument {
+    <#
+    .SYNOPSIS
+    True when an audit document is eligible to trigger folder-level STATUS_SET_GEN.
+    .DESCRIPTION
+    Status-set sources are DGN sheet files and normal (non-QC) sheet PDFs under CADD\Sheets.
+    QC artifacts, reference/working/template paths, and non-sheet extensions are excluded.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DocumentName)) { return $false }
+
+    $normPath = ([string]$FolderPath).Trim().Replace('\', '/').TrimEnd('/').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($normPath)) { return $false }
+    if ($normPath.IndexOf('cadd/sheets', [StringComparison]::Ordinal) -lt 0) { return $false }
+
+    $pathForFrag = $normPath + '/'
+    $excludedFolderFragments = @(
+        '/cadd/ref-ord/'
+        '/cadd/ref-noord/'
+        '/cadd/working/'
+        '/templates/'
+        '/template/'
+        '/workspace/'
+    )
+    foreach ($frag in $excludedFolderFragments) {
+        if ($pathForFrag.IndexOf($frag, [StringComparison]::Ordinal) -ge 0) { return $false }
+    }
+
+    $name = ([string]$DocumentName).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if (Test-QCIsStatusSetOutputPdfName -FileName $name) { return $false }
+
+    $ext = ([System.IO.Path]::GetExtension($name)).ToLowerInvariant()
+    if ($ext -eq '.pdf') {
+        if ($name -match '(?i)-qc\.pdf$') { return $false }
+        if ($name -match '(?i)_qc\.pdf$') { return $false }
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
+        if ($stem -and $stem.EndsWith('_QC', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        return $true
+    }
+    if ($ext -eq '.dgn') { return $true }
+
+    return $false
+}
+
 function Test-QCTriggerCandidate {
     [CmdletBinding()]
     param(

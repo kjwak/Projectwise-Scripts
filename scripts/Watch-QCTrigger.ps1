@@ -344,6 +344,7 @@ $script:WatchRequiredCommands = @(
     'Get-QCFinalizingWorkflowStateName'
     'Test-QCWorkflowStateIsQcFinalizing'
     'Test-QCIsStatusSetOutputPdfName'
+    'Test-QCStatusSetSourceDocument'
     'Invoke-QCReconcileOutputs'
     'Set-QCFullScanScheduleSlotComplete'
     'Get-OrderedTriggerRules'
@@ -1179,10 +1180,14 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                 }
 
-                                # STATUS_SET_GEN: one per unique Sheets folder
+                                # STATUS_SET_GEN: one per unique Sheets folder (status-set source docs only)
                                 $acEnableStatusSet = $true
                                 try { if ($null -ne $ac.enableStatusSet) { $acEnableStatusSet = [bool]$ac.enableStatusSet } } catch { }
-                                if ([bool]$ac.isSheetsFolder -and $acEnableStatusSet -and $statusRuleObj -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
+                                $isStatusSetSourceDoc = $false
+                                if (Get-Command -Name 'Test-QCStatusSetSourceDocument' -ErrorAction SilentlyContinue) {
+                                    $isStatusSetSourceDoc = [bool](Test-QCStatusSetSourceDocument -DocumentName $itemName -FolderPath $fp)
+                                }
+                                if ([bool]$ac.isSheetsFolder -and $acEnableStatusSet -and $statusRuleObj -and $isStatusSetSourceDoc -and -not $auditFoldersSeen.ContainsKey($fp.ToLowerInvariant())) {
                                     $auditFoldersSeen[$fp.ToLowerInvariant()] = $true
                                     if (-not (_Watch-EnsureAllModuleExports)) {
                                         throw 'Required module exports unavailable before audit STATUS_SET_GEN scan.'
