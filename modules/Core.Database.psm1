@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.9.0'
+    $targetVersion = '1.17.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through transition_events.changed_by columns")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through package-aware reporting views")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -703,7 +703,7 @@ CREATE TABLE processing_jobs (
     status          NVARCHAR(20) NOT NULL DEFAULT 'pending',
     trigger_source  NVARCHAR(50),
     trigger_audit_id BIGINT,
-    dedupe_key      NVARCHAR(200),
+    dedupe_key      NVARCHAR(500),
     attempt_count   INT NOT NULL DEFAULT 0,
     duration_ms     INT,
     error_code      NVARCHAR(100),
@@ -1151,7 +1151,7 @@ CREATE TABLE processing_jobs (
     status          NVARCHAR(20) NOT NULL DEFAULT 'pending',
     trigger_source  NVARCHAR(50),
     trigger_audit_id BIGINT,
-    dedupe_key      NVARCHAR(200),
+    dedupe_key      NVARCHAR(500),
     attempt_count   INT NOT NULL DEFAULT 0,
     duration_ms     INT,
     error_code      NVARCHAR(100),
@@ -1319,6 +1319,346 @@ IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.trans
     ALTER TABLE transition_events ADD changed_by_username NVARCHAR(128) NULL;
 IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'changed_by_username') IS NULL
     ALTER TABLE document_state_history ADD changed_by_username NVARCHAR(128) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot10Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') IS NOT NULL
+   AND COL_LENGTH('dbo.processing_jobs', 'dedupe_key') < 500
+    ALTER TABLE dbo.processing_jobs ALTER COLUMN dedupe_key NVARCHAR(500) NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot11Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.sheet_index', 'qc_cycle_id') IS NULL
+        ALTER TABLE sheet_index ADD qc_cycle_id NVARCHAR(80) NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'qc_cycle_number') IS NULL
+        ALTER TABLE sheet_index ADD qc_cycle_number INT NULL;
+END
+'@
+}
+
+function _QDB-GetSchemaV1dot12Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.sheet_index', 'qc_cycle_number') IS NOT NULL
+   AND EXISTS (
+       SELECT 1
+       FROM sys.columns c
+       INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+       WHERE c.object_id = OBJECT_ID('dbo.sheet_index')
+         AND c.name = 'qc_cycle_number'
+         AND t.name IN ('int', 'bigint', 'smallint', 'tinyint')
+   )
+BEGIN
+    ALTER TABLE sheet_index ALTER COLUMN qc_cycle_number NVARCHAR(16) NULL;
+END
+'@
+}
+
+function _QDB-GetSchemaV1dot13Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NULL
+CREATE TABLE qc_cycle_completions (
+    id bigint IDENTITY(1,1) PRIMARY KEY,
+    document_guid uniqueidentifier NOT NULL,
+    document_name nvarchar(260) NULL,
+    qc_cycle_id nvarchar(100) NOT NULL,
+    qc_cycle_number int NULL,
+    qc_review_type nvarchar(100) NOT NULL,
+    completed_at datetime2 NOT NULL,
+    completed_by nvarchar(256) NULL,
+    transition_event_id bigint NULL,
+    audit_event_id bigint NULL,
+    created_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT UQ_qc_cycle_completions_cycle UNIQUE (document_guid, qc_cycle_id, qc_review_type)
+);
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_cycle_completions_document')
+    CREATE INDEX IX_qc_cycle_completions_document ON qc_cycle_completions (document_guid);
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_cycle_completions_completed_at')
+    CREATE INDEX IX_qc_cycle_completions_completed_at ON qc_cycle_completions (completed_at);
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.sheet_index', 'production_qc_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD production_qc_completed_count int NOT NULL CONSTRAINT DF_sheet_index_production_qc_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'production_qc_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD production_qc_last_completed_at datetime2 NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'peer_review_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD peer_review_completed_count int NOT NULL CONSTRAINT DF_sheet_index_peer_review_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'peer_review_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD peer_review_last_completed_at datetime2 NULL;
+    IF COL_LENGTH('dbo.sheet_index', 'independent_check_completed_count') IS NULL
+        ALTER TABLE sheet_index ADD independent_check_completed_count int NOT NULL CONSTRAINT DF_sheet_index_independent_check_completed_count DEFAULT 0;
+    IF COL_LENGTH('dbo.sheet_index', 'independent_check_last_completed_at') IS NULL
+        ALTER TABLE sheet_index ADD independent_check_last_completed_at datetime2 NULL;
+END
+'@
+}
+
+function _QDB-GetSchemaV1dot14Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_event_id') IS NULL
+    ALTER TABLE qc_workflow_events ADD transition_event_id INT NULL;
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_transition_event')
+    CREATE INDEX IX_qc_workflow_events_transition_event ON qc_workflow_events (transition_event_id);
+'@
+}
+
+function _QDB-GetSchemaV1dot15Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NULL
+CREATE TABLE sheet_packages (
+    sheet_package_id                      UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_sheet_packages_id DEFAULT NEWSEQUENTIALID(),
+    sheet_stem                            NVARCHAR(260)    NOT NULL,
+    folder_path                           NVARCHAR(1000)   NOT NULL,
+    folder_guid                           UNIQUEIDENTIFIER NULL,
+    dgn_guid                              UNIQUEIDENTIFIER NULL,
+    dgn_name                              NVARCHAR(260)    NULL,
+    sheet_pdf_guid                        UNIQUEIDENTIFIER NULL,
+    sheet_pdf_name                        NVARCHAR(260)    NULL,
+    qc_pdf_guid                           UNIQUEIDENTIFIER NULL,
+    qc_pdf_name                           NVARCHAR(260)    NULL,
+    pw_state_name                         NVARCHAR(100)    NULL,
+    qc_review_type                        NVARCHAR(100)    NULL,
+    designer_email                        NVARCHAR(256)    NULL,
+    reviewer_email                        NVARCHAR(256)    NULL,
+    checker_email                         NVARCHAR(256)    NULL,
+    qc_assigned_to                        NVARCHAR(256)    NULL,
+    qc_cycle_id                           NVARCHAR(100)    NULL,
+    qc_cycle_number                       NVARCHAR(16)     NULL,
+    production_qc_completed_count         INT NOT NULL CONSTRAINT DF_sheet_packages_production_qc_completed_count DEFAULT 0,
+    production_qc_last_completed_at       DATETIME2        NULL,
+    peer_review_completed_count           INT NOT NULL CONSTRAINT DF_sheet_packages_peer_review_completed_count DEFAULT 0,
+    peer_review_last_completed_at         DATETIME2        NULL,
+    independent_check_completed_count     INT NOT NULL CONSTRAINT DF_sheet_packages_independent_check_completed_count DEFAULT 0,
+    independent_check_last_completed_at   DATETIME2        NULL,
+    first_seen_at                         DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_sheet_packages_first_seen DEFAULT SYSDATETIMEOFFSET(),
+    last_updated_at                       DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_sheet_packages_last_updated DEFAULT SYSDATETIMEOFFSET(),
+    CONSTRAINT PK_sheet_packages PRIMARY KEY (sheet_package_id),
+    CONSTRAINT UQ_sheet_packages_folder_stem UNIQUE (folder_path, sheet_stem)
+);
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_packages_folder')
+    CREATE INDEX IX_sheet_packages_folder ON sheet_packages (folder_path);
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_packages_dgn')
+    CREATE INDEX IX_sheet_packages_dgn ON sheet_packages (dgn_guid) WHERE dgn_guid IS NOT NULL;
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_packages_sheet_pdf')
+    CREATE INDEX IX_sheet_packages_sheet_pdf ON sheet_packages (sheet_pdf_guid) WHERE sheet_pdf_guid IS NOT NULL;
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_packages_qc_pdf')
+    CREATE INDEX IX_sheet_packages_qc_pdf ON sheet_packages (qc_pdf_guid) WHERE qc_pdf_guid IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.sheet_documents', 'U') IS NULL
+CREATE TABLE sheet_documents (
+    document_guid     UNIQUEIDENTIFIER NOT NULL,
+    sheet_package_id  UNIQUEIDENTIFIER NOT NULL,
+    document_name     NVARCHAR(260)    NOT NULL,
+    document_role     NVARCHAR(50)     NOT NULL,
+    pw_state_name     NVARCHAR(100)    NULL,
+    extension         NVARCHAR(20)     NULL,
+    source_type       NVARCHAR(10)     NULL,
+    last_seen_at      DATETIMEOFFSET(3) NULL,
+    file_modified_at  DATETIMEOFFSET(3) NULL,
+    CONSTRAINT PK_sheet_documents PRIMARY KEY (document_guid),
+    CONSTRAINT UQ_sheet_documents_package_role UNIQUE (sheet_package_id, document_role),
+    CONSTRAINT FK_sheet_documents_package FOREIGN KEY (sheet_package_id) REFERENCES sheet_packages(sheet_package_id)
+);
+IF OBJECT_ID('dbo.sheet_documents', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_documents_package')
+    CREATE INDEX IX_sheet_documents_package ON sheet_documents (sheet_package_id);
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'sheet_package_id') IS NULL
+    ALTER TABLE sheet_index ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sheet_index_package')
+    CREATE INDEX IX_sheet_index_package ON sheet_index (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'sheet_package_id') IS NULL
+    ALTER TABLE document_state_history ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'transition_group_id') IS NULL
+    ALTER TABLE document_state_history ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.document_state_history', 'U') IS NOT NULL AND COL_LENGTH('dbo.document_state_history', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_state_hist_sheet_package')
+    CREATE INDEX IX_state_hist_sheet_package ON document_state_history (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'sheet_package_id') IS NULL
+    ALTER TABLE transition_events ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'transition_group_id') IS NULL
+    ALTER TABLE transition_events ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_transition_sheet_package')
+    CREATE INDEX IX_transition_sheet_package ON transition_events (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+IF OBJECT_ID('dbo.transition_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.transition_events', 'transition_group_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_transition_group')
+    CREATE INDEX IX_transition_group ON transition_events (transition_group_id) WHERE transition_group_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'sheet_package_id') IS NULL
+    ALTER TABLE qc_workflow_events ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_group_id') IS NULL
+    ALTER TABLE qc_workflow_events ADD transition_group_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_sheet_package')
+    CREATE INDEX IX_qc_workflow_events_sheet_package ON qc_workflow_events (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'transition_group_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_workflow_events_transition_group')
+    CREATE INDEX IX_qc_workflow_events_transition_group ON qc_workflow_events (transition_group_id) WHERE transition_group_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'sheet_package_id') IS NULL
+    ALTER TABLE processing_jobs ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_jobs_sheet_package')
+    CREATE INDEX IX_jobs_sheet_package ON processing_jobs (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL AND COL_LENGTH('dbo.notification_log', 'sheet_package_id') IS NULL
+    ALTER TABLE notification_log ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL AND COL_LENGTH('dbo.notification_log', 'sheet_package_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_notif_sheet_package')
+    CREATE INDEX IX_notif_sheet_package ON notification_log (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_sheet_package_status', 'V') IS NOT NULL DROP VIEW v_sheet_package_status;
+GO
+CREATE VIEW v_sheet_package_status AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.folder_guid,
+    sp.dgn_guid,
+    sp.dgn_name,
+    sp.sheet_pdf_guid,
+    sp.sheet_pdf_name,
+    sp.qc_pdf_guid,
+    sp.qc_pdf_name,
+    sp.pw_state_name,
+    sp.qc_review_type,
+    sp.designer_email,
+    sp.reviewer_email,
+    sp.checker_email,
+    sp.qc_assigned_to,
+    sp.qc_cycle_id,
+    sp.qc_cycle_number,
+    sp.production_qc_completed_count,
+    sp.production_qc_last_completed_at,
+    sp.peer_review_completed_count,
+    sp.peer_review_last_completed_at,
+    sp.independent_check_completed_count,
+    sp.independent_check_last_completed_at,
+    sp.first_seen_at,
+    sp.last_updated_at
+FROM sheet_packages sp;
+GO
+IF OBJECT_ID('dbo.v_sheet_document_status', 'V') IS NOT NULL DROP VIEW v_sheet_document_status;
+GO
+CREATE VIEW v_sheet_document_status AS
+SELECT
+    sd.document_guid,
+    sd.sheet_package_id,
+    sd.document_name,
+    sd.document_role,
+    sd.pw_state_name,
+    sd.extension,
+    sd.source_type,
+    sd.last_seen_at,
+    sd.file_modified_at,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.pw_state_name AS package_pw_state_name
+FROM sheet_documents sd
+INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id;
+'@
+}
+
+function _QDB-GetSchemaV1dot16Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_cycle_completions', 'sheet_package_id') IS NULL
+    ALTER TABLE qc_cycle_completions ADD sheet_package_id UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_qc_cycle_completions_sheet_package')
+    ALTER TABLE qc_cycle_completions ADD CONSTRAINT FK_qc_cycle_completions_sheet_package
+        FOREIGN KEY (sheet_package_id) REFERENCES sheet_packages(sheet_package_id);
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_cycle_completions_sheet_package')
+    CREATE INDEX IX_qc_cycle_completions_sheet_package ON qc_cycle_completions (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_qc_cycle_completions_package')
+    CREATE UNIQUE INDEX UQ_qc_cycle_completions_package ON qc_cycle_completions (sheet_package_id, qc_cycle_id, qc_review_type)
+    WHERE sheet_package_id IS NOT NULL;
+'@
+}
+
+function _QDB-GetSchemaV1dot17Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.v_sheet_package_status', 'V') IS NOT NULL DROP VIEW v_sheet_package_status;
+GO
+CREATE VIEW v_sheet_package_status AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.pw_state_name,
+    sp.qc_review_type,
+    sp.qc_assigned_to,
+    sp.production_qc_completed_count,
+    sp.peer_review_completed_count,
+    sp.independent_check_completed_count,
+    sp.production_qc_last_completed_at,
+    sp.peer_review_last_completed_at,
+    sp.independent_check_last_completed_at,
+    sp.dgn_guid,
+    sp.sheet_pdf_guid,
+    sp.qc_pdf_guid
+FROM sheet_packages sp;
+GO
+IF OBJECT_ID('dbo.v_sheet_package_cycle_aging', 'V') IS NOT NULL DROP VIEW v_sheet_package_cycle_aging;
+GO
+CREATE VIEW v_sheet_package_cycle_aging AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.pw_state_name AS current_state,
+    sp.qc_cycle_id AS current_cycle_id,
+    sp.qc_cycle_number AS current_cycle_number,
+    CASE
+        WHEN sh.last_state_change_at IS NOT NULL
+        THEN DATEDIFF(day, CAST(sh.last_state_change_at AS datetimeoffset), SYSDATETIMEOFFSET())
+        ELSE DATEDIFF(day, sp.last_updated_at, SYSDATETIMEOFFSET())
+    END AS days_in_current_state,
+    CASE
+        WHEN lc.last_completion_at IS NOT NULL
+        THEN DATEDIFF(day, lc.last_completion_at, CAST(SYSDATETIMEOFFSET() AS datetime2))
+        ELSE NULL
+    END AS days_since_last_completion,
+    sp.production_qc_completed_count AS production_completion_count,
+    sp.peer_review_completed_count AS peer_completion_count,
+    sp.independent_check_completed_count AS independent_completion_count
+FROM sheet_packages sp
+OUTER APPLY (
+    SELECT MAX(dsh.captured_at) AS last_state_change_at
+    FROM document_state_history dsh
+    WHERE dsh.sheet_package_id = sp.sheet_package_id
+      AND dsh.field_name = 'pw_state_name'
+      AND ISNULL(dsh.new_value, '') = ISNULL(sp.pw_state_name, '')
+) sh
+OUTER APPLY (
+    SELECT MAX(v) AS last_completion_at
+    FROM (VALUES
+        (sp.production_qc_last_completed_at),
+        (sp.peer_review_last_completed_at),
+        (sp.independent_check_last_completed_at)
+    ) AS t(v)
+    WHERE v IS NOT NULL
+) lc;
 '@
 }
 
@@ -1554,7 +1894,7 @@ function Write-QCAuditEventRows {
     Batch-insert PW audit trail rows into audit_events (deduped by natural key).
     Rows without a document GUID are skipped (USER_LOGIN etc. use empty guid and break UX_audit_events_natural_key).
     .OUTPUTS
-    QCResult with Data: @{ written; skipped; skippedNoGuid; skippedDupInBatch; chunks; lastError }
+    QCResult with Data: @{ written; skipped; failed; skippedNoGuid; skippedDupInBatch; chunks; lastError }
     #>
     [CmdletBinding()]
     param(
@@ -1568,10 +1908,10 @@ function Write-QCAuditEventRows {
     if ($ChunkSize -lt 1 -or $ChunkSize -gt $maxChunk) { $ChunkSize = $maxChunk }
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
-        return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; chunks = 0 }
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_SKIPPED' -Message 'Database disabled.' -Data @{ written = 0; skipped = $Rows.Count; failed = 0; chunks = 0 }
     }
     if (-not $Rows -or $Rows.Count -eq 0) {
-        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; chunks = 0 }
+        return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE' -Message 'No audit rows to write.' -Data @{ written = 0; skipped = 0; failed = 0; chunks = 0 }
     }
 
     $prep = _QDB-PrepareAuditEventRowsForInsert -Rows $Rows
@@ -1580,11 +1920,12 @@ function Write-QCAuditEventRows {
     if ($insertRows.Count -eq 0) {
         return New-QCSuccessResult -Code 'AUDIT_EVENTS_NONE_INSERTABLE' -Message 'No audit rows with document GUID to insert.' -Data @{
             written = 0; skipped = $skipped; skippedNoGuid = [int]$prep.skippedNoGuid
-            skippedDupInBatch = [int]$prep.skippedDupInBatch; chunks = 0; lastError = $null
+            skippedDupInBatch = [int]$prep.skippedDupInBatch; failed = 0; chunks = 0; lastError = $null
         }
     }
 
     $written = 0
+    $failed = 0
     $chunks = 0
     $lastError = $null
     for ($i = 0; $i -lt $insertRows.Count; $i += $ChunkSize) {
@@ -1621,11 +1962,13 @@ WHERE NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL
                 $skipped += ($chunk.Count - [int]$res.Data.rowsAffected)
             } else {
                 $skipped += $chunk.Count
+                $failed += $chunk.Count
                 $lastError = [string]$res.Message
                 if ($res.Data -and $res.Data.error) { $lastError = "$lastError ($($res.Data.error))" }
             }
         } catch {
             $skipped += $chunk.Count
+            $failed += $chunk.Count
             $lastError = [string]$_.Exception.Message
         }
     }
@@ -1633,6 +1976,7 @@ WHERE NULLIF(LTRIM(RTRIM(v.pw_objguid)), '') IS NOT NULL
     return New-QCSuccessResult -Code 'AUDIT_EVENTS_WRITTEN' -Message "Audit events: $written inserted, $skipped skipped/duplicate." -Data @{
         written           = $written
         skipped           = $skipped
+        failed            = $failed
         skippedNoGuid     = [int]$prep.skippedNoGuid
         skippedDupInBatch = [int]$prep.skippedDupInBatch
         chunks            = $chunks
@@ -1728,7 +2072,7 @@ function Write-QCStateChangeJobTelemetry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$PreviousState,
+        [AllowEmptyString()][string]$PreviousState = '',
         [Parameter(Mandatory)][string]$CurrentState,
         [string]$JobId = '',
         [string]$ParentJobId = '',
@@ -1772,7 +2116,68 @@ function Write-QCStateChangeJobTelemetry {
         -SourcePath $sourcePath -SourceFolder $SourceFolder -TriggerSource $TriggerSource `
         -DurationMs $(if ($DurationMs -gt 0) { $DurationMs } else { $null }) `
         -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
-        -ResultData $resultJson
+        -ResultData $resultJson -DocumentGuid $DocumentGuid
+}
+
+function _QDB-IsSheetScopedProcessingJobType {
+    param([Parameter(Mandatory)][string]$JobType)
+    $t = ([string]$JobType).Trim()
+    if ($t -match '^(QC_PREPEND|QC_FINALIZE|QC_STATE|QC_NOTIFICATION)$') { return $true }
+    if ($t -match '^QC_COMMENT') { return $true }
+    return $false
+}
+
+function _QDB-ExtractDocumentGuidFromTelemetryJson {
+    param([string]$JsonText)
+    if ([string]::IsNullOrWhiteSpace($JsonText)) { return '' }
+    try {
+        $obj = $JsonText | ConvertFrom-Json
+        foreach ($name in @('documentGuid', 'document_guid', 'triggerDocumentGuid', 'qcPdfGuid')) {
+            try {
+                if ($obj.PSObject.Properties[$name] -and -not [string]::IsNullOrWhiteSpace([string]$obj.$name)) {
+                    return ([string]$obj.$name).Trim()
+                }
+            } catch { }
+        }
+    } catch { }
+    return ''
+}
+
+function _QDB-ResolveSheetPackageIdForJobTelemetry {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobType,
+        [string]$DocumentGuid = '',
+        [string]$SourcePath = '',
+        [string]$SourceFolder = '',
+        [string]$ResultData = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if (-not (_QDB-IsSheetScopedProcessingJobType -JobType $JobType)) { return $null }
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+
+    $docGuid = ([string]$DocumentGuid).Trim()
+    if ([string]::IsNullOrWhiteSpace($docGuid)) {
+        $docGuid = _QDB-ExtractDocumentGuidFromTelemetryJson -JsonText $ResultData
+    }
+    if ($docGuid) {
+        $pkg = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $docGuid
+        if ($pkg) { return $pkg }
+    }
+
+    $folder = _QDB-NormalizeTelemetryPath -Path $SourceFolder
+    $docName = ''
+    if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+        $docName = [System.IO.Path]::GetFileName(([string]$SourcePath).Trim())
+    }
+    if ($folder -and $docName) {
+        $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $docGuid -DocumentName $docName -FolderPath $folder
+        if ($resolved.isSheetPackageMember) {
+            return (Resolve-SheetPackageIdForSheetGroup -Config $Config -FolderPath $folder `
+                -SheetStem $resolved.sheetStem -DocumentGuid $docGuid -DocumentName $docName)
+        }
+    }
+    return $null
 }
 
 function Write-QCJobTelemetry {
@@ -1796,7 +2201,9 @@ function Write-QCJobTelemetry {
         [Nullable[int]]$DurationMs,
         [string]$ErrorCode,
         [string]$ErrorMessage,
-        [string]$ResultData
+        [string]$ResultData,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; reason = 'database_disabled' }
@@ -1808,6 +2215,9 @@ function Write-QCJobTelemetry {
     $SourcePath = _QDB-NormalizeTelemetryPath -Path $SourcePath
     $telemetryJobType = Get-QCProcessingJobType -QueueJobType $JobType -Config $Config
     $resultPayload = _QDB-TruncateTelemetryPayload -Text $ResultData
+    $resolvedPackageId = _QDB-ResolveSheetPackageIdForJobTelemetry -Config $Config -JobType $telemetryJobType `
+        -DocumentGuid $DocumentGuid -SourcePath $SourcePath -SourceFolder $SourceFolder `
+        -ResultData $resultPayload -SheetPackageId $SheetPackageId
     $startedAt = $null
     if (-not [string]::IsNullOrWhiteSpace($StartedAtUtc)) {
         try { $startedAt = [DateTimeOffset]::Parse($StartedAtUtc) } catch { $startedAt = $null }
@@ -1824,11 +2234,12 @@ WHEN MATCHED THEN UPDATE SET
     duration_ms = @durationMs,
     error_code = @errorCode,
     error_message = @errorMessage,
-    result_data = @resultData
+    result_data = @resultData,
+    sheet_package_id = COALESCE(@sheetPackageId, tgt.sheet_package_id)
 WHEN NOT MATCHED THEN INSERT
-    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data)
+    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data, sheet_package_id)
 VALUES
-    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData);
+    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData, @sheetPackageId);
 "@
         $params = @{
             jobId         = $JobId
@@ -1844,6 +2255,7 @@ VALUES
             errorCode     = if ($ErrorCode)     { $ErrorCode }     else { $null }
             errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
             resultData    = if ($resultPayload) { $resultPayload } else { $null }
+            sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2017,7 +2429,9 @@ function Write-QCDocumentStateHistoryRow {
         [string]$FieldName = '',
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
-        [Nullable[long]]$SourceAuditId = $null
+        [Nullable[long]]$SourceAuditId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'STATE_HISTORY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
@@ -2029,9 +2443,9 @@ function Write-QCDocumentStateHistoryRow {
     try {
         $sql = @"
 INSERT INTO document_state_history
-    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user, changed_by_username)
+    (document_guid, document_name, folder_path, event_type, source_audit_id, old_value, new_value, field_name, changed_by_user, changed_by_username, sheet_package_id, transition_group_id)
 VALUES
-    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser, @changedByUsername)
+    (@documentGuid, @documentName, @folderPath, @eventType, @sourceAuditId, @oldValue, @newValue, @fieldName, @changedByUser, @changedByUsername, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             documentGuid  = $DocumentGuid
@@ -2044,6 +2458,8 @@ VALUES
             fieldName     = if ($FieldName) { $FieldName } else { $null }
             changedByUser = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
             changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2073,6 +2489,9 @@ function Write-QCWorkflowEventRow {
         [string]$ProcessorVersion = '',
         [string]$QcReviewType = '',
         [string]$PayloadJson = '',
+        [Nullable[int]]$TransitionEventId = $null,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null,
         [switch]$PlannedOnly
     )
 
@@ -2101,9 +2520,9 @@ function Write-QCWorkflowEventRow {
     try {
         $sql = @"
 INSERT INTO qc_workflow_events
-    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json)
+    (run_id, job_id, document_id, event_type, previous_pw_state, target_pw_state, decision_code, processor_version, qc_review_type, payload_json, transition_event_id, sheet_package_id, transition_group_id)
 VALUES
-    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload)
+    (@runId, @jobId, @documentId, @eventType, @prev, @target, @decisionCode, @procVer, @qcReviewType, @payload, @transitionEventId, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             runId = if ($null -ne $RunId -and $RunId -gt 0) { $RunId } else { [DBNull]::Value }
@@ -2116,6 +2535,9 @@ VALUES
             procVer = if ($ProcessorVersion) { $ProcessorVersion } else { [DBNull]::Value }
             qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
             payload = if ($PayloadJson) { $PayloadJson } else { [DBNull]::Value }
+            transitionEventId = if ($null -ne $TransitionEventId -and $TransitionEventId -gt 0) { [int]$TransitionEventId } else { [DBNull]::Value }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2149,7 +2571,9 @@ function Ensure-QCTransitionEvent {
         [string]$JobType = '',
         [Nullable[long]]$TriggerAuditId = $null,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
 
     if (-not (_QDB-IsEnabled -Config $Config)) {
@@ -2248,7 +2672,7 @@ ORDER BY id DESC
     return Write-QCTransitionEvent -Config $Config -DocumentGuid $DocumentGuid -TransitionType $TransitionType `
         -DocumentName $DocumentName -FolderPath $FolderPath -FromValue $FromValue -ToValue $ToValue `
         -JobId $JobId -JobType $JobType -TriggerAuditId $TriggerAuditId -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername
+        -ChangedByUsername $ChangedByUsername -SheetPackageId $SheetPackageId -TransitionGroupId $TransitionGroupId
 }
 
 function Test-QCTransitionEventNotificationSent {
@@ -2290,7 +2714,9 @@ function Write-QCTransitionEvent {
         [string]$JobType = '',
         [Nullable[long]]$TriggerAuditId = $null,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [Nullable[guid]]$SheetPackageId = $null,
+        [Nullable[guid]]$TransitionGroupId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'TRANSITION_EVENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; transitionId = $null }
@@ -2302,10 +2728,10 @@ function Write-QCTransitionEvent {
     try {
         $sql = @"
 INSERT INTO transition_events
-    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type, changed_by_user, changed_by_username)
+    (document_guid, document_name, folder_path, transition_type, from_value, to_value, trigger_audit_id, job_id, job_type, changed_by_user, changed_by_username, sheet_package_id, transition_group_id)
 OUTPUT INSERTED.id
 VALUES
-    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType, @changedByUser, @changedByUsername)
+    (@documentGuid, @documentName, @folderPath, @transitionType, @fromValue, @toValue, @triggerAuditId, @jobId, @jobType, @changedByUser, @changedByUsername, @sheetPackageId, @transitionGroupId)
 "@
         $params = @{
             documentGuid   = $DocumentGuid
@@ -2319,6 +2745,8 @@ VALUES
             jobType        = if ($JobType) { $JobType } else { $null }
             changedByUser  = if ($null -ne $ChangedByUser) { $ChangedByUser } else { $null }
             changedByUsername = if ($ChangedByUsername) { [string]$ChangedByUsername } else { $null }
+            sheetPackageId = if ($null -ne $SheetPackageId) { $SheetPackageId } else { [DBNull]::Value }
+            transitionGroupId = if ($null -ne $TransitionGroupId) { $TransitionGroupId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
         $transitionId = $null
@@ -2455,16 +2883,21 @@ function Write-QCNotificationTelemetry {
         [string]$Provider,
         [bool]$Success = $true,
         [string]$ErrorMessage,
-        [Nullable[int]]$TransitionId
+        [Nullable[int]]$TransitionId,
+        [Nullable[guid]]$SheetPackageId = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'NOTIFICATION_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     $FolderPath = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $resolvedPackageId = $SheetPackageId
+    if ($null -eq $resolvedPackageId -and -not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        $resolvedPackageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+    }
     try {
         $sql = @"
 INSERT INTO notification_log
-    (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id)
+    (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id, sheet_package_id)
 VALUES
-    (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId)
+    (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId, @sheetPackageId)
 "@
         $params = @{
             eventType    = $EventType
@@ -2478,6 +2911,7 @@ VALUES
             success      = if ($Success) { 1 } else { 0 }
             errorMessage = if ($ErrorMessage) { $ErrorMessage } else { $null }
             transitionId = if ($null -ne $TransitionId) { $TransitionId } else { $null }
+            sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
@@ -2489,6 +2923,643 @@ VALUES
         $msg=[string]$_.Exception.Message
         Write-QCJsonLog -Flush -Level 'Error' -Code 'NOTIFICATION_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_notification_log'; eventType=$EventType }
         return New-QCErrorResult -Code 'NOTIFICATION_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_notification_log'; eventType=$EventType }
+    }
+}
+
+function _QDB-GetSheetStemFromDocumentName {
+    param([Parameter(Mandatory)][string]$DocumentName)
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    if ([string]::IsNullOrWhiteSpace($stem)) { return '' }
+    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    return $stem
+}
+
+function _QDB-ResolveSheetDocumentRole {
+    param([string]$DocumentName)
+    $dn = [string]$DocumentName
+    if ($dn -match '(?i)-qc\.pdf$') { return 'qc_pdf' }
+    if ($dn -match '(?i)\.dgn$') { return 'dgn' }
+    if ($dn -match '(?i)\.pdf$') { return 'sheet_pdf' }
+    return 'other'
+}
+
+function _QDB-TryParseDocumentGuid {
+    param([string]$DocumentGuid)
+    $g = ([string]$DocumentGuid).Trim()
+    if ($g.Length -lt 5) { return $null }
+    try {
+        return [guid]::Parse($g)
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-SheetPackageFromDocument {
+    <#
+    .SYNOPSIS
+    Resolves sheet stem and document role from a ProjectWise document identity.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$FolderPath = ''
+    )
+    $stem = _QDB-GetSheetStemFromDocumentName -DocumentName $DocumentName
+    $role = _QDB-ResolveSheetDocumentRole -DocumentName $DocumentName
+    return @{
+        documentGuid = ([string]$DocumentGuid).Trim()
+        documentName = ([string]$DocumentName).Trim()
+        folderPath = ([string]$FolderPath).Trim()
+        sheetStem = $stem
+        documentRole = $role
+        isSheetPackageMember = ($role -in @('dgn', 'sheet_pdf', 'qc_pdf'))
+    }
+}
+
+function Get-SheetPackageIdForDocument {
+    <#
+    .SYNOPSIS
+    Returns sheet_package_id for a physical document GUID, if known.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return $null }
+    $parsed = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsed) { return $null }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sheet_package_id
+FROM sheet_documents
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $parsed }
+        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+            $val = $res.Data.table.Rows[0].sheet_package_id
+            if ($val -isnot [DBNull]) { return [guid]$val }
+        }
+    } catch { }
+    return $null
+}
+
+function Resolve-SheetPackageIdForSheetGroup {
+    <#
+    .SYNOPSIS
+    Resolves sheet_package_id for a logical sheet group from document identity or folder/stem.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) { return $SheetPackageId }
+    if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+        $pkg = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+        if ($pkg) { return $pkg }
+    }
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $stem = ([string]$SheetStem).Trim()
+    if ($folder -and $stem -and (_QDB-IsEnabled -Config $Config)) {
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sheet_package_id
+FROM sheet_packages
+WHERE folder_path = @folderPath AND sheet_stem = @sheetStem
+"@ -Parameters @{ folderPath = $folder; sheetStem = $stem }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $val = $res.Data.table.Rows[0].sheet_package_id
+                if ($val -isnot [DBNull]) { return [guid]$val }
+            }
+        } catch { }
+    }
+    if ($folder -and $DocumentName) {
+        $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $folder
+        if ($resolved.isSheetPackageMember) {
+            $ensure = Ensure-SheetPackage -Config $Config -FolderPath $folder -SheetStem $resolved.sheetStem `
+                -DocumentRole $resolved.documentRole -DocumentGuid $DocumentGuid -DocumentName $DocumentName
+            if ($ensure.IsSuccess -and $ensure.Data -and $ensure.Data.sheetPackageId) {
+                try { return [guid]$ensure.Data.sheetPackageId } catch { }
+            }
+        }
+    }
+    return $null
+}
+
+function Ensure-SheetPackage {
+    <#
+    .SYNOPSIS
+    Upserts one sheet_packages row by (folder_path, sheet_stem) and returns sheet_package_id.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SheetStem,
+        [Parameter(Mandatory)][string]$DocumentRole,
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$DesignerEmail,
+        [string]$ReviewerEmail,
+        [string]$CheckerEmail,
+        [string]$QcReviewType,
+        [string]$QcAssignedTo,
+        [string]$PwStateName,
+        [string]$QcCycleId,
+        [string]$QcCycleNumber
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'SHEET_PACKAGE_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $stem = ([string]$SheetStem).Trim()
+    $role = ([string]$DocumentRole).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($folder) -or [string]::IsNullOrWhiteSpace($stem)) {
+        return New-QCFailureResult -Code 'SHEET_PACKAGE_IDENTITY_MISSING' -Message 'folder_path and sheet_stem are required.' -Data @{}
+    }
+    if ($role -notin @('dgn', 'sheet_pdf', 'qc_pdf')) {
+        return New-QCSuccessResult -Code 'SHEET_PACKAGE_SKIPPED' -Message 'Document role is not a sheet package member.' -Data @{ written = $false; documentRole = $role }
+    }
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    try {
+        $sql = @"
+DECLARE @ids TABLE (sheet_package_id UNIQUEIDENTIFIER);
+MERGE sheet_packages AS tgt
+USING (SELECT @folderPath AS folder_path, @sheetStem AS sheet_stem) AS src
+    ON tgt.folder_path = src.folder_path AND tgt.sheet_stem = src.sheet_stem
+WHEN MATCHED THEN UPDATE SET
+    dgn_guid = CASE WHEN @documentRole = 'dgn' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.dgn_guid END,
+    dgn_name = CASE WHEN @documentRole = 'dgn' AND @docName IS NOT NULL THEN @docName ELSE tgt.dgn_name END,
+    sheet_pdf_guid = CASE WHEN @documentRole = 'sheet_pdf' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.sheet_pdf_guid END,
+    sheet_pdf_name = CASE WHEN @documentRole = 'sheet_pdf' AND @docName IS NOT NULL THEN @docName ELSE tgt.sheet_pdf_name END,
+    qc_pdf_guid = CASE WHEN @documentRole = 'qc_pdf' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.qc_pdf_guid END,
+    qc_pdf_name = CASE WHEN @documentRole = 'qc_pdf' AND @docName IS NOT NULL THEN @docName ELSE tgt.qc_pdf_name END,
+    designer_email = CASE WHEN @documentRole = 'dgn' THEN COALESCE(@designerEmail, tgt.designer_email)
+                          WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@designerEmail, tgt.designer_email)
+                          ELSE tgt.designer_email END,
+    reviewer_email = CASE WHEN @documentRole = 'dgn' THEN COALESCE(@reviewerEmail, tgt.reviewer_email)
+                          WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@reviewerEmail, tgt.reviewer_email)
+                          ELSE tgt.reviewer_email END,
+    checker_email = CASE WHEN @documentRole = 'dgn' THEN COALESCE(@checkerEmail, tgt.checker_email)
+                         WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@checkerEmail, tgt.checker_email)
+                         ELSE tgt.checker_email END,
+    qc_review_type = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcReviewType, tgt.qc_review_type) ELSE tgt.qc_review_type END,
+    qc_assigned_to = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcAssignedTo, tgt.qc_assigned_to) ELSE tgt.qc_assigned_to END,
+    pw_state_name = CASE WHEN @documentRole = 'qc_pdf' THEN COALESCE(@pwStateName, tgt.pw_state_name)
+                         WHEN tgt.qc_pdf_guid IS NULL THEN COALESCE(@pwStateName, tgt.pw_state_name)
+                         ELSE tgt.pw_state_name END,
+    qc_cycle_id = CASE WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@qcCycleId, tgt.qc_cycle_id) ELSE tgt.qc_cycle_id END,
+    qc_cycle_number = CASE WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@qcCycleNumber, tgt.qc_cycle_number) ELSE tgt.qc_cycle_number END,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT (
+    sheet_package_id, sheet_stem, folder_path,
+    dgn_guid, dgn_name, sheet_pdf_guid, sheet_pdf_name, qc_pdf_guid, qc_pdf_name,
+    designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, pw_state_name,
+    qc_cycle_id, qc_cycle_number
+) VALUES (
+    NEWID(), @sheetStem, @folderPath,
+    CASE WHEN @documentRole = 'dgn' THEN @docGuid END,
+    CASE WHEN @documentRole = 'dgn' THEN @docName END,
+    CASE WHEN @documentRole = 'sheet_pdf' THEN @docGuid END,
+    CASE WHEN @documentRole = 'sheet_pdf' THEN @docName END,
+    CASE WHEN @documentRole = 'qc_pdf' THEN @docGuid END,
+    CASE WHEN @documentRole = 'qc_pdf' THEN @docName END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @designerEmail END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @reviewerEmail END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @checkerEmail END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcReviewType END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcAssignedTo END,
+    @pwStateName,
+    CASE WHEN @documentRole = 'sheet_pdf' THEN @qcCycleId END,
+    CASE WHEN @documentRole = 'sheet_pdf' THEN @qcCycleNumber END
+)
+OUTPUT inserted.sheet_package_id INTO @ids;
+SELECT TOP 1 sheet_package_id FROM @ids;
+"@
+        $params = @{
+            folderPath = $folder
+            sheetStem = $stem
+            documentRole = $role
+            docGuid = if ($parsedGuid) { $parsedGuid } else { [DBNull]::Value }
+            docName = if ($DocumentName) { [string]$DocumentName } else { [DBNull]::Value }
+            designerEmail = if ($DesignerEmail) { $DesignerEmail } else { [DBNull]::Value }
+            reviewerEmail = if ($ReviewerEmail) { $ReviewerEmail } else { [DBNull]::Value }
+            checkerEmail = if ($CheckerEmail) { $CheckerEmail } else { [DBNull]::Value }
+            qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
+            qcAssignedTo = if ($QcAssignedTo) { $QcAssignedTo } else { [DBNull]::Value }
+            pwStateName = if ($PwStateName) { $PwStateName } else { [DBNull]::Value }
+            qcCycleId = if ($QcCycleId) { $QcCycleId } else { [DBNull]::Value }
+            qcCycleNumber = if ($QcCycleNumber) { $QcCycleNumber } else { [DBNull]::Value }
+        }
+        $res = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
+        $scalarValue = if ($res.Data -and $res.Data.ContainsKey('value')) { $res.Data.value } else { $null }
+        if (-not $res.IsSuccess -or $null -eq $scalarValue -or $scalarValue -is [DBNull]) {
+            return New-QCErrorResult -Code 'SHEET_PACKAGE_WRITE_FAILED' -Message $res.Message -Data @{ operation = 'ensure_sheet_package' }
+        }
+        $packageId = [guid][string]$scalarValue
+        return New-QCSuccessResult -Code 'SHEET_PACKAGE_WRITTEN' -Message 'Sheet package upserted.' -Data @{
+            written = $true
+            sheetPackageId = $packageId
+            sheetStem = $stem
+            documentRole = $role
+        }
+    } catch {
+        return New-QCErrorResult -Code 'SHEET_PACKAGE_EXCEPTION' -Message $_.Exception.Message -Data @{ operation = 'ensure_sheet_package' }
+    }
+}
+
+function Write-SheetDocument {
+    <#
+    .SYNOPSIS
+    Upserts one sheet_documents row for a physical ProjectWise document.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][guid]$SheetPackageId,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$DocumentRole,
+        [string]$PwStateName,
+        [string]$Extension,
+        [string]$SourceType,
+        [string]$FileModifiedAt
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'SHEET_DOCUMENT_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsedGuid) {
+        return New-QCFailureResult -Code 'SHEET_DOCUMENT_GUID_INVALID' -Message 'document_guid is not a valid GUID.' -Data @{ documentGuid = $DocumentGuid }
+    }
+    $role = ([string]$DocumentRole).Trim().ToLowerInvariant()
+    if ($role -notin @('dgn', 'sheet_pdf', 'qc_pdf')) {
+        return New-QCFailureResult -Code 'SHEET_DOCUMENT_ROLE_INVALID' -Message 'document_role must be dgn, sheet_pdf, or qc_pdf.' -Data @{ documentRole = $role }
+    }
+    try {
+        $sql = @"
+MERGE sheet_documents AS tgt
+USING (SELECT @docGuid AS document_guid) AS src ON tgt.document_guid = src.document_guid
+WHEN MATCHED THEN UPDATE SET
+    sheet_package_id = @sheetPackageId,
+    document_name = @docName,
+    document_role = @documentRole,
+    pw_state_name = COALESCE(@pwStateName, tgt.pw_state_name),
+    extension = COALESCE(@extension, tgt.extension),
+    source_type = COALESCE(@sourceType, tgt.source_type),
+    last_seen_at = SYSDATETIMEOFFSET(),
+    file_modified_at = COALESCE(@fileModifiedAt, tgt.file_modified_at)
+WHEN NOT MATCHED THEN INSERT
+    (document_guid, sheet_package_id, document_name, document_role, pw_state_name, extension, source_type, last_seen_at, file_modified_at)
+VALUES
+    (@docGuid, @sheetPackageId, @docName, @documentRole, @pwStateName, @extension, @sourceType, SYSDATETIMEOFFSET(), @fileModifiedAt);
+"@
+        $params = @{
+            docGuid = $parsedGuid
+            sheetPackageId = $SheetPackageId
+            docName = [string]$DocumentName
+            documentRole = $role
+            pwStateName = if ($PwStateName) { $PwStateName } else { [DBNull]::Value }
+            extension = if ($Extension) { $Extension } else { [DBNull]::Value }
+            sourceType = if ($SourceType) { $SourceType } else { [DBNull]::Value }
+            fileModifiedAt = if ($FileModifiedAt) { $FileModifiedAt } else { [DBNull]::Value }
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'SHEET_DOCUMENT_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation = 'write_sheet_document' }
+        }
+        return New-QCSuccessResult -Code 'SHEET_DOCUMENT_WRITTEN' -Message 'Sheet document upserted.' -Data @{
+            written = $true
+            sheetPackageId = $SheetPackageId
+            documentGuid = $parsedGuid
+            documentRole = $role
+        }
+    } catch {
+        return New-QCErrorResult -Code 'SHEET_DOCUMENT_EXCEPTION' -Message $_.Exception.Message -Data @{ operation = 'write_sheet_document' }
+    }
+}
+
+function _QDB-LinkSheetIndexPackageId {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid,
+        [guid]$SheetPackageId
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return }
+    $g = ([string]$DocumentGuid).Trim()
+    if ($g.Length -lt 5) { return }
+    try {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET sheet_package_id = @sheetPackageId,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{
+            docGuid = $g
+            sheetPackageId = $SheetPackageId
+        })
+    } catch { }
+}
+
+function _QDB-SyncSheetPackageDualWrite {
+    <#
+    .SYNOPSIS
+    Phase 1 dual-write: upsert sheet_packages/sheet_documents and link sheet_index.sheet_package_id.
+    #>
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$Extension = '',
+        [string]$SourceType = '',
+        [string]$DesignerEmail = '',
+        [string]$ReviewerEmail = '',
+        [string]$CheckerEmail = '',
+        [string]$QcReviewType = '',
+        [string]$QcAssignedTo = '',
+        [string]$PwStateName = '',
+        [string]$FileModifiedAt = '',
+        [string]$QcCycleId = '',
+        [string]$QcCycleNumber = ''
+    )
+    $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath
+    if (-not $resolved.isSheetPackageMember) { return $null }
+    $pkgRes = Ensure-SheetPackage -Config $Config `
+        -FolderPath $resolved.folderPath `
+        -SheetStem $resolved.sheetStem `
+        -DocumentRole $resolved.documentRole `
+        -DocumentGuid $resolved.documentGuid `
+        -DocumentName $resolved.documentName `
+        -DesignerEmail $DesignerEmail `
+        -ReviewerEmail $ReviewerEmail `
+        -CheckerEmail $CheckerEmail `
+        -QcReviewType $QcReviewType `
+        -QcAssignedTo $QcAssignedTo `
+        -PwStateName $PwStateName `
+        -QcCycleId $QcCycleId `
+        -QcCycleNumber $QcCycleNumber
+    if (-not $pkgRes.IsSuccess) { return $null }
+    $packageId = $pkgRes.Data.sheetPackageId
+    if (-not $packageId) { return $null }
+    [void](Write-SheetDocument -Config $Config -SheetPackageId $packageId `
+        -DocumentGuid $resolved.documentGuid -DocumentName $resolved.documentName `
+        -DocumentRole $resolved.documentRole -PwStateName $PwStateName `
+        -Extension $Extension -SourceType $SourceType -FileModifiedAt $FileModifiedAt)
+    _QDB-LinkSheetIndexPackageId -Config $Config -DocumentGuid $resolved.documentGuid -SheetPackageId $packageId
+    return $packageId
+}
+
+function _QDB-NewSheetPackageBackfillConflict {
+    param(
+        [string]$ConflictType,
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [string]$DocumentRole = '',
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$Details = ''
+    )
+    return [ordered]@{
+        conflictType = $ConflictType
+        folderPath = $FolderPath
+        sheetStem = $SheetStem
+        documentRole = $DocumentRole
+        documentGuid = $DocumentGuid
+        documentName = $DocumentName
+        details = $Details
+    }
+}
+
+function _QDB-NewDeterministicSheetPackageId {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SheetStem
+    )
+    $key = ([string]$FolderPath).Trim().ToLowerInvariant() + '|' + ([string]$SheetStem).Trim().ToLowerInvariant()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes('sheetpkg:' + $key)
+    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    $guidBytes = New-Object byte[] 16
+    [Array]::Copy($hash, $guidBytes, 16)
+    $guidBytes[6] = ($guidBytes[6] -band 0x0F) -bor 0x40
+    $guidBytes[8] = ($guidBytes[8] -band 0x3F) -bor 0x80
+    return [guid]$guidBytes
+}
+
+function Build-SheetPackageBackfillPlan {
+    <#
+    .SYNOPSIS
+    Builds an idempotent sheet package backfill plan from legacy sheet_index-shaped rows.
+    Mirrors scripts/sql/backfill-sheet-packages.sql for offline validation and tests.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][array]$SheetIndexRows
+    )
+
+    $classified = [System.Collections.Generic.List[object]]::new()
+    $conflicts = [System.Collections.Generic.List[object]]::new()
+    $seenDocumentGuids = @{}
+
+    foreach ($row in @($SheetIndexRows)) {
+        $fp = if ($row.folderPath) { [string]$row.folderPath } elseif ($row.folder_path) { [string]$row.folder_path } else { '' }
+        $dn = if ($row.documentName) { [string]$row.documentName } elseif ($row.document_name) { [string]$row.document_name } else { '' }
+        $dg = if ($row.documentGuid) { [string]$row.documentGuid } elseif ($row.document_guid) { [string]$row.document_guid } else { '' }
+
+        if ([string]::IsNullOrWhiteSpace($fp)) {
+            [void]$conflicts.Add((_QDB-NewSheetPackageBackfillConflict -ConflictType 'missing_folder_path' -DocumentGuid $dg -DocumentName $dn))
+            continue
+        }
+        if (-not (Test-QCSheetIndexFolderPath -FolderPath $fp)) { continue }
+        if ([string]::IsNullOrWhiteSpace($dn)) {
+            [void]$conflicts.Add((_QDB-NewSheetPackageBackfillConflict -ConflictType 'missing_document_name' -FolderPath $fp -DocumentGuid $dg))
+            continue
+        }
+
+        $parsed = _QDB-TryParseDocumentGuid -DocumentGuid $dg
+        if (-not $parsed) {
+            [void]$conflicts.Add((_QDB-NewSheetPackageBackfillConflict -ConflictType 'invalid_guid' -FolderPath $fp -DocumentName $dn -DocumentGuid $dg))
+            continue
+        }
+
+        $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $dg -DocumentName $dn -FolderPath $fp
+        if (-not $resolved.isSheetPackageMember) { continue }
+
+        $guidKey = $parsed.ToString().ToLowerInvariant()
+        if ($seenDocumentGuids.ContainsKey($guidKey)) { continue }
+        $seenDocumentGuids[$guidKey] = $true
+
+        $classified.Add([pscustomobject]@{
+            folderPath = $fp.Trim()
+            sheetStem = $resolved.sheetStem
+            documentRole = $resolved.documentRole
+            documentGuid = $parsed
+            documentName = $dn.Trim()
+            extension = if ($row.extension) { [string]$row.extension } else { $null }
+            sourceType = if ($row.sourceType) { [string]$row.sourceType } elseif ($row.source_type) { [string]$row.source_type } else { $null }
+            pwStateName = if ($row.pwStateName) { [string]$row.pwStateName } elseif ($row.pw_state_name) { [string]$row.pw_state_name } else { $null }
+            designerEmail = if ($row.designerEmail) { [string]$row.designerEmail } elseif ($row.designer_email) { [string]$row.designer_email } else { $null }
+            reviewerEmail = if ($row.reviewerEmail) { [string]$row.reviewerEmail } elseif ($row.reviewer_email) { [string]$row.reviewer_email } else { $null }
+            checkerEmail = if ($row.checkerEmail) { [string]$row.checkerEmail } elseif ($row.checker_email) { [string]$row.checker_email } else { $null }
+            qcReviewType = if ($row.qcReviewType) { [string]$row.qcReviewType } elseif ($row.qc_review_type) { [string]$row.qc_review_type } else { $null }
+            qcAssignedTo = if ($row.qcAssignedTo) { [string]$row.qcAssignedTo } elseif ($row.qc_assigned_to) { [string]$row.qc_assigned_to } else { $null }
+            qcCycleId = if ($row.qcCycleId) { [string]$row.qcCycleId } elseif ($row.qc_cycle_id) { [string]$row.qc_cycle_id } else { $null }
+            qcCycleNumber = if ($row.qcCycleNumber) { [string]$row.qcCycleNumber } elseif ($row.qc_cycle_number) { [string]$row.qc_cycle_number } else { $null }
+            fileModifiedAt = if ($row.fileModifiedAt) { [string]$row.fileModifiedAt } elseif ($row.file_modified_at) { [string]$row.file_modified_at } else { $null }
+            productionQcCompletedCount = if ($null -ne $row.productionQcCompletedCount) { [int]$row.productionQcCompletedCount } elseif ($null -ne $row.production_qc_completed_count) { [int]$row.production_qc_completed_count } else { 0 }
+            productionQcLastCompletedAt = if ($row.productionQcLastCompletedAt) { $row.productionQcLastCompletedAt } elseif ($row.production_qc_last_completed_at) { $row.production_qc_last_completed_at } else { $null }
+            peerReviewCompletedCount = if ($null -ne $row.peerReviewCompletedCount) { [int]$row.peerReviewCompletedCount } elseif ($null -ne $row.peer_review_completed_count) { [int]$row.peer_review_completed_count } else { 0 }
+            peerReviewLastCompletedAt = if ($row.peerReviewLastCompletedAt) { $row.peerReviewLastCompletedAt } elseif ($row.peer_review_last_completed_at) { $row.peer_review_last_completed_at } else { $null }
+            independentCheckCompletedCount = if ($null -ne $row.independentCheckCompletedCount) { [int]$row.independentCheckCompletedCount } elseif ($null -ne $row.independent_check_completed_count) { [int]$row.independent_check_completed_count } else { 0 }
+            independentCheckLastCompletedAt = if ($row.independentCheckLastCompletedAt) { $row.independentCheckLastCompletedAt } elseif ($row.independent_check_last_completed_at) { $row.independent_check_last_completed_at } else { $null }
+            qcPdfGuid = if ($row.qcPdfGuid) { [string]$row.qcPdfGuid } elseif ($row.qc_pdf_guid) { [string]$row.qc_pdf_guid } else { $null }
+            qcPdfName = if ($row.qcPdfName) { [string]$row.qcPdfName } elseif ($row.qc_pdf_name) { [string]$row.qc_pdf_name } else { $null }
+            sourceKind = 'sheet_index_row'
+        }) | Out-Null
+    }
+
+    foreach ($item in @($classified)) {
+        $linkedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $item.qcPdfGuid
+        if (-not $linkedGuid) { continue }
+        if ([string]::IsNullOrWhiteSpace($item.qcPdfName)) { continue }
+        $guidKey = $linkedGuid.ToString().ToLowerInvariant()
+        if ($seenDocumentGuids.ContainsKey($guidKey)) { continue }
+        $seenDocumentGuids[$guidKey] = $true
+        $classified.Add([pscustomobject]@{
+            folderPath = $item.folderPath
+            sheetStem = $item.sheetStem
+            documentRole = 'qc_pdf'
+            documentGuid = $linkedGuid
+            documentName = ([string]$item.qcPdfName).Trim()
+            extension = '.pdf'
+            sourceType = $null
+            pwStateName = $null
+            designerEmail = $null
+            reviewerEmail = $null
+            checkerEmail = $null
+            qcReviewType = $null
+            qcAssignedTo = $null
+            qcCycleId = $null
+            qcCycleNumber = $null
+            fileModifiedAt = $null
+            productionQcCompletedCount = 0
+            productionQcLastCompletedAt = $null
+            peerReviewCompletedCount = 0
+            peerReviewLastCompletedAt = $null
+            independentCheckCompletedCount = 0
+            independentCheckLastCompletedAt = $null
+            qcPdfGuid = $null
+            qcPdfName = $null
+            sourceKind = 'linked_qc_pdf'
+        }) | Out-Null
+    }
+
+    $packageGroups = @($classified | Group-Object { $_.folderPath.ToLowerInvariant() + '|' + $_.sheetStem.ToLowerInvariant() })
+    $duplicateRoleKeys = @{}
+    foreach ($group in $packageGroups) {
+        foreach ($roleGroup in @($group.Group | Group-Object documentRole)) {
+            if ($roleGroup.Count -gt 1) {
+                $roleKey = $group.Name + '|' + $roleGroup.Name
+                $duplicateRoleKeys[$roleKey] = $true
+                foreach ($member in @($roleGroup.Group)) {
+                    [void]$conflicts.Add((_QDB-NewSheetPackageBackfillConflict `
+                        -ConflictType 'duplicate_role' `
+                        -FolderPath $member.folderPath `
+                        -SheetStem $member.sheetStem `
+                        -DocumentRole $member.documentRole `
+                        -DocumentGuid $member.documentGuid.ToString() `
+                        -DocumentName $member.documentName `
+                        -Details ("{0} documents compete for role {1}" -f $roleGroup.Count, $roleGroup.Name)))
+                }
+            }
+        }
+    }
+
+    $packages = [System.Collections.Generic.List[object]]::new()
+    $documents = [System.Collections.Generic.List[object]]::new()
+    $indexLinks = @{}
+
+    foreach ($group in $packageGroups) {
+        $sample = $group.Group[0]
+        $packageId = _QDB-NewDeterministicSheetPackageId -FolderPath $sample.folderPath -SheetStem $sample.sheetStem
+        $pkgKey = $group.Name
+
+        $pickRole = {
+            param([string]$Role)
+            $roleKey = $pkgKey + '|' + $Role
+            if ($duplicateRoleKeys.ContainsKey($roleKey)) { return $null }
+            $members = @($group.Group | Where-Object { $_.documentRole -eq $Role })
+            if ($members.Count -eq 1) { return $members[0] }
+            return $null
+        }
+
+        $dgn = & $pickRole 'dgn'
+        $pdf = & $pickRole 'sheet_pdf'
+        $qc = & $pickRole 'qc_pdf'
+
+        $pwStateName = $null
+        if ($qc) { $pwStateName = $qc.pwStateName }
+        elseif (-not $qc) {
+            if ($pdf) { $pwStateName = $pdf.pwStateName }
+            elseif ($dgn) { $pwStateName = $dgn.pwStateName }
+        }
+
+        $packages.Add([pscustomobject]@{
+            sheetPackageId = $packageId
+            folderPath = $sample.folderPath
+            sheetStem = $sample.sheetStem
+            dgnGuid = if ($dgn) { $dgn.documentGuid } else { $null }
+            dgnName = if ($dgn) { $dgn.documentName } else { $null }
+            sheetPdfGuid = if ($pdf) { $pdf.documentGuid } else { $null }
+            sheetPdfName = if ($pdf) { $pdf.documentName } else { $null }
+            qcPdfGuid = if ($qc) { $qc.documentGuid } else { $null }
+            qcPdfName = if ($qc) { $qc.documentName } else { $null }
+            pwStateName = $pwStateName
+            designerEmail = if ($dgn) { $dgn.designerEmail } elseif ($pdf) { $pdf.designerEmail } else { $null }
+            reviewerEmail = if ($dgn) { $dgn.reviewerEmail } elseif ($pdf) { $pdf.reviewerEmail } else { $null }
+            checkerEmail = if ($dgn) { $dgn.checkerEmail } elseif ($pdf) { $pdf.checkerEmail } else { $null }
+            qcReviewType = if ($pdf) { $pdf.qcReviewType } elseif ($dgn) { $dgn.qcReviewType } else { $null }
+            qcAssignedTo = if ($pdf) { $pdf.qcAssignedTo } elseif ($dgn) { $dgn.qcAssignedTo } else { $null }
+            qcCycleId = if ($pdf) { $pdf.qcCycleId } else { $null }
+            qcCycleNumber = if ($pdf) { $pdf.qcCycleNumber } else { $null }
+            productionQcCompletedCount = if ($dgn) { $dgn.productionQcCompletedCount } else { 0 }
+            productionQcLastCompletedAt = if ($dgn) { $dgn.productionQcLastCompletedAt } else { $null }
+            peerReviewCompletedCount = if ($dgn) { $dgn.peerReviewCompletedCount } else { 0 }
+            peerReviewLastCompletedAt = if ($dgn) { $dgn.peerReviewLastCompletedAt } else { $null }
+            independentCheckCompletedCount = if ($dgn) { $dgn.independentCheckCompletedCount } else { 0 }
+            independentCheckLastCompletedAt = if ($dgn) { $dgn.independentCheckLastCompletedAt } else { $null }
+        }) | Out-Null
+
+        foreach ($member in @($group.Group)) {
+            $roleKey = $pkgKey + '|' + $member.documentRole
+            if ($duplicateRoleKeys.ContainsKey($roleKey)) { continue }
+            $documents.Add([pscustomobject]@{
+                sheetPackageId = $packageId
+                documentGuid = $member.documentGuid
+                documentName = $member.documentName
+                documentRole = $member.documentRole
+                pwStateName = $member.pwStateName
+                extension = $member.extension
+                sourceType = $member.sourceType
+                fileModifiedAt = $member.fileModifiedAt
+            }) | Out-Null
+            $indexLinks[$member.documentGuid.ToString().ToLowerInvariant()] = $packageId
+        }
+    }
+
+    return [pscustomobject]@{
+        packages = @($packages)
+        documents = @($documents)
+        conflicts = @($conflicts)
+        indexLinks = $indexLinks
+        packageCount = $packages.Count
+        documentCount = $documents.Count
+        conflictCount = $conflicts.Count
     }
 }
 
@@ -2592,7 +3663,16 @@ VALUES
             Write-QCJsonLog -Flush -Level 'Error' -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='merge_sheet_index'; documentGuid=$DocumentGuid }
             return New-QCErrorResult -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='merge_sheet_index'; documentGuid=$DocumentGuid }
         }
-        return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index upserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+        $packageId = _QDB-SyncSheetPackageDualWrite -Config $Config `
+            -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+            -Extension $Extension -SourceType $SourceType `
+            -DesignerEmail $DesignerEmail -ReviewerEmail $ReviewerEmail -CheckerEmail $CheckerEmail `
+            -QcReviewType $QcReviewType -QcAssignedTo $QcAssignedTo -PwStateName $PwStateName -FileModifiedAt $FileModifiedAt
+        return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index upserted.' -Data @{
+            written = $true
+            rowsAffected = $dbRes.Data.rowsAffected
+            sheetPackageId = if ($packageId) { $packageId } else { $null }
+        }
     } catch {
         $msg=[string]$_.Exception.Message
         Write-QCJsonLog -Flush -Level 'Error' -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation='merge_sheet_index'; documentGuid=$DocumentGuid }
@@ -2628,11 +3708,183 @@ WHERE document_guid = @docGuid
             Write-QCJsonLog -Flush -Level 'Error' -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='update_sheet_index_pw_state'; documentGuid=$DocumentGuid }
             return New-QCErrorResult -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='update_sheet_index_pw_state'; documentGuid=$DocumentGuid }
         }
+        try {
+            $rowRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name, folder_path, extension, source_type
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+            if ($rowRes.IsSuccess -and $rowRes.Data.table -and $rowRes.Data.table.Rows.Count -gt 0) {
+                $row = $rowRes.Data.table.Rows[0]
+                $dn = if ($row.document_name -is [DBNull]) { '' } else { [string]$row.document_name }
+                $fp = if ($row.folder_path -is [DBNull]) { '' } else { [string]$row.folder_path }
+                $ext = if ($row.extension -is [DBNull]) { '' } else { [string]$row.extension }
+                $st = if ($row.source_type -is [DBNull]) { '' } else { [string]$row.source_type }
+                [void](_QDB-SyncSheetPackageDualWrite -Config $Config -DocumentGuid $DocumentGuid -DocumentName $dn -FolderPath $fp -Extension $ext -SourceType $st -PwStateName $PwStateName)
+            }
+        } catch { }
         return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index state updated.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
     } catch {
         $msg=[string]$_.Exception.Message
         Write-QCJsonLog -Flush -Level 'Error' -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation='update_sheet_index_pw_state'; documentGuid=$DocumentGuid }
         return New-QCErrorResult -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation='update_sheet_index_pw_state'; documentGuid=$DocumentGuid }
+    }
+}
+
+function Get-QCSheetIndexCycle {
+    <#
+    Returns the active QC cycle for a sheet package (stored on the sheet PDF row).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = ''
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return $null
+    }
+
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_cycle_id, qc_cycle_number
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $row = $res.Data.table.Rows[0]
+                $cycleId = if ($row.qc_cycle_id -is [DBNull]) { '' } else { [string]$row.qc_cycle_id }
+                $cycleNumber = $null
+                if ($row.qc_cycle_number -isnot [DBNull]) {
+                    $cycleNumber = [string]$row.qc_cycle_number
+                    if (-not [string]::IsNullOrWhiteSpace($cycleNumber)) { $cycleNumber = $cycleNumber.Trim() } else { $cycleNumber = $null }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($cycleId) -or -not [string]::IsNullOrWhiteSpace($cycleNumber)) {
+                    return @{ cycleId = $cycleId.Trim(); cycleNumber = $cycleNumber }
+                }
+            }
+        }
+
+        $stem = ([string]$SheetStem).Trim()
+        $folder = ([string]$FolderPath).Trim()
+        if ($stem.Length -gt 0 -and $folder.Length -gt 0) {
+            $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_cycle_id, qc_cycle_number
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@pdfName)
+"@ -Parameters @{ folderPath = $folder; pdfName = $pdfName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $row2 = $res2.Data.table.Rows[0]
+                $cycleId2 = if ($row2.qc_cycle_id -is [DBNull]) { '' } else { [string]$row2.qc_cycle_id }
+                $cycleNumber2 = $null
+                if ($row2.qc_cycle_number -isnot [DBNull]) {
+                    $cycleNumber2 = [string]$row2.qc_cycle_number
+                    if (-not [string]::IsNullOrWhiteSpace($cycleNumber2)) { $cycleNumber2 = $cycleNumber2.Trim() } else { $cycleNumber2 = $null }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($cycleId2) -or -not [string]::IsNullOrWhiteSpace($cycleNumber2)) {
+                    return @{ cycleId = $cycleId2.Trim(); cycleNumber = $cycleNumber2 }
+                }
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Update-QCSheetIndexCycle {
+    <#
+    Persists QC cycle identity on the sheet PDF row for notification dedupe and reporting.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$CycleId,
+        [Parameter(Mandatory)][string]$CycleNumber,
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SheetStem = ''
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    if ([string]::IsNullOrWhiteSpace($CycleId)) {
+        return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_ID_MISSING' -Message 'CycleId is required.' -Data @{}
+    }
+    $cycleNumberText = [string]$CycleNumber
+    if ([string]::IsNullOrWhiteSpace($cycleNumberText)) {
+        return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_NUMBER_MISSING' -Message 'CycleNumber is required.' -Data @{}
+    }
+
+    try {
+        $params = @{
+            cycleId = [string]$CycleId.Trim()
+            cycleNumber = $cycleNumberText.Trim()
+        }
+        $sql = $null
+        if (-not [string]::IsNullOrWhiteSpace($DocumentGuid)) {
+            $sql = @"
+UPDATE sheet_index
+SET qc_cycle_id = @cycleId,
+    qc_cycle_number = @cycleNumber,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@
+            $params['docGuid'] = [string]$DocumentGuid.Trim()
+        } else {
+            $stem = ([string]$SheetStem).Trim()
+            $folder = ([string]$FolderPath).Trim()
+            if ($stem.Length -eq 0 -or $folder.Length -eq 0) {
+                return New-QCFailureResult -Code 'SHEET_INDEX_CYCLE_TARGET_MISSING' -Message 'DocumentGuid or folderPath+sheetStem is required.' -Data @{}
+            }
+            $pdfName = if ($stem -match '(?i)\.pdf$') { $stem } else { $stem + '.pdf' }
+            $sql = @"
+UPDATE sheet_index
+SET qc_cycle_id = @cycleId,
+    qc_cycle_number = @cycleNumber,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@pdfName)
+"@
+            $params['folderPath'] = $folder
+            $params['pdfName'] = $pdfName
+        }
+
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation = 'update_sheet_index_cycle' }
+        }
+        try {
+            $lookupSql = if ($params.ContainsKey('docGuid')) {
+                "SELECT TOP 1 document_guid, document_name, folder_path, extension, source_type FROM sheet_index WHERE document_guid = @docGuid"
+            } else {
+                "SELECT TOP 1 document_guid, document_name, folder_path, extension, source_type FROM sheet_index WHERE folder_path = @folderPath AND LOWER(document_name) = LOWER(@pdfName)"
+            }
+            $rowRes = Invoke-QCDatabaseQuery -Config $Config -Sql $lookupSql -Parameters $params
+            if ($rowRes.IsSuccess -and $rowRes.Data.table -and $rowRes.Data.table.Rows.Count -gt 0) {
+                $row = $rowRes.Data.table.Rows[0]
+                [void](_QDB-SyncSheetPackageDualWrite -Config $Config `
+                    -DocumentGuid ([string]$row.document_guid) `
+                    -DocumentName ([string]$row.document_name) `
+                    -FolderPath ([string]$row.folder_path) `
+                    -Extension $(if ($row.extension -is [DBNull]) { '' } else { [string]$row.extension }) `
+                    -SourceType $(if ($row.source_type -is [DBNull]) { '' } else { [string]$row.source_type }) `
+                    -QcCycleId $params.cycleId -QcCycleNumber $params.cycleNumber)
+            }
+        } catch { }
+        return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index cycle updated.' -Data @{
+            written = $true
+            rowsAffected = $dbRes.Data.rowsAffected
+            cycleId = $params.cycleId
+            cycleNumber = $params.cycleNumber
+        }
+    } catch {
+        $msg = [string]$_.Exception.Message
+        return New-QCErrorResult -Code 'SHEET_INDEX_EXCEPTION' -Message $msg -Data @{ operation = 'update_sheet_index_cycle' }
     }
 }
 
@@ -2668,6 +3920,43 @@ WHERE document_guid = @sourceDocGuid
             Write-QCJsonLog -Flush -Level 'Error' -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='update_sheet_index_qc_pdf'; sourceDocumentGuid=$SourceDocumentGuid }
             return New-QCErrorResult -Code 'SHEET_INDEX_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='update_sheet_index_qc_pdf'; sourceDocumentGuid=$SourceDocumentGuid }
         }
+        try {
+            $packageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $SourceDocumentGuid
+            if (-not $packageId) {
+                $srcRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name, folder_path, extension, source_type
+FROM sheet_index
+WHERE document_guid = @sourceDocGuid
+"@ -Parameters @{ sourceDocGuid = $SourceDocumentGuid }
+                if ($srcRes.IsSuccess -and $srcRes.Data.table -and $srcRes.Data.table.Rows.Count -gt 0) {
+                    $srcRow = $srcRes.Data.table.Rows[0]
+                    $packageId = _QDB-SyncSheetPackageDualWrite -Config $Config `
+                        -DocumentGuid $SourceDocumentGuid `
+                        -DocumentName ([string]$srcRow.document_name) `
+                        -FolderPath ([string]$srcRow.folder_path) `
+                        -Extension $(if ($srcRow.extension -is [DBNull]) { '' } else { [string]$srcRow.extension }) `
+                        -SourceType $(if ($srcRow.source_type -is [DBNull]) { '' } else { [string]$srcRow.source_type })
+                }
+            }
+            if ($packageId -and -not [string]::IsNullOrWhiteSpace($QcPdfGuid) -and -not [string]::IsNullOrWhiteSpace($QcPdfName)) {
+                $qcParsed = _QDB-TryParseDocumentGuid -DocumentGuid $QcPdfGuid
+                if ($qcParsed) {
+                    [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_packages
+SET qc_pdf_guid = @qcPdfGuid,
+    qc_pdf_name = @qcPdfName,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE sheet_package_id = @sheetPackageId
+"@ -Parameters @{
+                        qcPdfGuid = $qcParsed
+                        qcPdfName = $QcPdfName
+                        sheetPackageId = $packageId
+                    })
+                    [void](Write-SheetDocument -Config $Config -SheetPackageId $packageId `
+                        -DocumentGuid $QcPdfGuid -DocumentName $QcPdfName -DocumentRole 'qc_pdf')
+                }
+            }
+        } catch { }
         return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index QC PDF link updated.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
     } catch {
         $msg=[string]$_.Exception.Message
@@ -2782,6 +4071,25 @@ VALUES
     (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.checker_email, src.qc_review_type, src.qc_assigned_to, src.qc_status, src.pw_state_name);
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $mergeSql -Parameters @{} -CommandTimeout 120)
+            foreach ($row in $Rows) {
+                $ext = $null
+                if ($row.documentName) {
+                    $extPart = [System.IO.Path]::GetExtension([string]$row.documentName)
+                    if ($extPart) { $ext = $extPart.ToLowerInvariant() }
+                }
+                [void](_QDB-SyncSheetPackageDualWrite -Config $Config `
+                    -DocumentGuid ([string]$row.documentGuid) `
+                    -DocumentName ([string]$row.documentName) `
+                    -FolderPath ([string]$row.folderPath) `
+                    -Extension $ext `
+                    -SourceType $(if ($row.sourceType) { [string]$row.sourceType } else { '' }) `
+                    -DesignerEmail $(if ($row.designerEmail) { [string]$row.designerEmail } else { '' }) `
+                    -ReviewerEmail $(if ($row.reviewerEmail) { [string]$row.reviewerEmail } else { '' }) `
+                    -CheckerEmail $(if ($row.checkerEmail) { [string]$row.checkerEmail } else { '' }) `
+                    -QcReviewType $(if ($row.qcReviewType) { [string]$row.qcReviewType } else { '' }) `
+                    -QcAssignedTo $(if ($row.qcAssignedTo) { [string]$row.qcAssignedTo } else { '' }) `
+                    -PwStateName $(if ($row.pwStateName) { [string]$row.pwStateName } else { '' }))
+            }
         } finally {
             try { $sess.Dispose.Invoke() } catch { }
         }
@@ -2818,6 +4126,123 @@ WHERE NULLIF(LTRIM(RTRIM(document_guid)), '') IS NOT NULL
     return New-QCSuccessResult -Code 'DOC_FOLDER_CACHE_OK' -Message "Loaded $($cache.Count) cached document folders." -Data @{ cache = $cache; count = $cache.Count }
 }
 
+function Get-QCNewerSheetDocumentStateAuditEvent {
+    <#
+    .SYNOPSIS
+    Returns the earliest DOCUMENT_STATE audit_events row newer than the current event for the same sheet group.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [array]$MemberDocumentNames = @(),
+        [array]$MemberDocumentGuids = @(),
+        [Nullable[long]]$CurrentAuditEventId = $null,
+        [string]$CurrentAuditEventAt = ''
+    )
+
+    $notFound = @{ found = $false }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_SKIPPED' -Message 'Database disabled.' -Data $notFound
+    }
+
+    $names = @($MemberDocumentNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    $guids = @($MemberDocumentGuids | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+    if ($names.Count -eq 0 -and $guids.Count -eq 0) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NONE' -Message 'No sheet member identities supplied.' -Data $notFound
+    }
+
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    if ([string]::IsNullOrWhiteSpace($folder)) { $folder = [string]$FolderPath }
+
+    $memberClauses = [System.Collections.Generic.List[string]]::new()
+    $params = @{ folderPath = $folder }
+    $ni = 0
+    foreach ($n in $names) {
+        $key = "docName$ni"
+        $params[$key] = $n
+        [void]$memberClauses.Add("LOWER(ae.pw_itemname) = LOWER(@$key)")
+        $ni++
+    }
+    $gi = 0
+    foreach ($g in $guids) {
+        $key = "docGuid$gi"
+        $params[$key] = $g
+        [void]$memberClauses.Add("ae.pw_objguid = @$key")
+        $gi++
+    }
+    if ($memberClauses.Count -eq 0) {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NONE' -Message 'No member match clauses.' -Data $notFound
+    }
+
+    $newerClause = ''
+    if ($null -ne $CurrentAuditEventId -and $CurrentAuditEventId -gt 0) {
+        $newerClause = 'AND ae.id > @currentAuditEventId'
+        $params['currentAuditEventId'] = [long]$CurrentAuditEventId
+    } elseif (-not [string]::IsNullOrWhiteSpace($CurrentAuditEventAt)) {
+        $currentAtUtc = $null
+        if (Get-Command -Name '_QCAT-ParsePwActTimeUtc' -ErrorAction SilentlyContinue) {
+            $currentAtUtc = _QCAT-ParsePwActTimeUtc -ActTime $CurrentAuditEventAt
+        }
+        if ($null -eq $currentAtUtc) {
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NO_ANCHOR' -Message 'Current audit timestamp could not be normalized to UTC.' -Data $notFound
+        }
+        $newerClause = 'AND ae.pw_acttime > @currentAuditEventAt'
+        $params['currentAuditEventAt'] = $currentAtUtc.ToString('yyyy-MM-dd HH:mm:ss')
+    } else {
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NO_ANCHOR' -Message 'No audit event anchor for recency comparison.' -Data $notFound
+    }
+
+    $sql = @"
+SELECT TOP 1 ae.id, ae.pw_acttime, ae.pw_objguid, ae.pw_itemname, ae.pw_userno, ae.processed
+FROM audit_events ae
+WHERE ae.pw_action = 1012
+  AND ae.resolved_folder = @folderPath
+  AND ($($memberClauses -join ' OR '))
+  $newerClause
+ORDER BY ae.id ASC
+"@
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $res.IsSuccess -or -not $res.Data -or -not $res.Data.table -or $res.Data.table.Rows.Count -eq 0) {
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_NOT_FOUND' -Message 'No newer DOCUMENT_STATE audit event for sheet group.' -Data $notFound
+        }
+        $r = $res.Data.table.Rows[0]
+        $candidateId = if ($r.id -is [DBNull]) { $null } else { [long]$r.id }
+        $candidateTime = if ($r.pw_acttime -is [DBNull]) { '' } else { [string]$r.pw_acttime }
+        $candidateName = if ($r.pw_itemname -is [DBNull]) { '' } else { [string]$r.pw_itemname }
+        $isStrictlyNewer = $false
+        if (Get-Command -Name '_QCAT-TestAuditTimeIsStrictlyAfterUtc' -ErrorAction SilentlyContinue) {
+            $isStrictlyNewer = _QCAT-TestAuditTimeIsStrictlyAfterUtc -CandidateTime $candidateTime -CurrentTime $CurrentAuditEventAt `
+                -CandidateAuditEventId $candidateId -CurrentAuditEventId $CurrentAuditEventId
+        } elseif ($null -ne $CurrentAuditEventId -and $CurrentAuditEventId -gt 0 -and $null -ne $candidateId) {
+            $isStrictlyNewer = ([long]$candidateId -gt [long]$CurrentAuditEventId)
+        }
+        if (-not $isStrictlyNewer) {
+            $rejected = @{
+                found = $false
+                rejectedBlockingReason = 'blocking_candidate_older_than_current'
+                rejectedBlockingAuditEventId = $candidateId
+                rejectedBlockingAuditTime = $candidateTime
+                rejectedBlockingDocumentName = $candidateName
+            }
+            return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_REJECTED' -Message 'Candidate DOCUMENT_STATE audit event is not newer than current anchor.' -Data $rejected
+        }
+        $data = @{
+            found = $true
+            id = $candidateId
+            pwActtime = $candidateTime
+            documentGuid = if ($r.pw_objguid -is [DBNull]) { '' } else { [string]$r.pw_objguid }
+            documentName = $candidateName
+            changedByUser = if ($r.pw_userno -is [DBNull]) { $null } else { [int]$r.pw_userno }
+            processed = if ($r.processed -is [DBNull]) { $false } else { [bool]$r.processed }
+        }
+        return New-QCSuccessResult -Code 'NEWER_STATE_AUDIT_FOUND' -Message 'Newer DOCUMENT_STATE audit event found for sheet group.' -Data $data
+    } catch {
+        return New-QCFailureResult -Code 'NEWER_STATE_AUDIT_QUERY_FAILED' -Message $_.Exception.Message -Data $notFound
+    }
+}
+
 function Get-QCUnprocessedAuditEvents {
     <#
     .SYNOPSIS
@@ -2827,7 +4252,8 @@ function Get-QCUnprocessedAuditEvents {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [int]$MaxRows = 500,
-        [int[]]$ActionCodes = @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020)
+        [int[]]$ActionCodes = @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020),
+        [long[]]$ExcludeEventIds = @()
     )
 
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
@@ -2839,14 +4265,18 @@ function Get-QCUnprocessedAuditEvents {
         return New-QCSuccessResult -Code 'AUDIT_UNPROCESSED_NONE' -Message 'No action codes configured.' -Data @{ rows = @(); count = 0 }
     }
     $codeList = ($codes | ForEach-Object { [string][int]$_ }) -join ','
+    $excludeIds = @($ExcludeEventIds | Where-Object { $_ -gt 0 } | ForEach-Object { [string][long]$_ } | Select-Object -Unique)
+    $excludeSql = ''
+    if ($excludeIds.Count -gt 0) { $excludeSql = "`n  AND ae.id NOT IN ($($excludeIds -join ','))" }
     $sql = @"
 SELECT TOP ($MaxRows)
-    id, pw_acttime, pw_action, pw_action_name, pw_objtype, pw_objno, pw_objguid, pw_parentguid,
-    pw_userno, pw_itemname, pw_itemdesc, pw_textparam, resolved_folder, candidate_type
-FROM audit_events
-WHERE processed = 0
-  AND pw_action IN ($codeList)
-ORDER BY CASE WHEN pw_action = 1012 THEN 0 ELSE 1 END, pw_acttime ASC, pw_objguid ASC
+    ae.id, ae.pw_acttime, ae.pw_action, ae.pw_action_name, ae.pw_objtype, ae.pw_objno, ae.pw_objguid, ae.pw_parentguid,
+    ae.pw_userno, pu.pw_username, ae.pw_itemname, ae.pw_itemdesc, ae.pw_textparam, ae.resolved_folder, ae.candidate_type
+FROM audit_events ae
+LEFT JOIN pw_users pu ON pu.pw_userno = ae.pw_userno
+WHERE ae.processed = 0
+  AND ae.pw_action IN ($codeList)$excludeSql
+ORDER BY CASE WHEN ae.pw_action = 1012 THEN 0 ELSE 1 END, ae.pw_acttime ASC, ae.pw_objguid ASC, ae.id ASC
 "@
     try {
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql
@@ -3272,4 +4702,318 @@ VALUES
     } catch { }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Update-QCSheetQcPdf, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+function Get-QCReviewTypeBucket {
+    <#
+    .SYNOPSIS
+    Maps QC review type labels to reporting buckets: production, peer_review, independent_check.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ReviewType
+    )
+
+    $norm = ([string]$ReviewType).Trim().ToLowerInvariant()
+    switch -Regex ($norm) {
+        '^production(\s+qc)?$|^production$|^qc$' { return 'production' }
+        '^peer(\s+review)?$|^peer_review$|^peer$' { return 'peer_review' }
+        '^independent(\s+(check|review))?$|^independent_check$|^independent$|^ic$' { return 'independent_check' }
+        default { return $null }
+    }
+}
+
+function Resolve-QCCycleCompletionSheetPackageId {
+    <#
+    .SYNOPSIS
+    Resolves sheet_package_id for QC cycle completion writes and rollups.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    return (_QDB-ResolveQCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $DocumentGuid -SheetPackageId $SheetPackageId)
+}
+
+function _QDB-ResolveQCCycleCompletionSheetPackageId {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) {
+        return $SheetPackageId
+    }
+    $pkg = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+    if ($pkg) { return $pkg }
+    $parsed = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsed) { return $null }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sheet_package_id
+FROM sheet_packages
+WHERE dgn_guid = @docGuid
+"@ -Parameters @{ docGuid = $parsed }
+        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+            $val = $res.Data.table.Rows[0].sheet_package_id
+            if ($val -isnot [DBNull]) { return [guid]$val }
+        }
+    } catch { }
+    return $null
+}
+
+function _QDB-FindExistingQCCycleCompletion {
+    param(
+        [hashtable]$Config,
+        [Nullable[guid]]$SheetPackageId,
+        [string]$DocumentGuid,
+        [string]$QcCycleId,
+        [string]$QcReviewType
+    )
+    if ($null -ne $SheetPackageId -and $SheetPackageId -ne [guid]::Empty) {
+        $byPackage = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, completed_at, sheet_package_id
+FROM qc_cycle_completions
+WHERE sheet_package_id = @sheetPackageId
+  AND qc_cycle_id = @qcCycleId
+  AND qc_review_type = @qcReviewType
+"@ -Parameters @{
+            sheetPackageId = $SheetPackageId
+            qcCycleId = $QcCycleId
+            qcReviewType = $QcReviewType
+        }
+        if ($byPackage.IsSuccess -and $byPackage.Data.table -and $byPackage.Data.table.Rows.Count -gt 0) {
+            return $byPackage.Data.table.Rows[0]
+        }
+    }
+    $byDoc = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 id, completed_at, sheet_package_id
+FROM qc_cycle_completions
+WHERE document_guid = @documentGuid
+  AND qc_cycle_id = @qcCycleId
+  AND qc_review_type = @qcReviewType
+"@ -Parameters @{
+        documentGuid = $DocumentGuid
+        qcCycleId = $QcCycleId
+        qcReviewType = $QcReviewType
+    }
+    if ($byDoc.IsSuccess -and $byDoc.Data.table -and $byDoc.Data.table.Rows.Count -gt 0) {
+        return $byDoc.Data.table.Rows[0]
+    }
+    return $null
+}
+
+function Ensure-QCCycleCompletion {
+    <#
+    .SYNOPSIS
+    Idempotently records a completed QC cycle keyed by sheet_package_id + qc_cycle_id + qc_review_type.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$QcCycleId,
+        [Parameter(Mandatory)][string]$QcReviewType,
+        [Nullable[guid]]$SheetPackageId = $null,
+        [string]$DocumentName = '',
+        [Nullable[int]]$QcCycleNumber = $null,
+        [Nullable[long]]$TransitionEventId = $null,
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$CompletedBy = '',
+        [Nullable[datetime]]$CompletedAt = $null
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ inserted = $false; reused = $false; completionId = $null; sheetPackageId = $null }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_PLANNED' -Message 'Dry-run: QC cycle completion not written.' -Data @{ inserted = $false; planned = $true; reused = $false; completionId = $null; sheetPackageId = $SheetPackageId }
+    }
+
+    $docGuid = ([string]$DocumentGuid).Trim().Trim('{}')
+    $cycleId = ([string]$QcCycleId).Trim()
+    $reviewType = ([string]$QcReviewType).Trim()
+    if ([string]::IsNullOrWhiteSpace($docGuid) -or [string]::IsNullOrWhiteSpace($cycleId) -or [string]::IsNullOrWhiteSpace($reviewType)) {
+        return New-QCFailureResult -Code 'QC_CYCLE_COMPLETION_INVALID' -Message 'DocumentGuid, QcCycleId, and QcReviewType are required.' -Data @{ inserted = $false; reused = $false; completionId = $null; sheetPackageId = $null }
+    }
+
+    $packageId = _QDB-ResolveQCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $docGuid -SheetPackageId $SheetPackageId
+    if (-not $packageId) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_SKIPPED' -Message 'sheet_package_id could not be resolved for completion insert.' -Data @{
+            inserted = $false; reused = $false; completionId = $null; sheetPackageId = $null; reason = 'sheet_package_not_found'
+        }
+    }
+
+    try {
+        $existingRow = _QDB-FindExistingQCCycleCompletion -Config $Config -SheetPackageId $packageId `
+            -DocumentGuid $docGuid -QcCycleId $cycleId -QcReviewType $reviewType
+        if ($existingRow) {
+            if ($existingRow.sheet_package_id -is [DBNull] -or $null -eq $existingRow.sheet_package_id) {
+                try {
+                    [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE qc_cycle_completions
+SET sheet_package_id = @sheetPackageId
+WHERE id = @id AND sheet_package_id IS NULL
+"@ -Parameters @{ sheetPackageId = $packageId; id = [long]$existingRow.id })
+                } catch { }
+            }
+            return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_REUSED' -Message 'Existing qc_cycle_completions row reused.' -Data @{
+                inserted = $false; reused = $true; completionId = [long]$existingRow.id
+                completedAt = if ($existingRow.completed_at -is [DBNull]) { $null } else { [datetime]$existingRow.completed_at }
+                sheetPackageId = $packageId
+            }
+        }
+    } catch { }
+
+    $completedAtValue = if ($null -ne $CompletedAt) { $CompletedAt } else { [datetime]::UtcNow }
+    $parsedDocGuid = _QDB-TryParseDocumentGuid -DocumentGuid $docGuid
+    try {
+        $sql = @"
+INSERT INTO qc_cycle_completions
+    (sheet_package_id, document_guid, document_name, qc_cycle_id, qc_cycle_number, qc_review_type, completed_at, completed_by, transition_event_id, audit_event_id)
+OUTPUT INSERTED.id
+VALUES
+    (@sheetPackageId, @documentGuid, @documentName, @qcCycleId, @qcCycleNumber, @qcReviewType, @completedAt, @completedBy, @transitionEventId, @auditEventId)
+"@
+        $params = @{
+            sheetPackageId = $packageId
+            documentGuid = if ($parsedDocGuid) { $parsedDocGuid } else { [guid]$docGuid }
+            documentName = if ($DocumentName) { $DocumentName } else { $null }
+            qcCycleId = $cycleId
+            qcCycleNumber = if ($null -ne $QcCycleNumber) { $QcCycleNumber } else { $null }
+            qcReviewType = $reviewType
+            completedAt = $completedAtValue
+            completedBy = if ($CompletedBy) { $CompletedBy } else { $null }
+            transitionEventId = if ($null -ne $TransitionEventId) { $TransitionEventId } else { $null }
+            auditEventId = if ($null -ne $AuditEventId) { $AuditEventId } else { $null }
+        }
+        $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            $msg = [string]$dbRes.Message
+            if ($msg -match 'UQ_qc_cycle_completions_package|UQ_qc_cycle_completions_cycle|duplicate key|2601|2627') {
+                try {
+                    $dupRow = _QDB-FindExistingQCCycleCompletion -Config $Config -SheetPackageId $packageId `
+                        -DocumentGuid $docGuid -QcCycleId $cycleId -QcReviewType $reviewType
+                    if ($dupRow) {
+                        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_REUSED' -Message 'QC cycle completion duplicate suppressed by unique constraint.' -Data @{
+                            inserted = $false; reused = $true; completionId = [long]$dupRow.id
+                            completedAt = if ($dupRow.completed_at -is [DBNull]) { $null } else { [datetime]$dupRow.completed_at }
+                            sheetPackageId = $packageId
+                        }
+                    }
+                } catch { }
+            }
+            return New-QCErrorResult -Code 'QC_CYCLE_COMPLETION_WRITE_FAILED' -Message $msg -Data @{ inserted = $false; reused = $false; completionId = $null; sheetPackageId = $packageId }
+        }
+        $completionId = $null
+        if ($null -ne $dbRes.Data.value) {
+            try { $completionId = [long]$dbRes.Data.value } catch { $completionId = $null }
+        }
+        return New-QCSuccessResult -Code 'QC_CYCLE_COMPLETION_WRITTEN' -Message 'qc_cycle_completions row inserted.' -Data @{
+            inserted = $true; reused = $false; completionId = $completionId; completedAt = $completedAtValue; sheetPackageId = $packageId
+        }
+    } catch {
+        return New-QCErrorResult -Code 'QC_CYCLE_COMPLETION_EXCEPTION' -Message $_.Exception.Message -Data @{ inserted = $false; reused = $false; completionId = $null; sheetPackageId = $packageId }
+    }
+}
+
+function Update-QCSheetCycleCompletionSummary {
+    <#
+    .SYNOPSIS
+    Rebuilds sheet_packages QC completion summary columns from qc_cycle_completions.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$DocumentGuid = '',
+        [Nullable[guid]]$SheetPackageId = $null
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    if (-not (Test-QCDatabaseWritesAllowed -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_PLANNED' -Message 'Dry-run: sheet_packages completion summary not updated.' -Data @{ written = $false; planned = $true }
+    }
+
+    $packageId = _QDB-ResolveQCCycleCompletionSheetPackageId -Config $Config -DocumentGuid $DocumentGuid -SheetPackageId $SheetPackageId
+    if (-not $packageId) {
+        return New-QCFailureResult -Code 'QC_CYCLE_SUMMARY_INVALID' -Message 'SheetPackageId could not be resolved.' -Data @{ written = $false }
+    }
+
+    try {
+        $aggRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_review_type, COUNT(*) AS completed_count, MAX(completed_at) AS last_completed_at
+FROM qc_cycle_completions
+WHERE sheet_package_id = @sheetPackageId
+GROUP BY qc_review_type
+"@ -Parameters @{ sheetPackageId = $packageId }
+
+        $productionCount = 0; $productionLast = $null
+        $peerCount = 0; $peerLast = $null
+        $independentCount = 0; $independentLast = $null
+
+        if ($aggRes.IsSuccess -and $aggRes.Data.table) {
+            foreach ($row in @($aggRes.Data.table.Rows)) {
+                $rt = if ($row.qc_review_type -is [DBNull]) { '' } else { [string]$row.qc_review_type }
+                $bucket = Get-QCReviewTypeBucket -ReviewType $rt
+                if (-not $bucket) { continue }
+                $cnt = 0
+                try { $cnt = [int]$row.completed_count } catch { $cnt = 0 }
+                $lastAt = $null
+                if ($row.last_completed_at -isnot [DBNull]) {
+                    try { $lastAt = [datetime]$row.last_completed_at } catch { $lastAt = $null }
+                }
+                switch ($bucket) {
+                    'production' {
+                        $productionCount += $cnt
+                        if ($null -eq $productionLast -or ($null -ne $lastAt -and $lastAt -gt $productionLast)) { $productionLast = $lastAt }
+                    }
+                    'peer_review' {
+                        $peerCount += $cnt
+                        if ($null -eq $peerLast -or ($null -ne $lastAt -and $lastAt -gt $peerLast)) { $peerLast = $lastAt }
+                    }
+                    'independent_check' {
+                        $independentCount += $cnt
+                        if ($null -eq $independentLast -or ($null -ne $lastAt -and $lastAt -gt $independentLast)) { $independentLast = $lastAt }
+                    }
+                }
+            }
+        }
+
+        $upd = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_packages
+SET production_qc_completed_count = @productionCount,
+    production_qc_last_completed_at = @productionLast,
+    peer_review_completed_count = @peerCount,
+    peer_review_last_completed_at = @peerLast,
+    independent_check_completed_count = @independentCount,
+    independent_check_last_completed_at = @independentLast,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE sheet_package_id = @sheetPackageId
+"@ -Parameters @{
+            sheetPackageId = $packageId
+            productionCount = $productionCount
+            productionLast = if ($null -ne $productionLast) { $productionLast } else { $null }
+            peerCount = $peerCount
+            peerLast = if ($null -ne $peerLast) { $peerLast } else { $null }
+            independentCount = $independentCount
+            independentLast = if ($null -ne $independentLast) { $independentLast } else { $null }
+        }
+
+        if (-not $upd.IsSuccess) {
+            return New-QCErrorResult -Code 'QC_CYCLE_SUMMARY_UPDATE_FAILED' -Message $upd.Message -Data @{ written = $false; sheetPackageId = $packageId }
+        }
+        return New-QCSuccessResult -Code 'QC_CYCLE_SUMMARY_UPDATED' -Message 'sheet_packages completion summary rebuilt from qc_cycle_completions.' -Data @{
+            written = $true
+            sheetPackageId = $packageId
+            productionQcCompletedCount = $productionCount
+            peerReviewCompletedCount = $peerCount
+            independentCheckCompletedCount = $independentCount
+        }
+    } catch {
+        return New-QCErrorResult -Code 'QC_CYCLE_SUMMARY_EXCEPTION' -Message $_.Exception.Message -Data @{ written = $false; sheetPackageId = $packageId }
+    }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

@@ -359,7 +359,7 @@ function New-QCNotificationEmailTemplateData {
         NotificationMessage = $message
         NotificationCategory = $category
         ProjectName = if ($projectName) { $projectName } else { '(unknown)' }
-        DocumentName = if ($Event.documentName) { [string]$Event.documentName } else { '(unknown)' }
+        DocumentName = if ($Event.displayDocumentName) { [string]$Event.displayDocumentName } elseif ($Event.documentName) { [string]$Event.documentName } else { '(unknown)' }
         ReviewType = if ($reviewType) { $reviewType } else { '(not specified)' }
         WorkflowState = if ($Event.currentState) { [string]$Event.currentState } else { '(unknown)' }
         AssignedTo = $assignedTo
@@ -389,7 +389,7 @@ function New-QCNotificationEmailBody {
         $Intro,
         '',
         ('Project: {0}' -f $(if ($Event.project) { $Event.project } else { '(unknown)' })),
-        ('Document: {0}' -f $(if ($Event.documentName) { $Event.documentName } else { '(unknown)' })),
+        ('Document: {0}' -f $(if ($Event.displayDocumentName) { $Event.displayDocumentName } elseif ($Event.documentName) { $Event.documentName } else { '(unknown)' })),
         ('Path: {0}' -f $(if ($Event.documentPath) { $Event.documentPath } else { '(unknown)' })),
         ('Previous state: {0}' -f $(if ($Event.previousState) { $Event.previousState } else { '(none)' })),
         ('Current state: {0}' -f $(if ($Event.currentState) { $Event.currentState } else { '(unknown)' })),

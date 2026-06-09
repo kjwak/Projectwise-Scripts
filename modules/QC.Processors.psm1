@@ -678,6 +678,12 @@ function Test-QCJobReady {
         [hashtable]$Config
     )
 
+    if ((-not $Job.ContainsKey('sourcePath') -or (_QCP-IsNullOrWhiteSpace $Job.sourcePath)) `
+        -and $Job.ContainsKey('sourceFolder') -and -not (_QCP-IsNullOrWhiteSpace $Job.sourceFolder) `
+        -and $Job.ContainsKey('sourceName') -and -not (_QCP-IsNullOrWhiteSpace $Job.sourceName)) {
+        $Job['sourcePath'] = Join-Path ([string]$Job.sourceFolder) ([string]$Job.sourceName)
+    }
+
     $missing = @()
     foreach ($k in @('id', 'type', 'sourcePath', 'dedupeKey')) {
         if (-not $Job.ContainsKey($k) -or (_QCP-IsNullOrWhiteSpace $Job[$k])) { $missing += $k }
@@ -1384,6 +1390,14 @@ function _QCP-EnsureQueueModulesLoaded {
     }
 }
 
+function _QCP-EnsureNotificationModulesLoaded {
+    if (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue) { return }
+    $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+    if (Test-Path -LiteralPath $notifPath) {
+        Import-Module $notifPath -Force -WarningAction SilentlyContinue | Out-Null
+    }
+}
+
 function _QCP-ResolveSheetPdfForPrependTrigger {
     param([string]$TriggerDocumentName)
     $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
@@ -1718,19 +1732,6 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     return $enq
 }
 
-function Test-QCNotificationsEnqueueAsJob {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$Config)
-    try {
-        if ($Config.ContainsKey('notifications') -and $Config.notifications) {
-            $n = $Config.notifications
-            if ($n -is [hashtable] -and $n.ContainsKey('enqueueAsJob')) { return [bool]$n.enqueueAsJob }
-            if ($n.PSObject -and $null -ne $n.enqueueAsJob) { return [bool]$n.enqueueAsJob }
-        }
-    } catch { }
-    return $false
-}
-
 function Invoke-QCNotificationProcessor {
     <#
     .SYNOPSIS
@@ -1742,6 +1743,9 @@ function Invoke-QCNotificationProcessor {
         [Parameter(Mandatory)][hashtable]$Config
     )
 
+    if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
+        try { _QCP-EnsureNotificationModulesLoaded } catch { }
+    }
     if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }
@@ -1786,6 +1790,15 @@ function Invoke-QCNotificationProcessor {
         StateTransitionKey = $stKey
         ChangedByUser = $changedByUser
         ChangedByUsername = $changedByUsername
+    }
+    if ($meta.ContainsKey('documentGuid') -and $meta.documentGuid) {
+        $notifyParams['DocumentGuid'] = [string]$meta.documentGuid
+    }
+    if (-not (_QCP-IsNullOrWhiteSpace $Job.sourceName)) {
+        $notifyParams['DocumentName'] = [string]$Job.sourceName
+    }
+    if (-not (_QCP-IsNullOrWhiteSpace $Job.sourceFolder)) {
+        $notifyParams['DocumentPath'] = Join-Path ([string]$Job.sourceFolder) $(if ($Job.sourceName) { [string]$Job.sourceName } else { '' })
     }
     if ($null -ne $transitionId -and $transitionId -gt 0) {
         $notifyParams['TransitionId'] = $transitionId

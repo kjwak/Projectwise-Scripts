@@ -50,6 +50,7 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | 1.3.0 | Audit natural-key index (`UX_audit_events_natural_key`) |
 | 1.4.0 | `pw_users` lookup + `v_audit_events_with_user` view |
 | 1.5.0 | `sheet_index` QC attribute columns (`checker_email`, `qc_review_type`, `qc_assigned_to`) |
+| 1.14.0 | `qc_workflow_events.transition_event_id` FK to `transition_events.id` |
 
 ### Schema 1.2.0 — comment sync (see `docs/qc-comment-status-sync.md`)
 

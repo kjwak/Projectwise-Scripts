@@ -79,7 +79,7 @@ Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAct
 | Entry point | Module sequence |
 | --- | --- |
 | `Import-QCScriptModules.ps1` | Results, Database, Runtime (+ `-AdditionalModules`) |
-| `Run-QCProcessor.ps1` | Results, Runtime, Queue.Json, Processors, Rendition, Worker, Database |
+| `Run-QCProcessor.ps1` | Results, Runtime, Queue.Json, Processors, Notifications, Rendition, Worker, Database |
 | `Watch-QCTrigger.ps1` | See `$script:WatchModuleLoadOrder` and `$script:WatchModuleRestoreOrder` |
 | `test/test_watcher_module_bootstrap.ps1` | Minimal watcher chain smoke test |
 

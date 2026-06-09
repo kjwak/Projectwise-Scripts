@@ -42,6 +42,7 @@ function Write-QCWorkflowEvent {
         [string]$ProcessorVersion = '',
         [string]$QcReviewType = '',
         [string]$PayloadJson = '',
+        [Nullable[int]]$TransitionEventId = $null,
         [switch]$PlannedOnly
     )
 
@@ -50,7 +51,7 @@ function Write-QCWorkflowEvent {
     return Write-QCWorkflowEventRow -Config $Config -RunId $runIdParam -JobId $JobId -DocumentId $DocumentId `
         -EventType $EventType -PreviousPwState $PreviousPwState -TargetPwState $TargetPwState `
         -DecisionCode $DecisionCode -ProcessorVersion $ProcessorVersion -QcReviewType $QcReviewType `
-        -PayloadJson $PayloadJson -PlannedOnly:$PlannedOnly
+        -PayloadJson $PayloadJson -TransitionEventId $TransitionEventId -PlannedOnly:$PlannedOnly
 }
 
 function Write-QCCommentSyncRun {

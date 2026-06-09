@@ -166,6 +166,95 @@ function Get-QCReportingDocuments {
     return @($docs)
 }
 
+function Get-QCPackageReportingRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [string]$FolderPath = ''
+    )
+
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return @() }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return @() }
+
+    $sql = 'SELECT * FROM v_sheet_package_status'
+    $params = @{}
+    if (-not (_QCR-IsBlank $FolderPath)) {
+        $sql += ' WHERE folder_path = @folderPath'
+        $params['folderPath'] = ([string]$FolderPath).Trim()
+    }
+    try {
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $res.IsSuccess -or -not $res.Data.table) { return @() }
+        return @($res.Data.table.Rows)
+    } catch {
+        return @()
+    }
+}
+
+function ConvertTo-QCPackageReportingRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Row)
+
+    $get = {
+        param([string]$Name)
+        try {
+            if ($Row -is [System.Data.DataRow]) {
+                if ($Row.Table.Columns.Contains($Name) -and $Row[$Name] -isnot [DBNull]) { return $Row[$Name] }
+            } elseif ($Row.PSObject.Properties[$Name]) { return $Row.$Name }
+        } catch { }
+        return $null
+    }
+
+    return [pscustomobject]@{
+        sheetPackageId = & $get 'sheet_package_id'
+        sheetStem = & $get 'sheet_stem'
+        folderPath = & $get 'folder_path'
+        pwStateName = & $get 'pw_state_name'
+        qcReviewType = & $get 'qc_review_type'
+        qcAssignedTo = & $get 'qc_assigned_to'
+        productionQcCompletedCount = & $get 'production_qc_completed_count'
+        peerReviewCompletedCount = & $get 'peer_review_completed_count'
+        independentCheckCompletedCount = & $get 'independent_check_completed_count'
+        productionQcLastCompletedAt = & $get 'production_qc_last_completed_at'
+        peerReviewLastCompletedAt = & $get 'peer_review_last_completed_at'
+        independentCheckLastCompletedAt = & $get 'independent_check_last_completed_at'
+        dgnGuid = & $get 'dgn_guid'
+        sheetPdfGuid = & $get 'sheet_pdf_guid'
+        qcPdfGuid = & $get 'qc_pdf_guid'
+    }
+}
+
+function New-QCPackageReportingMetrics {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Packages
+    )
+
+    $records = @($Packages | ForEach-Object { ConvertTo-QCPackageReportingRecord -Row $_ })
+    $countByState = @{}
+    foreach ($pkg in @($records)) {
+        $state = if (_QCR-IsBlank $pkg.pwStateName) { '<none>' } else { [string]$pkg.pwStateName }
+        if (-not $countByState.ContainsKey($state)) { $countByState[$state] = 0 }
+        $countByState[$state]++
+    }
+
+    return [pscustomobject]@{
+        packageCount = @($records).Count
+        inProductionCount = @($records | Where-Object { ([string]$_.pwStateName) -ieq 'In Production' }).Count
+        readyForQcCount = @($records | Where-Object { ([string]$_.pwStateName) -ieq 'Ready for QC' -or ([string]$_.pwStateName) -ieq 'QC Received' }).Count
+        redlinesReceivedCount = @($records | Where-Object { ([string]$_.pwStateName) -ieq 'Redlines Received' -or ([string]$_.pwStateName) -ieq 'Redlines Issued' }).Count
+        correctionsReceivedCount = @($records | Where-Object { ([string]$_.pwStateName) -match '(?i)Corrections (Received|In Progress)|Verification In Progress|Backcheck In Progress' }).Count
+        qcFinalizingCount = @($records | Where-Object { ([string]$_.pwStateName) -ieq 'QC Finalizing' }).Count
+        qcCompleteCount = @($records | Where-Object { ([string]$_.pwStateName) -ieq 'QC Complete' -or ([string]$_.pwStateName) -ieq 'Verified Closed' }).Count
+        productionQcCompletedTotal = ($records | ForEach-Object { [int]$_.productionQcCompletedCount } | Measure-Object -Sum).Sum
+        peerReviewCompletedTotal = ($records | ForEach-Object { [int]$_.peerReviewCompletedCount } | Measure-Object -Sum).Sum
+        independentCheckCompletedTotal = ($records | ForEach-Object { [int]$_.independentCheckCompletedCount } | Measure-Object -Sum).Sum
+        workflowStateCounts = [pscustomobject]$countByState
+    }
+}
+
 function New-QCReportingSnapshot {
     [CmdletBinding()]
     param(
@@ -173,7 +262,8 @@ function New-QCReportingSnapshot {
         [object[]]$Documents,
         [Parameter(Mandatory)]
         [hashtable]$Settings,
-        [string]$Project = 'project'
+        [string]$Project = 'project',
+        [object[]]$PackageRows = @()
     )
 
     $normalized = @($Documents | ForEach-Object { ConvertTo-QCReportingDocument -Document $_ -AttributeMap $Settings.attributeMap })
@@ -207,10 +297,18 @@ function New-QCReportingSnapshot {
         }
     }
 
+    $packageRecords = @()
+    $packageMetrics = $null
+    if (@($PackageRows).Count -gt 0) {
+        $packageRecords = @($PackageRows | ForEach-Object { ConvertTo-QCPackageReportingRecord -Row $_ })
+        $packageMetrics = New-QCPackageReportingMetrics -Packages $PackageRows
+    }
+
     return [pscustomobject]@{
         project = $Project
         generatedUtc = Get-QCTimestamp
         source = 'QC_REPORTING_SCAN'
+        primaryEntity = if (@($packageRecords).Count -gt 0) { 'sheet_package_id' } else { 'document_guid' }
         metrics = [pscustomobject]@{
             documentCount = @($normalized).Count
             qcActiveCount = @($active).Count
@@ -233,6 +331,8 @@ function New-QCReportingSnapshot {
         }
         workflowStateCounts = [pscustomobject]$stateCounts
         documents = @($normalized)
+        packageMetrics = $packageMetrics
+        packages = @($packageRecords)
     }
 }
 
@@ -267,9 +367,13 @@ function Invoke-QCReportingScan {
     $settings = Get-QCReportingSettings -Config $Config
     $docs = @(Get-QCReportingDocuments -Job $Job -Settings $settings)
     $project = if ($Job.ContainsKey('project')) { [string]$Job.project } elseif ($Job.ContainsKey('sourceFolder')) { [string]$Job.sourceFolder } else { 'project' }
-    $snapshot = New-QCReportingSnapshot -Documents $docs -Settings $settings -Project $project
+    $folderPath = if ($Job.ContainsKey('sourceFolder')) { [string]$Job.sourceFolder } else { '' }
+    $packageRows = @(Get-QCPackageReportingRows -Config $Config -FolderPath $folderPath)
+    $snapshot = New-QCReportingSnapshot -Documents $docs -Settings $settings -Project $project -PackageRows $packageRows
     $path = Write-QCReportingSnapshot -Snapshot $snapshot -Settings $settings
-    return New-QCSuccessResult -Code 'QC_REPORTING_SCAN_OK' -Message 'QC reporting snapshot written.' -Data @{ snapshotPath = $path; snapshot = $snapshot; documentCount = $docs.Count }
+    return New-QCSuccessResult -Code 'QC_REPORTING_SCAN_OK' -Message 'QC reporting snapshot written.' -Data @{
+        snapshotPath = $path; snapshot = $snapshot; documentCount = $docs.Count; packageCount = @($packageRows).Count
+    }
 }
 
 function New-QCReportingScanJob {
@@ -292,4 +396,4 @@ function New-QCReportingScanJob {
     }
 }
 
-Export-ModuleMember -Function Get-QCReportingSettings,Get-QCReportingDocuments,ConvertTo-QCReportingDocument,New-QCReportingSnapshot,Write-QCReportingSnapshot,Invoke-QCReportingScan,New-QCReportingScanJob
+Export-ModuleMember -Function Get-QCReportingSettings,Get-QCReportingDocuments,ConvertTo-QCReportingDocument,Get-QCPackageReportingRows,ConvertTo-QCPackageReportingRecord,New-QCPackageReportingMetrics,New-QCReportingSnapshot,Write-QCReportingSnapshot,Invoke-QCReportingScan,New-QCReportingScanJob

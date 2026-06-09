@@ -29,7 +29,7 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
             dedupe = @{
                 enabled = $true
                 storePath = $dedupePath
-                keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
+                keyFields = @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
             }
             graph = @{
                 tenantId = ''
@@ -193,6 +193,186 @@ $key1 = Get-QCNotificationDedupeKey -Event $event -Settings $settings
 $key2 = Get-QCNotificationDedupeKey -Event $event -Settings $settings
 Assert-Eq $key1 $key2 'Dedupe keys should be stable for the same event'
 
+# Placeholder document names should not fork dedupe when folder + sheet stem align
+$folderDedupeCfg = New-NotifyConfig -Enabled $true
+$folderDedupeCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$folderDedupeSettings = Get-QCNotificationSettings -Config $folderDedupeCfg
+$sharedFolder = 'documents\caltrans\proj\cadd\sheets\seg_1'
+$keyUnknown = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'READY_FOR_QC'
+    documentName = 'unknown-document-qc.pdf'
+    sheetStem = '080J082001ab001'
+    folderPath = $sharedFolder
+    previousState = 'QC Initiated'
+    currentState = 'Ready for QC'
+    transitionId = 77
+    stateTransitionKey = 'audit:5001'
+} -Settings $folderDedupeSettings
+$keyNamed = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'READY_FOR_QC'
+    documentName = '080J082001ab001-qc.pdf'
+    sheetStem = '080J082001ab001'
+    folderPath = $sharedFolder
+    previousState = 'QC Initiated'
+    currentState = 'Ready for QC'
+    transitionId = 77
+    stateTransitionKey = 'audit:5001'
+} -Settings $folderDedupeSettings
+Assert-Eq $keyUnknown $keyNamed 'Same folder + sheet stem should dedupe despite different document names'
+Assert-True ($keyUnknown -match 'folderPath=') 'Dedupe key should include folderPath'
+
+# Sibling audit echo events must not fork dedupe (audit:39541 vs audit:39542 on same sheet transition)
+$echoCfg = New-NotifyConfig -Enabled $true
+$echoCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$echoSettings = Get-QCNotificationSettings -Config $echoCfg
+$keyEcho1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    stateTransitionKey = 'audit:39541'
+} -Settings $echoSettings
+$keyEcho2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    stateTransitionKey = 'audit:39542'
+} -Settings $echoSettings
+Assert-Eq $keyEcho1 $keyEcho2 'Different audit echo ids should not fork notification dedupe'
+Assert-True ($keyEcho1 -notmatch 'audit:39541') 'Dedupe key should not include audit event id'
+Assert-True ($keyEcho1 -match 'previousState=QC Finalizing') 'Empty stale-index previousState should normalize for QC Complete'
+
+# Prepend writeback (explicit previousState) should match stale-index audit path for same sheet transition
+$keyPrepend = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = 'QC Finalizing'
+    currentState = 'QC Complete'
+    cycleId = 'qc_qcprepend_c6e50e714af81799'
+} -Settings $echoSettings
+$keyAuditWithCycle = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'QC_COMPLETE'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'QC Complete'
+    cycleId = 'qc_qcprepend_c6e50e714af81799'
+    stateTransitionKey = 'audit:39541'
+} -Settings $echoSettings
+Assert-Eq $keyPrepend $keyAuditWithCycle 'Prepend writeback and audit stale-index should dedupe when cycle id matches'
+
+# Redlines Received audit echoes (39533 vs 39534 pattern) must share one dedupe key
+$keyRedlines1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:5001'
+} -Settings $echoSettings
+$keyRedlines2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '0818000063ea501-qc.pdf'
+    sheetStem = '0818000063ea501'
+    folderPath = $sharedFolder
+    previousState = ''
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:5002'
+} -Settings $echoSettings
+Assert-Eq $keyRedlines1 $keyRedlines2 'Redlines audit echo ids should not fork notification dedupe'
+Assert-True ($keyRedlines1 -match 'previousState=Ready for QC') 'Stale-index Redlines should normalize previousState'
+
+# Different QC cycles must not share notification dedupe when cycleId differs
+$cycleSplitCfg = New-NotifyConfig -Enabled $true
+$cycleSplitCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$cycleSplitSettings = Get-QCNotificationSettings -Config $cycleSplitCfg
+$keyCycle1 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_oldcycle001'
+} -Settings $cycleSplitSettings
+$keyCycle2 = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_newcycle002'
+} -Settings $cycleSplitSettings
+Assert-True ($keyCycle1 -ne $keyCycle2) 'Different cycleId values should produce different dedupe keys'
+
+# Sub-cycle bumps (1 -> 1.1) must not collide with the forward Redlines notification in the same major cycle
+$subCycleCfg = New-NotifyConfig -Enabled $true
+$subCycleCfg.notifications.dedupe.keyFields = @('folderPath', 'sheetStem', 'eventType', 'previousState', 'currentState', 'cycleId')
+$subCycleSettings = Get-QCNotificationSettings -Config $subCycleCfg
+$keyForwardRedlines = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_cycle001|1'
+} -Settings $subCycleSettings
+$keyResubmitRedlines = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = '0818000063ea500'
+    folderPath = $sharedFolder
+    previousState = 'Corrections Received'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_cycle001|1.1'
+} -Settings $subCycleSettings
+Assert-True ($keyForwardRedlines -ne $keyResubmitRedlines) 'Forward and resubmit Redlines should use different cycleId dedupe keys'
+
+# Subject should use sheet PDF name (stem.pdf), not unknown-document placeholder from QC PDF resolution
+$readyCfg = New-NotifyConfig -Enabled $true
+$readyDedupe = Join-Path $testRoot 'dedupe-ready-subject\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $readyDedupe) -Force | Out-Null
+$readyCfg.notifications.dedupe.storePath = $readyDedupe
+$readyCfg.notifications.events['Ready for QC'] = @{
+    enabled = $true
+    eventType = 'READY_FOR_QC'
+    to = @('reviewers')
+    cc = @('designers')
+    actionRequired = 'Begin QC review.'
+}
+$readyJob = @{
+    id = 'qc_notification_subject_test'
+    sourceName = '080J082001ca001.pdf'
+    sourceFolder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+    metadata = @{
+        previousState = 'QC Initiated'
+        currentState = 'Ready for QC'
+        documentGuid = 'guid-ready-subject'
+        stateTransitionKey = 'audit:9999'
+        transitionId = 88
+    }
+}
+$readyDoc = [pscustomobject]@{
+    Name = '080J082001ca001.pdf'
+    DocumentGUID = 'guid-ready-subject'
+    EM_Reviewer_Email = 'reviewer@company.com'
+    EM_Designer_Email = 'designer@company.com'
+}
+$readySend = Invoke-QCNotificationForStateChange -Config $readyCfg -PreviousState 'QC Initiated' -CurrentState 'Ready for QC' `
+    -Document $readyDoc -Job $readyJob -DocumentGuid 'guid-ready-subject' -StateTransitionKey 'audit:9999' `
+    -TransitionId 88 -Project 'cafwy2200-i-15_elpse'
+Assert-True $readySend.IsSuccess 'Ready for QC job notification should succeed'
+$readyPayload = Get-Content -LiteralPath $readySend.Data.filePath -Raw | ConvertFrom-Json
+Assert-True ($readyPayload.subject -match '080J082001ca001\.pdf') 'Subject should use sheet PDF name'
+Assert-True ($readyPayload.subject -notmatch 'unknown-document') 'Subject must not contain unknown-document placeholder'
+
 # Duplicate suppression
 $dupCfg = New-NotifyConfig -Enabled $true
 $dupDedupe = Join-Path $testRoot 'dedupe-dup\sent-keys.jsonl'
@@ -227,9 +407,60 @@ $ae1 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 
     -Document $auditEchoDoc -StateTransitionKey 'audit:9001'
 Assert-True $ae1.IsSuccess 'First QC Complete send should succeed'
 $ae2 = Invoke-QCNotificationForStateChange -Config $auditEchoCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
-    -Document $auditEchoDoc -StateTransitionKey 'audit:9002'
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9001'
 Assert-True $ae2.Data.skipped 'Second audit echo for same sheet transition should dedupe'
 Assert-Eq $ae2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Audit echo duplicate should use skip code'
+
+$redlinesEchoCfg = New-NotifyConfig -Enabled $true
+$redlinesEchoCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-redlines-echo\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $redlinesEchoCfg.notifications.dedupe.storePath) -Force | Out-Null
+$redlinesEchoCfg.notifications.events['Redlines Received'] = @{
+    enabled = $true
+    eventType = 'REDLINES_RECEIVED'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'Designer corrections.'
+}
+$re1 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousState '' -CurrentState 'Redlines Received' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9101'
+Assert-True $re1.IsSuccess 'First Redlines Received send should succeed'
+$re2 = Invoke-QCNotificationForStateChange -Config $redlinesEchoCfg -PreviousState '' -CurrentState 'Redlines Received' `
+    -Document $auditEchoDoc -StateTransitionKey 'audit:9101'
+Assert-True $re2.Data.skipped 'Second Redlines audit echo should dedupe'
+Assert-Eq $re2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Redlines audit echo duplicate should use skip code'
+
+# Prepend writeback enqueues from sheet PDF; notification should resolve to *-qc.pdf and send
+$prependCompleteCfg = New-NotifyConfig -Enabled $true
+$prependCompleteCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-prepend-complete\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $prependCompleteCfg.notifications.dedupe.storePath) -Force | Out-Null
+$prependCompleteCfg.notifications.events['QC Complete'] = @{
+    enabled = $true
+    eventType = 'QC_COMPLETE'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'QC review cycle is complete.'
+}
+$prependCompleteCfg.auditPoller = @{ workflowTriggers = @{ qcPdfNotificationsOnly = $true } }
+$sheetPdfDoc = [pscustomobject]@{
+    Name = '0818000063ea500.pdf'
+    DocumentGUID = 'guid-prepend-sheet-pdf'
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$prependNotifJob = @{
+    id = 'qc_notification_prepend_writeback_test'
+    sourceName = '0818000063ea500.pdf'
+    sourceFolder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+    metadata = @{
+        previousState = 'QC Finalizing'
+        currentState = 'QC Complete'
+        parentJobId = 'qc_qcprepend_test'
+    }
+}
+$prependCompleteSend = Invoke-QCNotificationForStateChange -Config $prependCompleteCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
+    -Document $sheetPdfDoc -Job $prependNotifJob -DocumentGuid 'guid-prepend-sheet-pdf'
+Assert-True $prependCompleteSend.IsSuccess 'Prepend QC Complete notification should succeed'
+Assert-True (-not $prependCompleteSend.Data.skipped) 'Prepend QC Complete from sheet PDF should not be suppressed as package member'
 
 # New transition to same state should not dedupe (repeat QC cycle)
 $cycleDedupe = Join-Path $testRoot 'dedupe-cycle\sent-keys.jsonl'
@@ -253,6 +484,71 @@ $r2 = Invoke-QCNotificationForStateChange -Config $cycleCfg -PreviousState 'Corr
 Assert-True $r2.IsSuccess 'Second cycle Redlines Received should succeed with new transition key'
 Assert-True (-not $r2.Data.skipped) 'Second cycle should not be deduped'
 
+# Logical transition dedupe keys must distinguish different transitions on the same sheet
+$logicalCfg = New-NotifyConfig -Enabled $true
+$logicalSettings = Get-QCNotificationSettings -Config $logicalCfg
+$sharedStem = '080J082001ca001'
+$sharedGuid = 'guid-logical-transition'
+$sharedRecipients = @{ to = @('designer@company.com'); cc = @('reviewer@company.com') }
+$keyRedlines = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'REDLINES_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    stateTransitionKey = 'audit:40597'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+$keyCorrections = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'CORRECTIONS_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Redlines Received'
+    currentState = 'Corrections Received'
+    stateTransitionKey = 'audit:40598'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+Assert-True ($keyRedlines -ne $keyCorrections) 'Redlines and Corrections transitions should use different dedupe keys'
+Assert-True ($keyCorrections -match 'audit:40598') 'Corrections dedupe key should include audit event id in logical anchor'
+
+# Same logical transition with a new audit event id should not reuse the prior dedupe key
+$keyCorrections2 = Get-QCNotificationDedupeKey -Event (@{
+    eventType = 'CORRECTIONS_RECEIVED'
+    sheetStem = $sharedStem
+    documentGuid = $sharedGuid
+    previousState = 'Redlines Received'
+    currentState = 'Corrections Received'
+    stateTransitionKey = 'audit:40600'
+    transitionSource = 'user_audit'
+} + $sharedRecipients) -Settings $logicalSettings
+Assert-True ($keyCorrections -ne $keyCorrections2) 'Different audit ids for the same from/to should produce different dedupe keys'
+
+# Duplicate suppression for the exact same logical transition
+$sameTransitionCfg = New-NotifyConfig -Enabled $true
+$sameTransitionCfg.notifications.dedupe.storePath = Join-Path $testRoot 'dedupe-same-logical\sent-keys.jsonl'
+New-Item -ItemType Directory -Path (Split-Path $sameTransitionCfg.notifications.dedupe.storePath) -Force | Out-Null
+$sameTransitionCfg.notifications.events['Corrections Received'] = @{
+    enabled = $true
+    eventType = 'CORRECTIONS_RECEIVED'
+    to = @('designers')
+    cc = @('reviewers')
+    actionRequired = 'Reviewer verification.'
+}
+$sameDoc = [pscustomobject]@{
+    Name = ($sharedStem + '-qc.pdf')
+    DocumentGUID = $sharedGuid
+    EM_Designer_Email = 'designer@company.com'
+    EM_Reviewer_Email = 'reviewer@company.com'
+}
+$corr1 = Invoke-QCNotificationForStateChange -Config $sameTransitionCfg -PreviousState 'Redlines Received' -CurrentState 'Corrections Received' `
+    -Document $sameDoc -StateTransitionKey 'audit:40598' -NotificationStateSource 'user_audit'
+Assert-True $corr1.IsSuccess 'First Corrections Received send should succeed'
+$corr2 = Invoke-QCNotificationForStateChange -Config $sameTransitionCfg -PreviousState 'Redlines Received' -CurrentState 'Corrections Received' `
+    -Document $sameDoc -StateTransitionKey 'audit:40598' -NotificationStateSource 'user_audit'
+Assert-True $corr2.Data.skipped 'Exact same logical transition should dedupe'
+Assert-Eq $corr2.Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'Duplicate Corrections transition should use skip code'
+Assert-True (-not (Test-QCNotificationResultSent -Result $corr2)) 'Skipped duplicate should not count as sent'
+
 # Transition id drives dedupe key and suppresses echo retries for the same transition
 $tidDedupe = Join-Path $testRoot 'dedupe-transition-id\sent-keys.jsonl'
 New-Item -ItemType Directory -Path (Split-Path $tidDedupe) -Force | Out-Null
@@ -267,7 +563,8 @@ $tidCfg.notifications.events['QC Complete'] = @{
 }
 $tidSettings = Get-QCNotificationSettings -Config $tidCfg
 $tidEvent = @{ eventType = 'QC_COMPLETE'; documentName = '081800063ea515-qc.pdf'; sheetStem = '081800063ea515'; previousState = 'QC Finalizing'; currentState = 'QC Complete'; transitionId = 42 }
-Assert-Eq (Get-QCNotificationDedupeKey -Event $tidEvent -Settings $tidSettings) 'transition:42' 'Transition id should produce transition-scoped dedupe key'
+$tidKey = Get-QCNotificationDedupeKey -Event $tidEvent -Settings $tidSettings
+Assert-True ($tidKey -match 'sheetStem=081800063ea515') 'Dedupe key should include logical sheet stem'
 $tidDoc = [pscustomobject]@{
     Name = '081800063ea515-qc.pdf'
     DocumentGUID = 'guid-tid'
@@ -278,7 +575,7 @@ $t1 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Fin
     -Document $tidDoc -StateTransitionKey 'audit:9101' -TransitionId 42
 Assert-True $t1.IsSuccess 'First send with transition id should succeed'
 $t2 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' `
-    -Document $tidDoc -StateTransitionKey 'audit:9102' -TransitionId 42
+    -Document $tidDoc -StateTransitionKey 'audit:9101' -TransitionId 42
 Assert-True $t2.Data.skipped 'Same transition id with different audit echo should dedupe'
 $t3 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'Corrections Received' -CurrentState 'QC Complete' `
     -Document $tidDoc -StateTransitionKey 'audit:9103' -TransitionId 43

@@ -19,6 +19,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Revert-PWAssociatedSheetWorkflowStates'
         'Sync-PWAssociatedSheetMembersToWorkflowState'
         'Sync-PWAssociatedSheetReviewTypeAttributes'
+        'Sync-PWAssociatedSheetEmailAttributes'
         'Sync-PWSheetIndexOwnership'
         'Get-PWDocumentsInFolder'
         'ConvertTo-PWCmdletFolderPath'
@@ -40,6 +41,7 @@ function Ensure-PWDiscoveryModuleLoaded {
         'Core.Hashing.psm1'
         'Core.Database.psm1'
         'QC.StatusSet.psm1'
+        'PW.Connection.psm1'
         'PW.AuditPoller.psm1'
         'PW.Discovery.psm1'
     )
@@ -954,30 +956,61 @@ function Get-PWDocumentAttributesByColumns {
     }
 }
 
+function _PWD-GetSheetRoleEmailColumnNames {
+    param([hashtable]$Config = @{})
+
+    $designer = 'EM_Designer_Email'
+    $reviewer = 'EM_Reviewer_Email'
+    $checker = 'EM_Checker_Email'
+    try {
+        if ($Config) {
+            $na = $Config['notifications']['attributes']
+            if ($na) {
+                if ($na['designerEmailField']) { $designer = [string]$na['designerEmailField'] }
+                if ($na['reviewerEmailField']) { $reviewer = [string]$na['reviewerEmailField'] }
+                if ($na['checkerEmailField']) { $checker = [string]$na['checkerEmailField'] }
+            }
+            $pw = $Config['projectWise']
+            if ($pw -and $pw['environmentEmailAttributes']) {
+                $ea = $pw['environmentEmailAttributes']
+                if ($ea['default']) {
+                    if ($ea['default']['designerEmailColumn']) { $designer = [string]$ea['default']['designerEmailColumn'] }
+                    if ($ea['default']['reviewerEmailColumn']) { $reviewer = [string]$ea['default']['reviewerEmailColumn'] }
+                    if ($ea['default']['checkerEmailColumn']) { $checker = [string]$ea['default']['checkerEmailColumn'] }
+                }
+            }
+        }
+    } catch { }
+    return @{ designer = $designer; reviewer = $reviewer; checker = $checker }
+}
+
 function Get-PWDocumentEmailContacts {
     <#
     .SYNOPSIS
-    Reads EM_Designer_Email and EM_Reviewer_Email from a document in a folder via search-with-columns API.
+    Reads EM_Designer_Email, EM_Reviewer_Email, and EM_Checker_Email from a document in a folder via search-with-columns API.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$DocumentName,
         [string]$DesignerEmailColumn = 'EM_Designer_Email',
-        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email'
+        [string]$ReviewerEmailColumn = 'EM_Reviewer_Email',
+        [string]$CheckerEmailColumn = 'EM_Checker_Email'
     )
 
-    $cols = @($DesignerEmailColumn, $ReviewerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $cols = @($DesignerEmailColumn, $ReviewerEmailColumn, $CheckerEmailColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
     if (-not $read.found) {
-        return @{ designerEmail = ''; reviewerEmail = ''; found = $false; error = $read.error }
+        return @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; found = $false; error = $read.error }
     }
 
     $designer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $DesignerEmailColumn
     $reviewer = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $ReviewerEmailColumn
+    $checker = _PWD-GetPwAttributeValue -PwAttributes $read.attributes -ColumnName $CheckerEmailColumn
     return @{
         designerEmail = $designer
         reviewerEmail = $reviewer
+        checkerEmail  = $checker
         pwStateName   = [string]$read.pwStateName
         found         = $true
         document      = $read.document
@@ -989,6 +1022,112 @@ function _PWD-NormalizeSheetIndexValue {
     param([AllowNull()][string]$Value)
     if ($null -eq $Value) { return '' }
     return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function _PWD-GetSheetMemberDocRole {
+    param([string]$DocumentName)
+    $dn = [string]$DocumentName
+    if ($dn -match '(?i)-qc\.pdf$') { return 'qcPdf' }
+    if ($dn -match '(?i)\.dgn$') { return 'dgn' }
+    if ($dn -match '(?i)\.pdf$') { return 'pdf' }
+    return 'other'
+}
+
+function _PWD-WriteDocumentStateLiveVerificationLog {
+    param(
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$SourceDocumentGuid = '',
+        [string]$SourceDocumentName = '',
+        [string]$FolderPath = '',
+        [string]$CanonicalState = '',
+        [string]$CanonicalStateSource = 'liveProjectWise',
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [array]$Members = @(),
+        [hashtable]$StateByGuid = @{},
+        [hashtable]$Config = $null
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+
+    $byRole = @{ dgn = $null; pdf = $null; qcPdf = $null }
+    $associatedStates = [System.Collections.Generic.List[object]]::new()
+    foreach ($member in $Members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        if (-not $dn) { continue }
+        $role = _PWD-GetSheetMemberDocRole -DocumentName $dn
+        $liveState = ''
+        $stateSource = 'liveProjectWise'
+        $key = $dg.ToLowerInvariant()
+        if ($dg -and $StateByGuid.ContainsKey($key)) {
+            $liveState = [string]$StateByGuid[$key]
+        } else {
+            $liveState = _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+            if (-not $liveState) { $stateSource = 'memberDocumentRow' }
+        }
+        $sheetIndexState = ''
+        if ($dg -and $Config -and (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+            $sheetIndexState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        }
+        $entry = @{
+            role           = $role
+            documentGuid   = $dg
+            documentName   = $dn
+            livePwState    = $liveState
+            liveStateSource = $stateSource
+            sheetIndexState = $sheetIndexState
+        }
+        [void]$associatedStates.Add($entry)
+        if ($byRole.ContainsKey($role)) { $byRole[$role] = $entry }
+    }
+
+    Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_DOCUMENT_STATE_LIVE_VERIFY' `
+        -Message 'Live associated document workflow states before DOCUMENT_STATE sibling sync.' -Data @{
+        auditEventId = $AuditEventId
+        sourceDocumentGuid = $SourceDocumentGuid
+        sourceDocumentName = $SourceDocumentName
+        folderPath = $FolderPath
+        pwStateName = $CanonicalState
+        pwStateNameSource = $CanonicalStateSource
+        changedByUser = $ChangedByUser
+        changedByUsername = $ChangedByUsername
+        associatedStates = @($associatedStates)
+    } | Out-Null
+
+    $dgnState = if ($byRole.dgn) { [string]$byRole.dgn.livePwState } else { '' }
+    $pdfState = if ($byRole.pdf) { [string]$byRole.pdf.livePwState } else { '' }
+    $qcState = if ($byRole.qcPdf) { [string]$byRole.qcPdf.livePwState } else { '' }
+    $dgnName = if ($byRole.dgn) { [string]$byRole.dgn.documentName } else { '' }
+    $pdfName = if ($byRole.pdf) { [string]$byRole.pdf.documentName } else { '' }
+    $qcName = if ($byRole.qcPdf) { [string]$byRole.qcPdf.documentName } else { '' }
+
+    $divergences = [System.Collections.Generic.List[string]]::new()
+    if ($dgnState -and $pdfState -and ((_PWD-NormalizeSheetIndexValue $dgnState) -ne (_PWD-NormalizeSheetIndexValue $pdfState))) {
+        [void]$divergences.Add('dgn_vs_pdf')
+    }
+    if ($pdfState -and $qcState -and ((_PWD-NormalizeSheetIndexValue $pdfState) -ne (_PWD-NormalizeSheetIndexValue $qcState))) {
+        [void]$divergences.Add('pdf_vs_qcPdf')
+    }
+    if ($divergences.Count -gt 0) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_STATE_DIVERGENCE' `
+            -Message 'Associated sheet workflow states differ before sibling sync (expected when QC PDF or a member changes first).' -Data @{
+            auditEventId = $AuditEventId
+            sourceDocumentGuid = $SourceDocumentGuid
+            sourceDocumentName = $SourceDocumentName
+            folderPath = $FolderPath
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            divergences = @($divergences)
+            dgnDocumentName = $dgnName
+            dgnState = $dgnState
+            pdfDocumentName = $pdfName
+            pdfState = $pdfState
+            qcPdfDocumentName = $qcName
+            qcPdfState = $qcState
+            canonicalState = $CanonicalState
+            canonicalStateSource = $CanonicalStateSource
+        } | Out-Null
+    }
 }
 
 function _PWD-GetSheetIndexDocumentNameFromRow {
@@ -1159,10 +1298,19 @@ function Get-PWAssociatedSheetDocumentNames {
 function _PWD-InvokeSetPwDocumentState {
     param(
         [Parameter(Mandatory)][object]$Document,
-        [Parameter(Mandatory)][string]$StateName
+        [string]$StateName = '',
+        [hashtable]$GuardContext = @{}
     )
     if ([string]::IsNullOrWhiteSpace($StateName)) {
-        throw 'Set-PWDocumentState skipped: target workflow state is empty.'
+        if (-not $GuardContext) { $GuardContext = @{} }
+        $guardCallSite = '_PWD-InvokeSetPwDocumentState'
+        if ($GuardContext.callSite) { $guardCallSite = [string]$GuardContext.callSite }
+        _PWD-WriteEmptyStateGuardLog -CallSite $guardCallSite `
+            -AuditEventId $GuardContext.auditEventId -DocumentName ([string]$GuardContext.documentName) `
+            -FolderPath ([string]$GuardContext.folderPath) -SourceVariableName ([string]$GuardContext.sourceVariableName) `
+            -SourceValue $StateName -LivePwState ([string]$GuardContext.livePwState) `
+            -ChangedByUsername ([string]$GuardContext.changedByUsername)
+        return $false
     }
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
     if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
@@ -1430,8 +1578,18 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
             continue
         }
 
+        if (-not (_PWD-TestStateNameNotEmpty -StateName $target -CallSite 'Sync-PWAssociatedSheetReviewTypeAttributes.target' `
+                -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'target' -LivePwState ([string]$currentState) `
+                -ChangedByUsername '')) {
+            $change.skipped = 'empty_target_state'
+            $stateUpdates.Add($change) | Out-Null
+            continue
+        }
         try {
-            _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $target
+            _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $target -GuardContext @{
+                callSite = 'Sync-PWAssociatedSheetReviewTypeAttributes.target'; documentName = $dn; folderPath = $FolderPath
+                sourceVariableName = 'target'; livePwState = [string]$currentState
+            }
             $change.applied = $true
             $verifiedState = if ($dg) {
                 Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
@@ -1633,23 +1791,365 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
     }
 }
 
+function Sync-PWAssociatedSheetEmailAttributes {
+    <#
+    .SYNOPSIS
+    Propagates role emails from the DGN-first canonical source to associated DGN, sheet PDF, and QC PDF siblings.
+    .DESCRIPTION
+    Updates ProjectWise environment attributes and sheet_index role email columns for every associated member
+    when canonical designer, reviewer, or checker emails differ. Mirrors sibling QC_Review_Type sync.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false
+    )
+
+    $emailCols = _PWD-GetSheetRoleEmailColumnNames -Config $Config
+    $designerCol = [string]$emailCols.designer
+    $reviewerCol = [string]$emailCols.reviewer
+    $checkerCol = [string]$emailCols.checker
+
+    $canonical = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $DocumentName -Config $Config
+    if (-not $canonical.found) { return }
+
+    $canonicalDesigner = [string]$canonical.designerEmail
+    $canonicalReviewer = [string]$canonical.reviewerEmail
+    $canonicalChecker = [string]$canonical.checkerEmail
+
+    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if ($members.Count -eq 0) { return }
+
+    $readCols = @($designerCol, $reviewerCol, $checkerCol) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $stateUpdates = @()
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        $dn = [string]$member.documentName
+        $doc = $member.document
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+
+        $prevDbDesigner = ''
+        $prevDbReviewer = ''
+        $prevDbChecker = ''
+        if ($dg -and (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue) -and (Test-QCDatabaseEnabled -Config $Config)) {
+            try {
+                $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $dg }
+                if ($dbRes.IsSuccess -and $dbRes.Data.table -and $dbRes.Data.table.Rows.Count -gt 0) {
+                    $r = $dbRes.Data.table.Rows[0]
+                    if (-not ($r.designer_email -is [DBNull])) { $prevDbDesigner = [string]$r.designer_email }
+                    if (-not ($r.reviewer_email -is [DBNull])) { $prevDbReviewer = [string]$r.reviewer_email }
+                    if ($r.Table.Columns.Contains('checker_email') -and -not ($r.checker_email -is [DBNull])) { $prevDbChecker = [string]$r.checker_email }
+                }
+            } catch { }
+        }
+
+        $currentDesigner = ''
+        $currentReviewer = ''
+        $currentChecker = ''
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn $readCols
+        if ($attrRead.found) {
+            $currentDesigner = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $designerCol
+            $currentReviewer = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewerCol
+            $currentChecker = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $checkerCol
+            if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
+        }
+        if (-not $doc) {
+            $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
+        }
+        if (-not $doc) { continue }
+
+        $toWrite = @{}
+        if ((_PWD-NormalizeSheetIndexValue $currentDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner)) {
+            $toWrite[$designerCol] = $canonicalDesigner
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer)) {
+            $toWrite[$reviewerCol] = $canonicalReviewer
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)) {
+            $toWrite[$checkerCol] = $canonicalChecker
+        }
+
+        $indexNeedsWrite = (_PWD-NormalizeSheetIndexValue $prevDbDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner) `
+            -or (_PWD-NormalizeSheetIndexValue $prevDbReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer) `
+            -or (_PWD-NormalizeSheetIndexValue $prevDbChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)
+        if ($toWrite.Keys.Count -eq 0 -and -not $indexNeedsWrite) { continue }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromValue    = @{ designer = $currentDesigner; reviewer = $currentReviewer; checker = $currentChecker }
+            toValue      = @{ designer = $canonicalDesigner; reviewer = $canonicalReviewer; checker = $canonicalChecker }
+            applied      = $false
+            planned      = $false
+            indexUpdated = $false
+            attributesWritten = @($toWrite.Keys)
+        }
+
+        if ($toWrite.Keys.Count -gt 0) {
+            if ($DryRun) {
+                $change.planned = $true
+            } else {
+                try {
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $toWrite)
+                    $change.applied = $true
+                } catch {
+                    $change.error = [string]$_.Exception.Message
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_EMAIL_SYNC_FAILED' `
+                            -Message 'Failed to align associated sheet role emails.' -Data @{
+                            documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
+                            toValue = $change.toValue; error = [string]$_.Exception.Message
+                        }
+                    }
+                    continue
+                }
+            }
+        }
+
+        if ($indexNeedsWrite -and (Get-Command -Name 'Write-QCSheetIndex' -ErrorAction SilentlyContinue)) {
+            if (-not $DryRun) {
+                try {
+                    $ext = [System.IO.Path]::GetExtension($dn)
+                    if ($ext) { $ext = $ext.ToLowerInvariant() }
+                    $sourceType = $null
+                    if ($ext -eq '.pdf') { $sourceType = 'pdf' }
+                    elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
+                    Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
+                        -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType `
+                        -DesignerEmail $canonicalDesigner -ReviewerEmail $canonicalReviewer -CheckerEmail $canonicalChecker `
+                        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                    $change.indexUpdated = $true
+                } catch { }
+            }
+        }
+
+        if (Get-Command -Name 'Invoke-QCAuditWorkflowAttributeChangeTriggers' -ErrorAction SilentlyContinue) {
+            $fieldChanges = @{}
+            if ((_PWD-NormalizeSheetIndexValue $currentDesigner) -ne (_PWD-NormalizeSheetIndexValue $canonicalDesigner)) {
+                $fieldChanges['designer_email'] = @{ oldValue = [string]$currentDesigner; newValue = $canonicalDesigner }
+            }
+            if ((_PWD-NormalizeSheetIndexValue $currentReviewer) -ne (_PWD-NormalizeSheetIndexValue $canonicalReviewer)) {
+                $fieldChanges['reviewer_email'] = @{ oldValue = [string]$currentReviewer; newValue = $canonicalReviewer }
+            }
+            if ((_PWD-NormalizeSheetIndexValue $currentChecker) -ne (_PWD-NormalizeSheetIndexValue $canonicalChecker)) {
+                $fieldChanges['checker_email'] = @{ oldValue = [string]$currentChecker; newValue = $canonicalChecker }
+            }
+            if ($fieldChanges.Count -gt 0) {
+                Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
+                    -FolderPath $FolderPath -FieldChanges $fieldChanges | Out-Null
+            }
+        }
+
+        $stateUpdates += $change
+    }
+
+    if ($stateUpdates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_EMAIL_SYNC' `
+            -Message 'Associated sheet role emails aligned from DOCUMENT_ATTR audit event.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath          = $FolderPath
+            canonicalDesigner   = $canonicalDesigner
+            canonicalReviewer   = $canonicalReviewer
+            canonicalChecker    = $canonicalChecker
+            memberCount         = $members.Count
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+        }
+    }
+}
+
+
+
+function _PWD-WriteEmptyStateGuardLog {
+    param(
+        [string]$CallSite = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SourceVariableName = '',
+        [AllowNull()][object]$SourceValue = $null,
+        [string]$LivePwState = '',
+        [string]$ChangedByUsername = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+        -Message 'Skipped workflow state call because StateName source value was empty.' -Data @{
+        callSite = $CallSite
+        auditEventId = $AuditEventId
+        documentName = $DocumentName
+        folderPath = $FolderPath
+        sourceVariableName = $SourceVariableName
+        sourceValue = if ($null -eq $SourceValue) { $null } else { [string]$SourceValue }
+        livePwState = $LivePwState
+        changedByUsername = $ChangedByUsername
+    } | Out-Null
+}
+
+function _PWD-TestStateNameNotEmpty {
+    param(
+        [string]$StateName = '',
+        [string]$CallSite = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$SourceVariableName = '',
+        [string]$LivePwState = '',
+        [string]$ChangedByUsername = ''
+    )
+    if (-not [string]::IsNullOrWhiteSpace($StateName)) { return $true }
+    _PWD-WriteEmptyStateGuardLog -CallSite $CallSite -AuditEventId $AuditEventId `
+        -DocumentName $DocumentName -FolderPath $FolderPath -SourceVariableName $SourceVariableName `
+        -SourceValue $StateName -LivePwState $LivePwState -ChangedByUsername $ChangedByUsername
+    return $false
+}
+
+function _PWD-GetConfiguredWorkflowStateNames {
+    param([hashtable]$Config)
+    $states = [System.Collections.Generic.List[string]]::new()
+    $seen = @{}
+    $add = {
+        param([string]$Name)
+        if ([string]::IsNullOrWhiteSpace($Name)) { return }
+        $n = ([string]$Name).Trim()
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { return }
+        $seen[$k] = $true
+        [void]$states.Add($n)
+    }
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                foreach ($key in @('production','qcInitiated','qcReceived','readyForQc','redlinesReceived','correctionsReceived','correctionsInProgress','qcFinalizing','complete','error')) {
+                    try { & $add (Get-QCWorkflowStateName -Settings $wf -StateKey $key) } catch { }
+                }
+            }
+        } catch { }
+    }
+    foreach ($fallback in @('In Production','QC Initiated','Ready for QC','Redlines Received','Corrections Received','Corrections In Progress','QC Finalizing','QC Complete','Error Needs Attention')) {
+        & $add $fallback
+    }
+    return @($states)
+}
+
+function _PWD-ResolveAuditWorkflowTargetStateName {
+    param(
+        [hashtable]$Config,
+        [string]$AuditTargetStateName = '',
+        [string]$AuditRawItemDesc = '',
+        [string]$AuditRawTextParam = ''
+    )
+    $knownStates = @(_PWD-GetConfiguredWorkflowStateNames -Config $Config)
+    foreach ($raw in @($AuditTargetStateName, $AuditRawTextParam, $AuditRawItemDesc)) {
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $value = ([string]$raw).Trim()
+        foreach ($state in $knownStates) {
+            if ([string]::IsNullOrWhiteSpace($state)) { continue }
+            if ($value.Equals([string]$state, [System.StringComparison]::OrdinalIgnoreCase)) { return [string]$state }
+        }
+        foreach ($state in $knownStates) {
+            if ([string]::IsNullOrWhiteSpace($state)) { continue }
+            $escaped = [regex]::Escape(([string]$state).Trim())
+            if ($escaped -and $value -match ('(?i)(^|[^A-Za-z0-9])' + $escaped + '([^A-Za-z0-9]|$)')) { return [string]$state }
+        }
+    }
+    return ''
+}
+
+function _PWD-GetSheetIndexStateSnapshot {
+    param(
+        [hashtable]$Config,
+        [string]$DocumentGuid
+    )
+    $snapshot = @{ pwStateName = ''; lastAuditEventAt = $null }
+    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return $snapshot }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $snapshot }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $snapshot }
+    try {
+        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT pw_state_name, last_audit_event_at FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+            $r = $siRes.Data.table.Rows[0]
+            if (-not ($r.pw_state_name -is [DBNull])) { $snapshot.pwStateName = [string]$r.pw_state_name }
+            if (-not ($r.last_audit_event_at -is [DBNull])) { $snapshot.lastAuditEventAt = $r.last_audit_event_at }
+        }
+    } catch { }
+    return $snapshot
+}
+
 function _PWD-GetSheetIndexPwStateName {
     param(
         [hashtable]$Config,
         [string]$DocumentGuid
     )
-    if ([string]::IsNullOrWhiteSpace($DocumentGuid)) { return '' }
-    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
-    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    $snapshot = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $DocumentGuid
+    return [string]$snapshot.pwStateName
+}
+
+function _PWD-TryParseAuditDateTime {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    try { return [DateTimeOffset]::Parse([string]$Value) } catch { }
+    try { return [DateTimeOffset]::ParseExact(([string]$Value).Trim().TrimEnd('Z'), 'yyyy-MM-dd HH:mm:ss', $null, [Globalization.DateTimeStyles]::AssumeUniversal) } catch { }
+    return $null
+}
+
+function _PWD-TestShouldBlockStaleRestartOverwrite {
+    param(
+        [hashtable]$Config,
+        [string]$CurrentState = '',
+        [string]$TargetState = '',
+        [hashtable]$SheetIndexSnapshot = $null,
+        [string]$SourceAuditEventAt = ''
+    )
+    if (-not (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($TargetState)) { return $false }
+    if (Test-QCWorkflowStateIsQcInitiated -StateName $TargetState -Config $Config) { return $false }
+    if (-not $SheetIndexSnapshot) { return $false }
+    $snapshotState = [string]$SheetIndexSnapshot.pwStateName
+    if ([string]::IsNullOrWhiteSpace($snapshotState)) { return $false }
+    if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $snapshotState -Config $Config)) { return $false }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue) {
+        if (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config -PreviousState $TargetState -CurrentState $snapshotState)) { return $false }
+    }
+    $sourceAt = _PWD-TryParseAuditDateTime -Value $SourceAuditEventAt
+    $targetAt = $null
     try {
-        $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT pw_state_name FROM sheet_index WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid }
-        if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
-            $r = $siRes.Data.table.Rows[0]
-            if (-not ($r.pw_state_name -is [DBNull])) { return [string]$r.pw_state_name }
+        if ($SheetIndexSnapshot.lastAuditEventAt) { $targetAt = [DateTimeOffset]$SheetIndexSnapshot.lastAuditEventAt }
+    } catch { $targetAt = _PWD-TryParseAuditDateTime -Value ([string]$SheetIndexSnapshot.lastAuditEventAt) }
+    if ($sourceAt -and $targetAt) { return ($sourceAt -le $targetAt) }
+    return $true
+}
+
+function _PWD-ResolveSheetPackageNotificationDocumentGuid {
+    param([array]$Members)
+
+    foreach ($m in @($Members)) {
+        $dn = [string]$m.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
+            if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { return [string]$m.documentGuid }
+        } elseif ($dn -match '(?i)-qc\.pdf$') {
+            return [string]$m.documentGuid
         }
-    } catch { }
+    }
+    foreach ($m in @($Members)) {
+        $dn = [string]$m.documentName
+        if ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-qc\.pdf$') { return [string]$m.documentGuid }
+    }
+    if (@($Members).Count -gt 0) { return [string]$Members[0].documentGuid }
     return ''
 }
 
@@ -1687,6 +2187,8 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
     $canonical = _PWD-NormalizeSheetIndexValue $CanonicalState
     if ([string]::IsNullOrWhiteSpace($canonical)) { return }
 
+    $packageNotifyGuid = _PWD-ResolveSheetPackageNotificationDocumentGuid -Members $Members
+
     foreach ($member in $Members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -1704,10 +2206,28 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         }
         if ((_PWD-NormalizeSheetIndexValue $pwCurrent) -ne $canonical) { continue }
 
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STALE_INDEX_STATE_TRIGGER' `
+                -Message 'Firing workflow triggers for member already at canonical PW state but stale sheet_index.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $dg
+                documentName = $dn
+                folderPath = $FolderPath
+                previousState = $prevDb
+                previousStateSource = 'sheet_index'
+                currentState = $CanonicalState
+                currentStateSource = 'liveProjectWise'
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+            } | Out-Null
+        }
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
             -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
             -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
-            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
+            -PreviousStateSource 'sheet_index' -CurrentStateSource 'liveProjectWise' `
+            -StaleCheckMembers $Members -StaleCheckStateByGuid $StateByGuid -StaleCheckCanonicalState $CanonicalState `
+            -SuppressNotification:((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid)) | Out-Null
     }
 }
 
@@ -1980,9 +2500,17 @@ function Revert-PWAssociatedSheetWorkflowStates {
             $change.planned = $true
         } elseif (-not $doc) {
             $change.error = 'ProjectWise document object unavailable for state rollback.'
+        } elseif (-not (_PWD-TestStateNameNotEmpty -StateName $previous -CallSite 'Invoke-QCWorkflowStateEmailAttributeGate.rollback.previous' `
+                -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'previous' `
+                -LivePwState ([string]$current) -ChangedByUsername $ChangedByUsername)) {
+            $change.skipped = 'empty_previous_state'
         } else {
             try {
-                _PWD-InvokeSetPwDocumentState -Document $doc -StateName $previous
+                _PWD-InvokeSetPwDocumentState -Document $doc -StateName $previous -GuardContext @{
+                    callSite = 'Invoke-QCWorkflowStateEmailAttributeGate.rollback.previous'; auditEventId = $AuditEventId
+                    documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'previous'
+                    livePwState = [string]$current; changedByUsername = $ChangedByUsername
+                }
                 $change.applied = $true
                 if ($dbEnabled) {
                     try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $previous) } catch { }
@@ -2024,7 +2552,10 @@ function Sync-PWAssociatedSheetWorkflowState {
         [Nullable[long]]$AuditEventId = $null,
         [bool]$DryRun = $false,
         [Nullable[int]]$ChangedByUser = $null,
-        [string]$ChangedByUsername = ''
+        [string]$ChangedByUsername = '',
+        [string]$AuditTargetStateName = '',
+        [string]$AuditRawItemDesc = '',
+        [string]$AuditRawTextParam = ''
     )
 
     if (Get-Command -Name 'Test-QCShouldSuppressAuditSheetStateSync' -ErrorAction SilentlyContinue) {
@@ -2041,8 +2572,78 @@ function Sync-PWAssociatedSheetWorkflowState {
         }
     }
 
-    $canonicalState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
-    if ([string]::IsNullOrWhiteSpace($canonicalState)) { return }
+    $sourcePwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+    if ([string]::IsNullOrWhiteSpace($sourcePwState)) { return }
+    $auditTargetState = _PWD-ResolveAuditWorkflowTargetStateName -Config $Config `
+        -AuditTargetStateName $AuditTargetStateName -AuditRawItemDesc $AuditRawItemDesc -AuditRawTextParam $AuditRawTextParam
+    # DOCUMENT_STATE audit rows are sparse: the parsed audit state is only a diagnostic hint.
+    # Live ProjectWise state remains authoritative for sibling sync and workflow actions.
+    $canonicalState = $sourcePwState
+    $actorIsAutomation = $false
+    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
+        try { $actorIsAutomation = Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername } catch { $actorIsAutomation = $false }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($auditTargetState)) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_TARGET_UNAVAILABLE' `
+                -Message 'DOCUMENT_STATE audit row did not include a usable target state; using live ProjectWise state.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+                auditTimestamp = $LastAuditEventAt
+                rawItemDesc = $AuditRawItemDesc
+                rawTextParam = $AuditRawTextParam
+                liveWorkflowState = $sourcePwState
+            } | Out-Null
+        } else {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_TARGET_HINT' `
+                -Message 'DOCUMENT_STATE audit row included a target-state hint; live ProjectWise state remains authoritative.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                changedByUser = $ChangedByUser
+                changedByUsername = $ChangedByUsername
+                auditTimestamp = $LastAuditEventAt
+                rawItemDesc = $AuditRawItemDesc
+                rawTextParam = $AuditRawTextParam
+                auditTargetStateHint = $auditTargetState
+                liveWorkflowState = $sourcePwState
+            } | Out-Null
+        }
+    }
+
+    $triggerSheetIndexState = ''
+    if (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue) {
+        $triggerSheetIndexState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SOURCE' `
+            -Message 'DOCUMENT_STATE sibling sync source state resolved from live ProjectWise state.' -Data @{
+            auditEventId = $AuditEventId
+            sourceDocumentGuid = $DocumentGuid
+            sourceDocumentName = $DocumentName
+            folderPath = $FolderPath
+            pwStateName = $sourcePwState
+            pwStateNameSource = 'liveProjectWise'
+            sourceCurrentPwState = $sourcePwState
+            sheetIndexState = $triggerSheetIndexState
+            sheetIndexStateSource = 'sheet_index'
+            auditTargetState = $auditTargetState
+            canonicalState = $canonicalState
+            canonicalStateSource = 'liveProjectWise'
+            sourceAuditActionTime = $LastAuditEventAt
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            actorIsAutomation = $actorIsAutomation
+            rawItemDesc = $AuditRawItemDesc
+            rawTextParam = $AuditRawTextParam
+        } | Out-Null
+    }
 
     if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
@@ -2111,6 +2712,77 @@ function Sync-PWAssociatedSheetWorkflowState {
         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
     }
 
+    $previousStateByGuid = @{}
+    foreach ($member in $members) {
+        $dg = [string]$member.documentGuid
+        if (-not $dg) { continue }
+        $prevIndex = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
+        $previousStateByGuid[$dg.ToLowerInvariant()] = [string]$prevIndex
+    }
+
+    _PWD-WriteDocumentStateLiveVerificationLog -AuditEventId $AuditEventId `
+        -SourceDocumentGuid $DocumentGuid -SourceDocumentName $DocumentName -FolderPath $FolderPath `
+        -CanonicalState $canonicalState -CanonicalStateSource 'liveProjectWise' `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+        -Members $members -StateByGuid $stateByGuid -Config $Config
+
+    if ($guids.Count -gt 0) {
+        try {
+            $liveRefresh = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
+            if ($liveRefresh) {
+                foreach ($k in @($liveRefresh.Keys)) { $stateByGuid[$k] = $liveRefresh[$k] }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH' `
+                    -Message 'Re-read live ProjectWise workflow states before DOCUMENT_STATE recency evaluation.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    memberCount = $members.Count
+                    stateCount = if ($liveRefresh) { @($liveRefresh.Keys).Count } else { 0 }
+                    sourceAuditActionTime = $LastAuditEventAt
+                    changedByUser = $ChangedByUser
+                    changedByUsername = $ChangedByUsername
+                } | Out-Null
+            }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_STATE_LIVE_REFRESH_FAILED' `
+                    -Message 'Failed to re-read live ProjectWise workflow states before DOCUMENT_STATE recency evaluation.' -Data @{
+                    auditEventId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    folderPath = $FolderPath
+                    error = [string]$_.Exception.Message
+                } | Out-Null
+            }
+        }
+    }
+
+    if (Get-Command -Name 'Test-QCDocumentStateAuditEventIsStale' -ErrorAction SilentlyContinue) {
+        $staleDecision = Test-QCDocumentStateAuditEventIsStale -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -CanonicalState $canonicalState `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -Members $members -StateByGuid $stateByGuid -SheetStem $sheetStemForPrepend
+        if ($staleDecision -and [bool]$staleDecision.isStale) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                $staleLog = @{
+                    decision = 'skipped'
+                    sync = 'skipped'
+                    notify = 'skipped'
+                    canonicalState = $canonicalState
+                    canonicalStateSource = 'liveProjectWise'
+                }
+                foreach ($k in @($staleDecision.Keys)) { $staleLog[$k] = $staleDecision[$k] }
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SKIPPED_STALE_EVENT' `
+                    -Message 'Skipped DOCUMENT_STATE sibling sync for superseded audit event.' -Data $staleLog | Out-Null
+            }
+            return
+        }
+    }
+
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
         try {
             $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
@@ -2147,10 +2819,6 @@ function Sync-PWAssociatedSheetWorkflowState {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
 
-    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
-        -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
-        -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId
-
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
@@ -2160,6 +2828,63 @@ function Sync-PWAssociatedSheetWorkflowState {
             [string]$stateByGuid[$dg.ToLowerInvariant()]
         } else {
             _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
+        }
+        $memberSheetIndexSnapshot = _PWD-GetSheetIndexStateSnapshot -Config $Config -DocumentGuid $dg
+        $regressionBlocked = _PWD-TestShouldBlockStaleRestartOverwrite -Config $Config -CurrentState ([string]$currentState) `
+            -TargetState ([string]$canonicalState) -SheetIndexSnapshot $memberSheetIndexSnapshot `
+            -SourceAuditEventAt $LastAuditEventAt
+        if ($regressionBlocked) {
+            $restartStateToKeep = [string]$memberSheetIndexSnapshot.pwStateName
+            $targetLastAuditEventAtForLog = $null
+            if ($memberSheetIndexSnapshot.lastAuditEventAt) { $targetLastAuditEventAtForLog = [string]$memberSheetIndexSnapshot.lastAuditEventAt }
+            $restored = $false
+            $restoreError = ''
+            if ((-not $DryRun) -and ((_PWD-NormalizeSheetIndexValue $currentState) -ne (_PWD-NormalizeSheetIndexValue $restartStateToKeep))) {
+                if (-not (_PWD-TestStateNameNotEmpty -StateName $restartStateToKeep -CallSite 'Sync-PWAssociatedSheetWorkflowState.restartStateToKeep' `
+                        -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'restartStateToKeep' `
+                        -LivePwState ([string]$currentState) -ChangedByUsername $ChangedByUsername)) {
+                    $restoreError = 'Restart state was empty; restore skipped.'
+                } else {
+                try {
+                    _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $restartStateToKeep -GuardContext @{
+                        callSite = 'Sync-PWAssociatedSheetWorkflowState.restartStateToKeep'; auditEventId = $AuditEventId
+                        documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'restartStateToKeep'
+                        livePwState = [string]$currentState; changedByUsername = $ChangedByUsername
+                    }
+                    $restored = $true
+                } catch {
+                    $restoreError = [string]$_.Exception.Message
+                }
+                }
+            }
+            if ($dbEnabled -and (-not $DryRun)) {
+                try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $restartStateToKeep) } catch { }
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                $level = if ($restoreError) { 'Warning' } else { 'Warning' }
+                Write-QCJsonLog -Flush -Level $level -Code 'WATCH_AUDIT_STATE_REGRESSION_BLOCKED' `
+                    -Message 'Blocked stale DOCUMENT_STATE sync from regressing a newer manual QC Initiated restart.' -Data @{
+                    sourceAuditId = $AuditEventId
+                    sourceDocumentGuid = $DocumentGuid
+                    sourceDocumentName = $DocumentName
+                    sourceCurrentPwState = $sourcePwState
+                    sourceAuditActionTime = $LastAuditEventAt
+                    sourceActorUserNo = $ChangedByUser
+                    sourceActorUsername = $ChangedByUsername
+                    sourceActorIsAutomation = $actorIsAutomation
+                    targetDocumentGuid = $dg
+                    targetDocumentName = $dn
+                    targetPreviousPwState = [string]$currentState
+                    targetNewPwState = $restartStateToKeep
+                    targetLastAuditEventAt = $targetLastAuditEventAtForLog
+                    targetChangeIsAutomationOriginated = $actorIsAutomation
+                    reason = 'newer_manual_qc_initiated_restart'
+                    restored = $restored
+                    dryRun = [bool]$DryRun
+                    error = $restoreError
+                } | Out-Null
+            }
+            continue
         }
         if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $canonicalState)) {
             if ($dbEnabled) {
@@ -2176,14 +2901,6 @@ WHERE document_guid = @docGuid
             continue
         }
 
-        if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
-            Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
-                -FolderPath $FolderPath -PreviousState ([string]$currentState) -CurrentState ([string]$canonicalState) `
-                -Document $member.document -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
-                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
-                -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
-        }
-
         $change = @{
             documentGuid = $dg
             documentName = $dn
@@ -2195,10 +2912,49 @@ WHERE document_guid = @docGuid
 
         if ($DryRun) {
             $change.planned = $true
+        } elseif (-not (_PWD-TestStateNameNotEmpty -StateName $canonicalState -CallSite 'Sync-PWAssociatedSheetWorkflowState.canonicalState' `
+                -AuditEventId $AuditEventId -DocumentName $dn -FolderPath $FolderPath -SourceVariableName 'canonicalState' `
+                -LivePwState ([string]$currentState) -ChangedByUsername $ChangedByUsername)) {
+            $change.skipped = 'empty_canonical_state'
+            $stateUpdates += $change
+            continue
         } else {
             try {
-                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState
+                _PWD-InvokeSetPwDocumentState -Document $member.document -StateName $canonicalState -GuardContext @{
+                    callSite = 'Sync-PWAssociatedSheetWorkflowState.canonicalState'; auditEventId = $AuditEventId
+                    documentName = $dn; folderPath = $FolderPath; sourceVariableName = 'canonicalState'
+                    livePwState = [string]$currentState; changedByUsername = $ChangedByUsername
+                }
                 $change.applied = $true
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_CHANGE' `
+                        -Message 'Sibling workflow state changed from DOCUMENT_STATE audit event.' -Data @{
+                        sourceAuditId = $AuditEventId
+                        sourceDocument = $DocumentName
+                        sourceDocumentGuid = $DocumentGuid
+                        sourceDocumentName = $DocumentName
+                        sourceState = [string]$canonicalState
+                        sourceCurrentPwState = $sourcePwState
+                        sourceAuditActionTime = $LastAuditEventAt
+                        sourceActorUserNo = $ChangedByUser
+                        sourceActorUsername = $ChangedByUsername
+                        actor = $ChangedByUsername
+                        sourceActorIsAutomation = $actorIsAutomation
+                        targetDocument = $dn
+                        targetDocumentGuid = $dg
+                        targetDocumentName = $dn
+                        targetState = [string]$canonicalState
+                        previousTargetState = [string]$currentState
+                        targetPreviousPwState = [string]$currentState
+                        newTargetState = [string]$canonicalState
+                        targetNewPwState = [string]$canonicalState
+                        changedByUser = $ChangedByUser
+                        changedByUsername = $ChangedByUsername
+                        targetChangeIsAutomationOriginated = $actorIsAutomation
+                        reason = 'document_state_sibling_sync'
+                        dryRun = [bool]$DryRun
+                    } | Out-Null
+                }
                 if (Get-Command -Name 'Write-QCStateChangeJobTelemetry' -ErrorAction SilentlyContinue) {
                     $recordJobs = $true
                     if (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue) {
@@ -2253,9 +3009,23 @@ WHERE document_guid = @docGuid
         }
     }
 
+    if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+        Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $DocumentGuid `
+            -TriggerDocumentName $DocumentName -FolderPath $FolderPath -SourceState $previousSheetState `
+            -TargetState $canonicalState -TransitionSource 'user_audit' -Members $members `
+            -StateByGuid $stateByGuid -PreviousStateByGuid $previousStateByGuid `
+            -AuditEventId $AuditEventId -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -LastAuditEventAt $LastAuditEventAt -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' | Out-Null
+    }
+
     $qcInitiated = $false
-    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+    if ((-not [string]::IsNullOrWhiteSpace($canonicalState)) -and (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) {
         $qcInitiated = Test-QCWorkflowStateIsQcInitiated -StateName $canonicalState -Config $Config
+    } elseif ([string]::IsNullOrWhiteSpace($canonicalState)) {
+        _PWD-WriteEmptyStateGuardLog -CallSite 'Sync-PWAssociatedSheetWorkflowState.qcInitiatedTest' `
+            -AuditEventId $AuditEventId -DocumentName $DocumentName -FolderPath $FolderPath `
+            -SourceVariableName 'canonicalState' -SourceValue $canonicalState -LivePwState $sourcePwState `
+            -ChangedByUsername $ChangedByUsername
     }
     if ($qcInitiated -and $dbEnabled -and -not $DryRun -and (Get-Command -Name 'Sync-PWSheetIndexOwnership' -ErrorAction SilentlyContinue)) {
         foreach ($member in $members) {
@@ -2289,18 +3059,39 @@ WHERE document_guid = @docGuid
 
     $appliedStateUpdates = @($stateUpdates | Where-Object { $_ -and $_.applied -eq $true })
     if ($appliedStateUpdates.Count -eq 0) {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
-                -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
-                triggerDocumentGuid = $DocumentGuid
-                triggerDocumentName = $DocumentName
-                folderPath          = $FolderPath
-                canonicalState      = $canonicalState
-                memberCount         = $members.Count
-                auditEventId        = $AuditEventId
-            } | Out-Null
+        $allowPrependForRestartEcho = $false
+        if ($qcInitiated -and (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue)) {
+            $allowPrependForRestartEcho = Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config `
+                -PreviousState $previousSheetState -CurrentState $canonicalState
         }
-        return
+        if ($allowPrependForRestartEcho) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_RESTART_NO_STATE_CHANGES' `
+                    -Message 'QC_PREPEND evaluation allowed for QC Initiated restart even though sibling states were already aligned.' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    previousSheetState  = $previousSheetState
+                    canonicalState      = $canonicalState
+                    memberCount         = $members.Count
+                    auditEventId        = $AuditEventId
+                    reason              = 'qc_initiated_restart_intake'
+                } | Out-Null
+            }
+        } else {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
+                    -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    canonicalState      = $canonicalState
+                    memberCount         = $members.Count
+                    auditEventId        = $AuditEventId
+                } | Out-Null
+            }
+            return
+        }
     }
 
     _PWD-EnqueuePrependJobsFromAssociatedQcPdfState -Config $Config -FolderPath $FolderPath -Members $members `
@@ -2360,6 +3151,13 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
     try {
         $sheetState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $sheetPdfName -DocumentGuid $sheetGuid)
     } catch { return }
+    if ([string]::IsNullOrWhiteSpace($sheetState)) {
+        _PWD-WriteEmptyStateGuardLog -CallSite '_PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf.sheetState' `
+            -AuditEventId $null -DocumentName $sheetPdfName -FolderPath $FolderPath `
+            -SourceVariableName 'sheetState' -SourceValue $sheetState -LivePwState $sheetState `
+            -ChangedByUsername $ChangedByUsername
+        return
+    }
     if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $sheetState -Config $Config)) { return }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -2406,6 +3204,7 @@ function Sync-PWSheetIndexOwnership {
         [Nullable[long]]$AuditEventId = $null,
         [string]$AuditActionName = '',
         [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
         [switch]$SkipQcInitiatedFallback
     )
 
@@ -2451,6 +3250,21 @@ WHERE document_guid = @docGuid
 
     $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
     $read = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName -ColumnsToReturn $cols
+    if ($isDocumentAttr -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_ATTR_LIVE_READ' `
+            -Message 'DOCUMENT_ATTR audit signal resolved by live ProjectWise attribute read.' -Data @{
+            auditEventId = $AuditEventId
+            documentGuid = $DocumentGuid
+            documentName = $DocumentName
+            folderPath = $FolderPath
+            changedByUser = $ChangedByUser
+            changedByUsername = $ChangedByUsername
+            auditTimestamp = $LastAuditEventAt
+            liveAttributeReadStatus = if ($read.found) { 'found' } else { 'not_found' }
+            liveWorkflowState = if ($read.pwStateName) { [string]$read.pwStateName } else { '' }
+            error = if ($read.error) { [string]$read.error } else { '' }
+        } | Out-Null
+    }
     if (-not $read.found) { return }
 
     $fieldsRaw = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
@@ -2532,7 +3346,8 @@ WHERE document_guid = @docGuid
         }
         if ($fieldChanges.Count -gt 0) {
             Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $DocumentGuid `
-                -DocumentName $DocumentName -FolderPath $FolderPath -FieldChanges $fieldChanges | Out-Null
+                -DocumentName $DocumentName -FolderPath $FolderPath -FieldChanges $fieldChanges `
+                -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername | Out-Null
         }
     }
 
@@ -2559,6 +3374,15 @@ WHERE document_guid = @docGuid
         }
     }
 
+    $checkerEmailDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker)
+    $roleEmailsNeedSiblingSync = $emailsDiffer -or $checkerEmailDiffer
+
+    if ($isDocumentAttr -and $roleEmailsNeedSiblingSync) {
+        Sync-PWAssociatedSheetEmailAttributes -Config $Config -DocumentGuid $DocumentGuid `
+            -DocumentName $DocumentName -FolderPath $FolderPath -WatchRoot $WatchRoot `
+            -LastAuditEventAt $LastAuditEventAt -DryRun:$false
+    }
+
     if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($pwReviewType)) {
         Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
             -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $pwReviewType `
@@ -2574,7 +3398,8 @@ WHERE document_guid = @docGuid
     if ($IsSheetsFolder -and $isDocumentAttr -and -not $SkipQcInitiatedFallback) {
         _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf -Config $Config -FolderPath $FolderPath `
             -DocumentName $DocumentName -DocumentGuid $DocumentGuid -IsSheetsFolder:$IsSheetsFolder `
-            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser
+            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername
     }
 }
 
@@ -2614,7 +3439,7 @@ function _PWD-InvokeUpdatePWDocumentAttributes {
 function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     <#
     .SYNOPSIS
-    Copies EM_Designer_Email and EM_Reviewer_Email from the source sheet PDF to the matching *-qc.pdf document.
+    Copies EM_Designer_Email, EM_Reviewer_Email, and EM_Checker_Email from the source sheet PDF to the matching *-qc.pdf document.
     .DESCRIPTION
     The source .pdf is the source of truth. When the QC PDF is missing these values or they differ,
     updates the QC PDF environment attributes to match the source.
@@ -2624,10 +3449,19 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$SourceDocumentName,
         [Parameter(Mandatory)][string]$QcDocumentName,
+        [hashtable]$Config = @{},
         [string]$DesignerEmailColumn = 'EM_Designer_Email',
         [string]$ReviewerEmailColumn = 'EM_Reviewer_Email',
+        [string]$CheckerEmailColumn = 'EM_Checker_Email',
         [switch]$PassThru
     )
+
+    if ($Config -and $Config.Count -gt 0) {
+        $emailCols = _PWD-GetSheetRoleEmailColumnNames -Config $Config
+        if ($emailCols.designer) { $DesignerEmailColumn = [string]$emailCols.designer }
+        if ($emailCols.reviewer) { $ReviewerEmailColumn = [string]$emailCols.reviewer }
+        if ($emailCols.checker) { $CheckerEmailColumn = [string]$emailCols.checker }
+    }
 
     $result = @{
         updated = $false
@@ -2635,24 +3469,45 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
         reason = ''
         sourceDesignerEmail = ''
         sourceReviewerEmail = ''
+        sourceCheckerEmail = ''
         qcDesignerEmailBefore = ''
         qcReviewerEmailBefore = ''
+        qcCheckerEmailBefore = ''
         attributesWritten = @()
     }
 
-    $source = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $SourceDocumentName `
-        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
-    if (-not $source.found) {
-        $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
-        if ($PassThru) { return $result }
-        return
+    $sourceDesigner = ''
+    $sourceReviewer = ''
+    $sourceChecker = ''
+    if ($Config -and $Config.Count -gt 0) {
+        $roleFields = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $Config
+        if ($roleFields.found) {
+            $sourceDesigner = [string]$roleFields.designerEmail
+            $sourceReviewer = [string]$roleFields.reviewerEmail
+            $sourceChecker = [string]$roleFields.checkerEmail
+        }
+    }
+    if (-not $sourceDesigner -and -not $sourceReviewer -and -not $sourceChecker) {
+        $source = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $SourceDocumentName `
+            -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn `
+            -CheckerEmailColumn $CheckerEmailColumn
+        if (-not $source.found) {
+            $result.reason = if ($source.error) { "Source PDF not found or unreadable: $($source.error)" } else { 'Source PDF not found.' }
+            if ($PassThru) { return $result }
+            return
+        }
+        $sourceDesigner = [string]$source.designerEmail
+        $sourceReviewer = [string]$source.reviewerEmail
+        $sourceChecker = [string]$source.checkerEmail
     }
 
-    $result.sourceDesignerEmail = [string]$source.designerEmail
-    $result.sourceReviewerEmail = [string]$source.reviewerEmail
+    $result.sourceDesignerEmail = $sourceDesigner
+    $result.sourceReviewerEmail = $sourceReviewer
+    $result.sourceCheckerEmail = $sourceChecker
 
     $qc = Get-PWDocumentEmailContacts -FolderPath $FolderPath -DocumentName $QcDocumentName `
-        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn
+        -DesignerEmailColumn $DesignerEmailColumn -ReviewerEmailColumn $ReviewerEmailColumn `
+        -CheckerEmailColumn $CheckerEmailColumn
     if (-not $qc.found) {
         $result.reason = if ($qc.error) { "QC PDF not found or unreadable: $($qc.error)" } else { 'QC PDF not found.' }
         if ($PassThru) { return $result }
@@ -2662,12 +3517,12 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     $qcDoc = $qc.document
     $result.qcDesignerEmailBefore = [string]$qc.designerEmail
     $result.qcReviewerEmailBefore = [string]$qc.reviewerEmail
+    $result.qcCheckerEmailBefore = [string]$qc.checkerEmail
 
     $toWrite = @{}
-    $sourceDesigner = [string]$source.designerEmail
-    $sourceReviewer = [string]$source.reviewerEmail
     $qcDesigner = [string]$qc.designerEmail
     $qcReviewer = [string]$qc.reviewerEmail
+    $qcChecker = [string]$qc.checkerEmail
 
     if ($sourceDesigner -ne $qcDesigner) {
         $toWrite[$DesignerEmailColumn] = $sourceDesigner
@@ -2676,6 +3531,10 @@ function Sync-PWQcPdfEmailAttributesFromSourcePdf {
     if ($sourceReviewer -ne $qcReviewer) {
         $toWrite[$ReviewerEmailColumn] = $sourceReviewer
         $result.attributesWritten += $ReviewerEmailColumn
+    }
+    if ($sourceChecker -ne $qcChecker) {
+        $toWrite[$CheckerEmailColumn] = $sourceChecker
+        $result.attributesWritten += $CheckerEmailColumn
     }
 
     if ($toWrite.Keys.Count -eq 0) {
@@ -2990,19 +3849,9 @@ function Ensure-PWQcReviewTypeOnAssociatedSheet {
     if ($PassThru) { return $result }
 }
 
-function Get-PWQcPrependRoleFieldsFromSourcePdf {
-    <#
-    .SYNOPSIS
-    Reads QC role emails and QC_Review_Type from the source sheet PDF in ProjectWise.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$FolderPath,
-        [Parameter(Mandatory)][string]$SourceDocumentName,
-        [Parameter(Mandatory)][hashtable]$Config
-    )
+function _PWD-GetSheetRoleFolderCandidates {
+    param([string]$FolderPath)
 
-    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
     $folderCandidates = [System.Collections.Generic.List[string]]::new()
     foreach ($fp in @($FolderPath)) {
         if ([string]::IsNullOrWhiteSpace($fp)) { continue }
@@ -3013,11 +3862,21 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
             if (-not $folderCandidates.Contains($withDocs)) { $folderCandidates.Add($withDocs) | Out-Null }
         }
     }
+    return @($folderCandidates)
+}
+
+function _PWD-TryReadSheetRoleFieldsFromDocument {
+    param(
+        [string[]]$FolderCandidates,
+        [string]$DocumentName,
+        [string[]]$Columns,
+        [hashtable]$Config
+    )
 
     $read = @{ found = $false; error = 'Document not found'; attributes = @{}; pwStateName = '' }
-    $resolvedFolder = $FolderPath
-    foreach ($fp in @($folderCandidates)) {
-        $tryRead = Get-PWDocumentAttributesByColumns -FolderPath $fp -DocumentName $SourceDocumentName -ColumnsToReturn $cols
+    $resolvedFolder = ''
+    foreach ($fp in @($FolderCandidates)) {
+        $tryRead = Get-PWDocumentAttributesByColumns -FolderPath $fp -DocumentName $DocumentName -ColumnsToReturn $Columns
         if ($tryRead.found) {
             $read = $tryRead
             $resolvedFolder = $fp
@@ -3026,35 +3885,74 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
         if (-not $read.found -and $tryRead.error) { $read.error = [string]$tryRead.error }
     }
     if (-not $read.found) {
-        return @{ found = $false; error = [string]$read.error; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
+        return @{ found = $false; error = [string]$read.error; fields = $null; resolvedFolder = '' }
     }
-
     $fields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $read.attributes -PwStateName ([string]$read.pwStateName)
-    $designerEmail = [string]$fields.designerEmail
-    $reviewerEmail = [string]$fields.reviewerEmail
-    $checkerEmail = [string]$fields.checkerEmail
+    return @{ found = $true; error = ''; fields = $fields; resolvedFolder = $resolvedFolder }
+}
 
+function _PWD-PickSheetRoleFieldValue {
+    param(
+        [hashtable]$DgnFields,
+        [hashtable]$PdfFields,
+        [string]$Name
+    )
+
+    if ($DgnFields -and $DgnFields.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$DgnFields[$Name])) {
+        return [string]$DgnFields[$Name]
+    }
+    if ($PdfFields -and $PdfFields.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$PdfFields[$Name])) {
+        return [string]$PdfFields[$Name]
+    }
+    return ''
+}
+
+function Get-PWQcPrependRoleFieldsFromSourcePdf {
+    <#
+    .SYNOPSIS
+    Reads QC role emails and QC_Review_Type for a sheet package member.
+    .DESCRIPTION
+    The paired DGN is the source of truth for role emails and review type. The sheet PDF
+    is read only to fill fields that are blank on the DGN.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $folderCandidates = _PWD-GetSheetRoleFolderCandidates -FolderPath $FolderPath
     $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
-    if (-not [string]::IsNullOrWhiteSpace($stem)) {
-        $dgnName = $stem + '.dgn'
-        if ($dgnName -ne [string]$SourceDocumentName) {
-            $needDgn = [string]::IsNullOrWhiteSpace($designerEmail) -or [string]::IsNullOrWhiteSpace($reviewerEmail)
-            if ($needDgn) {
-                $dgnRead = Get-PWDocumentAttributesByColumns -FolderPath $resolvedFolder -DocumentName $dgnName -ColumnsToReturn $cols
-                if ($dgnRead.found) {
-                    $dgnFields = ConvertTo-SheetIndexFieldValues -Config $Config -PwAttributes $dgnRead.attributes -PwStateName ([string]$dgnRead.pwStateName)
-                    if ([string]::IsNullOrWhiteSpace($designerEmail)) { $designerEmail = [string]$dgnFields.designerEmail }
-                    if ([string]::IsNullOrWhiteSpace($reviewerEmail)) { $reviewerEmail = [string]$dgnFields.reviewerEmail }
-                    if ([string]::IsNullOrWhiteSpace($checkerEmail)) { $checkerEmail = [string]$dgnFields.checkerEmail }
-                    if ([string]::IsNullOrWhiteSpace($fields.qcReviewType) -and $dgnFields.qcReviewType) {
-                        $fields.qcReviewType = [string]$dgnFields.qcReviewType
-                    }
-                }
-            }
-        }
+    if ([string]::IsNullOrWhiteSpace($stem)) {
+        return @{ found = $false; error = 'Invalid source document name'; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
     }
 
-    $qcReviewType = [string]$fields.qcReviewType
+    $dgnName = if ([string]$SourceDocumentName -match '(?i)\.dgn$') { [string]$SourceDocumentName } else { $stem + '.dgn' }
+    $pdfName = if ([string]$SourceDocumentName -match '(?i)\.pdf$' -and [string]$SourceDocumentName -notmatch '(?i)-qc\.pdf$') {
+        [string]$SourceDocumentName
+    } else {
+        $stem + '.pdf'
+    }
+
+    $dgnRead = _PWD-TryReadSheetRoleFieldsFromDocument -FolderCandidates $folderCandidates -DocumentName $dgnName -Columns $cols -Config $Config
+    $pdfRead = $null
+    if ($pdfName -ne $dgnName) {
+        $pdfRead = _PWD-TryReadSheetRoleFieldsFromDocument -FolderCandidates $folderCandidates -DocumentName $pdfName -Columns $cols -Config $Config
+    }
+
+    if (-not $dgnRead.found -and (-not $pdfRead -or -not $pdfRead.found)) {
+        $err = if ($dgnRead.error) { [string]$dgnRead.error } elseif ($pdfRead -and $pdfRead.error) { [string]$pdfRead.error } else { 'Document not found' }
+        return @{ found = $false; error = $err; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
+    }
+
+    $dgnFields = if ($dgnRead.found) { $dgnRead.fields } else { $null }
+    $pdfFields = if ($pdfRead -and $pdfRead.found) { $pdfRead.fields } else { $null }
+    $designerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'designerEmail'
+    $reviewerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'reviewerEmail'
+    $checkerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'checkerEmail'
+    $qcReviewType = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcReviewType'
     if ([string]::IsNullOrWhiteSpace($qcReviewType) -and (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
         $qcReviewType = Get-PWQcDefaultReviewType -Config $Config
     }
@@ -3183,7 +4081,7 @@ function Sync-PWQcPdfReviewTypeFromSourcePdf {
 function Sync-PrependQcPdfAttributesFromSource {
     <#
     .SYNOPSIS
-    Syncs email and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
+    Syncs role emails (designer, reviewer, checker) and QC_Review_Type from source sheet PDF to *-qc.pdf (PW environment attributes).
     When QC_Review_Type is unset on the source sheet PDF, sets Production QC on DGN, sheet PDF, and QC PDF.
     #>
     [CmdletBinding()]
@@ -3196,7 +4094,7 @@ function Sync-PrependQcPdfAttributesFromSource {
 
     if (Get-Command -Name 'Sync-PWQcPdfEmailAttributesFromSourcePdf' -ErrorAction SilentlyContinue) {
         Sync-PWQcPdfEmailAttributesFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
-            -QcDocumentName $QcDocumentName | Out-Null
+            -QcDocumentName $QcDocumentName -Config $Config | Out-Null
     }
     Sync-PWQcPdfReviewTypeFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
         -QcDocumentName $QcDocumentName -Config $Config | Out-Null

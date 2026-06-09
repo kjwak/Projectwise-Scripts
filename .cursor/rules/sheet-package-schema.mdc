@@ -1,0 +1,35 @@
+---
+description: Sheet package identity policy for new QC database tables
+globs: "**/*.{psm1,sql,md}"
+alwaysApply: false
+---
+
+# Sheet Package Schema Policy (Phase 4+)
+
+New tables that represent QC workflow, metrics, assignments, notifications, comments, reviews, findings, or analytics **must** include:
+
+```text
+sheet_package_id UNIQUEIDENTIFIER NOT NULL
+```
+
+with a foreign key to `sheet_packages(sheet_package_id)` when the row belongs to a logical sheet package.
+
+## Primary business key
+
+- Use `sheet_package_id` as the primary correlation key for logical QC activity.
+- Prefer package-scoped table names: `sheet_package_metrics`, `sheet_package_alerts`, `sheet_package_review_gaps`, `sheet_package_comments`, `sheet_package_assignments`.
+
+## When to keep document_guid
+
+- Keep `document_guid` only when the row is inherently tied to a physical file (DGN, sheet PDF, QC PDF).
+- Do not use document GUID alone to infer sibling relationships; resolve via `sheet_documents` or `sheet_packages`.
+
+## Transition correlation
+
+- Sheet-group workflow transitions must share one `transition_group_id` per logical transition across sibling documents.
+- Populate both `sheet_package_id` and `transition_group_id` on `transition_events`, `qc_workflow_events`, and `document_state_history` when recording grouped transitions.
+
+## Additive migrations only
+
+- Do not remove `document_guid` from existing tables during package migration phases.
+- Do not retire `sheet_index` until an explicit Phase 5 migration is approved.

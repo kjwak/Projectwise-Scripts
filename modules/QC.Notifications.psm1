@@ -7,7 +7,9 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Config.psm1') -Force -ErrorAction S
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+}
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
 
@@ -36,7 +38,13 @@ function _QCN-IsBlank([object]$Value) {
 
 function _QCN-GetProp([object]$Object, [string[]]$Names) {
     foreach ($n in @($Names)) {
-        try { if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n } } catch { }
+        try {
+            if ($Object -is [hashtable]) {
+                if ($Object.ContainsKey($n) -and $null -ne $Object[$n]) { return $Object[$n] }
+                continue
+            }
+            if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n }
+        } catch { }
     }
     return $null
 }
@@ -119,6 +127,19 @@ function _QCN-GetAttributeValue([object]$Document, [string]$AttributeName) {
     return $null
 }
 
+function Test-QCNotificationsEnqueueAsJob {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    try {
+        if ($Config -and $Config.ContainsKey('notifications') -and $Config.notifications) {
+            $n = _QCN-ToHashtable $Config.notifications
+            if ($n -and $n.ContainsKey('enqueueAsJob')) { return [bool]$n.enqueueAsJob }
+        }
+    } catch { }
+    return $false
+}
+
 function Get-QCNotificationSettings {
     [CmdletBinding()]
     param([hashtable]$Config)
@@ -138,7 +159,9 @@ function Get-QCNotificationSettings {
         dedupe = @{
             enabled = $true
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
-            keyFields = @('sheetStem', 'eventType', 'previousState', 'currentState')
+            # Logical sheet-transition identity.  Do not key by transitionId by default because
+            # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
+            keyFields = @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
         }
         graph = @{
             tenantId = ''
@@ -232,6 +255,12 @@ function Get-QCNotificationSettings {
     }
     if ($settings.dedupe) {
         try { $settings.dedupe.enabled = [bool]$settings.dedupe.enabled } catch { }
+    }
+    if ($settings.outputRoot) {
+        $settings.outputRoot = _QCN-ResolveRepoPath -Path ([string]$settings.outputRoot)
+    }
+    if ($settings.dedupe -and $settings.dedupe.storePath) {
+        $settings.dedupe.storePath = _QCN-ResolveRepoPath -Path ([string]$settings.dedupe.storePath)
     }
     _QCN-NormalizeNotificationSubjectTemplates -Settings $settings
     return $settings
@@ -610,6 +639,17 @@ function Resolve-QCNotificationQcPdfUrl {
     }
 
     $docGuid = if ($Event.documentGuid) { [string]$Event.documentGuid.Trim() } else { '' }
+    if (_QCN-IsBlank $docGuid) {
+        $folderForGuid = if ($Event.folderPath) { [string]$Event.folderPath } elseif ($Event.documentPath -and ($Event.documentPath -match '\\')) {
+            [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+        } else { '' }
+        $srcForGuid = if ($Event.documentName) { [string]$Event.documentName } else { '' }
+        if (-not (_QCN-IsBlank $srcForGuid) -and $srcForGuid -match '(?i)-qc\.pdf$') {
+            $srcForGuid = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcForGuid)) + '.pdf'
+        }
+        $docGuid = _QCN-ResolveQcPdfGuidFromSheetIndex -Config $Config -FolderPath $folderForGuid `
+            -SourceDocumentName $srcForGuid -DocumentGuid $docGuid
+    }
     if ($docGuid -and (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) {
         try {
             $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($docGuid) -ErrorAction SilentlyContinue)
@@ -664,6 +704,36 @@ function Resolve-QCNotificationQcPdfUrl {
             $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
             $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
             return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
+        }
+    }
+
+    if (_QCN-IsBlank $docGuid) {
+        $folderForSearch = if ($Event.folderPath) { [string]$Event.folderPath } elseif ($Event.documentPath -and ($Event.documentPath -match '\\')) {
+            [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+        } else { '' }
+        $qcNameForSearch = if ($Event.documentName) { [string]$Event.documentName } else { '' }
+        if (-not (_QCN-IsBlank $qcNameForSearch) -and $qcNameForSearch -notmatch '(?i)-qc\.pdf$') {
+            $qcNameForSearch = [System.IO.Path]::GetFileNameWithoutExtension($qcNameForSearch) + '-qc.pdf'
+        }
+        $docGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $folderForSearch -QcPdfName $qcNameForSearch
+        if (-not (_QCN-IsBlank $docGuid) -and -not (_QCN-IsBlank $baseUrl)) {
+            $datasourceName = ''
+            if ($Config -and $Config.projectWise) {
+                $pw = _QCN-ToHashtable $Config.projectWise
+                if ($pw) {
+                    if ($pw.datasourceName) { $datasourceName = [string]$pw.datasourceName }
+                    elseif ($pw.datasource) { $datasourceName = [string]$pw.datasource }
+                }
+            }
+            if (_QCN-IsBlank $datasourceName -and (Get-Command -Name 'Get-PWCurrentDatasource' -ErrorAction SilentlyContinue)) {
+                try { $datasourceName = [string](Get-PWCurrentDatasource) } catch { }
+            }
+            if (-not (_QCN-IsBlank $datasourceName)) {
+                $dsParam = _QCN-GetEncodedPwDatasource -DatasourceName $datasourceName
+                $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
+                $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
+                return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
+            }
         }
     }
 
@@ -760,16 +830,16 @@ function _QCN-ResolveNotificationReviewType {
     $fromDoc = _QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewCol
     if (-not (_QCN-IsBlank $fromDoc)) { return ([string]$fromDoc).Trim() }
 
-    if ($Job) {
-        $fromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewType', 'qcReviewType'))
-        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
-    }
-
     if ($Config -and -not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceName)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceName -Config $Config
             if ($pw.found -and -not (_QCN-IsBlank $pw.qcReviewType)) { return ([string]$pw.qcReviewType).Trim() }
         }
+    }
+
+    if ($Job) {
+        $fromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewType', 'qcReviewType'))
+        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
     }
 
     return ''
@@ -820,26 +890,113 @@ function _QCN-GetQcReviewerEmailAttributeName {
 function _QCN-GetRoleEmailsFromSheetIndex {
     param(
         [hashtable]$Config,
-        [string]$DocumentGuid
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = ''
     )
 
-    if (_QCN-IsBlank $DocumentGuid) { return $null }
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $null }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
+
     try {
-        $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT designer_email, reviewer_email, checker_email
 FROM sheet_index
 WHERE document_guid = @docGuid
-"@ -Parameters @{ docGuid = $DocumentGuid }
-        if (-not $res.IsSuccess -or -not $res.Data.table -or $res.Data.table.Rows.Count -eq 0) { return $null }
-        $r = $res.Data.table.Rows[0]
-        return @{
-            designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
-            reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
-            checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $r = $res.Data.table.Rows[0]
+                $roles = @{
+                    designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
+                    reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
+                    checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+                }
+                if (-not (_QCN-IsBlank $roles.reviewerEmail) -or -not (_QCN-IsBlank $roles.designerEmail)) {
+                    return $roles
+                }
+            }
+        }
+        if (-not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceDocumentName)) {
+            $srcName = [string]$SourceDocumentName
+            if ($srcName -match '(?i)-qc\.pdf$') {
+                $srcName = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcName)) + '.pdf'
+            }
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@srcName)
+"@ -Parameters @{ folderPath = [string]$FolderPath; srcName = $srcName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $r2 = $res2.Data.table.Rows[0]
+                return @{
+                    designerEmail = if ($r2.designer_email -is [DBNull]) { '' } else { [string]$r2.designer_email }
+                    reviewerEmail = if ($r2.reviewer_email -is [DBNull]) { '' } else { [string]$r2.reviewer_email }
+                    checkerEmail = if ($r2.checker_email -is [DBNull]) { '' } else { [string]$r2.checker_email }
+                }
+            }
         }
     } catch { return $null }
+    return $null
+}
+
+function _QCN-ResolveQcPdfGuidFromSheetIndex {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = '',
+        [string]$DocumentGuid = ''
+    )
+
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    try {
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_pdf_guid
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $g = if ($res.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_pdf_guid }
+                if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+            }
+        }
+        if (-not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceDocumentName)) {
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_pdf_guid
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@srcName)
+"@ -Parameters @{ folderPath = [string]$FolderPath; srcName = [string]$SourceDocumentName }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $g2 = if ($res2.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].qc_pdf_guid }
+                if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
+            }
+        }
+    } catch { }
+    return ''
+}
+
+function _QCN-TryResolveQcPdfGuidFromPwSearch {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$QcPdfName
+    )
+
+    if (_QCN-IsBlank $FolderPath) { return '' }
+    if (_QCN-IsBlank $QcPdfName) { return '' }
+    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
+    try {
+        $docs = @(Get-PWDocumentsBySearch -FolderPath $FolderPath -DocumentName $QcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
+        if ($docs.Count -gt 0) {
+            $g = [string](_QCN-GetProp -Object $docs[0] -Names @('DocumentGUID','DocumentGuid','GUID'))
+            if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+        }
+    } catch { }
+    return ''
 }
 
 function _QCN-ResolveNotificationRoleEmails {
@@ -887,15 +1044,15 @@ function _QCN-ResolveNotificationRoleEmails {
     $designer = ''
     $reviewer = ''
     $checker = ''
-    if ($RoleOverrides) {
-        if ($RoleOverrides.ContainsKey('designerEmail')) { $designer = [string]$RoleOverrides.designerEmail }
-        if ($RoleOverrides.ContainsKey('reviewerEmail')) { $reviewer = [string]$RoleOverrides.reviewerEmail }
-        if ($RoleOverrides.ContainsKey('checkerEmail')) { $checker = [string]$RoleOverrides.checkerEmail }
-    }
-    if ($Job) {
-        if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetJobValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')) }
-        if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail')) }
-        if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetJobValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')) }
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $sourceName)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folderPath -SourceDocumentName $sourceName -Config $Config
+            if ($pw.found) {
+                if (-not (_QCN-IsBlank $pw.designerEmail)) { $designer = [string]$pw.designerEmail }
+                if (-not (_QCN-IsBlank $pw.reviewerEmail)) { $reviewer = [string]$pw.reviewerEmail }
+                if (-not (_QCN-IsBlank $pw.checkerEmail)) { $checker = [string]$pw.checkerEmail }
+            }
+        }
     }
     if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
     if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
@@ -903,25 +1060,22 @@ function _QCN-ResolveNotificationRoleEmails {
     if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcDesignerField) }
     if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewerField) }
     if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $qcCheckerField) }
-
-    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $sourceName)) {
-        $needSource = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
-        if ($needSource) {
-            if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
-                $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folderPath -SourceDocumentName $sourceName -Config $Config
-                if ($pw.found) {
-                    if (_QCN-IsBlank $designer) { $designer = [string]$pw.designerEmail }
-                    if (_QCN-IsBlank $reviewer) { $reviewer = [string]$pw.reviewerEmail }
-                    if (_QCN-IsBlank $checker) { $checker = [string]$pw.checkerEmail }
-                }
-            }
-        }
+    if ($Job) {
+        if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetJobValue -Job $Job -Keys @('designerEmail','qcDesignerEmail')) }
+        if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewerEmail','qcReviewerEmail')) }
+        if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetJobValue -Job $Job -Keys @('checkerEmail','qcCheckerEmail')) }
+    }
+    if ($RoleOverrides) {
+        if (_QCN-IsBlank $designer -and $RoleOverrides.ContainsKey('designerEmail')) { $designer = [string]$RoleOverrides.designerEmail }
+        if (_QCN-IsBlank $reviewer -and $RoleOverrides.ContainsKey('reviewerEmail')) { $reviewer = [string]$RoleOverrides.reviewerEmail }
+        if (_QCN-IsBlank $checker -and $RoleOverrides.ContainsKey('checkerEmail')) { $checker = [string]$RoleOverrides.checkerEmail }
     }
 
-    if ($Config -and (-not (_QCN-IsBlank $DocumentGuid))) {
+    if ($Config -and ((-not (_QCN-IsBlank $DocumentGuid)) -or ((-not (_QCN-IsBlank $folderPath)) -and (-not (_QCN-IsBlank $sourceName))))) {
         $needIndex = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
         if ($needIndex) {
-            $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid
+            $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid `
+                -FolderPath $folderPath -SourceDocumentName $sourceName
             if ($idx) {
                 if (_QCN-IsBlank $designer) { $designer = [string]$idx.designerEmail }
                 if (_QCN-IsBlank $reviewer) { $reviewer = [string]$idx.reviewerEmail }
@@ -968,28 +1122,44 @@ function _QCN-ResolveQcPdfNotificationTarget {
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
     if (_QCN-IsBlank $triggerName) { $triggerName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName')) }
 
-    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $triggerName) -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $triggerName)) {
         $guid = $DocumentGuid
         if (_QCN-IsBlank $guid) { $guid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID','DocumentGuid','GUID')) }
-        try {
-            $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
-            foreach ($m in $members) {
-                $dn = [string]$m.documentName
-                if ($dn -match '(?i)-qc\.pdf$') {
-                    $out.documentName = $dn
-                    $out.documentGuid = [string]$m.documentGuid
-                    $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
-                    if ($m.document) { $out.document = $m.document }
-                    return $out
+        if (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue) {
+            try {
+                $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
+                foreach ($m in $members) {
+                    $dn = [string]$m.documentName
+                    if ($dn -match '(?i)-qc\.pdf$') {
+                        $out.documentName = $dn
+                        $resolvedGuid = [string]$m.documentGuid
+                        if (-not (_QCN-IsBlank $resolvedGuid)) {
+                            $out.documentGuid = $resolvedGuid.Trim()
+                        }
+                        $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
+                        if ($m.document) { $out.document = $m.document }
+                        return $out
+                    }
                 }
-            }
+            } catch { }
+        }
+        if ($out.documentName -notmatch '(?i)-qc\.pdf$') {
             $stem = [System.IO.Path]::GetFileNameWithoutExtension($triggerName)
             if ($stem) {
                 $qcName = $stem + '-qc.pdf'
                 $out.documentName = $qcName
                 $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $qcName) } else { $DocumentPath }
             }
-        } catch { }
+            if (_QCN-IsBlank $out.documentGuid) {
+                $idxGuid = _QCN-ResolveQcPdfGuidFromSheetIndex -Config $Config -FolderPath $folderPath `
+                    -SourceDocumentName $triggerName -DocumentGuid $guid
+                if (-not (_QCN-IsBlank $idxGuid)) { $out.documentGuid = $idxGuid }
+            }
+            if (_QCN-IsBlank $out.documentGuid) {
+                $pwGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $folderPath -QcPdfName $out.documentName
+                if (-not (_QCN-IsBlank $pwGuid)) { $out.documentGuid = $pwGuid }
+            }
+        }
     }
     return $out
 }
@@ -1066,35 +1236,447 @@ function Resolve-QCNotificationRecipients {
     }
 }
 
+function _QCN-BuildRecipientKey {
+    param(
+        [string[]]$To = @(),
+        [string[]]$Cc = @()
+    )
+
+    $set = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($email in @($To) + @($Cc)) {
+        if (_QCN-IsBlank $email) { continue }
+        [void]$set.Add(([string]$email).Trim().ToLowerInvariant())
+    }
+    if ($set.Count -eq 0) { return '' }
+    return ('recipients:' + ((@($set)) -join ','))
+}
+
+function _QCN-IsPlaceholderNotificationSheetStem {
+    param([string]$Stem)
+    if (_QCN-IsBlank $Stem) { return $true }
+    return $Stem.Equals('unknown-document', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function _QCN-IsPlaceholderNotificationDocumentName {
+    param([string]$DocumentName)
+    if (_QCN-IsBlank $DocumentName) { return $true }
+    $name = [System.IO.Path]::GetFileName([string]$DocumentName)
+    if ($name -match '(?i)^unknown-document(-qc)?\.pdf$') { return $true }
+    if ($name.Equals('unknown-document', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $false
+}
+
+function _QCN-ResolveNotificationDisplayDocumentName {
+    param(
+        [string]$DocumentName = '',
+        [hashtable]$Job = $null,
+        [hashtable]$Event = $null,
+        [hashtable]$Config = $null
+    )
+
+    if ($Job) {
+        $src = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+        if (-not (_QCN-IsBlank $src)) {
+            if ($src -match '(?i)-qc\.pdf$') {
+                $src = [System.IO.Path]::GetFileNameWithoutExtension($src) + '.pdf'
+            }
+            if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $src)) { return $src }
+        }
+    }
+
+    $stem = ''
+    if ($Event) {
+        if ($Event.ContainsKey('sheetStem') -and -not (_QCN-IsBlank $Event.sheetStem) `
+                -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem ([string]$Event.sheetStem))) {
+            $stem = [string]$Event.sheetStem
+        }
+        else {
+            $stem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+        }
+    }
+    if (-not (_QCN-IsBlank $stem) -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) {
+        return ($stem + '.pdf')
+    }
+
+    $name = [string]$DocumentName
+    if ($name -match '(?i)-qc\.pdf$') {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf'
+    }
+    if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $name)) { return $name }
+    return $name
+}
+
+function _QCN-ResolveSheetStemFromFolderForDedupe {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$DocumentGuid = ''
+    )
+
+    if (_QCN-IsBlank $FolderPath) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+
+    try {
+        if (-not (_QCN-IsBlank $DocumentGuid)) {
+            $byGuid = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($byGuid.IsSuccess -and $byGuid.Data.table -and $byGuid.Data.table.Rows.Count -gt 0) {
+                $dn = if ($byGuid.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byGuid.Data.table.Rows[0].document_name }
+                if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                    $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+                    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+                }
+            }
+            $byQcGuid = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE qc_pdf_guid = @docGuid
+"@ -Parameters @{ docGuid = [string]$DocumentGuid.Trim() }
+            if ($byQcGuid.IsSuccess -and $byQcGuid.Data.table -and $byQcGuid.Data.table.Rows.Count -gt 0) {
+                $dn = if ($byQcGuid.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byQcGuid.Data.table.Rows[0].document_name }
+                if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                    $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+                    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+                }
+            }
+        }
+
+        $byFolder = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_name
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND document_name LIKE '%.pdf'
+  AND document_name NOT LIKE '%-qc.pdf'
+ORDER BY last_audit_event_at DESC
+"@ -Parameters @{ folderPath = [string]$FolderPath.Trim() }
+        if ($byFolder.IsSuccess -and $byFolder.Data.table -and $byFolder.Data.table.Rows.Count -gt 0) {
+            $dn = if ($byFolder.Data.table.Rows[0].document_name -is [DBNull]) { '' } else { [string]$byFolder.Data.table.Rows[0].document_name }
+            if (-not (_QCN-IsBlank $dn) -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                return [string](Get-PWSheetStemFromDocumentName -DocumentName $dn)
+            }
+        }
+    } catch { }
+
+    return ''
+}
+
+function _QCN-NormalizeNotificationSheetStemForDedupe {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Config = $null
+    )
+
+    if (-not $Event) { return '' }
+    $stem = if ($Event.ContainsKey('sheetStem') -and -not (_QCN-IsBlank $Event.sheetStem)) {
+        [string]$Event.sheetStem
+    } else { '' }
+
+    if (-not (_QCN-IsBlank $stem) -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+
+    if ((_QCN-IsBlank $stem) -and $Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+        try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+    }
+
+    if (-not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) { return $stem }
+
+    $folderPath = ''
+    if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+    elseif ($Event.documentPath -and ([string]$Event.documentPath -match '\\')) {
+        $folderPath = [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+    }
+
+    $docGuid = if ($Event.documentGuid) { [string]$Event.documentGuid } else { '' }
+    if ($Config -and -not (_QCN-IsBlank $folderPath)) {
+        $resolved = _QCN-ResolveSheetStemFromFolderForDedupe -Config $Config -FolderPath $folderPath -DocumentGuid $docGuid
+        if (-not (_QCN-IsBlank $resolved)) { return $resolved }
+    }
+
+    return $stem
+}
+
+function _QCN-NormalizeNotificationDedupePreviousState {
+    <#
+    Collapses stale sheet_index baselines (often empty) with the nominal prior workflow state
+    so prepend writeback and audit stale-index paths share one notification dedupe key.
+    Applies to every configured workflow notification target state, not only QC Complete.
+    #>
+    param(
+        [string]$PreviousState = '',
+        [string]$CurrentState = '',
+        [hashtable]$Config = $null
+    )
+
+    $prev = ([string]$PreviousState).Trim()
+    if ($prev.Length -gt 0) { return $prev }
+
+    $curr = ([string]$CurrentState).Trim()
+    if ($curr.Length -eq 0) { return $prev }
+
+    $priorByTarget = _QCN-GetWorkflowNotificationPriorStateMap -Config $Config
+    if ($null -ne $priorByTarget -and $priorByTarget.ContainsKey($curr)) {
+        $nominal = [string]$priorByTarget[$curr]
+        if (-not (_QCN-IsBlank $nominal)) { return $nominal }
+    }
+    return $prev
+}
+
+function _QCN-GetWorkflowNotificationPriorStateMap {
+    param([hashtable]$Config = $null)
+
+    $map = @{
+        'QC Complete' = 'QC Finalizing'
+        'QC Finalizing' = 'Ready for QC'
+        'Redlines Received' = 'Ready for QC'
+        'Corrections Received' = 'Redlines Received'
+        'Ready for QC' = 'QC Initiated'
+        'QC Received' = 'In Production'
+    }
+
+    if ($Config -and $Config.qcWorkflow -and $Config.qcWorkflow.states) {
+        $states = _QCN-ToHashtable $Config.qcWorkflow.states
+        if ($states) {
+            $resolved = @{}
+            $pairs = @(
+                @('complete', 'qcFinalizing')
+                @('qcFinalizing', 'readyForQc')
+                @('redlinesReceived', 'readyForQc')
+                @('correctionsReceived', 'redlinesReceived')
+                @('readyForQc', 'qcInitiated')
+                @('qcReceived', 'production')
+            )
+            foreach ($pair in @($pairs)) {
+                $targetKey = [string]$pair[0]
+                $priorKey = [string]$pair[1]
+                if (-not $states.ContainsKey($targetKey)) { continue }
+                $targetName = [string]$states[$targetKey]
+                if (_QCN-IsBlank $targetName) { continue }
+                $priorName = if ($states.ContainsKey($priorKey)) { [string]$states[$priorKey] } else { '' }
+                if (-not (_QCN-IsBlank $priorName)) {
+                    $resolved[$targetName] = $priorName
+                }
+            }
+            if ($resolved.Count -gt 0) { return $resolved }
+        }
+    }
+
+    return $map
+}
+
+function Get-QCNotificationSheetTransitionKey {
+    <#
+    Stable sheet-package transition identity for notification dedupe.
+    Intentionally ignores audit:{id} / transition:{id} echo events from sibling sync.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Event,
+        [hashtable]$Config = $null
+    )
+
+    $stem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+    if (_QCN-IsBlank $stem) { return '' }
+
+    $curr = if ($Event.currentState) { [string]$Event.currentState } elseif ($Event.targetState) { [string]$Event.targetState } else { '' }
+    $from = _QCN-NormalizeNotificationDedupePreviousState -PreviousState ([string]$Event.previousState) `
+        -CurrentState $curr -Config $Config
+    $to = ([string]$curr).Trim()
+    if ($to.Length -eq 0) { return '' }
+
+    return ('sheet:' + $stem.Trim().ToLowerInvariant() + '|from:' + $from.Trim().ToLowerInvariant() + '|to:' + $to.ToLowerInvariant())
+}
+
+function _QCN-ResolveNotificationTransitionSource {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Job = $null
+    )
+
+    if ($Event) {
+        foreach ($key in @('transitionSource', 'notificationStateSource', 'triggerSource')) {
+            if ($Event.ContainsKey($key) -and -not (_QCN-IsBlank $Event[$key])) {
+                return ([string]$Event[$key]).Trim().ToLowerInvariant()
+            }
+        }
+    }
+    if ($Job) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd) {
+            foreach ($key in @('transitionSource', 'notificationStateSource')) {
+                if ($jobMd.ContainsKey($key) -and -not (_QCN-IsBlank $jobMd[$key])) {
+                    return ([string]$jobMd[$key]).Trim().ToLowerInvariant()
+                }
+            }
+        }
+    }
+    return ''
+}
+
+function _QCN-ResolveNotificationLogicalTransitionAnchor {
+    <#
+    Stable anchor for one logical sheet-package transition.
+    Uses sheet|from|to plus cycle and audit id. transitionGroupId is intentionally excluded here
+    because each Invoke-QCSheetGroupWorkflowTransition call mints a new group id; sibling triggers
+    for the same audit event must share one dedupe anchor instead.
+    #>
+    param(
+        [hashtable]$Event,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null
+    )
+
+    $sheetKey = if ($Event -and $Event.sheetTransitionKey -and -not (_QCN-IsBlank $Event.sheetTransitionKey)) {
+        [string]$Event.sheetTransitionKey
+    } elseif ($Event) {
+        Get-QCNotificationSheetTransitionKey -Event $Event -Config $Config
+    } else { '' }
+
+    $cycleId = _QCN-ResolveNotificationCycleId -Event $Event -Config $Config -Job $Job
+    $cyclePart = if (-not (_QCN-IsBlank $cycleId)) { '|cycle:' + ([string]$cycleId).Trim() } else { '' }
+
+    $auditId = _QCN-GetNotificationAuditEventId -Event $Event
+    $auditPart = if ($null -ne $auditId -and $auditId -gt 0) { '|audit:' + [string]$auditId } else { '' }
+
+    if (-not (_QCN-IsBlank $sheetKey)) { return $sheetKey + $cyclePart + $auditPart }
+
+    if ($Event -and $Event.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $Event.transitionGroupId)) {
+        return 'transitionGroup:' + ([string]$Event.transitionGroupId).Trim().ToLowerInvariant()
+    }
+    if ($auditPart.Length -gt 0) { return $auditPart.TrimStart('|') }
+    return ''
+}
+
+function Test-QCNotificationResultSent {
+    [CmdletBinding()]
+    param([object]$Result)
+
+    if ($null -eq $Result) { return $false }
+    $data = _QCN-ToHashtable $Result.Data
+    if ($data -and $data.ContainsKey('skipped') -and [bool]$data.skipped) { return $false }
+    $code = if ($Result.Code) { [string]$Result.Code } else { '' }
+    if ($code -in @('QC_NOTIFICATION_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUED')) { return $false }
+    if ($code -match '^QC_NOTIFICATION_(SENT|MOCK|GRAPH|JOB_OK)$') { return $true }
+    if ($Result.IsSuccess -and $data -and $data.success -eq $true) { return $true }
+    return $false
+}
+
+function _QCN-ResolveNotificationCycleId {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null
+    )
+
+    $sources = [System.Collections.Generic.List[object]]::new()
+    if ($Event) { $sources.Add($Event) | Out-Null }
+    if ($Event) {
+        $eventAttrs = _QCN-ToHashtable $Event.attributes
+        if ($eventAttrs) { $sources.Add($eventAttrs) | Out-Null }
+    }
+    if ($Job) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd) {
+            $sources.Add($jobMd) | Out-Null
+            $jobAttrs = _QCN-ToHashtable $jobMd.attributes
+            if ($jobAttrs) { $sources.Add($jobAttrs) | Out-Null }
+        }
+    }
+
+    foreach ($source in @($sources)) {
+        foreach ($key in @('cycleId', 'qcCycleId', 'QC_Cycle_ID')) {
+            if (-not $source.ContainsKey($key)) { continue }
+            $value = [string]$source[$key]
+            if (_QCN-IsBlank $value) { continue }
+            if ($value -match '^(audit:|transition:)') { continue }
+            return $value.Trim()
+        }
+    }
+
+    if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $folderPath = ''
+            $sheetStem = ''
+            $documentGuid = ''
+            if ($Event) {
+                if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+                if ($Event.sheetStem) { $sheetStem = [string]$Event.sheetStem }
+                if ($Event.documentGuid) { $documentGuid = [string]$Event.documentGuid }
+            }
+            if ((_QCN-IsBlank $sheetStem) -and $Event -and $Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+                try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+            }
+            if ((_QCN-IsBlank $folderPath) -and $Job -and $Job.sourceFolder) { $folderPath = [string]$Job.sourceFolder }
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $documentGuid -FolderPath $folderPath -SheetStem $sheetStem
+            if ($cycle -and -not (_QCN-IsBlank $cycle.cycleId)) { return [string]$cycle.cycleId.Trim() }
+        } catch { }
+    }
+    return ''
+}
+
 function Get-QCNotificationDedupeKey {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [hashtable]$Event,
         [hashtable]$Settings,
-        [hashtable]$Config = $null
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null
     )
 
     if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
 
-    if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
-        try {
-            $tid = [int]$Event.transitionId
-            if ($tid -gt 0) { return ('transition:{0}' -f $tid) }
-        } catch { }
-    }
-
     $dedupe = _QCN-ToHashtable $Settings.dedupe
-    # stateTransitionKey (audit:/transition:) allows a new email each QC cycle; transitionId scopes one row.
-    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else { @('stateTransitionKey', 'sheetStem', 'eventType', 'previousState', 'currentState') }
-
-    if (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
-        $stem = ''
-        if ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
-            try { $stem = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
-        }
-        if (-not (_QCN-IsBlank $stem)) { $Event['sheetStem'] = $stem }
+    # Default to one durable notification per logical sheet transition + recipient set.  A
+    # transition_events id is intentionally *not* authoritative here: sibling sync can create
+    # one transition row for the DGN, sheet PDF, and *-qc.pdf for the same logical sheet action.
+    $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else {
+        @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
     }
+
+    $folderPath = ''
+    if ($Event.folderPath) { $folderPath = [string]$Event.folderPath }
+    elseif ($Event.documentPath -and ([string]$Event.documentPath -match '\\')) {
+        $folderPath = [System.IO.Path]::GetDirectoryName([string]$Event.documentPath)
+    }
+    if (-not (_QCN-IsBlank $folderPath)) { $Event['folderPath'] = $folderPath }
+
+    $normalizedStem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+    if (-not (_QCN-IsBlank $normalizedStem)) { $Event['sheetStem'] = $normalizedStem }
+    elseif (-not $Event.ContainsKey('sheetStem') -or (_QCN-IsBlank $Event.sheetStem)) {
+        if ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+            try { $Event['sheetStem'] = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
+        }
+    }
+
+    if ((-not $Event.ContainsKey('recipientKey') -or (_QCN-IsBlank $Event.recipientKey)) -and ($Event.ContainsKey('to') -or $Event.ContainsKey('cc'))) {
+        $Event['recipientKey'] = _QCN-BuildRecipientKey -To @($Event.to) -Cc @($Event.cc)
+    }
+    if (-not $Event.ContainsKey('notificationType') -or (_QCN-IsBlank $Event.notificationType)) {
+        $Event['notificationType'] = [string]$Event.eventType
+    }
+    if (-not $Event.ContainsKey('targetState') -or (_QCN-IsBlank $Event.targetState)) {
+        $Event['targetState'] = [string]$Event.currentState
+    }
+    $resolvedCycleId = _QCN-ResolveNotificationCycleId -Event $Event -Config $Config -Job $Job
+    if (-not (_QCN-IsBlank $resolvedCycleId)) {
+        $Event['cycleId'] = $resolvedCycleId
+    } elseif (-not $Event.ContainsKey('cycleId')) {
+        $Event['cycleId'] = ''
+    }
+    $sheetTransitionKey = Get-QCNotificationSheetTransitionKey -Event $Event -Config $Config
+    if (-not (_QCN-IsBlank $sheetTransitionKey)) {
+        $Event['sheetTransitionKey'] = $sheetTransitionKey
+    }
+    $transitionSource = _QCN-ResolveNotificationTransitionSource -Event $Event -Job $Job
+    if (-not (_QCN-IsBlank $transitionSource)) { $Event['transitionSource'] = $transitionSource }
+    $logicalAnchor = _QCN-ResolveNotificationLogicalTransitionAnchor -Event $Event -Config $Config -Job $Job
+    if (-not (_QCN-IsBlank $logicalAnchor)) { $Event['logicalTransitionAnchor'] = $logicalAnchor }
+    $auditIdForKey = _QCN-GetNotificationAuditEventId -Event $Event
+    if ($null -ne $auditIdForKey -and $auditIdForKey -gt 0) { $Event['auditEventId'] = $auditIdForKey }
 
     $parts = [System.Collections.Generic.List[string]]::new()
     foreach ($field in @($fields)) {
@@ -1105,7 +1687,12 @@ function Get-QCNotificationDedupeKey {
                 elseif ($Event.documentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
                     try { $value = [string](Get-PWSheetStemFromDocumentName -DocumentName ([string]$Event.documentName)) } catch { }
                 }
+                if (_QCN-IsPlaceholderNotificationSheetStem -Stem $value) {
+                    $resolvedStem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
+                    if (-not (_QCN-IsBlank $resolvedStem)) { $value = $resolvedStem }
+                }
             }
+            'folderPath' { $value = [string]$Event.folderPath }
             'documentGuid' {
                 $value = if ($Event.documentGuid) { [string]$Event.documentGuid }
                 elseif ($Event.documentPath) { [string]$Event.documentPath }
@@ -1114,11 +1701,54 @@ function Get-QCNotificationDedupeKey {
             'documentName' { $value = [string]$Event.documentName }
             'documentPath' { $value = [string]$Event.documentPath }
             'eventType' { $value = [string]$Event.eventType }
+            'notificationType' { $value = [string]$Event.notificationType }
             'currentState' { $value = [string]$Event.currentState }
-            'previousState' { $value = [string]$Event.previousState }
+            'targetState' { $value = [string]$Event.targetState }
+            'previousState' {
+                $value = _QCN-NormalizeNotificationDedupePreviousState -PreviousState ([string]$Event.previousState) `
+                    -CurrentState ([string]$Event.currentState) -Config $Config
+            }
             'project' { $value = [string]$Event.project }
-            'stateTransitionKey' { $value = [string]$Event.stateTransitionKey }
+            'stateTransitionKey' {
+                # Legacy config field name: value is sheet-package transition, not audit:{id}.
+                $value = if ($Event.sheetTransitionKey) { [string]$Event.sheetTransitionKey } else {
+                    Get-QCNotificationSheetTransitionKey -Event $Event -Config $Config
+                }
+            }
+            'sheetTransitionKey' {
+                $value = if ($Event.sheetTransitionKey) { [string]$Event.sheetTransitionKey } else {
+                    Get-QCNotificationSheetTransitionKey -Event $Event -Config $Config
+                }
+            }
+            'cycleId' { $value = [string]$Event.cycleId }
+            'recipientKey' { $value = [string]$Event.recipientKey }
+            'transitionSource' {
+                $value = if ($Event.transitionSource) { [string]$Event.transitionSource } else {
+                    _QCN-ResolveNotificationTransitionSource -Event $Event -Job $Job
+                }
+            }
+            'logicalTransitionAnchor' {
+                $value = if ($Event.logicalTransitionAnchor) { [string]$Event.logicalTransitionAnchor } else {
+                    _QCN-ResolveNotificationLogicalTransitionAnchor -Event $Event -Config $Config -Job $Job
+                }
+            }
+            'auditEventId' {
+                $auditVal = _QCN-GetNotificationAuditEventId -Event $Event
+                if ($null -ne $auditVal -and $auditVal -gt 0) { $value = [string]$auditVal }
+            }
+            'transitionGroupId' {
+                if ($Event.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $Event.transitionGroupId)) {
+                    $value = ([string]$Event.transitionGroupId).Trim().ToLowerInvariant()
+                }
+            }
+            'sheetPackageId' {
+                if ($Event.ContainsKey('sheetPackageId') -and -not (_QCN-IsBlank $Event.sheetPackageId)) {
+                    $value = ([string]$Event.sheetPackageId).Trim().ToLowerInvariant()
+                }
+            }
             'transitionId' {
+                # Backward-compatible opt-in only. Not part of the default key because it is
+                # per-document-row rather than per logical sheet transition.
                 if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
                     try { $value = [string][int]$Event.transitionId } catch { $value = [string]$Event.transitionId }
                 }
@@ -1132,6 +1762,60 @@ function Get-QCNotificationDedupeKey {
     return ($parts -join '|')
 }
 
+function _QCN-GetNotificationDedupeStorePath {
+    param([hashtable]$Settings)
+    if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+    $dedupe = _QCN-ToHashtable $Settings.dedupe
+    if ($dedupe -and $dedupe.storePath) { return (_QCN-ResolveRepoPath -Path ([string]$dedupe.storePath)) }
+    return (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
+}
+
+function _QCN-TestNotificationDedupeInStore {
+    param(
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [Parameter(Mandatory)][string]$StorePath
+    )
+
+    if (_QCN-IsBlank $DedupeKey) { return $false }
+    if (-not (Test-Path -LiteralPath $StorePath)) { return $false }
+    try {
+        $lines = Get-Content -LiteralPath $StorePath -ErrorAction Stop
+        foreach ($line in @($lines)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $row = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($row.key -eq $DedupeKey) { return $true }
+            } catch { }
+        }
+    } catch { }
+    return $false
+}
+
+function _QCN-TestNotificationJobActuallySent {
+    param([hashtable]$Job)
+
+    if (-not $Job) { return $false }
+    $result = _QCN-ToHashtable $Job.result
+    if (-not $result) { return $false }
+
+    $data = _QCN-ToHashtable $result.data
+    if ($data -and $data.notification) {
+        $notif = _QCN-ToHashtable $data.notification
+        if ($notif) {
+            if ($notif.ContainsKey('skipped') -and [bool]$notif.skipped) { return $false }
+            if ($notif.ContainsKey('success') -and $notif.success -eq $true) { return $true }
+            return $false
+        }
+    }
+
+    $code = if ($result.code) { [string]$result.code } else { '' }
+    if ($code -match '^QC_NOTIFICATION_(SENT|MOCK|GRAPH|JOB_OK)$') {
+        if ($data -and $data.skipped) { return $false }
+        return $true
+    }
+    return $false
+}
+
 function Test-QCNotificationDedupe {
     [CmdletBinding()]
     param(
@@ -1139,7 +1823,8 @@ function Test-QCNotificationDedupe {
         [string]$DedupeKey,
         [hashtable]$Settings,
         [hashtable]$Config = $null,
-        [Nullable[int]]$TransitionId = $null
+        [Nullable[int]]$TransitionId = $null,
+        [string]$ExcludeJobId = ''
     )
 
     if (_QCN-IsBlank $DedupeKey) { return $false }
@@ -1170,7 +1855,31 @@ WHERE transition_id = @transitionId AND success = 1
             } catch { }
         }
         if ($transitionAlreadySent) { return $true }
-        # Pending transition (notification_sent=0): do not block on legacy jsonl keys from sheet-only dedupe.
+    }
+
+    if ($Config -and (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) {
+        try {
+            $dup = Test-QCDuplicateJob -DedupeKey $DedupeKey -Config $Config
+            if ($dup.IsSuccess -and $dup.Data -and [bool]$dup.Data.isDuplicate) {
+                foreach ($match in @($dup.Data.matches)) {
+                    if (-not $match) { continue }
+                    $matchJobId = ''
+                    $matchState = ''
+                    try { $matchJobId = [string]$match.jobId } catch { }
+                    try { $matchState = [string]$match.state } catch { }
+                    if (-not (_QCN-IsBlank $ExcludeJobId) -and $matchJobId -eq $ExcludeJobId) { continue }
+                    if ($matchState -in @('pending', 'running')) { return $true }
+                    if ($matchState -eq 'succeeded') {
+                        $jobObj = $null
+                        if ($match.ContainsKey('path') -and $match.path -and (Test-Path -LiteralPath ([string]$match.path))) {
+                            try { $jobObj = Get-Content -LiteralPath ([string]$match.path) -Raw | ConvertFrom-Json -ErrorAction Stop } catch { }
+                        }
+                        if ($null -eq $jobObj) { continue }
+                        if (_QCN-TestNotificationJobActuallySent -Job (_QCN-ToHashtable $jobObj)) { return $true }
+                    }
+                }
+            }
+        } catch { }
     }
 
     if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
@@ -1188,19 +1897,8 @@ WHERE dedupe_key = @dedupeKey AND success = 1
         } catch { }
     }
 
-    $storePath = if ($dedupe.storePath) { [string]$dedupe.storePath } else { (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl') }
-    if (-not (Test-Path -LiteralPath $storePath)) { return $false }
-
-    try {
-        $lines = Get-Content -LiteralPath $storePath -ErrorAction Stop
-        foreach ($line in @($lines)) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try {
-                $row = $line | ConvertFrom-Json -ErrorAction Stop
-                if ($row.key -eq $DedupeKey) { return $true }
-            } catch { }
-        }
-    } catch { }
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    if (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath) { return $true }
     return $false
 }
 
@@ -1217,7 +1915,9 @@ function Register-QCNotificationDedupe {
     $dedupe = _QCN-ToHashtable $Settings.dedupe
     if (-not $dedupe -or -not [bool]$dedupe.enabled) { return }
 
-    $storePath = if ($dedupe.storePath) { [string]$dedupe.storePath } else { (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl') }
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    if (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath) { return }
+
     $dir = Split-Path -Parent $storePath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
@@ -1230,6 +1930,46 @@ function Register-QCNotificationDedupe {
     } | ConvertTo-Json -Compress
 
     Add-Content -LiteralPath $storePath -Value $entry -Encoding UTF8
+}
+
+function Register-QCNotificationDedupeClaim {
+    <#
+    Atomically reserves a dedupe key before send so concurrent notification jobs cannot both pass Test-QCNotificationDedupe.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [hashtable]$Settings,
+        [hashtable]$Config = $null,
+        [Nullable[int]]$TransitionId = $null,
+        [string]$ExcludeJobId = '',
+        [hashtable]$ResultData = $null
+    )
+
+    if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+    $dedupe = _QCN-ToHashtable $Settings.dedupe
+    if (-not $dedupe -or -not [bool]$dedupe.enabled) { return $true }
+    if (_QCN-IsBlank $DedupeKey) { return $false }
+
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    $mutexName = 'Global\QCNotifyDedupe_' + ([string][BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($storePath.ToLowerInvariant())))).Replace('-', '')
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne(15000)
+        if (-not $acquired) { return $false }
+        if (Test-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -Config $Config -TransitionId $TransitionId -ExcludeJobId $ExcludeJobId) {
+            return $false
+        }
+        $claimData = if ($ResultData) { $ResultData } else { @{ eventType = ''; documentName = ''; provider = '' } }
+        Register-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -ResultData $claimData
+        return $true
+    } finally {
+        if ($acquired) {
+            try { $mutex.ReleaseMutex() | Out-Null } catch { }
+        }
+        try { $mutex.Dispose() } catch { }
+    }
 }
 
 function _QCN-EnsureSingleResult {
@@ -1280,6 +2020,109 @@ function Write-QCNotificationResult {
     if (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $data | Out-Null
     }
+}
+
+function _QCN-GetNotificationAuditEventId {
+    param([hashtable]$Event)
+    if (-not $Event) { return $null }
+    foreach ($key in @('auditEventId', 'triggerAuditId', 'sourceAuditId')) {
+        if ($Event.ContainsKey($key) -and $null -ne $Event[$key]) {
+            try {
+                $v = [long]$Event[$key]
+                if ($v -gt 0) { return $v }
+            } catch { }
+        }
+    }
+    if ($Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
+        $m = [regex]::Match([string]$Event.stateTransitionKey, 'audit:(\d+)')
+        if ($m.Success) {
+            try { return [long]$m.Groups[1].Value } catch { }
+        }
+    }
+    return $null
+}
+
+function _QCN-TestNotificationActorIsAutomation {
+    param(
+        [hashtable]$Config,
+        [hashtable]$Event
+    )
+    if (-not $Config -or -not $Event) { return $false }
+    if (-not (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue)) { return $false }
+    $userno = $null
+    if ($Event.ContainsKey('changedByUser') -and $null -ne $Event.changedByUser) {
+        try {
+            $n = [int]$Event.changedByUser
+            if ($n -gt 0) { $userno = $n }
+        } catch { }
+    }
+    $username = if ($Event.ContainsKey('changedByUsername')) { [string]$Event.changedByUsername } else { '' }
+    try { return [bool](Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $userno -ChangedByUsername $username) } catch { }
+    return $false
+}
+
+function _QCN-ResolveNotificationTriggerSource {
+    param(
+        [hashtable]$Event,
+        [hashtable]$Job
+    )
+    if ($Event) {
+        foreach ($key in @('triggerSource', 'source', 'origin')) {
+            if ($Event.ContainsKey($key) -and -not (_QCN-IsBlank $Event[$key])) { return [string]$Event[$key] }
+        }
+        if ($Event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $Event.stateTransitionKey)) {
+            $st = [string]$Event.stateTransitionKey
+            if ($st.StartsWith('audit:', [StringComparison]::OrdinalIgnoreCase)) { return 'audit' }
+            if ($st.StartsWith('workflow:', [StringComparison]::OrdinalIgnoreCase)) { return 'workflow' }
+        }
+    }
+    if ($Job) {
+        foreach ($key in @('type', 'jobType')) {
+            if ($Job.ContainsKey($key) -and -not (_QCN-IsBlank $Job[$key])) { return [string]$Job[$key] }
+        }
+    }
+    return ''
+}
+
+function _QCN-WriteNotificationLifecycleLog {
+    param(
+        [Parameter(Mandatory)][string]$Code,
+        [string]$Level = 'Information',
+        [string]$Message = '',
+        [hashtable]$Event,
+        [hashtable]$Config = $null,
+        [hashtable]$Job,
+        [string[]]$To = @(),
+        [string[]]$Cc = @(),
+        [string]$Subject = ''
+    )
+
+    if (-not (Get-Command -Name Write-QCJsonLog -ErrorAction SilentlyContinue)) { return }
+    if (_QCN-IsBlank $Message) { $Message = $Code }
+    $actor = ''
+    if ($Event -and $Event.ContainsKey('changedByUsername') -and -not (_QCN-IsBlank $Event.changedByUsername)) { $actor = [string]$Event.changedByUsername }
+    elseif ($Event -and $Event.ContainsKey('submittedBy') -and -not (_QCN-IsBlank $Event.submittedBy)) { $actor = [string]$Event.submittedBy }
+    $recipientKey = ''
+    if ($Event -and $Event.ContainsKey('recipientKey') -and -not (_QCN-IsBlank $Event.recipientKey)) { $recipientKey = [string]$Event.recipientKey }
+    else { $recipientKey = _QCN-BuildRecipientKey -To @($To) -Cc @($Cc) }
+    $data = @{
+        jobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } elseif ($Event -and $Event.ContainsKey('sourceJobId')) { [string]$Event.sourceJobId } else { '' }
+        auditEventId = _QCN-GetNotificationAuditEventId -Event $Event
+        documentName = if ($Event -and $Event.ContainsKey('documentName')) { [string]$Event.documentName } else { '' }
+        sheetStem = if ($Event -and $Event.ContainsKey('sheetStem')) { [string]$Event.sheetStem } else { '' }
+        targetState = if ($Event -and $Event.ContainsKey('targetState')) { [string]$Event.targetState } elseif ($Event -and $Event.ContainsKey('currentState')) { [string]$Event.currentState } else { '' }
+        previousState = if ($Event -and $Event.ContainsKey('previousState')) { [string]$Event.previousState } else { '' }
+        recipient = $recipientKey
+        to = @($To)
+        cc = @($Cc)
+        notificationType = if ($Event -and $Event.ContainsKey('notificationType')) { [string]$Event.notificationType } elseif ($Event -and $Event.ContainsKey('eventType')) { [string]$Event.eventType } else { '' }
+        dedupeKey = if ($Event -and $Event.ContainsKey('dedupeKey')) { [string]$Event.dedupeKey } else { '' }
+        actor = $actor
+        actorIsAutomation = _QCN-TestNotificationActorIsAutomation -Config $Config -Event $Event
+        triggerSource = _QCN-ResolveNotificationTriggerSource -Event $Event -Job $Job
+        subject = $Subject
+    }
+    Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $data | Out-Null
 }
 
 function Send-QCNotification {
@@ -1344,7 +2187,8 @@ function Send-QCNotification {
         $reviewType = ''
         if ($Event.reviewType) { $reviewType = [string]$Event.reviewType }
         elseif ($Event.qcReviewType) { $reviewType = [string]$Event.qcReviewType }
-        $tokens = _QCN-NewNotificationSubjectTokens -DocumentName ([string]$Event.documentName) `
+        $subjectDocumentName = if ($Event.displayDocumentName) { [string]$Event.displayDocumentName } else { [string]$Event.documentName }
+        $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $subjectDocumentName `
             -DocumentPath ([string]$Event.documentPath) -Project ([string]$Event.project) `
             -PreviousState ([string]$Event.previousState) -CurrentState ([string]$Event.currentState) `
             -EventType ([string]$Event.eventType) -ReviewType $reviewType
@@ -1446,6 +2290,9 @@ function Send-QCNotification {
     $provider = ([string]$settings.provider).Trim()
     if (_QCN-IsBlank $provider) { $provider = 'Mock' }
 
+    _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_SEND_ATTEMPT' -Level 'Information' `
+        -Message 'Sending QC workflow notification.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
+
     $sendResult = $null
     switch ($provider.ToLowerInvariant()) {
         'microsoftgraph' {
@@ -1454,7 +2301,11 @@ function Send-QCNotification {
             $sendResult = Send-QCNotificationGraph -GraphSettings $graph -Payload $payload -DryRun:([bool]$settings.dryRun)
         }
         default {
-            $outputRoot = if ($settings.outputRoot) { [string]$settings.outputRoot } else { (Join-Path (_QCN-GetRepoRoot) 'notifications') }
+            $outputRoot = if ($settings.outputRoot) {
+                _QCN-ResolveRepoPath -Path ([string]$settings.outputRoot)
+            } else {
+                (Join-Path (_QCN-GetRepoRoot) 'notifications')
+            }
             $sendResult = Send-QCNotificationMock -Payload $payload -OutputRoot $outputRoot -DryRun:([bool]$settings.dryRun)
         }
     }
@@ -1473,6 +2324,10 @@ function Send-QCNotification {
     } else { 'QC_NOTIFICATION_FAILED' }
     $level = if ($sendResult.IsSuccess) { 'Information' } else { 'Warning' }
     Write-QCNotificationResult -Code $code -Level $level -Message $sendResult.Message -Result $result -Event $Event
+    if ($sendResult.IsSuccess) {
+        _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_SENT' -Level 'Information' `
+            -Message 'QC workflow notification sent.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
+    }
 
     if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
         $telemetryFolder = [string]$Event.folderPath
@@ -2063,6 +2918,7 @@ function Invoke-QCNotificationForStateChange {
         [string]$ChangedByUsername = '',
         [string]$SubmittedBy = '',
         [Nullable[int]]$TransitionId = $null,
+        [string]$NotificationStateSource = '',
         [switch]$Force
     )
 
@@ -2140,7 +2996,12 @@ function Invoke-QCNotificationForStateChange {
     }
 
     if (_QCN-IsBlank $DocumentName) {
-        $DocumentName = _QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')
+        if ($Job) {
+            $DocumentName = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+        }
+        if (_QCN-IsBlank $DocumentName) {
+            $DocumentName = _QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')
+        }
         if (_QCN-IsBlank $DocumentName) { $DocumentName = 'unknown-document' }
     }
     if (_QCN-IsBlank $DocumentGuid) {
@@ -2193,6 +3054,23 @@ function Invoke-QCNotificationForStateChange {
     $DocumentGuid = [string]$qcTarget.documentGuid
     if (-not (_QCN-IsBlank $qcTarget.documentPath)) { $DocumentPath = [string]$qcTarget.documentPath }
 
+    if (-not $Force -and -not (_QCN-IsBlank $DocumentName) -and (Get-Command -Name 'Test-QCShouldNotifyForSheetPackageMember' -ErrorAction SilentlyContinue)) {
+        if (-not (Test-QCShouldNotifyForSheetPackageMember -Config $Config -DocumentName $DocumentName)) {
+            $skipped = @{
+                success = $false
+                skipped = $true
+                message = 'Notification skipped: sheet package notifies from QC PDF only.'
+                documentName = $DocumentName
+                currentState = $curr
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Level 'Information' -Message $skipped.message -Result $skipped -Event @{
+                documentName = $DocumentName; currentState = $curr; previousState = $prev
+            }
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_PACKAGE_MEMBER' -Message $skipped.message -Data $skipped
+        }
+    }
+
     $folderForRoles = ''
     $sourceForRoles = $DocumentName
     if ($Job) {
@@ -2223,14 +3101,26 @@ function Invoke-QCNotificationForStateChange {
     $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc) `
         -Config $Config -Job $Job -RoleOverrides $roleOverrides -FolderPath $folderForRoles -SourceDocumentName $sourceForRoles `
         -DocumentGuid $DocumentGuid
+    $recipientKey = _QCN-BuildRecipientKey -To @($resolved.to) -Cc @($resolved.cc)
     $event = New-QCNotificationEvent -EventType $eventType -Project $Project -DocumentName $DocumentName `
         -DocumentPath $DocumentPath -DocumentGuid ([string]$DocumentGuid) -PreviousState $prev -CurrentState $curr `
         -Reviewers $resolved.reviewers -Designers $resolved.designers -Cc $resolved.cc -ActionRequired $actionRequired -SourceJobId $sourceJobId
     if (-not (_QCN-IsBlank $folderForRoles)) { $event['folderPath'] = $folderForRoles }
+    $event['notificationType'] = $eventType
+    $event['targetState'] = $curr
+    $event['recipientKey'] = $recipientKey
+    $event['to'] = @($resolved.to)
+    $event['cc'] = @($resolved.cc)
     if (-not (_QCN-IsBlank $StateTransitionKey)) { $event['stateTransitionKey'] = [string]$StateTransitionKey }
     elseif ($Job -and ($Job.metadata -is [hashtable]) -and $Job.metadata.ContainsKey('stateTransitionKey') -and $Job.metadata.stateTransitionKey) {
         $event['stateTransitionKey'] = [string]$Job.metadata.stateTransitionKey
     }
+    if ($event.ContainsKey('stateTransitionKey') -and -not (_QCN-IsBlank $event.stateTransitionKey)) {
+        $auditId = _QCN-GetNotificationAuditEventId -Event $event
+        if ($null -ne $auditId) { $event['auditEventId'] = $auditId }
+    }
+    $resolvedCycleId = _QCN-ResolveNotificationCycleId -Event $event -Config $Config -Job $Job
+    if (-not (_QCN-IsBlank $resolvedCycleId)) { $event['cycleId'] = $resolvedCycleId }
 
     $folderForRt = ''
     $sourceForRt = $DocumentName
@@ -2268,10 +3158,68 @@ function Invoke-QCNotificationForStateChange {
     if ($null -ne $resolvedTransitionId -and $resolvedTransitionId -gt 0) {
         $event['transitionId'] = $resolvedTransitionId
     }
+    if ($Job -and ($Job.metadata -is [hashtable])) {
+        $jobMdForEvent = _QCN-ToHashtable $Job.metadata
+        if ($jobMdForEvent) {
+            if ($jobMdForEvent.ContainsKey('transitionSource') -and -not (_QCN-IsBlank $jobMdForEvent.transitionSource)) {
+                $event['transitionSource'] = [string]$jobMdForEvent.transitionSource
+            } elseif ($jobMdForEvent.ContainsKey('notificationStateSource') -and -not (_QCN-IsBlank $jobMdForEvent.notificationStateSource)) {
+                $event['transitionSource'] = [string]$jobMdForEvent.notificationStateSource
+            }
+            if ($jobMdForEvent.ContainsKey('transitionGroupId') -and -not (_QCN-IsBlank $jobMdForEvent.transitionGroupId)) {
+                $event['transitionGroupId'] = [string]$jobMdForEvent.transitionGroupId
+            }
+            if ($jobMdForEvent.ContainsKey('sheetPackageId') -and -not (_QCN-IsBlank $jobMdForEvent.sheetPackageId)) {
+                $event['sheetPackageId'] = [string]$jobMdForEvent.sheetPackageId
+            }
+            if ($jobMdForEvent.ContainsKey('auditEventId') -and $null -ne $jobMdForEvent.auditEventId) {
+                try {
+                    $jobAudit = [long]$jobMdForEvent.auditEventId
+                    if ($jobAudit -gt 0) { $event['auditEventId'] = $jobAudit }
+                } catch { }
+            }
+        }
+    }
+    if (-not (_QCN-IsBlank $NotificationStateSource)) {
+        $event['notificationStateSource'] = [string]$NotificationStateSource
+        if (-not $event.ContainsKey('transitionSource') -or (_QCN-IsBlank $event.transitionSource)) {
+            $event['transitionSource'] = [string]$NotificationStateSource
+        }
+    }
 
-    $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config
+    $resolvedNotificationStateSource = if (-not (_QCN-IsBlank $NotificationStateSource)) {
+        [string]$NotificationStateSource
+    } else {
+        'currentStateParameter'
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_STATE_RESOLVED' `
+            -Message 'Notification template state resolved before send.' -Data @{
+            documentGuid = $DocumentGuid
+            documentName = $DocumentName
+            previousState = $prev
+            notificationStateSource = $resolvedNotificationStateSource
+            notificationStateValue = $curr
+            eventType = $eventType
+            transitionId = $resolvedTransitionId
+        } | Out-Null
+    }
+
+    $dedupeKey = Get-QCNotificationDedupeKey -Event $event -Settings $settings -Config $Config -Job $Job
     $event['dedupeKey'] = $dedupeKey
-    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId)) {
+    if ($Job -and $Job.ContainsKey('id') -and -not (_QCN-IsBlank $Job.id)) {
+        $Job['dedupeKey'] = $dedupeKey
+    }
+    $displayDocumentName = _QCN-ResolveNotificationDisplayDocumentName -DocumentName $DocumentName -Job $Job -Event $event -Config $Config
+    if (-not (_QCN-IsBlank $displayDocumentName)) {
+        $event['displayDocumentName'] = $displayDocumentName
+    }
+    $excludeJobId = if ($Job -and $Job.ContainsKey('id')) { [string]$Job.id } else { '' }
+    if (-not $Force -and (Test-QCNotificationDedupe -DedupeKey $dedupeKey -Settings $settings -Config $Config -TransitionId $resolvedTransitionId -ExcludeJobId $excludeJobId)) {
+        $skipCode = if (_QCN-TestNotificationActorIsAutomation -Config $Config -Event $event) { 'QC_NOTIFICATION_SKIPPED_AUTOMATION_ECHO' } else { 'QC_NOTIFICATION_DEDUPED' }
+        _QCN-WriteNotificationLifecycleLog -Code $skipCode -Level 'Information' `
+            -Message 'Duplicate workflow notification suppressed for logical sheet transition.' `
+            -Event $event -Config $Config -Job $Job -To @($resolved.to) -Cc @($resolved.cc)
         $skipped = @{
             success = $false
             skipped = $true
@@ -2281,11 +3229,36 @@ function Invoke-QCNotificationForStateChange {
             documentName = $DocumentName
             timestampUtc = Get-QCTimestamp
         }
-        Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
+        Write-QCNotificationResult -Code $skipCode -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
     }
+    if (-not $Force) {
+        $claimData = @{
+            eventType = $eventType
+            documentName = $DocumentName
+            provider = [string]$settings.provider
+        }
+        if (-not (Register-QCNotificationDedupeClaim -DedupeKey $dedupeKey -Settings $settings -Config $Config `
+                -TransitionId $resolvedTransitionId -ExcludeJobId $excludeJobId -ResultData $claimData)) {
+            _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_DEDUPED' -Level 'Information' `
+                -Message 'Duplicate workflow notification suppressed during dedupe claim.' `
+                -Event $event -Config $Config -Job $Job -To @($resolved.to) -Cc @($resolved.cc)
+            $skipped = @{
+                success = $false
+                skipped = $true
+                dedupeKey = $dedupeKey
+                message = 'Duplicate notification suppressed during dedupe claim.'
+                eventType = $eventType
+                documentName = $DocumentName
+                timestampUtc = Get-QCTimestamp
+            }
+            Write-QCNotificationResult -Code 'QC_NOTIFICATION_DEDUPED' -Level 'Information' -Message $skipped.message -Result $skipped -Event $event
+            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message $skipped.message -Data $skipped
+        }
+    }
 
-    $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $DocumentName -DocumentPath $DocumentPath `
+    $subjectDocumentName = if (-not (_QCN-IsBlank $displayDocumentName)) { $displayDocumentName } else { $DocumentName }
+    $tokens = _QCN-NewNotificationSubjectTokens -DocumentName $subjectDocumentName -DocumentPath $DocumentPath `
         -Project $Project -PreviousState $prev -CurrentState $curr -EventType $eventType -ReviewType $resolvedReviewType
     $subjectTemplate = _QCN-ResolveNotificationSubjectTemplate -EventCfg $eventCfg -Settings $settings
     $subject = Expand-QCNotificationTemplate -Template $subjectTemplate -Tokens $tokens
@@ -2322,8 +3295,8 @@ function Invoke-QCNotificationForStateChange {
     return New-QCFailureResult -Code $notifyCode -Message $notifyMessage -Data $resultData
 }
 
-Export-ModuleMember -Function Get-QCNotificationSettings, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, `
+Export-ModuleMember -Function Get-QCNotificationSettings, Test-QCNotificationsEnqueueAsJob, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
+    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Test-QCNotificationDedupe, Register-QCNotificationDedupe, Register-QCNotificationDedupeClaim, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
-    Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult
+    Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult, Test-QCNotificationResultSent

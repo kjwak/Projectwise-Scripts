@@ -43,6 +43,7 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
@@ -106,6 +107,7 @@ function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     if ($jobType -eq 'QC_PREPEND') { return 'Invoke-QCPrependProcessor' }
     if ($jobType -eq 'QC_RENDITION') { return 'Invoke-QCRenditionProcessor' }
     if ($jobType -eq 'STATUS_SET_GEN') { return 'Invoke-StatusSetProcessor' }
+    if ($jobType -eq 'QC_NOTIFICATION') { return 'Invoke-QCNotificationProcessor' }
     return ''
 }
 
@@ -228,12 +230,25 @@ function _Write-WorkerJobOutcomeTelemetry {
     $jobAttempts = 0
     try { if ($Job.ContainsKey('attempts') -and $null -ne $Job['attempts']) { $jobAttempts = [int]$Job['attempts'] } } catch { }
     $rdJson = _Build-TelemetryResultJson -ResultData $ResultData
+    $jobDocumentGuid = ''
+    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) {
+        foreach ($gk in @('documentGuid', 'triggerDocumentGuid', 'qcPdfGuid')) {
+            if ($Job.metadata.ContainsKey($gk) -and $Job.metadata[$gk]) {
+                $jobDocumentGuid = [string]$Job.metadata[$gk]
+                break
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($jobDocumentGuid) -and $ResultData -is [hashtable] -and $ResultData.ContainsKey('documentGuid')) {
+        $jobDocumentGuid = [string]$ResultData.documentGuid
+    }
     $telRes = Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType $JobType -Status $Status `
         -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
         -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
         -AttemptCount $jobAttempts -DurationMs $DurationMs -ResultData $rdJson `
         -ErrorCode $(if ($ErrorCode) { $ErrorCode } else { $null }) `
-        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null })
+        -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
+        -DocumentGuid $jobDocumentGuid
     Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -TelemetryResult $telRes
     return $telRes
 }
@@ -443,10 +458,30 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     $srcFolder = [string]$Job['sourceFolder']
                     $qcPdfName = [System.IO.Path]::GetFileName([string]$resultData.qcOutputPdf)
                     if ($srcName -and $srcFolder -and $qcPdfName) {
-                        Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+                        $srcGuid = ''
+                        if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) {
+                            $md = $Job.metadata
+                            foreach ($gk in @('triggerDocumentGuid', 'documentGuid')) {
+                                if ($md.ContainsKey($gk) -and $md[$gk]) { $srcGuid = [string]$md[$gk]; break }
+                            }
+                        }
+                        $qcPdfGuid = ''
+                        if (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue) {
+                            try {
+                                $qcDocs = @(Get-PWDocumentsBySearch -FolderPath $srcFolder -DocumentName $qcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
+                                if ($qcDocs.Count -gt 0 -and $qcDocs[0].DocumentGUID) {
+                                    $qcPdfGuid = [string]$qcDocs[0].DocumentGUID
+                                }
+                            } catch { }
+                        }
+                        if (Get-Command -Name 'Update-QCSheetQcPdf' -ErrorAction SilentlyContinue -and $srcGuid) {
+                            Update-QCSheetQcPdf -Config $Config -SourceDocumentGuid $srcGuid -QcPdfGuid $qcPdfGuid -QcPdfName $qcPdfName | Out-Null
+                        } else {
+                            Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE sheet_index SET qc_pdf_name = @qcPdfName, last_updated_at = SYSDATETIMEOFFSET()
 WHERE document_name = @srcName AND folder_path = @srcFolder
 "@ -Parameters @{ qcPdfName = $qcPdfName; srcName = $srcName; srcFolder = $srcFolder } | Out-Null
+                        }
                     }
                 } catch { }
             }

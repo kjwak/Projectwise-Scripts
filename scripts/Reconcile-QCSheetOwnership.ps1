@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-Reconciles designer/reviewer emails and workflow state across DGN, sheet PDF, and QC PDF.
+Reconciles designer/reviewer/checker emails and workflow state across DGN, sheet PDF, and QC PDF.
 
 .DESCRIPTION
 Reads all rows from sheet_index, groups by folder + sheet stem, then applies:
 
-  - Email source of truth: DGN (EM_Designer_Email / EM_Reviewer_Email)
+  - Email source of truth: DGN (EM_Designer_Email / EM_Reviewer_Email / EM_Checker_Email)
     -> sheet PDF and *-qc.pdf are updated to match DGN when they differ.
 
   - State source of truth: *-qc.pdf workflow state
@@ -79,24 +79,33 @@ function _RSO-GetEmailColumns {
     param([hashtable]$Config)
     $designer = 'EM_Designer_Email'
     $reviewer = 'EM_Reviewer_Email'
+    $checker = 'EM_Checker_Email'
     try {
+        $na = $Config['notifications']['attributes']
+        if ($na) {
+            if ($na['designerEmailField']) { $designer = [string]$na['designerEmailField'] }
+            if ($na['reviewerEmailField']) { $reviewer = [string]$na['reviewerEmailField'] }
+            if ($na['checkerEmailField']) { $checker = [string]$na['checkerEmailField'] }
+        }
         $pw = $Config.projectWise
         if ($pw -and $pw.environmentEmailAttributes) {
             $ea = $pw.environmentEmailAttributes
             if ($ea.default) {
                 if ($ea.default.designerEmailColumn) { $designer = [string]$ea.default.designerEmailColumn }
                 if ($ea.default.reviewerEmailColumn) { $reviewer = [string]$ea.default.reviewerEmailColumn }
+                if ($ea.default.checkerEmailColumn) { $checker = [string]$ea.default.checkerEmailColumn }
             }
         }
     } catch { }
-    return @{ designer = $designer; reviewer = $reviewer }
+    return @{ designer = $designer; reviewer = $reviewer; checker = $checker }
 }
 
 function _RSO-BuildFolderEmailMap {
     param(
         [string]$FolderPath,
         [string]$DesignerColumn,
-        [string]$ReviewerColumn
+        [string]$ReviewerColumn,
+        [string]$CheckerColumn
     )
 
     $map = @{}
@@ -112,10 +121,11 @@ function _RSO-BuildFolderEmailMap {
             JustThisFolder = $true
             ErrorAction    = 'Stop'
         }
+        $returnCols = @($DesignerColumn, $ReviewerColumn, $CheckerColumn) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
         if ($cmd.Parameters.ContainsKey('ColumnsToReturn')) {
-            $params['ColumnsToReturn'] = @($DesignerColumn, $ReviewerColumn)
+            $params['ColumnsToReturn'] = $returnCols
         } elseif ($cmd.Parameters.ContainsKey('ReturnColumns')) {
-            $params['ReturnColumns'] = @($DesignerColumn, $ReviewerColumn)
+            $params['ReturnColumns'] = $returnCols
         }
         $rows = @(& $cmd @params)
         foreach ($row in $rows) {
@@ -128,11 +138,13 @@ function _RSO-BuildFolderEmailMap {
             $attrs = Get-PWDocumentAttributeMap -DocRow $row
             $designer = if ($attrs.ContainsKey($DesignerColumn)) { [string]$attrs[$DesignerColumn] } else { '' }
             $reviewer = if ($attrs.ContainsKey($ReviewerColumn)) { [string]$attrs[$ReviewerColumn] } else { '' }
+            $checker = if ($attrs.ContainsKey($CheckerColumn)) { [string]$attrs[$CheckerColumn] } else { '' }
             $key = $name.ToLowerInvariant()
             $map[$key] = @{
                 documentGuid  = $guid
                 designerEmail = $designer.Trim()
                 reviewerEmail = $reviewer.Trim()
+                checkerEmail  = $checker.Trim()
                 document      = $row
             }
         }
@@ -145,6 +157,22 @@ function _RSO-SetPwDocumentState {
         [object]$Document,
         [string]$StateName
     )
+    if ([string]::IsNullOrWhiteSpace($StateName)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                -Message 'Skipped reconcile workflow state write because StateName was empty.' -Data @{
+                callSite = '_RSO-SetPwDocumentState.StateName'
+                auditEventId = $null
+                documentName = ''
+                folderPath = ''
+                sourceVariableName = 'StateName'
+                sourceValue = $StateName
+                livePwState = ''
+                changedByUsername = ''
+            } | Out-Null
+        }
+        return
+    }
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
     if (-not $cmd -or -not $Document) { throw 'Set-PWDocumentState or document unavailable.' }
     $args = @{}
@@ -273,10 +301,11 @@ Initialize-QCDatabaseSchema -Config $config | Out-Null
 $emailCols = _RSO-GetEmailColumns -Config $config
 $designerCol = $emailCols.designer
 $reviewerCol = $emailCols.reviewer
+$checkerCol = $emailCols.checker
 
 $sql = @"
 SELECT document_guid, document_name, folder_path, extension, source_type,
-       qc_pdf_guid, qc_pdf_name, designer_email, reviewer_email, pw_state_name
+       qc_pdf_guid, qc_pdf_name, designer_email, reviewer_email, checker_email, pw_state_name
 FROM sheet_index
 "@
 $sqlParams = @{}
@@ -302,6 +331,7 @@ foreach ($r in @($qRes.Data.table.Rows)) {
         qcPdfName      = if ($r.qc_pdf_name -is [DBNull]) { '' } else { [string]$r.qc_pdf_name }
         designerEmail  = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
         reviewerEmail  = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
+        checkerEmail   = if ($r.Table.Columns.Contains('checker_email') -and -not ($r.checker_email -is [DBNull])) { [string]$r.checker_email } else { '' }
         pwStateName    = if ($r.pw_state_name -is [DBNull]) { '' } else { [string]$r.pw_state_name }
     }
 }
@@ -418,7 +448,7 @@ try {
         $folderKey = $g.folderPath.ToLowerInvariant()
         if (-not $folderEmailCache.ContainsKey($folderKey)) {
             $folderEmailCache[$folderKey] = _RSO-BuildFolderEmailMap -FolderPath $g.folderPath `
-                -DesignerColumn $designerCol -ReviewerColumn $reviewerCol
+                -DesignerColumn $designerCol -ReviewerColumn $reviewerCol -CheckerColumn $checkerCol
         }
         $emailMap = $folderEmailCache[$folderKey]
 
@@ -426,6 +456,7 @@ try {
         $dgnEmails = if ($emailMap.ContainsKey($dgnNameKey)) { $emailMap[$dgnNameKey] } else { $null }
         $canonicalDesigner = if ($dgnEmails) { [string]$dgnEmails.designerEmail } else { $g.dgn.designerEmail }
         $canonicalReviewer = if ($dgnEmails) { [string]$dgnEmails.reviewerEmail } else { $g.dgn.reviewerEmail }
+        $canonicalChecker = if ($dgnEmails) { [string]$dgnEmails.checkerEmail } else { $g.dgn.checkerEmail }
 
         $qcGuid = ''
         $qcName = ''
@@ -457,6 +488,7 @@ try {
             qcPdf             = if ($g.qcPdfName) { $g.qcPdfName } elseif ($g.qcIndexed) { $g.qcIndexed.documentName } else { $null }
             canonicalDesigner = $canonicalDesigner
             canonicalReviewer = $canonicalReviewer
+            canonicalChecker  = $canonicalChecker
             canonicalState    = $canonicalState
             emailChanges      = @()
             stateChanges      = @()
@@ -476,33 +508,39 @@ try {
         foreach ($target in $emailTargets) {
             $currentDesigner = ''
             $currentReviewer = ''
+            $currentChecker = ''
             if ($target.row) {
                 $nk = $target.nameKey
                 if ($emailMap.ContainsKey($nk)) {
                     $currentDesigner = [string]$emailMap[$nk].designerEmail
                     $currentReviewer = [string]$emailMap[$nk].reviewerEmail
+                    $currentChecker = [string]$emailMap[$nk].checkerEmail
                 } else {
                     $currentDesigner = [string]$target.row.designerEmail
                     $currentReviewer = [string]$target.row.reviewerEmail
+                    $currentChecker = [string]$target.row.checkerEmail
                 }
             } elseif ($target.nameKey -and $emailMap.ContainsKey($target.nameKey)) {
                 $currentDesigner = [string]$emailMap[$target.nameKey].designerEmail
                 $currentReviewer = [string]$emailMap[$target.nameKey].reviewerEmail
+                $currentChecker = [string]$emailMap[$target.nameKey].checkerEmail
             }
 
             $needsDesigner = (_RSO-Norm $currentDesigner) -ne (_RSO-Norm $canonicalDesigner)
             $needsReviewer = (_RSO-Norm $currentReviewer) -ne (_RSO-Norm $canonicalReviewer)
-            if (-not $needsDesigner -and -not $needsReviewer) { continue }
+            $needsChecker = (_RSO-Norm $currentChecker) -ne (_RSO-Norm $canonicalChecker)
+            if (-not $needsDesigner -and -not $needsReviewer -and -not $needsChecker) { continue }
 
+            $targetDocumentName = if ($target.row) { $target.row.documentName } else { $target.name }
             $docObj = _RSO-ResolvePwDocument -DocByGuid $docByGuid -EmailMap $emailMap `
-                -FolderPath $g.folderPath -DocumentName $change.document `
+                -FolderPath $g.folderPath -DocumentName $targetDocumentName `
                 -DocumentGuid $(if ($target.row) { $target.row.documentGuid } else { $target.guid })
 
             $change = [ordered]@{
                 role     = $target.role
-                document = if ($target.row) { $target.row.documentName } else { $target.name }
-                from     = @{ designer = $currentDesigner; reviewer = $currentReviewer }
-                to       = @{ designer = $canonicalDesigner; reviewer = $canonicalReviewer }
+                document = $targetDocumentName
+                from     = @{ designer = $currentDesigner; reviewer = $currentReviewer; checker = $currentChecker }
+                to       = @{ designer = $canonicalDesigner; reviewer = $canonicalReviewer; checker = $canonicalChecker }
                 applied  = $false
             }
 
@@ -510,6 +548,7 @@ try {
                 $toWrite = @{}
                 if ($needsDesigner) { $toWrite[$designerCol] = $canonicalDesigner }
                 if ($needsReviewer) { $toWrite[$reviewerCol] = $canonicalReviewer }
+                if ($needsChecker) { $toWrite[$checkerCol] = $canonicalChecker }
                 $targetPath = "$($g.folderPath)\$($change.document)"
                 if ($PSCmdlet.ShouldProcess($targetPath, 'Sync email attributes from DGN')) {
                     try {
@@ -555,12 +594,30 @@ try {
                 if ($docObj -and $doWrites) {
                     $targetPath = "$($g.folderPath)\$($target.row.documentName)"
                     if ($PSCmdlet.ShouldProcess($targetPath, "Set workflow state to $canonicalState")) {
-                        try {
-                            _RSO-SetPwDocumentState -Document $docObj -StateName $canonicalState
-                            $change.applied = $true
-                            $summary.stateUpdates++
-                        } catch {
-                            $summary.errors += "State update failed for $($target.row.documentName): $($_.Exception.Message)"
+                        if ([string]::IsNullOrWhiteSpace($canonicalState)) {
+                            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_EMPTY_STATE_GUARDED' `
+                                    -Message 'Skipped reconcile state write because canonical state was empty.' -Data @{
+                                    callSite = 'Reconcile-QCSheetOwnership.canonicalState'
+                                    auditEventId = $null
+                                    documentName = $target.row.documentName
+                                    folderPath = $g.folderPath
+                                    sourceVariableName = 'canonicalState'
+                                    sourceValue = $canonicalState
+                                    livePwState = [string]$currentState
+                                    changedByUsername = ''
+                                } | Out-Null
+                            }
+                            $change.skipped = $true
+                            $change.reason = 'empty canonical state'
+                        } else {
+                            try {
+                                _RSO-SetPwDocumentState -Document $docObj -StateName $canonicalState
+                                $change.applied = $true
+                                $summary.stateUpdates++
+                            } catch {
+                                $summary.errors += "State update failed for $($target.row.documentName): $($_.Exception.Message)"
+                            }
                         }
                     }
                 } elseif ($docObj -and $DryRun.IsPresent) {
@@ -581,7 +638,8 @@ try {
 
         foreach ($dbRow in $dbTargets) {
             $needsDbEmail = (_RSO-Norm $dbRow.designerEmail) -ne (_RSO-Norm $canonicalDesigner) `
-                -or (_RSO-Norm $dbRow.reviewerEmail) -ne (_RSO-Norm $canonicalReviewer)
+                -or (_RSO-Norm $dbRow.reviewerEmail) -ne (_RSO-Norm $canonicalReviewer) `
+                -or (_RSO-Norm $dbRow.checkerEmail) -ne (_RSO-Norm $canonicalChecker)
             $needsDbState = $canonicalState -and ((_RSO-Norm $dbRow.pwStateName) -ne (_RSO-Norm $canonicalState))
             if (-not $needsDbEmail -and -not $needsDbState) { continue }
 
@@ -594,6 +652,7 @@ try {
                     -SourceType $dbRow.sourceType `
                     -DesignerEmail $canonicalDesigner `
                     -ReviewerEmail $canonicalReviewer `
+                    -CheckerEmail $canonicalChecker `
                     -PwStateName $(if ($canonicalState) { $canonicalState } else { $dbRow.pwStateName }) `
                     -SetOwnershipFromProjectWise
                 $detail.dbRowsUpdated++

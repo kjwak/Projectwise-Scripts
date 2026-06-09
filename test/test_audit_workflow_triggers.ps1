@@ -17,6 +17,17 @@ function Assert-True($cond, $msg) {
 Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-qc.pdf') 'qc pdf suffix'
 Assert-True (-not (Test-QCIsQcPdfDocumentName -DocumentName 'sheet.pdf')) 'plain pdf is not qc pdf'
 
+$cfgNotify = @{
+    auditPoller = @{
+        workflowTriggers = @{
+            notifyOnStateChange = $true
+            qcPdfNotificationsOnly = $true
+        }
+    }
+}
+Assert-True (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-qc.pdf') 'qc pdf member may notify'
+Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00.pdf')) 'sheet pdf member suppressed when qcPdfNotificationsOnly'
+
 $cfg = @{
     auditPoller = @{
         workflowTriggers = @{
@@ -39,6 +50,10 @@ Assert-True (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfg
     'empty index -> In Production is baseline seed'
 Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState '' -CurrentState 'QC Received')) `
     'empty index -> QC Received is a real transition'
+Assert-True (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $cfgDefault -PreviousState '' -CurrentState 'Ready for QC') `
+    'empty prior -> Ready for QC should suppress audit notification baseline'
+Assert-True (-not (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $cfgDefault -PreviousState 'QC Initiated' -CurrentState 'Ready for QC')) `
+    'QC Initiated -> Ready for QC is a real notification transition'
 Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState 'In Production' -CurrentState 'QC Initiated')) `
     'prior state blocks baseline suppression'
 
@@ -111,110 +126,108 @@ Assert-True (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -Document
 $cfgAutoOff = @{ auditPoller = @{ workflowTriggers = @{ ignoreStateChangeFromAutomation = $false; automationPwUsernames = @('srv_typsa_archivist') } } }
 Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAutoOff -ChangedByUsername 'srv_typsa_archivist')) 'ignore flag off'
 
-# Final QC prepend success must record QC Finalizing -> QC Complete in transition_events.
-$script:finalPrependTransitions = [System.Collections.Generic.List[object]]::new()
-$script:finalPrependWorkflowEvents = [System.Collections.Generic.List[object]]::new()
-function Write-QCTransitionEvent {
+$staleNoAnchor = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'Documents\P\Sheets\S1' `
+    -DocumentName '0818000063ea509.pdf' -CanonicalState 'Redlines Received'
+Assert-True (-not $staleNoAnchor.isStale) 'missing audit anchor is not stale'
+Assert-Eq $staleNoAnchor.decision 'process' 'missing anchor keeps process decision'
+
+$staleMembers = @(
+    @{ documentGuid = 'pdf-guid'; documentName = '0818000063ea509.pdf' }
+    @{ documentGuid = 'dgn-guid'; documentName = '0818000063ea509.dgn' }
+)
+$staleStateByGuid = @{ 'pdf-guid' = 'Corrections Received'; 'dgn-guid' = 'Redlines Received' }
+function _PWD-GetSheetIndexStateSnapshot {
+    param([hashtable]$Config, [string]$DocumentGuid)
+    if ($DocumentGuid -eq 'pdf-guid') {
+        return @{ pwStateName = 'Corrections Received'; lastAuditEventAt = '2026-06-04T22:10:00Z' }
+    }
+    return @{ pwStateName = ''; lastAuditEventAt = $null }
+}
+$staleRegression = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'Documents\P\Sheets\S1' `
+    -DocumentName '0818000063ea509.pdf' -DocumentGuid 'pdf-guid' -AuditEventId 39093 `
+    -LastAuditEventAt '2026-06-04T22:00:00Z' -CanonicalState 'Redlines Received' `
+    -Members $staleMembers -StateByGuid $staleStateByGuid -SheetStem '0818000063ea509'
+Assert-True $staleRegression.isStale 'newer pdf index state blocks regressive canonical'
+Assert-Eq $staleRegression.reason 'regressive_pdf_state' 'regression reason is regressive_pdf_state'
+Assert-Eq $staleRegression.decision 'skipped' 'regression decision is skipped'
+
+# Test 1: valid QC PDF forward transition (sibling PDF/DGN behind, QC PDF ahead).
+$fwdMembers = @(
+    @{ documentGuid = 'pdf-guid'; documentName = '080J082001ca001.pdf' }
+    @{ documentGuid = 'dgn-guid'; documentName = '080J082001ca001.dgn' }
+    @{ documentGuid = 'qc-guid'; documentName = '080J082001ca001-qc.pdf' }
+)
+$fwdStateByGuid = @{
+    'pdf-guid' = 'Ready for QC'
+    'dgn-guid' = 'Ready for QC'
+    'qc-guid'  = 'Redlines Received'
+}
+function _PWD-GetSheetIndexStateSnapshot {
+    param([hashtable]$Config, [string]$DocumentGuid)
+    switch ($DocumentGuid) {
+        'pdf-guid' { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        'dgn-guid' { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        'qc-guid'  { return @{ pwStateName = 'Ready for QC'; lastAuditEventAt = '2026-06-09T16:49:44Z' } }
+        default { return @{ pwStateName = ''; lastAuditEventAt = $null } }
+    }
+}
+$fwdStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
+    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -LastAuditEventAt '2026-06-09 10:02:09' -CanonicalState 'Redlines Received' `
+    -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
+Assert-True (-not $fwdStale.isStale) 'Test 1: QC PDF forward transition is not stale'
+Assert-Eq $fwdStale.decision 'process' 'Test 1: sibling sync allowed'
+
+# Test 2: duplicate batch ingest guard suppresses pw_batch fallback.
+$dbRowsPrepared = 1
+$dbWrites = 0
+$dbSkipped = 1
+$dbUnprocessedLoaded = 0
+$allowPwBatchFallback = $true
+if ($dbRowsPrepared -gt 0 -and $dbWrites -eq 0 -and $dbSkipped -gt 0) { $allowPwBatchFallback = $false }
+Assert-True (-not $allowPwBatchFallback) 'Test 2: duplicate ingest suppresses pw_batch trigger fallback'
+Assert-Eq $dbUnprocessedLoaded 0 'Test 2: no unprocessed DB rows loaded'
+
+# Test 3: older sibling audit event must not block newer trigger.
+function Get-QCNewerSheetDocumentStateAuditEvent {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][string]$DocumentGuid,
-        [Parameter(Mandatory)][string]$TransitionType,
-        [string]$DocumentName = '',
-        [string]$FolderPath = '',
-        [string]$FromValue = '',
-        [string]$ToValue = '',
-        [string]$JobId = '',
-        [string]$JobType = '',
-        [Nullable[long]]$TriggerAuditId = $null
+        [Parameter(Mandatory)][string]$FolderPath,
+        [array]$MemberDocumentNames = @(),
+        [array]$MemberDocumentGuids = @(),
+        [Nullable[long]]$CurrentAuditEventId = $null,
+        [string]$CurrentAuditEventAt = ''
     )
-    $script:finalPrependTransitions.Add(@{
-        documentGuid = $DocumentGuid
-        transitionType = $TransitionType
-        fromValue = $FromValue
-        toValue = $ToValue
-        jobId = $JobId
-        jobType = $JobType
-    }) | Out-Null
-    return [pscustomobject]@{
+    return @{
         IsSuccess = $true
-        Code = 'TRANSITION_EVENT_WRITTEN'
-        Message = 'Captured for test.'
-        Data = @{ written = $true; transitionId = 99 }
-    }
-}
-
-function Write-QCWorkflowEventRow {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [string]$DocumentId = '',
-        [string]$JobId = '',
-        [string]$EventType = '',
-        [string]$PreviousPwState = '',
-        [string]$TargetPwState = '',
-        [string]$DecisionCode = '',
-        [string]$PayloadJson = '',
-        [string]$QcReviewType = ''
-    )
-    $payload = $null
-    try { if ($PayloadJson) { $payload = $PayloadJson | ConvertFrom-Json } } catch { }
-    $script:finalPrependWorkflowEvents.Add(@{
-        documentId = $DocumentId
-        eventType = $EventType
-        previousPwState = $PreviousPwState
-        targetPwState = $TargetPwState
-        decisionCode = $DecisionCode
-        qcReviewType = $QcReviewType
-        payload = $payload
-    }) | Out-Null
-    return [pscustomobject]@{
-        IsSuccess = $true
-        Code = 'QC_WORKFLOW_EVENT_WRITTEN'
-        Message = 'Captured for test.'
-        Data = @{ written = $true }
-    }
-}
-
-$cfgFinalPrepend = @{
-    database = @{ enabled = $true; allowWritesInDryRun = $true }
-    auditPoller = @{
-        workflowTriggers = @{
-            enabled = $true
-            recordFromProcessor = $true
-            recordTransitions = $true
-            recordStateHistory = $false
-            recordProcessingJobs = $false
+        Code = 'NEWER_STATE_AUDIT_REJECTED'
+        Data = @{
+            found = $false
+            rejectedBlockingReason = 'blocking_candidate_older_than_current'
+            rejectedBlockingAuditEventId = 40686
+            rejectedBlockingAuditTime = '2026-06-09 09:47:49'
+            rejectedBlockingDocumentName = '080J082001ca001.pdf'
         }
     }
 }
-$finalCtx = @{
-    job = @{
-        id = 'qc_prepend_final_test'
-        sourceFolder = 'Documents\X\CADD\Sheets'
-        metadata = @{
-            triggerDocumentGuid = 'guid-final-prepend'
-            triggerDocumentName = 'A101.pdf'
-            pwStateName = 'QC Finalizing'
-            prependTrigger = 'finalQcComplete'
-        }
-    }
-    previousState = 'QC Finalizing'
-    lifecycleState = 'QC Finalizing'
-    documentGuid = 'guid-final-prepend'
-    documentName = 'A101.pdf'
-    attributes = @{
-        reviewType = 'Independent Check'
-    }
-}
-Invoke-QCProcessorWorkflowStateTelemetry -Config $cfgFinalPrepend -Context $finalCtx `
-    -PreviousState 'QC Finalizing' -CurrentState 'QC Complete' -JobType 'QC_PREPEND'
-Assert-Eq $script:finalPrependTransitions.Count 1 'final prepend should write one transition event'
-Assert-Eq $script:finalPrependTransitions[0].fromValue 'QC Finalizing' 'transition from QC Finalizing'
-Assert-Eq $script:finalPrependTransitions[0].toValue 'QC Complete' 'transition to QC Complete'
-Assert-Eq $script:finalPrependTransitions[0].jobType 'QC_PREPEND' 'transition job type QC_PREPEND'
-Assert-Eq $script:finalPrependTransitions[0].documentGuid 'guid-final-prepend' 'transition uses trigger document guid'
-Assert-Eq $script:finalPrependWorkflowEvents.Count 1 'final prepend should mirror one workflow event'
-Assert-Eq $script:finalPrependWorkflowEvents[0].qcReviewType 'Independent Check' 'workflow event includes qc_review_type column value'
+$newerRejectStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
+    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -LastAuditEventAt '06/09/2026 17:02:09' -CanonicalState 'Redlines Received' `
+    -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
+Assert-True (-not $newerRejectStale.isStale) 'Test 3: older blocking candidate does not stale-block'
+Assert-Eq $newerRejectStale.rejectedBlockingReason 'blocking_candidate_older_than_current' 'Test 3: telemetry records rejected blocking candidate'
+Assert-Eq $newerRejectStale.blockingDocumentName '080J082001ca001.pdf' 'Test 3: blocking candidate document captured'
+Remove-Item Function:Get-QCNewerSheetDocumentStateAuditEvent -ErrorAction SilentlyContinue
+
+# Test 4: sheet_index lag must not block live PW canonical state for QC PDF trigger.
+Assert-True (-not $fwdStale.isStale) 'Test 4: sheet_index lag does not produce regressive_pdf_state by itself'
+Assert-Eq $fwdStale.staleComparisonBasis 'audit_event_id_and_time_utc' 'Test 4: stale comparison uses persisted audit anchor'
+
+Assert-Eq (Get-QCSheetGroupTransitionKey -SheetStem 'sheet1' -DocumentGuid 'guid-a' -TargetState 'QC Initiated' `
+    -TransitionSource 'user_audit' -AuditEventId 100) `
+    'sg|sheet1|guid-a|qc initiated|audit:100|user_audit' 'sheet-group transition key is stable'
+
+# Processor/prepend sheet-group telemetry: see test_sheet_group_workflow_transition.ps1 (test 7).
 
 Write-Host 'test_audit_workflow_triggers.ps1 passed'

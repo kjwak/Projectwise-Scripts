@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "pw-qc-debug": {
+      "command": "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\tools\\pw-qc-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\tools\\pw-qc-mcp\\server.py"
+      ],
+      "env": {
+        "PWQC_SQL_SERVER": "192.168.22.90",
+        "PWQC_SQL_DATABASE": "QC_Pipeline",
+        "PWQC_SQL_DRIVER": "ODBC Driver 13 for SQL Server",
+        "PWQC_SQL_TRUST_CERT": "yes"
+      }
+    }
+  }
+}
