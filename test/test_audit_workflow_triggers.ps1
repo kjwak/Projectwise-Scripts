@@ -54,6 +54,10 @@ Assert-True (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $c
     'empty prior -> Ready for QC should suppress audit notification baseline'
 Assert-True (-not (Test-QCShouldSuppressAuditReadyForQcBaselineNotification -Config $cfgDefault -PreviousState 'QC Initiated' -CurrentState 'Ready for QC')) `
     'QC Initiated -> Ready for QC is a real notification transition'
+Assert-True (Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync -AuditActionName 'DOCUMENT_ATTR') `
+    'DOCUMENT_ATTR index sync must not send state-change notifications'
+Assert-True (-not (Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync -AuditActionName 'DOCUMENT_STATE')) `
+    'DOCUMENT_STATE audits may still send state-change notifications'
 Assert-True (-not (Test-QCShouldSuppressBaselineSheetIndexStateTransition -Config $cfgDefault -PreviousState 'In Production' -CurrentState 'QC Initiated')) `
     'prior state blocks baseline suppression'
 

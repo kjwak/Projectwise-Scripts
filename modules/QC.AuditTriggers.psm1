@@ -1334,6 +1334,20 @@ function Test-QCShouldSuppressAuditReadyForQcBaselineNotification {
     return $false
 }
 
+function Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync {
+    <#
+    .SYNOPSIS
+    True when a pw_state_name diff came from sheet_index catch-up during DOCUMENT_ATTR, not a live DOCUMENT_STATE audit.
+    Notifications for those diffs duplicate prepend/processor or DOCUMENT_STATE paths.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AuditActionName
+    )
+
+    return (([string]$AuditActionName).Trim() -eq 'DOCUMENT_ATTR')
+}
+
 function _QCAT-ParsePwActTimeUtc {
     param([string]$ActTime)
     if ([string]::IsNullOrWhiteSpace($ActTime)) { return $null }
@@ -2073,6 +2087,21 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     if (-not $shouldNotify) { return }
+    if (Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync -AuditActionName $AuditActionName) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_SKIPPED_ATTR_INDEX_SYNC' `
+                -Message 'Skipped QC notification for pw_state_name diff detected during DOCUMENT_ATTR sheet_index sync.' -Data @{
+                auditEventId = $AuditEventId
+                auditActionName = $AuditActionName
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                previousState = $prev
+                currentState = $curr
+            } | Out-Null
+        }
+        return
+    }
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) {
         try { Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
     }
@@ -2489,7 +2518,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Get-QCSheetGroupTransitionKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

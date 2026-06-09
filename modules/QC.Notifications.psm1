@@ -1277,9 +1277,8 @@ function _QCN-ResolveNotificationDisplayDocumentName {
     if ($Job) {
         $src = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
         if (-not (_QCN-IsBlank $src)) {
-            if ($src -match '(?i)-qc\.pdf$') {
-                $src = [System.IO.Path]::GetFileNameWithoutExtension($src) + '.pdf'
-            }
+            $src = [System.IO.Path]::GetFileNameWithoutExtension($src)
+            if ($src -match '(?i)-qc$') { $src = $src.Substring(0, $src.Length - 3) }
             if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $src)) { return $src }
         }
     }
@@ -1295,12 +1294,13 @@ function _QCN-ResolveNotificationDisplayDocumentName {
         }
     }
     if (-not (_QCN-IsBlank $stem) -and -not (_QCN-IsPlaceholderNotificationSheetStem -Stem $stem)) {
-        return ($stem + '.pdf')
+        return $stem
     }
 
     $name = [string]$DocumentName
-    if ($name -match '(?i)-qc\.pdf$') {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf'
+    if (-not (_QCN-IsBlank $name)) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($name)
+        if ($name -match '(?i)-qc$') { $name = $name.Substring(0, $name.Length - 3) }
     }
     if (-not (_QCN-IsPlaceholderNotificationDocumentName -DocumentName $name)) { return $name }
     return $name
