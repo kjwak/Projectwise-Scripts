@@ -432,8 +432,65 @@ function Test-PWLoginHealth {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [hashtable]$Config
+        [hashtable]$Config,
+        [string]$ProbeFolderPath = ''
     )
+
+    if (-not (_PWC-TryImportPWModules)) {
+        return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise cmdlets not loaded for session health probe.' -Data @{
+            psModulePath = $env:PSModulePath
+        }
+    }
+
+    $probePath = [string]$ProbeFolderPath
+    if ([string]::IsNullOrWhiteSpace($probePath)) {
+        $pwCfg = $Config.projectWise
+        if ($pwCfg -is [pscustomobject]) {
+            $pwCfg = @{}
+            foreach ($p in $Config.projectWise.PSObject.Properties) { $pwCfg[$p.Name] = $p.Value }
+        }
+        if ($pwCfg -and $pwCfg.watchList) {
+            $watchList = $pwCfg.watchList
+            if ($watchList -is [pscustomobject]) {
+                $wl = @{}
+                foreach ($p in $watchList.PSObject.Properties) { $wl[$p.Name] = $p.Value }
+                $watchList = $wl
+            }
+            if ($watchList.roots) {
+                $firstRoot = @($watchList.roots | Select-Object -First 1)[0]
+                if ($firstRoot -and $firstRoot.path) {
+                    $probePath = [string]$firstRoot.path
+                }
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($probePath)) {
+        $probePath = 'Documents'
+    }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $folder = Get-PWFolders -FolderPath $probePath -JustOne -ErrorAction Stop
+        $sw.Stop()
+        if (-not $folder) {
+            return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise session probe returned no folder (session may be logged out).' -Data @{
+                probeFolderPath = $probePath
+                durationMs = [int]$sw.ElapsedMilliseconds
+            }
+        }
+        return New-QCSuccessResult -Code 'PW_SESSION_HEALTHY' -Message 'ProjectWise session probe succeeded.' -Data @{
+            probeFolderPath = $probePath
+            durationMs = [int]$sw.ElapsedMilliseconds
+            folderName = if ($folder.Name) { [string]$folder.Name } else { '' }
+        }
+    } catch {
+        $sw.Stop()
+        return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise session probe failed (session may be logged out).' -Data @{
+            probeFolderPath = $probePath
+            durationMs = [int]$sw.ElapsedMilliseconds
+            errorMessage = [string]$_.Exception.Message
+        }
+    }
 }
 
 function Connect-PWIfNeeded {

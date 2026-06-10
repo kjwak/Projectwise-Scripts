@@ -107,7 +107,9 @@ function New-QCGraphEmailMessage {
         [string]$LogoPath,
         [string[]]$CcRecipients = @(),
         [string[]]$BccRecipients = @(),
-        [string]$ContentId = 'typsa-logo'
+        [string]$ContentId = 'typsa-logo',
+        [ValidateSet('low', 'normal', 'high')]
+        [string]$Importance = 'normal'
     )
 
     if (_QCNG-IsBlank $Subject) {
@@ -143,6 +145,7 @@ function New-QCGraphEmailMessage {
             content = [string]$HtmlBody
         }
         toRecipients = $to
+        importance = [string]$Importance
         attachments = @(
             @{
                 '@odata.type' = '#microsoft.graph.fileAttachment'
@@ -292,9 +295,15 @@ function Send-QCNotificationGraph {
         $logoPath = 'email/typsalogo.png.webp'
     }
 
+    $importance = 'normal'
+    if ($Payload.importance) {
+        $candidate = ([string]$Payload.importance).Trim().ToLowerInvariant()
+        if ($candidate -in @('low', 'normal', 'high')) { $importance = $candidate }
+    }
+
     if ($Payload.htmlBody) {
         $sendMailBody = New-QCGraphEmailMessage -ToRecipients @($Payload.to) -Subject ([string]$Payload.subject) `
-            -HtmlBody ([string]$Payload.htmlBody) -LogoPath $logoPath -CcRecipients @($Payload.cc)
+            -HtmlBody ([string]$Payload.htmlBody) -LogoPath $logoPath -CcRecipients @($Payload.cc) -Importance $importance
     }
     else {
         $sendMailBody = New-QCNotificationGraphSendMailBody -Payload $Payload

@@ -260,6 +260,7 @@ function _Reset-WatcherPassState {
     $script:reconciliationTriggerSource = $null
     $script:downtimeSeconds = 0
     $script:auditGapDetected = $false
+    $script:pwSessionLossHandled = $false
     $script:watcherPhase = 'session/connect'
     $script:queueDepthSnapshot = $null
 }
@@ -533,6 +534,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
 _Watch-RestoreFoundationModules
 if (-not (_Watch-EnsureAllModuleExports)) {
     $missingAtStart = @(_Watch-GetMissingRequiredCommands)
@@ -693,6 +695,75 @@ if ($statusSetRules.Count -gt 0) {
 $watcherTick = 0
 $pwSessionOpen = $false
 $script:pwConnectFailureStreak = 0
+$script:watchLastMaxPwActTimeUtc = $null
+$script:watchLastMaxPwActChangeUtc = $null
+$script:watchLastPwHealthProbeTick = 0
+
+function _Watch-HandlePwSessionLost {
+    param(
+        [hashtable]$Config,
+        [string]$Reason,
+        [string]$DatasourceName = '',
+        [string]$ProbeFolderPath = '',
+        [string]$MaxPwActTime = '',
+        [string]$WatermarkAfter = '',
+        [string]$ErrorMessage = '',
+        [ref]$PwSessionOpenRef,
+        [ref]$ErrorsRef
+    )
+
+    $detectedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_SESSION_STALE' -Message 'ProjectWise session is unhealthy; closing session and alerting operators.' -Data @{
+        reason = $Reason
+        tick = $watcherTick
+        datasourceName = $DatasourceName
+        probeFolderPath = $ProbeFolderPath
+        maxPwActTime = $MaxPwActTime
+        watermarkAfter = $WatermarkAfter
+        errorMessage = $ErrorMessage
+        pwConnectFailureStreak = $script:pwConnectFailureStreak
+    }
+
+    if (Get-Command -Name 'Send-QCWatcherSessionLostAlert' -ErrorAction SilentlyContinue) {
+        try {
+            $alertDetails = @{
+                detectedUtc = $detectedUtc
+                reason = $Reason
+                datasourceName = $DatasourceName
+                tick = [string]$watcherTick
+                probeFolderPath = $ProbeFolderPath
+                maxPwActTime = $MaxPwActTime
+                watermarkAfter = $WatermarkAfter
+                errorMessage = $ErrorMessage
+            }
+            $alertRes = Send-QCWatcherSessionLostAlert -Config $Config -Details $alertDetails
+            $alertLevel = if ($alertRes.IsSuccess) { 'Information' } else { 'Warning' }
+            $alertCode = if ($alertRes.IsSuccess) { 'WATCH_PW_SESSION_ALERT_SENT' } else { 'WATCH_PW_SESSION_ALERT_FAILED' }
+            _Watch-WriteJsonLog -Flush -Level $alertLevel -Code $alertCode -Message ([string]$alertRes.Message) -Data @{
+                alertCode = [string]$alertRes.Code
+                reason = $Reason
+            }
+        } catch {
+            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_SESSION_ALERT_FAILED' -Message 'Could not send ProjectWise session lost alert.' -Data @{
+                reason = $Reason
+                errorMessage = [string]$_.Exception.Message
+            }
+        }
+    }
+
+    if ($watcherContinuous -and $PwSessionOpenRef.Value) {
+        try {
+            Disconnect-PW | Out-Null
+            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after health failure (will reconnect).' -Data @{ tick = $watcherTick; reason = $Reason }
+        } catch {
+            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after health failure.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
+        }
+    }
+    $PwSessionOpenRef.Value = $false
+    $script:pwConnectFailureStreak++
+    $script:pwSessionLossHandled = $true
+    if ($ErrorsRef) { $ErrorsRef.Value++ }
+}
 do {
     $watcherTick++
     _Reset-WatcherPassState
@@ -733,7 +804,8 @@ if ($statusSetRules.Count -ge 0) {
                 }
                 $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
                 if (-not $connRes.IsSuccess) {
-                    $script:pwConnectFailureStreak++
+                    _Watch-HandlePwSessionLost -Config $config -Reason 'connect_failed' -DatasourceName $ds `
+                        -ErrorMessage ([string]$connRes.Message) -PwSessionOpenRef ([ref]$pwSessionOpen) -ErrorsRef ([ref]$errors)
                     throw ($connRes.Code + ': ' + $connRes.Message)
                 }
                 $pwSessionOpen = $true
@@ -742,6 +814,27 @@ if ($statusSetRules.Count -ge 0) {
                     datasourceName = $ds
                     userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
                     continuous = $watcherContinuous
+                }
+            }
+
+            if ($pwSessionOpen -and (Get-Command -Name 'Test-PWLoginHealth' -ErrorAction SilentlyContinue)) {
+                $sessionAlertSettings = $null
+                if (Get-Command -Name 'Get-QCWatcherSessionAlertSettings' -ErrorAction SilentlyContinue) {
+                    $sessionAlertSettings = Get-QCWatcherSessionAlertSettings -Config $config
+                }
+                $probeIntervalTicks = if ($sessionAlertSettings) { [int]$sessionAlertSettings.probeIntervalTicks } else { 60 }
+                $probeFolderPath = if ($sessionAlertSettings) { [string]$sessionAlertSettings.probeFolderPath } else { '' }
+                $probeDue = ($watcherTick -eq 1) -or (($watcherTick - $script:watchLastPwHealthProbeTick) -ge $probeIntervalTicks)
+                if ($probeDue) {
+                    $script:watchLastPwHealthProbeTick = $watcherTick
+                    $healthRes = Test-PWLoginHealth -Config $config -ProbeFolderPath $probeFolderPath
+                    if (-not $healthRes.IsSuccess) {
+                        $probePath = if ($healthRes.Data -and $healthRes.Data.probeFolderPath) { [string]$healthRes.Data.probeFolderPath } else { $probeFolderPath }
+                        $healthErr = if ($healthRes.Data -and $healthRes.Data.errorMessage) { [string]$healthRes.Data.errorMessage } else { [string]$healthRes.Message }
+                        _Watch-HandlePwSessionLost -Config $config -Reason 'health_probe_failed' -DatasourceName $ds `
+                            -ProbeFolderPath $probePath -ErrorMessage $healthErr -PwSessionOpenRef ([ref]$pwSessionOpen) -ErrorsRef ([ref]$errors)
+                        throw ('PW_SESSION_UNHEALTHY: ' + [string]$healthRes.Message)
+                    }
                 }
             }
 
@@ -991,6 +1084,22 @@ if ($statusSetRules.Count -ge 0) {
                             folderGuidCacheConfigPresent = if ($null -ne $auditData.stats.folderGuidCacheConfigPresent) { [bool]$auditData.stats.folderGuidCacheConfigPresent } else { $null }
                             parentGuidFilterBypassReason = if ($auditData.stats.parentGuidFilterBypassReason) { [string]$auditData.stats.parentGuidFilterBypassReason } else { $null }
                             parentGuidFilterActivationReason = if ($auditData.stats.parentGuidFilterActivationReason) { [string]$auditData.stats.parentGuidFilterActivationReason } else { $null }
+                        }
+
+                        if ($pwSessionOpen -and -not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc) -and (Get-Command -Name 'Test-QCWatcherAuditActivityStalled' -ErrorAction SilentlyContinue)) {
+                            if ($maxPwActTimeUtc -ne $script:watchLastMaxPwActTimeUtc) {
+                                $script:watchLastMaxPwActTimeUtc = $maxPwActTimeUtc
+                                $script:watchLastMaxPwActChangeUtc = (Get-Date).ToUniversalTime()
+                            }
+                            $stallRes = Test-QCWatcherAuditActivityStalled -Config $config -MaxPwActTimeUtc $maxPwActTimeUtc `
+                                -PollUntilUtc ([string]$pollWindow.untilUtc) -LastMaxPwActChangeUtc $script:watchLastMaxPwActChangeUtc
+                            if ($stallRes.stalled) {
+                                _Watch-HandlePwSessionLost -Config $config -Reason 'audit_activity_stalled' -DatasourceName $ds `
+                                    -MaxPwActTime $maxPwActTime -WatermarkAfter $watermarkAfterStr `
+                                    -ErrorMessage ("Audit lag $($stallRes.lagSeconds)s exceeded threshold $($stallRes.thresholdSeconds)s.") `
+                                    -PwSessionOpenRef ([ref]$pwSessionOpen) -ErrorsRef ([ref]$errors)
+                                throw 'PW_SESSION_UNHEALTHY: ProjectWise audit activity stalled while session appeared open.'
+                            }
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.
@@ -2450,25 +2559,27 @@ if ($statusSetRules.Count -ge 0) {
                 $pwSessionOpen = $false
             }
         } catch {
-            $errors++
-            if ($watcherContinuous) {
-                if ($pwSessionOpen) {
-                    try {
-                        Disconnect-PW | Out-Null
-                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after watch error (will reconnect).' -Data @{ tick = $watcherTick }
-                    } catch {
-                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after watch error.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
+            if (-not $script:pwSessionLossHandled) {
+                $errors++
+                if ($watcherContinuous) {
+                    if ($pwSessionOpen) {
+                        try {
+                            Disconnect-PW | Out-Null
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_DISCONNECT_ON_ERROR' -Message 'ProjectWise session closed after watch error (will reconnect).' -Data @{ tick = $watcherTick }
+                        } catch {
+                            _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_ON_ERROR_FAILED' -Message 'Could not disconnect ProjectWise after watch error.' -Data @{ tick = $watcherTick; error = [string]$_.Exception.Message }
+                        }
+                    }
+                    $pwSessionOpen = $false
+                    if ($_.Exception.Message -match 'PW_CONNECT_FAILED') {
+                        $script:pwConnectFailureStreak++
                     }
                 }
-                $pwSessionOpen = $false
-                if ($_.Exception.Message -match 'PW_CONNECT_FAILED') {
-                    $script:pwConnectFailureStreak++
+                _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{
+                    errorMessage = [string]$_.Exception.Message
+                    scriptStackTrace = [string]$_.ScriptStackTrace
+                    pwConnectFailureStreak = $script:pwConnectFailureStreak
                 }
-            }
-            _Watch-WriteJsonLog -Flush -Level 'Error' -Code 'WATCH_PW_ERROR' -Message 'ProjectWise watchList processing failed.' -Data @{
-                errorMessage = [string]$_.Exception.Message
-                scriptStackTrace = [string]$_.ScriptStackTrace
-                pwConnectFailureStreak = $script:pwConnectFailureStreak
             }
         } finally {
             $pwWatchSw.Stop()
