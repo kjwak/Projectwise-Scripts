@@ -416,6 +416,57 @@ function Show-PWFolderDocumentList {
     }
 }
 
+function _PWC-ConvertProbeFolderPath {
+    param([AllowNull()][string]$InternalFolderPath)
+
+    $s = ($InternalFolderPath -as [string]).Trim().TrimEnd('\')
+    while ($s -match '^(?i)Documents\\') { $s = $s -replace '^(?i)Documents\\', '' }
+    if ([string]::IsNullOrWhiteSpace($s)) { return 'Documents' }
+    return $s
+}
+
+function _PWC-GetSessionProbeFolderCandidates {
+    param(
+        [hashtable]$Config,
+        [string]$ProbeFolderPath = ''
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    [void]$candidates.Add('Documents')
+
+    if (-not [string]::IsNullOrWhiteSpace($ProbeFolderPath)) {
+        $converted = _PWC-ConvertProbeFolderPath -InternalFolderPath $ProbeFolderPath
+        if ($candidates -notcontains $converted) { [void]$candidates.Add($converted) }
+    }
+
+    $pwCfg = $Config.projectWise
+    if ($pwCfg -is [pscustomobject]) {
+        $tmp = @{}
+        foreach ($p in $pwCfg.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+        $pwCfg = $tmp
+    }
+    if ($pwCfg -and $pwCfg.watchList) {
+        $watchList = $pwCfg.watchList
+        if ($watchList -is [pscustomobject]) {
+            $wl = @{}
+            foreach ($p in $watchList.PSObject.Properties) { $wl[$p.Name] = $p.Value }
+            $watchList = $wl
+        }
+        if ($watchList.roots) {
+            foreach ($root in @($watchList.roots)) {
+                $path = $null
+                if ($root -is [hashtable] -and $root.path) { $path = [string]$root.path }
+                elseif ($root.path) { $path = [string]$root.path }
+                if ([string]::IsNullOrWhiteSpace($path)) { continue }
+                $converted = _PWC-ConvertProbeFolderPath -InternalFolderPath $path
+                if ($candidates -notcontains $converted) { [void]$candidates.Add($converted) }
+            }
+        }
+    }
+
+    return @($candidates)
+}
+
 function Test-PWLoginHealth {
     <#
     .SYNOPSIS
@@ -442,54 +493,48 @@ function Test-PWLoginHealth {
         }
     }
 
-    $probePath = [string]$ProbeFolderPath
-    if ([string]::IsNullOrWhiteSpace($probePath)) {
-        $pwCfg = $Config.projectWise
-        if ($pwCfg -is [pscustomobject]) {
-            $pwCfg = @{}
-            foreach ($p in $Config.projectWise.PSObject.Properties) { $pwCfg[$p.Name] = $p.Value }
-        }
-        if ($pwCfg -and $pwCfg.watchList) {
-            $watchList = $pwCfg.watchList
-            if ($watchList -is [pscustomobject]) {
-                $wl = @{}
-                foreach ($p in $watchList.PSObject.Properties) { $wl[$p.Name] = $p.Value }
-                $watchList = $wl
-            }
-            if ($watchList.roots) {
-                $firstRoot = @($watchList.roots | Select-Object -First 1)[0]
-                if ($firstRoot -and $firstRoot.path) {
-                    $probePath = [string]$firstRoot.path
-                }
+    if (Get-Command -Name 'Ensure-PWDiscoveryCmdlets' -ErrorAction SilentlyContinue) {
+        $discRes = Ensure-PWDiscoveryCmdlets
+        if (-not $discRes.IsSuccess) {
+            return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message $discRes.Message -Data @{
+                discoveryCode = [string]$discRes.Code
+                discovery = $discRes.Data
             }
         }
-    }
-    if ([string]::IsNullOrWhiteSpace($probePath)) {
-        $probePath = 'Documents'
     }
 
+    $probeCandidates = @(_PWC-GetSessionProbeFolderCandidates -Config $Config -ProbeFolderPath $ProbeFolderPath)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-        $folder = Get-PWFolders -FolderPath $probePath -JustOne -ErrorAction Stop
-        $sw.Stop()
-        if (-not $folder) {
-            return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise session probe returned no folder (session may be logged out).' -Data @{
-                probeFolderPath = $probePath
-                durationMs = [int]$sw.ElapsedMilliseconds
+    $attempts = @()
+    $lastError = ''
+
+    foreach ($probePath in $probeCandidates) {
+        try {
+            $folder = Get-PWFolders -FolderPath $probePath -JustOne -ErrorAction Stop
+            if ($folder) {
+                $sw.Stop()
+                return New-QCSuccessResult -Code 'PW_SESSION_HEALTHY' -Message 'ProjectWise session probe succeeded.' -Data @{
+                    probeFolderPath = $probePath
+                    probeCandidates = $probeCandidates
+                    durationMs = [int]$sw.ElapsedMilliseconds
+                    folderName = if ($folder.Name) { [string]$folder.Name } else { '' }
+                }
             }
+            $attempts += @{ probeFolderPath = $probePath; result = 'empty' }
+            $lastError = "Get-PWFolders returned no folder for '$probePath'."
+        } catch {
+            $attempts += @{ probeFolderPath = $probePath; result = 'error'; errorMessage = [string]$_.Exception.Message }
+            $lastError = [string]$_.Exception.Message
         }
-        return New-QCSuccessResult -Code 'PW_SESSION_HEALTHY' -Message 'ProjectWise session probe succeeded.' -Data @{
-            probeFolderPath = $probePath
-            durationMs = [int]$sw.ElapsedMilliseconds
-            folderName = if ($folder.Name) { [string]$folder.Name } else { '' }
-        }
-    } catch {
-        $sw.Stop()
-        return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise session probe failed (session may be logged out).' -Data @{
-            probeFolderPath = $probePath
-            durationMs = [int]$sw.ElapsedMilliseconds
-            errorMessage = [string]$_.Exception.Message
-        }
+    }
+
+    $sw.Stop()
+    return New-QCFailureResult -Code 'PW_SESSION_UNHEALTHY' -Message 'ProjectWise session probe failed after trying configured folder paths.' -Data @{
+        probeFolderPath = if ($probeCandidates.Count -gt 0) { [string]$probeCandidates[0] } else { 'Documents' }
+        probeCandidates = $probeCandidates
+        attempts = $attempts
+        durationMs = [int]$sw.ElapsedMilliseconds
+        errorMessage = $lastError
     }
 }
 

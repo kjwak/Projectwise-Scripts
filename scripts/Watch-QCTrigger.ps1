@@ -698,6 +698,7 @@ $script:pwConnectFailureStreak = 0
 $script:watchLastMaxPwActTimeUtc = $null
 $script:watchLastMaxPwActChangeUtc = $null
 $script:watchLastPwHealthProbeTick = 0
+$script:watchLastPwConnectTick = 0
 
 function _Watch-HandlePwSessionLost {
     param(
@@ -713,7 +714,7 @@ function _Watch-HandlePwSessionLost {
     )
 
     $detectedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_SESSION_STALE' -Message 'ProjectWise session is unhealthy; closing session and alerting operators.' -Data @{
+    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_SESSION_STALE' -Message 'ProjectWise session health check failed; closing session and alerting operators.' -Data @{
         reason = $Reason
         tick = $watcherTick
         datasourceName = $DatasourceName
@@ -737,10 +738,32 @@ function _Watch-HandlePwSessionLost {
                 errorMessage = $ErrorMessage
             }
             $alertRes = Send-QCWatcherSessionLostAlert -Config $Config -Details $alertDetails
-            $alertLevel = if ($alertRes.IsSuccess) { 'Information' } else { 'Warning' }
-            $alertCode = if ($alertRes.IsSuccess) { 'WATCH_PW_SESSION_ALERT_SENT' } else { 'WATCH_PW_SESSION_ALERT_FAILED' }
+            $alertResultCode = [string]$alertRes.Code
+            switch ($alertResultCode) {
+                'QC_WATCHER_ALERT_SENT' {
+                    $alertLevel = 'Information'
+                    $alertCode = 'WATCH_PW_SESSION_ALERT_SENT'
+                }
+                'QC_WATCHER_ALERT_SKIPPED_DEDUPED' {
+                    $alertLevel = 'Information'
+                    $alertCode = 'WATCH_PW_SESSION_ALERT_SKIPPED_DEDUPED'
+                }
+                'QC_WATCHER_ALERT_SKIPPED_DISABLED' {
+                    $alertLevel = 'Information'
+                    $alertCode = 'WATCH_PW_SESSION_ALERT_SKIPPED_DISABLED'
+                }
+                default {
+                    if ($alertRes.IsSuccess) {
+                        $alertLevel = 'Information'
+                        $alertCode = 'WATCH_PW_SESSION_ALERT_SENT'
+                    } else {
+                        $alertLevel = 'Warning'
+                        $alertCode = 'WATCH_PW_SESSION_ALERT_FAILED'
+                    }
+                }
+            }
             _Watch-WriteJsonLog -Flush -Level $alertLevel -Code $alertCode -Message ([string]$alertRes.Message) -Data @{
-                alertCode = [string]$alertRes.Code
+                alertCode = $alertResultCode
                 reason = $Reason
             }
         } catch {
@@ -810,6 +833,7 @@ if ($statusSetRules.Count -ge 0) {
                 }
                 $pwSessionOpen = $true
                 $script:pwConnectFailureStreak = 0
+                $script:watchLastPwConnectTick = $watcherTick
                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
                     datasourceName = $ds
                     userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
@@ -824,7 +848,8 @@ if ($statusSetRules.Count -ge 0) {
                 }
                 $probeIntervalTicks = if ($sessionAlertSettings) { [int]$sessionAlertSettings.probeIntervalTicks } else { 60 }
                 $probeFolderPath = if ($sessionAlertSettings) { [string]$sessionAlertSettings.probeFolderPath } else { '' }
-                $probeDue = ($watcherTick -eq 1) -or (($watcherTick - $script:watchLastPwHealthProbeTick) -ge $probeIntervalTicks)
+                $probeDue = ($watcherTick -ne $script:watchLastPwConnectTick) -and
+                    (($script:watchLastPwHealthProbeTick -eq 0) -or (($watcherTick - $script:watchLastPwHealthProbeTick) -ge $probeIntervalTicks))
                 if ($probeDue) {
                     $script:watchLastPwHealthProbeTick = $watcherTick
                     $healthRes = Test-PWLoginHealth -Config $config -ProbeFolderPath $probeFolderPath
