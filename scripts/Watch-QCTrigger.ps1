@@ -1111,20 +1111,9 @@ if ($statusSetRules.Count -ge 0) {
                             parentGuidFilterActivationReason = if ($auditData.stats.parentGuidFilterActivationReason) { [string]$auditData.stats.parentGuidFilterActivationReason } else { $null }
                         }
 
-                        if ($pwSessionOpen -and -not [string]::IsNullOrWhiteSpace($maxPwActTimeUtc) -and (Get-Command -Name 'Test-QCWatcherAuditActivityStalled' -ErrorAction SilentlyContinue)) {
-                            if ($maxPwActTimeUtc -ne $script:watchLastMaxPwActTimeUtc) {
-                                $script:watchLastMaxPwActTimeUtc = $maxPwActTimeUtc
-                                $script:watchLastMaxPwActChangeUtc = (Get-Date).ToUniversalTime()
-                            }
-                            $stallRes = Test-QCWatcherAuditActivityStalled -Config $config -MaxPwActTimeUtc $maxPwActTimeUtc `
-                                -PollUntilUtc ([string]$pollWindow.untilUtc) -LastMaxPwActChangeUtc $script:watchLastMaxPwActChangeUtc
-                            if ($stallRes.stalled) {
-                                _Watch-HandlePwSessionLost -Config $config -Reason 'audit_activity_stalled' -DatasourceName $ds `
-                                    -MaxPwActTime $maxPwActTime -WatermarkAfter $watermarkAfterStr `
-                                    -ErrorMessage ("Audit lag $($stallRes.lagSeconds)s exceeded threshold $($stallRes.thresholdSeconds)s.") `
-                                    -PwSessionOpenRef ([ref]$pwSessionOpen) -ErrorsRef ([ref]$errors)
-                                throw 'PW_SESSION_UNHEALTHY: ProjectWise audit activity stalled while session appeared open.'
-                            }
+                        if ($maxPwActTimeUtc -and $maxPwActTimeUtc -ne $script:watchLastMaxPwActTimeUtc) {
+                            $script:watchLastMaxPwActTimeUtc = $maxPwActTimeUtc
+                            $script:watchLastMaxPwActChangeUtc = (Get-Date).ToUniversalTime()
                         }
 
                         # Process audit candidates through the existing trigger/job/enqueue pipeline.

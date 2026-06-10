@@ -41,6 +41,7 @@ function Get-QCWatcherSessionAlertSettings {
         dedupeMinutes = 60
         probeIntervalTicks = 60
         staleAuditLagSeconds = 180
+        enableAuditStallDetection = $false
         probeFolderPath = ''
     }
 
@@ -63,6 +64,7 @@ function Get-QCWatcherSessionAlertSettings {
         if ($null -ne $alerts.dedupeMinutes) { try { $settings.dedupeMinutes = [int]$alerts.dedupeMinutes } catch { } }
         if ($null -ne $alerts.probeIntervalTicks) { try { $settings.probeIntervalTicks = [int]$alerts.probeIntervalTicks } catch { } }
         if ($null -ne $alerts.staleAuditLagSeconds) { try { $settings.staleAuditLagSeconds = [int]$alerts.staleAuditLagSeconds } catch { } }
+        if ($null -ne $alerts.enableAuditStallDetection) { try { $settings.enableAuditStallDetection = [bool]$alerts.enableAuditStallDetection } catch { } }
         if ($alerts.probeFolderPath) { $settings.probeFolderPath = [string]$alerts.probeFolderPath }
     }
 
@@ -279,6 +281,11 @@ function Send-QCWatcherSessionLostAlert {
 }
 
 function Test-QCWatcherAuditActivityStalled {
+    <#
+    .SYNOPSIS
+    Diagnostic helper for audit watermark lag. Not used for session-loss alerts by default.
+    Quiet periods without QC events can exceed the lag threshold while ProjectWise is healthy.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -289,6 +296,9 @@ function Test-QCWatcherAuditActivityStalled {
     )
 
     $settings = Get-QCWatcherSessionAlertSettings -Config $Config
+    if (-not [bool]$settings.enableAuditStallDetection) {
+        return @{ stalled = $false; reason = 'disabled' }
+    }
     if ([string]::IsNullOrWhiteSpace($MaxPwActTimeUtc) -or [string]::IsNullOrWhiteSpace($PollUntilUtc)) {
         return @{ stalled = $false; reason = 'missing_timestamps' }
     }

@@ -67,10 +67,17 @@ $graphMsg = New-QCGraphEmailMessage -ToRecipients @('jflint@aztec.us') -Subject 
     -LogoPath (Join-Path $repoRoot 'email/typsalogo.png.webp') -Importance 'high'
 Assert-Eq $graphMsg.message.importance 'high' 'Graph message should carry high importance'
 
-$stall = Test-QCWatcherAuditActivityStalled -Config $config `
+$stallDisabled = Test-QCWatcherAuditActivityStalled -Config $config `
     -MaxPwActTimeUtc '2026-06-10 07:17:22' `
     -PollUntilUtc '2026-06-10 07:24:00' `
     -LastMaxPwActChangeUtc ([datetime]'2026-06-10T07:17:22Z')
-Assert-True $stall.stalled 'audit stall heuristic should detect lag beyond threshold'
+Assert-True (-not $stallDisabled.stalled) 'audit stall detection should be disabled by default'
+
+$config.watcher.sessionAlerts.enableAuditStallDetection = $true
+$stallEnabled = Test-QCWatcherAuditActivityStalled -Config $config `
+    -MaxPwActTimeUtc '2026-06-10 07:17:22' `
+    -PollUntilUtc '2026-06-10 07:24:00' `
+    -LastMaxPwActChangeUtc ([datetime]'2026-06-10T07:17:22Z')
+Assert-True $stallEnabled.stalled 'audit stall heuristic should detect lag when explicitly enabled'
 
 Write-Host 'OK: QC watcher session alert tests passed.' -ForegroundColor Green
