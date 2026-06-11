@@ -513,6 +513,19 @@ function _QCW-InvokeStateChangeNotification {
                         }
                         return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification already sent for this sheet transition.' -Data @{ dedupeKey = $dedupeKey }
                     }
+                    if (Get-Command -Name 'Test-QCNotificationSheetPackageAlreadySent' -ErrorAction SilentlyContinue) {
+                        if (Test-QCNotificationSheetPackageAlreadySent -Event $eventForDedupe -Settings $notifSettingsForSent -Config $Config -Job $job) {
+                            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                                Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUE_SKIPPED_SHEET_PACKAGE' `
+                                    -Message 'Notification already sent for this sheet-package target state in the current cycle.' -Data @{
+                                    dedupeKey = $dedupeKey
+                                    currentState = [string]$CurrentState
+                                    previousState = [string]$PreviousState
+                                } | Out-Null
+                            }
+                            return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_DUPLICATE' -Message 'Notification already sent for this sheet-package transition.' -Data @{ dedupeKey = $dedupeKey }
+                        }
+                    }
                 } catch { }
             }
         }
@@ -687,6 +700,25 @@ function _QCW-InvokeStateChangeNotification {
         }
         $enq = Add-QCQueueJob -Job $notifJob -Config $Config
         if ($enq.IsSuccess) {
+            if (Get-Command -Name 'Register-QCNotificationSheetPackageDedupe' -ErrorAction SilentlyContinue) {
+                try {
+                    $pkgEvent = $eventForDedupe
+                    if (-not $pkgEvent) {
+                        $pkgEvent = @{
+                            previousState = [string]$PreviousState
+                            currentState = [string]$CurrentState
+                        }
+                        if ($Document) {
+                            try { $pkgEvent['documentName'] = [string]$Document.Name } catch { }
+                            try { $pkgEvent['documentGuid'] = [string]$Document.DocumentGUID } catch { }
+                        }
+                        if ($Context -and $Context.folderPath) { $pkgEvent['folderPath'] = [string]$Context.folderPath }
+                    }
+                    $pkgSettings = Get-QCNotificationSettings -Config $Config
+                    Register-QCNotificationSheetPackageDedupe -Event $pkgEvent -Settings $pkgSettings -Config $Config -Job $notifJob `
+                        -ResultData @{ eventType = [string]$CurrentState; documentName = [string]$notifJob.sourceName; provider = 'queued' }
+                } catch { }
+            }
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_ENQUEUED' `
                     -Message 'Notification deferred to QC_NOTIFICATION job.' -Data @{

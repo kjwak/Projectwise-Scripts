@@ -336,4 +336,53 @@ Assert-True (-not $r10.notificationSent) 'duplicate skip should not mark notific
 Assert-Eq $r10.notificationResultCode 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'duplicate skip should preserve result code'
 Assert-True (-not $r10.notificationEmitted) 'notificationEmitted should mirror notificationSent'
 
+# 11. QC PDF trigger should win over stale sibling *-qc.pdf when sending notification
+$script:lastNotifyDocumentGuid = $null
+$script:notificationResultOverride = $null
+function Invoke-QCWorkflowStateChangeNotification {
+    param([hashtable]$Config, [hashtable]$Context, [string]$PreviousState, [string]$CurrentState, $Document)
+    $script:notificationCalls++
+    if ($Document -and $Document.DocumentGUID) {
+        $script:lastNotifyDocumentGuid = [string]$Document.DocumentGUID
+    }
+    if ($script:notificationResultOverride) { return $script:notificationResultOverride }
+    return [pscustomobject]@{ IsSuccess = $true; Code = 'QC_NOTIFICATION_SENT' }
+}
+$oldQcGuid = '27d9a8ba-6aaa-4e51-a1d8-9759b20880bb'
+$newQcGuid = '72bf6609-063c-40db-b067-94d1b064a5b5'
+$mixedMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
+    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+    @{ documentGuid = $newQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+)
+$stalePrevMap = @{
+    ($dgnGuid.ToLowerInvariant()) = 'Ready for QC'
+    ($pdfGuid.ToLowerInvariant()) = 'Ready for QC'
+    ($oldQcGuid.ToLowerInvariant()) = 'Ready for QC'
+    ($newQcGuid.ToLowerInvariant()) = 'Ready for QC'
+}
+Reset-TestState
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $newQcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
+    -TargetState 'Redlines Received' -TransitionSource 'user_audit' -Members $mixedMembers `
+    -PreviousStateByGuid $stalePrevMap -AuditEventId 41070 | Out-Null
+Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Trigger QC PDF member should be selected for notification'
+$staleOnlyMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
+    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+)
+$staleOnlyPrevMap = @{
+    ($dgnGuid.ToLowerInvariant()) = 'Ready for QC'
+    ($pdfGuid.ToLowerInvariant()) = 'Ready for QC'
+    ($oldQcGuid.ToLowerInvariant()) = 'Ready for QC'
+}
+Reset-TestState
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $newQcGuid `
+    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
+    -TargetState 'Redlines Received' -TransitionSource 'user_audit' -Members $staleOnlyMembers `
+    -PreviousStateByGuid $staleOnlyPrevMap -AuditEventId 41071 | Out-Null
+Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Missing trigger QC PDF member should fall back to trigger identity'
+
 Write-Host 'test_sheet_group_workflow_transition.ps1 passed'

@@ -26,6 +26,9 @@ required_snippets = {
     "sheet group telemetry tracks notificationSent": "notificationSent = $notificationSent",
     "sheet group member finalState uses target": "$finalState = _QCAT-NormalizeValue $target",
     "sheet group member preSyncLiveState": "preSyncLiveState = _QCAT-NormalizeValue $preSyncLiveState",
+    "sheet package dedupe helper exists": "function Get-QCNotificationSheetPackageDedupeKey",
+    "audit trigger sheet package echo suppressor exists": "function Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification",
+    "trigger qc pdf notify member resolution": "TriggerDocumentGuid $TriggerDocumentGuid -TriggerDocumentName $TriggerDocumentName",
 }
 missing = [name for name, snippet in required_snippets.items() if snippet not in notifications + workflow + audit]
 

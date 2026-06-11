@@ -21,12 +21,16 @@ def test_appsettings_notifications_production_delivery_defaults():
     assert notifications["dedupe"]["enabled"] is True
     assert notifications["dedupe"]["keyFields"] == [
         "sheetStem",
-        "documentGuid",
         "previousState",
         "currentState",
         "transitionSource",
         "logicalTransitionAnchor",
         "recipientKey",
+    ]
+    assert notifications["dedupe"]["sheetPackageKeyFields"] == [
+        "sheetStem",
+        "currentState",
+        "cycleId",
     ]
 
 

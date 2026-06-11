@@ -130,7 +130,41 @@ function _QCAT-ResolveMemberFileRole {
 }
 
 function _QCAT-ResolveSheetPackageNotificationMember {
-    param([array]$Members)
+    param(
+        [array]$Members,
+        [string]$TriggerDocumentGuid = '',
+        [string]$TriggerDocumentName = ''
+    )
+
+    $triggerName = if ($TriggerDocumentName) { [string]$TriggerDocumentName } else { '' }
+    $triggerGuid = if ($TriggerDocumentGuid) { [string]$TriggerDocumentGuid } else { '' }
+    $triggerIsQcPdf = $false
+    if (-not [string]::IsNullOrWhiteSpace($triggerName)) {
+        if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
+            $triggerIsQcPdf = [bool](Test-QCIsQcPdfDocumentName -DocumentName $triggerName)
+        } else {
+            $triggerIsQcPdf = ($triggerName -match '(?i)-qc\.pdf$')
+        }
+    }
+
+    if ($triggerIsQcPdf) {
+        $triggerKey = if (-not [string]::IsNullOrWhiteSpace($triggerGuid)) { $triggerGuid.Trim().ToLowerInvariant() } else { '' }
+        foreach ($member in @($Members)) {
+            $dg = [string]$member.documentGuid
+            if ([string]::IsNullOrWhiteSpace($dg)) { continue }
+            if (-not [string]::IsNullOrWhiteSpace($triggerKey) -and $dg.Trim().ToLowerInvariant() -eq $triggerKey) {
+                return $member
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($triggerGuid)) {
+            return @{
+                documentGuid = $triggerGuid
+                documentName = $triggerName
+                document = $null
+            }
+        }
+    }
+
     $qcPdf = $null
     $sheetPdf = $null
     foreach ($member in @($Members)) {
@@ -784,7 +818,8 @@ function Invoke-QCSheetGroupWorkflowTransition {
     }
 
     $memberResults = [System.Collections.Generic.List[object]]::new()
-    $notifyMember = _QCAT-ResolveSheetPackageNotificationMember -Members $Members
+    $notifyMember = _QCAT-ResolveSheetPackageNotificationMember -Members $Members `
+        -TriggerDocumentGuid $TriggerDocumentGuid -TriggerDocumentName $TriggerDocumentName
     $notifyGuid = if ($notifyMember) { [string]$notifyMember.documentGuid } else { '' }
     $notifyName = if ($notifyMember) { [string]$notifyMember.documentName } else { '' }
     $packagePreviousState = _QCAT-NormalizeValue $SourceState
@@ -1346,6 +1381,66 @@ function Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync {
     )
 
     return (([string]$AuditActionName).Trim() -eq 'DOCUMENT_ATTR')
+}
+
+function Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification {
+    <#
+    .SYNOPSIS
+    True when an audit-trigger notification would duplicate a sheet-group or prepend notification
+  for the same sheet stem, target state, and QC cycle (for example DOCUMENT_CIN after DOCUMENT_STATE).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$PreviousState = '',
+        [Parameter(Mandatory)][string]$CurrentState,
+        [string]$AuditActionName = '',
+        [string]$PreviousStateSource = '',
+        [hashtable]$PwAttributes = $null
+    )
+
+    $action = ([string]$AuditActionName).Trim()
+    $prevSource = ([string]$PreviousStateSource).Trim().ToLowerInvariant()
+    $isEchoPath = ($action -ne 'DOCUMENT_STATE') -or ($prevSource -eq 'sheet_index')
+    if (-not $isEchoPath) { return $false }
+
+    if (-not (Get-Command -Name 'Test-QCNotificationSheetPackageAlreadySent' -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+
+    $eventProbe = @{
+        documentName = $DocumentName
+        documentGuid = $DocumentGuid
+        folderPath = $FolderPath
+        previousState = $PreviousState
+        currentState = $CurrentState
+    }
+    if ($PwAttributes) {
+        $eventProbe['attributes'] = $PwAttributes
+        if ($PwAttributes.ContainsKey('cycleId') -and -not [string]::IsNullOrWhiteSpace([string]$PwAttributes.cycleId)) {
+            $eventProbe['cycleId'] = [string]$PwAttributes.cycleId
+        }
+    }
+    if (-not $eventProbe.ContainsKey('cycleId') -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
+        try {
+            $sheetStem = ''
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $DocumentName)
+            }
+            $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $DocumentGuid -FolderPath $FolderPath -SheetStem $sheetStem
+            if ($cycle -and -not [string]::IsNullOrWhiteSpace([string]$cycle.cycleId)) {
+                $eventProbe['cycleId'] = [string]$cycle.cycleId.Trim()
+            }
+        } catch { }
+    }
+
+    try {
+        return [bool](Test-QCNotificationSheetPackageAlreadySent -Event $eventProbe -Config $Config)
+    } catch { }
+    return $false
 }
 
 function _QCAT-ParsePwActTimeUtc {
@@ -2109,6 +2204,24 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
 
     $attrs = @{}
     if ($PwAttributes) { $attrs = $PwAttributes }
+    if (Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification -Config $Config -DocumentName $DocumentName `
+            -DocumentGuid $DocumentGuid -FolderPath $FolderPath -PreviousState $prev -CurrentState $curr `
+            -AuditActionName $AuditActionName -PreviousStateSource $PreviousStateSource -PwAttributes $attrs) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_NOTIFY_SKIPPED_SHEET_PACKAGE_ECHO' `
+                -Message 'Skipped audit-trigger notification because this sheet-package target state was already notified in the current cycle.' -Data @{
+                auditEventId = $AuditEventId
+                auditActionName = $AuditActionName
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                previousState = $prev
+                currentState = $curr
+                previousStateSource = if ($PreviousStateSource) { [string]$PreviousStateSource } else { '' }
+            } | Out-Null
+        }
+        return
+    }
     $Document = _QCAT-BuildNotificationDocument -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid -Attributes $attrs
 
@@ -2519,6 +2632,6 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Get-QCSheetGroupTransitionKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
-    Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditSheetStateSync, `
+    Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

@@ -29,7 +29,8 @@ function New-NotifyConfig([bool]$Enabled, [string]$Provider = 'Mock') {
             dedupe = @{
                 enabled = $true
                 storePath = $dedupePath
-                keyFields = @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
+                keyFields = @('sheetStem', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
+                sheetPackageKeyFields = @('sheetStem', 'currentState', 'cycleId')
             }
             graph = @{
                 tenantId = ''
@@ -370,7 +371,7 @@ $readySend = Invoke-QCNotificationForStateChange -Config $readyCfg -PreviousStat
     -TransitionId 88 -Project 'cafwy2200-i-15_elpse'
 Assert-True $readySend.IsSuccess 'Ready for QC job notification should succeed'
 $readyPayload = Get-Content -LiteralPath $readySend.Data.filePath -Raw | ConvertFrom-Json
-Assert-True ($readyPayload.subject -match '080J082001ca001\.pdf') 'Subject should use sheet PDF name'
+Assert-True ($readyPayload.subject -match '080J082001ca001') 'Subject should use sheet stem, not QC PDF placeholder'
 Assert-True ($readyPayload.subject -notmatch 'unknown-document') 'Subject must not contain unknown-document placeholder'
 
 # Duplicate suppression
@@ -582,6 +583,59 @@ $t3 = Invoke-QCNotificationForStateChange -Config $tidCfg -PreviousState 'Correc
 Assert-True $t3.IsSuccess 'New transition id (QC cycle) should send again'
 Assert-True (-not $t3.Data.skipped) 'New transition id should not be deduped'
 
+# Default dedupe ignores per-file GUID so orphan/replacement QC PDFs do not fork keys
+$guidAgnosticCfg = New-NotifyConfig -Enabled $true
+$guidAgnosticSettings = Get-QCNotificationSettings -Config $guidAgnosticCfg
+$sharedLogicalAnchor = 'sheet:080j082001ab001|from:ready for qc|to:redlines received|cycle:qc_qcprepend_test|1|audit:41067'
+$keyGuidA = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '080J082001ab001-qc.pdf'
+    sheetStem = '080J082001ab001'
+    documentGuid = '27d9a8ba-6aaa-4e51-a1d8-9759b20880bb'
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    transitionSource = 'user_audit'
+    logicalTransitionAnchor = $sharedLogicalAnchor
+    recipientKey = 'recipients:jflint@aztec.us'
+} -Settings $guidAgnosticSettings
+$keyGuidB = Get-QCNotificationDedupeKey -Event @{
+    eventType = 'REDLINES_RECEIVED'
+    documentName = '080J082001ab001-qc.pdf'
+    sheetStem = '080J082001ab001'
+    documentGuid = '72bf6609-063c-40db-b067-94d1b064a5b5'
+    previousState = 'Ready for QC'
+    currentState = 'Redlines Received'
+    transitionSource = 'user_audit'
+    logicalTransitionAnchor = $sharedLogicalAnchor
+    recipientKey = 'recipients:jflint@aztec.us'
+} -Settings $guidAgnosticSettings
+Assert-Eq $keyGuidA $keyGuidB 'Different QC PDF GUIDs with same logical transition should share one dedupe key'
+Assert-True ($keyGuidA -notmatch '27d9a8ba') 'Dedupe key must not include stale QC PDF GUID'
+Assert-True ($keyGuidA -notmatch '72bf6609') 'Dedupe key must not include replacement QC PDF GUID'
+
+# Sheet-package dedupe key collapses audit echo paths within the same cycle
+$pkgKeyA = Get-QCNotificationSheetPackageDedupeKey -Event @{
+    sheetStem = '080J082001ab001'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_test|1'
+} -Settings $guidAgnosticSettings
+$pkgKeyB = Get-QCNotificationSheetPackageDedupeKey -Event @{
+    sheetStem = '080J082001ab001'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_test|1'
+} -Settings $guidAgnosticSettings
+Assert-Eq $pkgKeyA $pkgKeyB 'Sheet-package dedupe key should be stable'
+Register-QCNotificationSheetPackageDedupe -Event @{
+    sheetStem = '080J082001ab001'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_test|1'
+} -Settings $guidAgnosticSettings -ResultData @{ eventType = 'REDLINES_RECEIVED'; documentName = '080J082001ab001-qc.pdf'; provider = 'Mock' }
+Assert-True (Test-QCNotificationSheetPackageAlreadySent -Event @{
+    sheetStem = '080J082001ab001'
+    currentState = 'Redlines Received'
+    cycleId = 'qc_qcprepend_test|1'
+} -Settings $guidAgnosticSettings) 'Registered sheet-package dedupe should block echo sends'
+
 # Graph not configured
 $graphCfg = New-NotifyConfig -Enabled $true -Provider 'MicrosoftGraph'
 $graph = Send-QCNotification -Event $event -Config $graphCfg -Subject 'Test' -To @('a@b.com')
@@ -666,6 +720,6 @@ Assert-Eq $resolvedActor.changedByUser 99 'job metadata changedByUser is used'
 Assert-Eq $resolvedActor.changedByUsername 'audit.user' 'changedByUsername only from metadata, not designer fallbacks'
 $display = Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser $resolvedActor.changedByUser `
     -ChangedByUsername $resolvedActor.changedByUsername
-Assert-Eq $display 'PW User 99' 'SubmittedBy follows resolved changedByUser'
+Assert-Eq $display 'audit.user' 'SubmittedBy prefers explicit username over PW User fallback'
 
 Write-Host 'All QC notification tests passed.'

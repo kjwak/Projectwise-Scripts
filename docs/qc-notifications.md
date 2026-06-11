@@ -55,6 +55,8 @@ Configured under `notifications.events` keyed by **current workflow state name**
 
 When `notifications.dedupe.enabled` is true, the same notification is not sent twice for the same key.
 
+- Default `notifications.dedupe.keyFields` use **sheet stem + logical transition** (`logicalTransitionAnchor`), not per-file `documentGuid`, so a replacement `*-qc.pdf` GUID does not fork dedupe.
+- `notifications.dedupe.sheetPackageKeyFields` (`sheetStem`, `currentState`, `cycleId`) register a coarser **sheet-package** key used to suppress `audit_trigger` echo notifications (for example `DOCUMENT_CIN` after sheet-group `DOCUMENT_STATE` already enqueued).
 - If `transitionId` is supplied (from `transition_events`), the dedupe key is `transition:{id}` — **one email per transition row**.
 - Otherwise the key uses `stateTransitionKey` (e.g. `audit:38268`), then `sheetStem`, `eventType`, `previousState`, `currentState` so a **later QC cycle** to the same target state can email again.
 - `transition_events.notification_sent` is set to `1` only after a **successful** send. `notification_sent = 0` means no successful email yet (not “deduped forever”).
