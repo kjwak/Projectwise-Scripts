@@ -812,6 +812,7 @@ function ConvertTo-SheetIndexFieldValues {
     $qcReviewerCol = if ($wfMap.ContainsKey('reviewerEmail')) { $wfMap['reviewerEmail'] } else { 'QC_Reviewer_Email' }
     $qcCheckerCol = if ($wfMap.ContainsKey('checkerEmail')) { $wfMap['checkerEmail'] } else { 'QC_Checker_Email' }
     $qcReviewTypeCol = if ($wfMap.ContainsKey('reviewType')) { $wfMap['reviewType'] } else { 'QC_Review_Type' }
+    $qcProcessTypeCol = if ($wfMap.ContainsKey('processType')) { $wfMap['processType'] } else { 'QC_Process_Type' }
     $qcAssignedCol = if ($wfMap.ContainsKey('assignedTo')) { $wfMap['assignedTo'] } else { 'QC_Assigned_To' }
     $qcStatusCol = if ($wfMap.ContainsKey('status')) { $wfMap['status'] } else { 'QC_Status' }
 
@@ -831,6 +832,7 @@ function ConvertTo-SheetIndexFieldValues {
         reviewerEmail  = $reviewer
         checkerEmail   = $checker
         qcReviewType   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcReviewTypeCol
+        qcProcessType  = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcProcessTypeCol
         qcAssignedTo   = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcAssignedCol
         qcStatus       = _PWD-GetPwAttributeValue -PwAttributes $PwAttributes -ColumnName $qcStatusCol
         pwStateName    = if ($PwStateName) { $PwStateName.Trim() } else { '' }
@@ -4071,11 +4073,11 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     $folderCandidates = _PWD-GetSheetRoleFolderCandidates -FolderPath $FolderPath
     $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
     if ([string]::IsNullOrWhiteSpace($stem)) {
-        return @{ found = $false; error = 'Invalid source document name'; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
+        return @{ found = $false; error = 'Invalid source document name'; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = ''; qcProcessType = '' }
     }
 
     $dgnName = if ([string]$SourceDocumentName -match '(?i)\.dgn$') { [string]$SourceDocumentName } else { $stem + '.dgn' }
-    $pdfName = if ([string]$SourceDocumentName -match '(?i)\.pdf$' -and [string]$SourceDocumentName -notmatch '(?i)-qc\.pdf$') {
+    $pdfName = if ([string]$SourceDocumentName -match '(?i)\.pdf$' -and [string]$SourceDocumentName -notmatch '(?i)-(prod|chk|rev|qc)\.pdf$') {
         [string]$SourceDocumentName
     } else {
         $stem + '.pdf'
@@ -4089,7 +4091,7 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
 
     if (-not $dgnRead.found -and (-not $pdfRead -or -not $pdfRead.found)) {
         $err = if ($dgnRead.error) { [string]$dgnRead.error } elseif ($pdfRead -and $pdfRead.error) { [string]$pdfRead.error } else { 'Document not found' }
-        return @{ found = $false; error = $err; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = '' }
+        return @{ found = $false; error = $err; designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = ''; qcProcessType = '' }
     }
 
     $dgnFields = if ($dgnRead.found) { $dgnRead.fields } else { $null }
@@ -4097,6 +4099,7 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     $designerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'designerEmail'
     $reviewerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'reviewerEmail'
     $checkerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'checkerEmail'
+    $qcProcessType = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcProcessType'
     $qcReviewType = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcReviewType'
     if ([string]::IsNullOrWhiteSpace($qcReviewType) -and (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
         $qcReviewType = Get-PWQcDefaultReviewType -Config $Config
@@ -4108,6 +4111,7 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
         reviewerEmail  = $reviewerEmail
         checkerEmail   = $checkerEmail
         qcReviewType   = $qcReviewType
+        qcProcessType  = $qcProcessType
     }
 }
 

@@ -6,6 +6,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction 
 Import-Module (Join-Path $PSScriptRoot 'Core.Config.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
 if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
@@ -648,13 +649,14 @@ function Resolve-QCNotificationQcPdfUrl {
     if (-not (_QCN-IsBlank $srcForGuid) -and $srcForGuid -match '(?i)-qc\.pdf$') {
         $srcForGuid = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcForGuid)) + '.pdf'
     }
-    $qcPdfName = _QCN-NormalizeQcPdfDocumentName -DocumentName ([string]$Event.documentName) -SheetStem $sheetStem
+    $qcPdfName = _QCN-NormalizeQcPdfDocumentName -DocumentName ([string]$Event.documentName) -SheetStem $sheetStem `
+        -ProcessType ([string]$Event.qcProcessType) -Config $Config -Event $Event
     $hintGuid = if ($Event.documentGuid) { [string]$Event.documentGuid.Trim() } else { '' }
     $sheetPackageIdForLink = _QCN-ResolveNotificationSheetPackageId -Event $Event
     $linkResolutionSource = ''
     $docGuid = _QCN-ResolveLiveQcPdfDocumentGuid -Config $Config -FolderPath $folderForGuid `
         -QcPdfName $qcPdfName -SheetStem $sheetStem -HintGuid $hintGuid -SourceSheetPdfName $srcForGuid `
-        -SheetPackageId $sheetPackageIdForLink -ResolutionSource ([ref]$linkResolutionSource)
+        -SheetPackageId $sheetPackageIdForLink -ResolutionSource ([ref]$linkResolutionSource) -Event $Event
     if (-not (_QCN-IsBlank $linkResolutionSource)) { $Event['linkResolutionSource'] = $linkResolutionSource }
     if ($docGuid -and (Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue)) {
         try {
@@ -1018,22 +1020,92 @@ function _QCN-TryResolveQcPdfGuidFromPwSearch {
 function _QCN-NormalizeQcPdfDocumentName {
     param(
         [string]$DocumentName = '',
-        [string]$SheetStem = ''
+        [string]$SheetStem = '',
+        [string]$ProcessType = '',
+        [hashtable]$Config = $null,
+        [hashtable]$Event = $null
     )
+
+    $resolvedProcessType = [string]$ProcessType
+    if (_QCN-IsBlank $resolvedProcessType -and $Event) {
+        if ($Event.qcProcessType) { $resolvedProcessType = [string]$Event.qcProcessType }
+        elseif (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+            if ($norm) { $resolvedProcessType = $norm }
+        }
+    }
 
     $name = [string]$DocumentName
     if ((_QCN-IsBlank $name) -and (-not (_QCN-IsBlank $SheetStem))) {
+        if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+            $expected = Get-QCLaneQcPdfExpectedName -SheetBaseName $SheetStem -ProcessType $resolvedProcessType -Config $Config
+            if (-not (_QCN-IsBlank $expected)) { return $expected.Trim() }
+        }
         return ([string]$SheetStem + '-prod.pdf')
     }
     if (_QCN-IsBlank $name) { return '' }
     if ($name -match '(?i)-(prod|chk|rev)\.pdf$') { return $name.Trim() }
-    $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
-    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-        $stem = Get-PWSheetStemFromDocumentName -DocumentName $name
-        if (-not (_QCN-IsBlank $stem)) { $base = $stem }
+
+    $base = [string]$SheetStem
+    if (_QCN-IsBlank $base) {
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $stem = Get-PWSheetStemFromDocumentName -DocumentName $name
+            if (-not (_QCN-IsBlank $stem)) { $base = $stem }
+        }
+        if (_QCN-IsBlank $base) {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
+            if ($base -match '(?i)-qc$') { $base = $base.Substring(0, $base.Length - 3) }
+        }
     }
     if (_QCN-IsBlank $base) { return '' }
+
+    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+        $expected = Get-QCLaneQcPdfExpectedName -SheetBaseName $base -ProcessType $resolvedProcessType -Config $Config
+        if (-not (_QCN-IsBlank $expected)) { return $expected.Trim() }
+    }
     return ($base + '-prod.pdf')
+}
+
+function _QCN-GetQcPdfLookupCandidateNames {
+    param(
+        [string]$PrimaryName = '',
+        [string]$SheetStem = '',
+        [string]$ProcessType = '',
+        [hashtable]$Config = $null,
+        [hashtable]$Event = $null
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $ordered = [System.Collections.Generic.List[string]]::new()
+    function _AddCandidate([string]$Candidate) {
+        if (_QCN-IsBlank $Candidate) { return }
+        $trimmed = $Candidate.Trim()
+        if ($seen.Add($trimmed)) { [void]$ordered.Add($trimmed) }
+    }
+
+    _AddCandidate $PrimaryName
+    _AddCandidate (_QCN-NormalizeQcPdfDocumentName -DocumentName $PrimaryName -SheetStem $SheetStem `
+        -ProcessType $ProcessType -Config $Config -Event $Event)
+
+    $base = [string]$SheetStem
+    if (_QCN-IsBlank $base -and -not (_QCN-IsBlank $PrimaryName)) {
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $base = [string](Get-PWSheetStemFromDocumentName -DocumentName $PrimaryName)
+        }
+        if ($base -match '(?i)-qc$') { $base = $base.Substring(0, $base.Length - 3) }
+    }
+    if (-not (_QCN-IsBlank $base)) {
+        foreach ($suffix in @('prod', 'chk', 'rev', 'qc')) {
+            _AddCandidate ($base + '-' + $suffix + '.pdf')
+        }
+        if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+            foreach ($pt in @($ProcessType, 'production', 'review', 'check')) {
+                if (_QCN-IsBlank $pt) { continue }
+                _AddCandidate (Get-QCLaneQcPdfExpectedName -SheetBaseName $base -ProcessType $pt -Config $Config)
+            }
+        }
+    }
+    return @($ordered.ToArray())
 }
 
 function _QCN-LookupQcPdfGuidFromSheetDocuments {
@@ -1265,12 +1337,13 @@ function _QCN-ResolveLiveQcPdfDocumentGuid {
         [string]$HintGuid = '',
         [string]$SourceSheetPdfName = '',
         [string]$SheetPackageId = '',
-        [ref]$ResolutionSource = $null
+        [ref]$ResolutionSource = $null,
+        [hashtable]$Event = $null
     )
 
     $resolved = _QCN-ResolveLiveQcPdfDocumentGuidResult -Config $Config -FolderPath $FolderPath `
         -QcPdfName $QcPdfName -SheetStem $SheetStem -HintGuid $HintGuid -SourceSheetPdfName $SourceSheetPdfName `
-        -SheetPackageId $SheetPackageId
+        -SheetPackageId $SheetPackageId -Event $Event
     if ($null -ne $ResolutionSource) { $ResolutionSource.Value = [string]$resolved.resolutionSource }
     return [string]$resolved.documentGuid
 }
@@ -1283,18 +1356,31 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         [string]$SheetStem = '',
         [string]$HintGuid = '',
         [string]$SourceSheetPdfName = '',
-        [string]$SheetPackageId = ''
+        [string]$SheetPackageId = '',
+        [hashtable]$Event = $null
     )
 
-    $qcName = _QCN-NormalizeQcPdfDocumentName -DocumentName $QcPdfName -SheetStem $SheetStem
+    $processType = if ($Event -and $Event.qcProcessType) { [string]$Event.qcProcessType } else { '' }
+    $qcName = _QCN-NormalizeQcPdfDocumentName -DocumentName $QcPdfName -SheetStem $SheetStem `
+        -ProcessType $processType -Config $Config -Event $Event
     $stem = if (-not (_QCN-IsBlank $SheetStem)) { [string]$SheetStem } else {
-        if (-not (_QCN-IsBlank $qcName)) { [System.IO.Path]::GetFileNameWithoutExtension($qcName) } else { '' }
+        if (-not (_QCN-IsBlank $qcName)) {
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                [string](Get-PWSheetStemFromDocumentName -DocumentName $qcName)
+            } else {
+                [System.IO.Path]::GetFileNameWithoutExtension($qcName)
+            }
+        } else { '' }
     }
+    if ($stem -match '(?i)-qc$') { $stem = $stem.Substring(0, $stem.Length - 3) }
     if (_QCN-IsBlank $qcName) {
         $guid = if (-not (_QCN-IsBlank $HintGuid)) { [string]$HintGuid.Trim() } else { '' }
         $source = if (-not (_QCN-IsBlank $guid)) { 'hint_guid_no_qc_name' } else { '' }
         return @{ documentGuid = $guid; resolutionSource = $source }
     }
+
+    $candidateNames = _QCN-GetQcPdfLookupCandidateNames -PrimaryName $qcName -SheetStem $stem `
+        -ProcessType $processType -Config $Config -Event $Event
 
     $packageGuid = ''
     if (-not (_QCN-IsBlank $SheetPackageId)) {
@@ -1304,28 +1390,32 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         }
     }
 
-    $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
-        -QcPdfName $qcName -SheetStem $stem
-    if (-not (_QCN-IsBlank $pkgGuid)) {
-        return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages' }
-    }
+    foreach ($candidate in @($candidateNames)) {
+        if (_QCN-IsBlank $candidate) { continue }
 
-    $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $qcName
-    if (-not (_QCN-IsBlank $idxGuid)) {
-        return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
-    }
+        $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
+            -QcPdfName $candidate -SheetStem $stem
+        if (-not (_QCN-IsBlank $pkgGuid)) {
+            return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages' }
+        }
 
-    $pkgDocGuid = _QCN-LookupQcPdfGuidFromSheetDocuments -Config $Config -FolderPath $FolderPath `
-        -QcPdfName $qcName -SheetStem $stem
-    if (-not (_QCN-IsBlank $pkgDocGuid)) {
-        return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
-    }
+        $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $candidate
+        if (-not (_QCN-IsBlank $idxGuid)) {
+            return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
+        }
 
-    if (-not (_QCN-IsBlank $FolderPath)) {
-        $pwGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $FolderPath -QcPdfName $qcName
-        if (-not (_QCN-IsBlank $pwGuid)) {
-            if (_QCN-TestPwDocumentGuidMatchesName -DocumentGuid $pwGuid -ExpectedName $qcName) {
-                return @{ documentGuid = $pwGuid; resolutionSource = 'pw_search' }
+        $pkgDocGuid = _QCN-LookupQcPdfGuidFromSheetDocuments -Config $Config -FolderPath $FolderPath `
+            -QcPdfName $candidate -SheetStem $stem
+        if (-not (_QCN-IsBlank $pkgDocGuid)) {
+            return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
+        }
+
+        if (-not (_QCN-IsBlank $FolderPath)) {
+            $pwGuid = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $Config -FolderPath $FolderPath -QcPdfName $candidate
+            if (-not (_QCN-IsBlank $pwGuid)) {
+                if (_QCN-TestPwDocumentGuidMatchesName -DocumentGuid $pwGuid -ExpectedName $candidate) {
+                    return @{ documentGuid = $pwGuid; resolutionSource = 'pw_search' }
+                }
             }
         }
     }
@@ -1340,8 +1430,10 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         return @{ documentGuid = $linkedGuid; resolutionSource = 'sheet_index_qc_pdf_guid' }
     }
 
-    if (_QCN-TestPwDocumentGuidMatchesName -DocumentGuid $HintGuid -ExpectedName $qcName) {
-        return @{ documentGuid = [string]$HintGuid.Trim(); resolutionSource = 'hint_guid_pw_verified' }
+    foreach ($candidate in @($candidateNames)) {
+        if (_QCN-TestPwDocumentGuidMatchesName -DocumentGuid $HintGuid -ExpectedName $candidate) {
+            return @{ documentGuid = [string]$HintGuid.Trim(); resolutionSource = 'hint_guid_pw_verified' }
+        }
     }
     return @{ documentGuid = ''; resolutionSource = '' }
 }
@@ -2098,7 +2190,10 @@ function Get-QCNotificationDedupeKey {
                 if ($Event.qcProcessType) {
                     $value = [string]$Event.qcProcessType
                 } elseif (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-                    $norm = Normalize-QCProcessType -ProcessType ([string]$Event.reviewType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+                    $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+                    if (-not $norm) {
+                        $norm = Normalize-QCProcessType -ProcessType ([string]$Event.processType) -ReviewType ([string]$Event.reviewType) -Context $Event
+                    }
                     if ($norm) { $value = $norm }
                 }
             }
@@ -2333,11 +2428,71 @@ function _QCN-TestNotificationDedupeInStore {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             try {
                 $row = $line | ConvertFrom-Json -ErrorAction Stop
-                if ($row.key -eq $DedupeKey) { return $true }
+                if ($row.key -eq $DedupeKey) {
+                    $status = if ($row.status) { ([string]$row.status).Trim().ToLowerInvariant() } else { 'sent' }
+                    if ($status -eq 'pending') { continue }
+                    return $true
+                }
             } catch { }
         }
     } catch { }
     return $false
+}
+
+function Remove-QCNotificationDedupeKey {
+    <#
+    .SYNOPSIS
+    Removes a dedupe key from the local store (e.g. after a failed send that claimed pending).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DedupeKey,
+        [hashtable]$Settings
+    )
+
+    if (_QCN-IsBlank $DedupeKey) { return $false }
+    if (-not $Settings) { $Settings = Get-QCNotificationSettings -Config @{} }
+    $dedupe = _QCN-ToHashtable $Settings.dedupe
+    if (-not $dedupe -or -not [bool]$dedupe.enabled) { return $false }
+
+    $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
+    if (-not (Test-Path -LiteralPath $storePath)) { return $false }
+
+    $mutexName = 'Global\QCNotifyDedupe_' + ([string][BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($storePath.ToLowerInvariant())))).Replace('-', '')
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne(15000)
+        if (-not $acquired) { return $false }
+        $remaining = [System.Collections.Generic.List[string]]::new()
+        $removed = $false
+        foreach ($line in @(Get-Content -LiteralPath $storePath -ErrorAction Stop)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $row = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($row.key -eq $DedupeKey) {
+                    $removed = $true
+                    continue
+                }
+            } catch { }
+            [void]$remaining.Add($line)
+        }
+        if ($removed) {
+            if ($remaining.Count -eq 0) {
+                Set-Content -LiteralPath $storePath -Value '' -Encoding UTF8
+            } else {
+                Set-Content -LiteralPath $storePath -Value ($remaining.ToArray()) -Encoding UTF8
+            }
+        }
+        return $removed
+    } catch {
+        return $false
+    } finally {
+        if ($acquired) {
+            try { $mutex.ReleaseMutex() | Out-Null } catch { }
+        }
+        try { $mutex.Dispose() } catch { }
+    }
 }
 
 function _QCN-TestNotificationJobActuallySent {
@@ -2465,7 +2620,11 @@ function Register-QCNotificationDedupe {
     if (-not $dedupe -or -not [bool]$dedupe.enabled) { return }
 
     $storePath = _QCN-GetNotificationDedupeStorePath -Settings $Settings
-    if (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath) { return }
+    $status = 'sent'
+    if ($ResultData -and $ResultData.status) { $status = ([string]$ResultData.status).Trim().ToLowerInvariant() }
+    if ($status -eq 'sent' -and (_QCN-TestNotificationDedupeInStore -DedupeKey $DedupeKey -StorePath $storePath)) { return }
+
+    Remove-QCNotificationDedupeKey -DedupeKey $DedupeKey -Settings $Settings | Out-Null
 
     $dir = Split-Path -Parent $storePath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -2476,6 +2635,7 @@ function Register-QCNotificationDedupe {
         eventType = $ResultData.eventType
         documentName = $ResultData.documentName
         provider = $ResultData.provider
+        status = $status
     } | ConvertTo-Json -Compress
 
     Add-Content -LiteralPath $storePath -Value $entry -Encoding UTF8
@@ -2511,7 +2671,12 @@ function Register-QCNotificationDedupeClaim {
             return $false
         }
         $claimData = if ($ResultData) { $ResultData } else { @{ eventType = ''; documentName = ''; provider = '' } }
-        Register-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -ResultData $claimData
+        Register-QCNotificationDedupe -DedupeKey $DedupeKey -Settings $Settings -ResultData (@{
+            eventType = $claimData.eventType
+            documentName = $claimData.documentName
+            provider = $claimData.provider
+            status = 'pending'
+        })
         return $true
     } finally {
         if ($acquired) {
@@ -3870,6 +4035,8 @@ function Invoke-QCNotificationForStateChange {
                 Update-QCTransitionEventNotification -Config $Config -TransitionId $resolvedTransitionId -NotificationSent $true -NotificationId $dedupeKey
             } catch { }
         }
+    } elseif (-not $Force) {
+        Remove-QCNotificationDedupeKey -DedupeKey $dedupeKey -Settings $settings | Out-Null
     }
     if ($resultData) {
         $resultData['dedupeKey'] = $dedupeKey
@@ -3886,7 +4053,7 @@ function Invoke-QCNotificationForStateChange {
 }
 
 Export-ModuleMember -Function Get-QCNotificationSettings, Test-QCNotificationsEnqueueAsJob, New-QCNotificationEvent, Resolve-QCNotificationRecipients, `
-    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Get-QCNotificationSheetPackageDedupeKey, Test-QCNotificationDedupe, Test-QCNotificationSheetPackageAlreadySent, Register-QCNotificationDedupe, Register-QCNotificationSheetPackageDedupe, Register-QCNotificationDedupeClaim, `
+    Resolve-QCNotificationQcPdfUrl, Resolve-QCNotificationSubmittedBy, Resolve-QCNotificationStateChangeActor, Get-QCNotificationSheetTransitionKey, Get-QCNotificationDedupeKey, Get-QCNotificationSheetPackageDedupeKey, Test-QCNotificationDedupe, Test-QCNotificationSheetPackageAlreadySent, Register-QCNotificationDedupe, Register-QCNotificationSheetPackageDedupe, Register-QCNotificationDedupeClaim, Remove-QCNotificationDedupeKey, `
     Get-QCStateChangeMissingEmailFields, Get-QCWorkflowTransitionMissingEmailFields, Test-QCPrependBlockedByMissingEmailAttributes, `
     Resolve-QCWorkflowRollbackPreviousState, Resolve-QCStateChangeActorEmailAddress, Send-QCStateChangeBlockedNotification, Invoke-QCWorkflowStateEmailAttributeGate, `
     Send-QCNotification, Invoke-QCNotificationForStateChange, Write-QCNotificationResult, Test-QCNotificationResultSent

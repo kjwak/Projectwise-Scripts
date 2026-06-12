@@ -121,9 +121,10 @@ function _QCP-ResolveProcessTypeFromJob {
         [hashtable]$Job,
         [hashtable]$Config
     )
-    $raw = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType', 'reviewType', 'qcReviewType')
-    if (-not (_QCP-IsNullOrWhiteSpace $raw) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-        $norm = Normalize-QCProcessType -ProcessType ([string]$raw)
+    $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType')
+    $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview)
         if ($norm) { return $norm }
     }
     $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
@@ -132,7 +133,7 @@ function _QCP-ResolveProcessTypeFromJob {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
             if ($pw.found -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-                $norm = Normalize-QCProcessType -ProcessType ([string]$pw.qcReviewType) -ReviewType ([string]$pw.qcProcessType)
+                $norm = Normalize-QCProcessType -ProcessType ([string]$pw.qcProcessType) -ReviewType ([string]$pw.qcReviewType)
                 if ($norm) { return $norm }
             }
         }
@@ -1039,6 +1040,20 @@ function Invoke-QCPrependProcessor {
         if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) {
             $args += @('-PrependTrigger', $prependTrigger)
         }
+
+        $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+        $laneSuffix = 'prod'
+        if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
+            $resolvedSuffix = Get-QCProcessTypePdfSuffix -ProcessType $processType -Config $Config
+            if (-not (_QCP-IsNullOrWhiteSpace $resolvedSuffix)) { $laneSuffix = [string]$resolvedSuffix }
+        }
+        $sheetBase = [System.IO.Path]::GetFileNameWithoutExtension($incomingDocName)
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName $incomingDocName
+            if (-not (_QCP-IsNullOrWhiteSpace $resolvedStem)) { $sheetBase = [string]$resolvedStem }
+        }
+        $historyDocName = ($sheetBase + '-' + $laneSuffix + '.pdf')
+        $args += @('-HistoryDocName', $historyDocName)
 
         $stdoutPath = [System.IO.Path]::GetTempFileName()
         $stderrPath = [System.IO.Path]::GetTempFileName()
