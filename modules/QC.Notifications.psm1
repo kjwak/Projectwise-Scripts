@@ -786,6 +786,40 @@ function _QCN-GetQcCheckerEmailAttributeName {
     return $col
 }
 
+function _QCN-ResolveNotificationProcessType {
+    param(
+        [hashtable]$Event = $null,
+        [hashtable]$Config = $null,
+        [hashtable]$Job = $null
+    )
+
+    if ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.qcProcessType) {
+        $fromJob = [string]$Job.metadata.qcProcessType
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType $fromJob -AllowNullOnEmpty
+            if ($norm) { return $norm }
+        }
+        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
+    }
+
+    if ($Event) {
+        if ($Event.qcProcessType) {
+            if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -AllowNullOnEmpty
+                if ($norm) { return $norm }
+            }
+            return ([string]$Event.qcProcessType).Trim()
+        }
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) `
+                -Context $Event -AllowNullOnEmpty
+            if ($norm) { return $norm }
+        }
+    }
+
+    return ''
+}
+
 function _QCN-ResolveNotificationReviewType {
     param(
         [object]$Document,
@@ -1030,9 +1064,12 @@ function _QCN-NormalizeQcPdfDocumentName {
     if (_QCN-IsBlank $resolvedProcessType -and $Event) {
         if ($Event.qcProcessType) { $resolvedProcessType = [string]$Event.qcProcessType }
         elseif (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event -AllowNullOnEmpty
             if ($norm) { $resolvedProcessType = $norm }
         }
+    }
+    if (_QCN-IsBlank $resolvedProcessType) {
+        $resolvedProcessType = 'production'
     }
 
     $name = [string]$DocumentName
@@ -3952,6 +3989,16 @@ function Invoke-QCNotificationForStateChange {
     if (-not (_QCN-IsBlank $resolvedReviewType)) {
         $event['reviewType'] = $resolvedReviewType
         $event['qcReviewType'] = $resolvedReviewType
+    }
+    $resolvedProcessType = ''
+    if ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.qcProcessType) {
+        $resolvedProcessType = [string]$Job.metadata.qcProcessType
+    }
+    if (_QCN-IsBlank $resolvedProcessType) {
+        $resolvedProcessType = _QCN-ResolveNotificationProcessType -Event $event -Config $Config -Job $Job
+    }
+    if (-not (_QCN-IsBlank $resolvedProcessType)) {
+        $event['qcProcessType'] = $resolvedProcessType
     }
 
     $resolvedSubmittedBy = Resolve-QCNotificationSubmittedBy -Config $Config -ChangedByUser $ChangedByUser `

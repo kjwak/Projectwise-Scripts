@@ -881,11 +881,32 @@ function Invoke-QCSheetGroupWorkflowTransition {
             $preSyncLiveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
         }
         $finalState = _QCAT-NormalizeValue $target
+        if ($Context -and $Context.ContainsKey('laneIndependentInitialPrepend') -and $Context.laneIndependentInitialPrepend) {
+            $laneTarget = if ($Context.ContainsKey('laneTargetState') -and $Context.laneTargetState) {
+                _QCAT-NormalizeValue ([string]$Context.laneTargetState)
+            } else { $finalState }
+            $refState = if ($Context.ContainsKey('referenceState') -and $Context.referenceState) {
+                _QCAT-NormalizeValue ([string]$Context.referenceState)
+            } else { '' }
+            $activeLane = if ($Context.ContainsKey('activeQcProcessType') -and $Context.activeQcProcessType) {
+                [string]$Context.activeQcProcessType
+            } elseif ($Context.ContainsKey('qcProcessType') -and $Context.qcProcessType) {
+                [string]$Context.qcProcessType
+            } else { '' }
+            if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                $memberLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+                if ($memberLane -and $activeLane -and ($memberLane -ieq $activeLane)) {
+                    $finalState = $laneTarget
+                } elseif ($dn -match '(?i)\.dgn$' -or ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
+                    $finalState = $refState
+                }
+            }
+        }
 
-        $logicalKey = Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $dg -TargetState $target `
+        $logicalKey = Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $dg -TargetState $finalState `
             -TransitionSource $TransitionSource -AuditEventId $AuditEventId -JobId $JobId
 
-        $shouldRecord = (_QCAT-NormalizeValue $prevState) -ne $target
+        $shouldRecord = (_QCAT-NormalizeValue $prevState) -ne $finalState
 
         $telemetry = @{
             role = $role
@@ -920,7 +941,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
 
             $rec = _QCAT-WriteSheetGroupMemberWorkflowEvents -Config $Config -Settings $settings `
                 -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
-                -PreviousState $prevState -CurrentState $target -TransitionSource $TransitionSource `
+                -PreviousState $prevState -CurrentState $finalState -TransitionSource $TransitionSource `
                 -AuditActionName $AuditActionName -AuditEventId $AuditEventId -JobId $JobId -JobType $JobType `
                 -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
                 -Document $member.document -Context $Context -DryRun:$DryRun `

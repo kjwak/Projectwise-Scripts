@@ -13,6 +13,18 @@ Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'review' -Config @{}) 'rev' '
 Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'production' -Config @{}) 'prod' 'production suffix'
 Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'check' -Config @{}) 'chk' 'check suffix'
 
+InModuleScope -ModuleName QC.Notifications {
+    $normalizedChk = _QCN-NormalizeQcPdfDocumentName -DocumentName 'CA001.pdf' -SheetStem 'CA001' -ProcessType '' `
+        -Config @{} -Event @{ qcProcessType = 'check' }
+    if ($normalizedChk -ne 'CA001-chk.pdf') {
+        throw "ASSERT FAILED: empty ProcessType falls back to event qcProcessType (got '$normalizedChk')"
+    }
+    $normalizedDefault = _QCN-NormalizeQcPdfDocumentName -DocumentName 'CA001.pdf' -SheetStem 'CA001' -ProcessType '' -Config @{} -Event @{}
+    if ($normalizedDefault -ne 'CA001-prod.pdf') {
+        throw "ASSERT FAILED: blank process type defaults to production lane (got '$normalizedDefault')"
+    }
+}
+
 $norm = Normalize-QCProcessType -ProcessType 'Review' -ReviewType 'Production QC'
 Assert-Eq $norm 'review' 'QC_Process_Type must win over QC_Review_Type'
 

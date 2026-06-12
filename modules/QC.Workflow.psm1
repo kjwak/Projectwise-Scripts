@@ -571,6 +571,11 @@ function _QCW-InvokeStateChangeNotification {
                 stateTransitionKey = $wfTransitionKey
             }
         }
+        if ($Context -and $Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
+            $notifJob.metadata['qcProcessType'] = [string]$Context.qcProcessType
+        } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.qcProcessType) {
+            $notifJob.metadata['qcProcessType'] = [string]$job.metadata.qcProcessType
+        }
         if ($Context -and $Context.ContainsKey('transitionSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionSource)) {
             $notifJob.metadata['transitionSource'] = [string]$Context.transitionSource
         } elseif ($Context -and $Context.ContainsKey('notificationStateSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationStateSource)) {
@@ -1607,6 +1612,36 @@ function Set-PWQCWorkflowState {
     $info = Get-PWDocumentWorkflowInfo -Document $document -Context $Context
     $data = @{ stateName = $StateName; currentStateName = $info.Data.stateName; transition = $null; planned = $false; changed = $false; warnings = @() }
 
+    $laneIndependentInitialPrepend = $false
+    $laneTargetState = $StateName
+    $referenceState = ''
+    if ($Context) {
+        $prependTrigger = if ($Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) { [string]$Context.prependTrigger } else { '' }
+        $skipForLane = $false
+        if ($Context.ContainsKey('skipSiblingStateSync')) {
+            try { $skipForLane = [bool]$Context.skipSiblingStateSync } catch { $skipForLane = $false }
+        }
+        $cfgEarly = if ($Context.ContainsKey('config')) { $Context.config } else { $null }
+        if (-not $skipForLane -and (Get-Command -Name 'Test-QCLegacySiblingStateSyncEnabled' -ErrorAction SilentlyContinue)) {
+            try { $skipForLane = -not (Test-QCLegacySiblingStateSyncEnabled -Config $cfgEarly) } catch { }
+        }
+        if ($prependTrigger -eq 'initialQcPdf' -and $skipForLane) {
+            $referenceState = Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
+            if (-not (_QCW-IsNullOrWhiteSpace $referenceState)) {
+                $laneIndependentInitialPrepend = $true
+                $laneTargetState = $StateName
+                $StateName = [string]$referenceState
+                $data.stateName = $StateName
+                $Context['laneIndependentInitialPrepend'] = $true
+                $Context['laneTargetState'] = $laneTargetState
+                $Context['referenceState'] = $referenceState
+                if ($Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
+                    $Context['activeQcProcessType'] = [string]$Context.qcProcessType
+                }
+            }
+        }
+    }
+
     if (_QCW-IsNullOrWhiteSpace $StateName) {
         $data.warnings = @('Target workflow state is empty; no state change was made.')
         _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message $data.warnings[0] -Data $data
@@ -1704,17 +1739,19 @@ function Set-PWQCWorkflowState {
                 qcProcessType = $laneType
                 targetState = $StateName
             } | Out-Null
-            if (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue) {
-                $laneForUpdate = $laneType
-                if (_QCW-IsNullOrWhiteSpace $laneForUpdate) {
-                    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
-                        $laneForUpdate = Get-PWQcPdfLaneFromDocumentName -DocumentName $docName
-                    }
-                }
-                if (-not (_QCW-IsNullOrWhiteSpace $laneForUpdate)) {
-                    [void](Update-SheetPackageQcPdfLaneState -Config $cfg -DocumentGuid $docGuid `
-                        -CurrentPwState $StateName -QcProcessType $laneForUpdate)
-                }
+        }
+
+        if ($laneIndependentInitialPrepend -and $cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
+            -and (Get-Command -Name 'Sync-PWPostInitialPrependLaneStates' -ErrorAction SilentlyContinue)) {
+            try {
+                $laneType = if ($Context -and $Context.activeQcProcessType) { [string]$Context.activeQcProcessType } `
+                    elseif ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { 'production' }
+                $laneSplit = Sync-PWPostInitialPrependLaneStates -Config $cfg -FolderPath $folderPath `
+                    -DocumentName $docName -DocumentGuid $docGuid -QcProcessType $laneType `
+                    -LaneTargetState $laneTargetState -ReferenceState $referenceState -DryRun:$DryRun
+                $data.lanePostPrependSplit = $laneSplit
+            } catch {
+                $data.lanePostPrependSplitError = [string]$_.Exception.Message
             }
         }
 
@@ -1748,8 +1785,9 @@ function Set-PWQCWorkflowState {
             }
             if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
                 if ($Context -and $data.sheetStateSync) { $Context['sheetStateSync'] = $data.sheetStateSync }
+                $transitionTarget = if ($laneIndependentInitialPrepend) { $laneTargetState } else { $StateName }
                 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $docGuid -TriggerDocumentName $docName `
-                    -FolderPath $folderPath -SourceState $previousForTelemetry -TargetState $StateName `
+                    -FolderPath $folderPath -SourceState $previousForTelemetry -TargetState $transitionTarget `
                     -TransitionSource 'automation_prepend_completion' -JobId $jobId -JobType 'QC_PREPEND' `
                     -Context $Context -SuppressNotification -DryRun:$DryRun | Out-Null
             } elseif (Get-Command -Name 'Invoke-QCProcessorWorkflowStateTelemetry' -ErrorAction SilentlyContinue) {

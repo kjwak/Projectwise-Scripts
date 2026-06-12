@@ -109,11 +109,68 @@ function _QCP-GetReviewStampRoleFieldsFromJob {
                 $roles.reviewerEmail = [string]$pw.reviewerEmail
                 $roles.checkerEmail = [string]$pw.checkerEmail
                 $roles.qcReviewType = [string]$pw.qcReviewType
+                if (-not (_QCP-IsNullOrWhiteSpace $pw.qcProcessType)) {
+                    $roles.qcProcessType = [string]$pw.qcProcessType
+                }
             }
         }
     }
 
     return $roles
+}
+
+function _QCP-IsStemSheetDocumentName {
+    param([string]$DocumentName)
+    if (_QCP-IsNullOrWhiteSpace $DocumentName) { return $false }
+    if ([string]$DocumentName -match '(?i)\.dgn$') { return $true }
+    if ([string]$DocumentName -match '(?i)\.pdf$' -and [string]$DocumentName -notmatch '(?i)-(prod|chk|rev|qc)\.pdf$') { return $true }
+    return $false
+}
+
+function _QCP-ResolveProcessTypeFromSheetIndex {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$SourceDocumentName
+    )
+    if (-not (Get-Command -Name 'Invoke-QCDatabaseQuery' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    if ((_QCP-IsNullOrWhiteSpace $FolderPath) -or (_QCP-IsNullOrWhiteSpace $SourceDocumentName)) { return '' }
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName $SourceDocumentName
+        if (-not (_QCP-IsNullOrWhiteSpace $resolvedStem)) { $stem = [string]$resolvedStem }
+    }
+    if (_QCP-IsNullOrWhiteSpace $stem) { return '' }
+
+    $pdfName = $stem + '.pdf'
+    $dgnName = $stem + '.dgn'
+    $folderCandidates = @([string]$FolderPath)
+    if ($FolderPath -notmatch '^(?i)Documents\\') {
+        $folderCandidates += ('Documents\' + $FolderPath.Trim().TrimEnd('\'))
+    }
+
+    foreach ($fp in @($folderCandidates)) {
+        if (_QCP-IsNullOrWhiteSpace $fp) { continue }
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_process_type
+FROM sheet_index
+WHERE folder_path = @folderPath
+  AND qc_process_type IS NOT NULL
+  AND LTRIM(RTRIM(qc_process_type)) <> ''
+  AND (LOWER(document_name) = LOWER(@pdfName) OR LOWER(document_name) = LOWER(@dgnName))
+ORDER BY CASE WHEN LOWER(document_name) = LOWER(@dgnName) THEN 0 ELSE 1 END
+"@ -Parameters @{ folderPath = $fp; pdfName = $pdfName; dgnName = $dgnName }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $raw = if ($res.Data.table.Rows[0].qc_process_type -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_process_type }
+                if (-not (_QCP-IsNullOrWhiteSpace $raw)) { return $raw.Trim() }
+            }
+        } catch { }
+    }
+    return ''
 }
 
 function _QCP-ResolveProcessTypeFromJob {
@@ -130,14 +187,31 @@ function _QCP-ResolveProcessTypeFromJob {
     $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType')
     $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
     if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-        $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview)
+        $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview) -AllowNullOnEmpty
         if ($norm) { return $norm }
     }
     if (-not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
+        if (_QCP-IsStemSheetDocumentName ([string]$docName)) {
+            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
+            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
+                if ($norm) { return $norm }
+            }
+        }
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
-            if ($pw.found -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-                $norm = Normalize-QCProcessType -ProcessType ([string]$pw.qcProcessType) -ReviewType ([string]$pw.qcReviewType)
+            if ($pw.found) {
+                $pwProcess = if ($pw.qcProcessType) { [string]$pw.qcProcessType } else { '' }
+                if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                    $norm = Normalize-QCProcessType -ProcessType $pwProcess -ReviewType ([string]$pw.qcReviewType) -AllowNullOnEmpty
+                    if ($norm) { return $norm }
+                }
+            }
+        }
+        if (-not (_QCP-IsStemSheetDocumentName ([string]$docName))) {
+            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
+            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
                 if ($norm) { return $norm }
             }
         }
@@ -570,8 +644,14 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
     $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
     $ctx['qcProcessType'] = $processType
+    if (-not $Job.ContainsKey('metadata') -or -not ($Job.metadata -is [hashtable])) {
+        $Job['metadata'] = @{}
+    }
+    $Job.metadata['qcProcessType'] = $processType
     if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
         $ctx['skipSiblingStateSync'] = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType $processType -Config $Config)
+    } else {
+        $ctx['skipSiblingStateSync'] = $true
     }
 
     $previousState = _QCP-GetJobMetadataValue -Job $Job -Keys @('pwStateName','stateName','workflowState','currentState')
@@ -598,16 +678,12 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     $stKey = _QCP-GetJobMetadataValue -Job $Job -Keys @('stateTransitionKey')
     if (-not (_QCP-IsNullOrWhiteSpace $stKey)) { $ctx['stateTransitionKey'] = [string]$stKey }
 
-    $writeback = $null
-    if ($processType -in @('check', 'review')) {
-        $writeback = New-QCSuccessResult -Code 'QC_PREPEND_LANE_NO_WORKFLOW_WRITEBACK' -Message 'Check/review lane prepend skipped production workflow writeback.' -Data @{
-            qcProcessType = $processType
-            skipSiblingStateSync = $true
-        }
-    } else {
-        $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
-    }
+    $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
+    if ($Result.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
+        -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
+        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
+    }
     $strict = $false
     try {
         $settings = Get-QCWorkflowSettings -Config $Config

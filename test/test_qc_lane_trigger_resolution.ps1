@@ -29,6 +29,14 @@ InModuleScope -ModuleName QC.Processors {
         return $null
     }
     function Get-PWQcDefaultProcessType { param($Config) return 'production' }
+    function Invoke-QCDatabaseQuery {
+        param($Config, $Sql, $Parameters = @{})
+        $table = New-Object System.Data.DataTable
+        [void]$table.Columns.Add('qc_process_type', [string])
+        [void]$table.Rows.Add('check')
+        return New-QCSuccessResult -Code 'DB_OK' -Message 'ok' -Data @{ table = $table }
+    }
+    function Test-QCDatabaseEnabled { param($Config) return $true }
 
     $jobSource = @{
         id = 'j1'
@@ -51,6 +59,13 @@ InModuleScope -ModuleName QC.Processors {
         sourceName = 'CA001-rev.pdf'
     }
     Assert-Eq (_QCP-ResolveProcessTypeFromJob -Job $jobDirectRev -Config @{}) 'review' 'direct *-rev.pdf trigger resolves review'
+
+    $jobSheetIndex = @{
+        id = 'j4'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        sourceName = 'CA001.pdf'
+    }
+    Assert-Eq (_QCP-ResolveProcessTypeFromJob -Job $jobSheetIndex -Config @{ database = @{ enabled = $true } }) 'check' 'stem PDF resolves qc_process_type from sheet_index'
 }
 
 InModuleScope -ModuleName QC.Notifications {

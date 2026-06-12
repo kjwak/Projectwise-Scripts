@@ -1674,6 +1674,160 @@ WHERE folder_path = @folderPath
     return @($resolved)
 }
 
+function Sync-PWPostInitialPrependLaneStates {
+    <#
+    .SYNOPSIS
+    After initial QC prepend (Initiate Origination), sets lane QC PDF to Originated and reverts stem PDF + DGN to production state.
+    Resets qc_process_type to production on reference documents.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$QcProcessType,
+        [Parameter(Mandatory)][string]$LaneTargetState,
+        [Parameter(Mandatory)][string]$ReferenceState,
+        [bool]$DryRun = $false
+    )
+
+    $laneType = [string]$QcProcessType
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $laneType -AllowNullOnEmpty
+        if ($norm) { $laneType = $norm }
+    }
+    if ([string]::IsNullOrWhiteSpace($laneType)) { $laneType = 'production' }
+
+    $laneTarget = ([string]$LaneTargetState).Trim()
+    $referenceTarget = ([string]$ReferenceState).Trim()
+    if ([string]::IsNullOrWhiteSpace($laneTarget) -or [string]::IsNullOrWhiteSpace($referenceTarget)) {
+        return @{ updates = @(); skipped = $true; skipReason = 'empty_target_state' }
+    }
+
+    $sheetStem = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) {
+        $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    }
+
+    $lanePdfName = ''
+    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+        $lanePdfName = Get-QCLaneQcPdfExpectedName -SheetBaseName $sheetStem -ProcessType $laneType -Config $Config
+    }
+    if ([string]::IsNullOrWhiteSpace($lanePdfName)) {
+        $suffix = 'prod'
+        if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
+            $resolvedSuffix = Get-QCProcessTypePdfSuffix -ProcessType $laneType -Config $Config
+            if (-not [string]::IsNullOrWhiteSpace($resolvedSuffix)) { $suffix = [string]$resolvedSuffix }
+        }
+        $lanePdfName = ($sheetStem + '-' + $suffix + '.pdf')
+    }
+
+    $referenceNames = @(
+        ($sheetStem + '.pdf')
+        ($sheetStem + '.dgn')
+    )
+    $stateUpdates = [System.Collections.Generic.List[object]]::new()
+
+    function _PWD-ApplyPostPrependState {
+        param(
+            [string]$TargetName,
+            [string]$TargetGuid,
+            [string]$TargetState
+        )
+        if ([string]::IsNullOrWhiteSpace($TargetName)) { return }
+        $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $TargetGuid
+        if (-not $doc) { return }
+        $dg = if ($TargetGuid) { [string]$TargetGuid } else { try { [string]$doc.DocumentGUID } catch { '' } }
+        $currentState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
+        $change = @{
+            documentGuid = $dg
+            documentName = $TargetName
+            fromState = [string]$currentState
+            toState = $TargetState
+            applied = $false
+            planned = $false
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $TargetState)) {
+            $change.skipped = 'already_at_target'
+            $stateUpdates.Add($change) | Out-Null
+            return
+        }
+        if ($DryRun) {
+            $change.planned = $true
+            $stateUpdates.Add($change) | Out-Null
+            return
+        }
+        try {
+            _PWD-InvokeSetPwDocumentState -Document $doc -StateName $TargetState -GuardContext @{
+                callSite = 'Sync-PWPostInitialPrependLaneStates'
+                documentName = $TargetName
+                folderPath = $FolderPath
+                sourceVariableName = 'target'
+                livePwState = [string]$currentState
+            }
+            $change.applied = $true
+            if ($dg -and (Get-Command -Name 'Update-QCSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+                try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $TargetState) } catch { }
+            }
+            if ($dg -and (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue)) {
+                $laneForRow = Get-PWQcPdfLaneFromDocumentName -DocumentName $TargetName
+                if ($laneForRow) {
+                    try {
+                        [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $dg `
+                            -CurrentPwState $TargetState -QcProcessType $laneForRow)
+                    } catch { }
+                }
+            }
+        } catch {
+            $change.error = [string]$_.Exception.Message
+        }
+        $stateUpdates.Add($change) | Out-Null
+    }
+
+    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget
+    foreach ($refName in @($referenceNames)) {
+        _PWD-ApplyPostPrependState -TargetName $refName -TargetGuid '' -TargetState $referenceTarget
+    }
+
+    if (-not $DryRun -and (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue)) {
+        $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
+        $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
+            [string]$DocumentName
+        } else {
+            $sheetStem + '.pdf'
+        }
+        try {
+            Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $resetGuid `
+                -DocumentName $resetName -FolderPath $FolderPath -CanonicalReviewType 'production' -DryRun:$DryRun
+        } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_POST_PREPEND_LANE_SPLIT' `
+            -Message 'Applied lane-independent post-prepend state split.' -Data @{
+            folderPath = $FolderPath
+            sheetStem = $sheetStem
+            qcProcessType = $laneType
+            lanePdfName = $lanePdfName
+            laneTargetState = $laneTarget
+            referenceState = $referenceTarget
+            updateCount = $stateUpdates.Count
+        } | Out-Null
+    }
+
+    return @{
+        updates = @($stateUpdates)
+        lanePdfName = $lanePdfName
+        qcProcessType = $laneType
+        laneTargetState = $laneTarget
+        referenceState = $referenceTarget
+    }
+}
+
 function Sync-PWAssociatedSheetMembersToWorkflowState {
     <#
     .SYNOPSIS
