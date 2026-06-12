@@ -15,8 +15,8 @@ function Assert-True($cond, $msg) {
 }
 
 Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Production QC') 'production' 'Production QC -> production'
-Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Peer Review') 'peer_review' 'Peer Review -> peer_review'
-Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Independent Check') 'independent_check' 'Independent Check -> independent_check'
+Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Peer Review') 'review' 'Peer Review -> review'
+Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Independent Check') 'check' 'Independent Check -> check'
 Assert-Eq (Get-QCReviewTypeBucket -ReviewType 'Unknown Type') $null 'Unknown review type returns null'
 
 $packageId = [guid]'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -222,7 +222,7 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid
 Assert-Eq $script:completionCalls.Count 1 'DGN trigger should record one package completion'
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'DGN trigger should keep audit document_guid'
 Assert-Eq $script:completionCalls[0].sheetPackageId.ToString() $packageId.ToString() 'DGN trigger should resolve sheet_package_id'
-Assert-Eq $script:completionCalls[0].qcReviewType 'peer_review' 'Stored review type should be normalized'
+Assert-Eq $script:completionCalls[0].qcReviewType 'review' 'Stored review type should be normalized'
 Assert-Eq $script:summaryCalls.Count 1 'Rollup should run after insert'
 Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Rollup should target sheet_packages'
 Assert-Eq $script:historyCalls.Count 3 'Sibling history must remain per-member'
@@ -390,7 +390,7 @@ Invoke-QCAuditWorkflowStateChangeTriggers -Config $cfg -DocumentGuid $dgnGuid `
     -ChangedByUsername 'checker@example.com' -StaleCheckMembers $members
 Assert-Eq $script:completionCalls.Count 1 'Audit trigger path should record one canonical completion'
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Audit trigger should use DGN GUID'
-Assert-Eq $script:completionCalls[0].qcReviewType 'independent_check' 'Audit trigger should store normalized review type'
+Assert-Eq $script:completionCalls[0].qcReviewType 'check' 'Audit trigger should store normalized review type'
 
 # Duplicate suppression via unique key
 Reset-CompletionState

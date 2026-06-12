@@ -10,6 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
 if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 }
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
 
@@ -801,9 +802,32 @@ function _QCN-ResolveNotificationReviewType {
         if (-not (_QCN-IsBlank $fromNotify)) { return ([string]$fromNotify).Trim() }
     }
 
+    $processCol = 'QC_Process_Type'
+    if (Get-Command -Name 'Get-PWQcProcessTypeAttributeName' -ErrorAction SilentlyContinue) {
+        $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
+    }
+    $fromProcess = _QCN-GetAttributeValue -Document $Document -AttributeName $processCol
+    if (-not (_QCN-IsBlank $fromProcess)) {
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType ([string]$fromProcess)
+            if ($norm -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+                return Get-QCProcessTypeDisplayLabel -ProcessType $norm
+            }
+        }
+        return ([string]$fromProcess).Trim()
+    }
+
     $qcReviewCol = _QCN-GetQcReviewTypeAttributeName -Config $Config
     $fromDoc = _QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewCol
-    if (-not (_QCN-IsBlank $fromDoc)) { return ([string]$fromDoc).Trim() }
+    if (-not (_QCN-IsBlank $fromDoc)) {
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType ([string]$fromDoc)
+            if ($norm -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+                return Get-QCProcessTypeDisplayLabel -ProcessType $norm
+            }
+        }
+        return ([string]$fromDoc).Trim()
+    }
 
     if ($Config -and -not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceName)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
@@ -999,14 +1023,17 @@ function _QCN-NormalizeQcPdfDocumentName {
 
     $name = [string]$DocumentName
     if ((_QCN-IsBlank $name) -and (-not (_QCN-IsBlank $SheetStem))) {
-        return ([string]$SheetStem + '-qc.pdf')
+        return ([string]$SheetStem + '-prod.pdf')
     }
     if (_QCN-IsBlank $name) { return '' }
-    if ($name -match '(?i)-qc\.pdf$') { return $name.Trim() }
+    if ($name -match '(?i)-(prod|chk|rev)\.pdf$') { return $name.Trim() }
     $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
-    if ($base -match '(?i)-qc$') { $base = $base.Substring(0, $base.Length - 3) }
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $stem = Get-PWSheetStemFromDocumentName -DocumentName $name
+        if (-not (_QCN-IsBlank $stem)) { $base = $stem }
+    }
     if (_QCN-IsBlank $base) { return '' }
-    return ($base + '-qc.pdf')
+    return ($base + '-prod.pdf')
 }
 
 function _QCN-LookupQcPdfGuidFromSheetDocuments {
@@ -1800,12 +1827,15 @@ function _QCN-GetWorkflowNotificationPriorStateMap {
     param([hashtable]$Config = $null)
 
     $map = @{
+        'Verified' = 'Initiate Verification'
         'QC Complete' = 'QC Finalizing'
+        'Initiate Verification' = 'Originated'
         'QC Finalizing' = 'Ready for QC'
-        'Redlines Received' = 'Ready for QC'
+        'Originated' = 'Initiate Origination'
+        'Redlines Received' = 'Originated'
         'Corrections Received' = 'Redlines Received'
         'Ready for QC' = 'QC Initiated'
-        'QC Received' = 'In Production'
+        'QC Received' = 'In Development'
     }
 
     if ($Config -and $Config.qcWorkflow -and $Config.qcWorkflow.states) {
@@ -2062,6 +2092,14 @@ function Get-QCNotificationDedupeKey {
                 if (_QCN-IsPlaceholderNotificationSheetStem -Stem $value) {
                     $resolvedStem = _QCN-NormalizeNotificationSheetStemForDedupe -Event $Event -Config $Config
                     if (-not (_QCN-IsBlank $resolvedStem)) { $value = $resolvedStem }
+                }
+            }
+            'qcProcessType' {
+                if ($Event.qcProcessType) {
+                    $value = [string]$Event.qcProcessType
+                } elseif (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                    $norm = Normalize-QCProcessType -ProcessType ([string]$Event.reviewType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+                    if ($norm) { $value = $norm }
                 }
             }
             'folderPath' { $value = [string]$Event.folderPath }

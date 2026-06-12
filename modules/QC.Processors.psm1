@@ -10,6 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorActio
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -115,12 +116,45 @@ function _QCP-GetReviewStampRoleFieldsFromJob {
     return $roles
 }
 
+function _QCP-ResolveProcessTypeFromJob {
+    param(
+        [hashtable]$Job,
+        [hashtable]$Config
+    )
+    $raw = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType', 'reviewType', 'qcReviewType')
+    if (-not (_QCP-IsNullOrWhiteSpace $raw) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+        $norm = Normalize-QCProcessType -ProcessType ([string]$raw)
+        if ($norm) { return $norm }
+    }
+    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
+    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
+    if (-not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
+            if ($pw.found -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$pw.qcReviewType) -ReviewType ([string]$pw.qcProcessType)
+                if ($norm) { return $norm }
+            }
+        }
+    }
+    if (Get-Command -Name 'Get-PWQcDefaultProcessType' -ErrorAction SilentlyContinue) {
+        return Get-PWQcDefaultProcessType -Config $Config
+    }
+    return 'production'
+}
+
 function _QCP-ReviewStampRequiredForReviewType {
     param(
         [hashtable]$StampSettings,
-        [string]$ReviewType
+        [string]$ReviewType,
+        [string]$ProcessType = ''
     )
 
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $ProcessType -ReviewType $ReviewType
+        if ($norm -in @('check', 'review')) { return $true }
+        if ($norm -eq 'production') { return $false }
+    }
     if (-not $StampSettings -or (_QCP-IsNullOrWhiteSpace $ReviewType)) { return $false }
     foreach ($p in @($StampSettings.profiles)) {
         if ([string]$p.reviewType -eq [string]$ReviewType) { return $true }
@@ -147,10 +181,45 @@ function _QCP-TryApplyReviewStampFromJob {
     }
 
     $roles = _QCP-GetReviewStampRoleFieldsFromJob -Job $Job -Config $Config -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName
+    $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+    $roles.qcProcessType = $processType
 
     if (_QCP-IsNullOrWhiteSpace $OverlayExe) {
         $qc = _QCP-ToHashtable $Config.qcPrepend
         if ($qc -and $qc.overlayExePath) { $OverlayExe = [string]$qc.overlayExePath }
+    }
+
+    if (Get-Command -Name 'Resolve-QCStampForProcess' -ErrorAction SilentlyContinue) {
+        $stampResolved = Resolve-QCStampForProcess -Config $Config -ProcessType $processType -FolderPath $FolderPath
+        if ($stampResolved.IsSuccess -and $stampResolved.stampPath -and (Get-Command -Name 'Invoke-QCReviewStamp' -ErrorAction SilentlyContinue)) {
+            $stampCfg = Get-QCReviewStampSettings -Config $Config
+            $profileKey = if ($stampResolved.profileKey) { [string]$stampResolved.profileKey } else { 'check' }
+            $roleValues = @{
+                designerEmail = [string]$roles.designerEmail
+                reviewerEmail = [string]$roles.reviewerEmail
+                checkerEmail = [string]$roles.checkerEmail
+            }
+            if (Get-Command -Name '_QCRS-ResolveStampRoleValues' -ErrorAction SilentlyContinue) {
+                $roleValues = _QCRS-ResolveStampRoleValues -RoleFields $roleValues -ProfileKey $profileKey
+            }
+            $stampParams = @{
+                OverlayExe = if ($OverlayExe) { $OverlayExe } else { [string]$stampCfg.overlayExe }
+                PdfPath = $PdfPath
+                StampPath = [string]$stampResolved.stampPath
+                StampHeightPt = if ($stampCfg) { [double]$stampCfg.stampHeightPt } else { 200 }
+                MarginOutsidePt = if ($stampCfg) { [double]$stampCfg.marginOutsidePt } else { 12 }
+                PopulateTextFields = if ($stampCfg) { [bool]$stampCfg.populateTextFields } else { $false }
+            }
+            $result = Invoke-QCReviewStamp @stampParams
+            $result['reviewType'] = $processType
+            $result['qcProcessType'] = $processType
+            $result['stampProfile'] = $stampResolved.resolvedStampProfile
+            $result['stampName'] = $stampResolved.resolvedStampName
+            return $result
+        }
+        if ($processType -in @('check', 'review') -and -not $stampResolved.IsSuccess) {
+            return @{ applied = $false; skipped = $false; reason = [string]$stampResolved.Message; qcProcessType = $processType }
+        }
     }
 
     return Invoke-QCReviewStampForReviewType -PdfPath $PdfPath -Config $Config -RoleFields $roles -OverlayExe $OverlayExe
@@ -494,6 +563,11 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if ($document) { $ctx['document'] = $document }
     $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
     if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
+    $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+    $ctx['qcProcessType'] = $processType
+    if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
+        $ctx['skipSiblingStateSync'] = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType $processType -Config $Config)
+    }
 
     $previousState = _QCP-GetJobMetadataValue -Job $Job -Keys @('pwStateName','stateName','workflowState','currentState')
     if (-not (_QCP-IsNullOrWhiteSpace $previousState)) {
@@ -519,7 +593,15 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     $stKey = _QCP-GetJobMetadataValue -Job $Job -Keys @('stateTransitionKey')
     if (-not (_QCP-IsNullOrWhiteSpace $stKey)) { $ctx['stateTransitionKey'] = [string]$stKey }
 
-    $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
+    $writeback = $null
+    if ($processType -in @('check', 'review')) {
+        $writeback = New-QCSuccessResult -Code 'QC_PREPEND_LANE_NO_WORKFLOW_WRITEBACK' -Message 'Check/review lane prepend skipped production workflow writeback.' -Data @{
+            qcProcessType = $processType
+            skipSiblingStateSync = $true
+        }
+    } else {
+        $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
+    }
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
     $strict = $false
     try {
@@ -537,6 +619,45 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     }
 
     return New-QCSuccessResult -Code $Result.Code -Message $Result.Message -Data $data
+}
+
+function _QCP-TryResetProcessTypeAfterPrepend {
+    param(
+        [hashtable]$Job,
+        [hashtable]$Config,
+        [string]$ProcessType
+    )
+    if (-not (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
+    if (-not (Test-QCProcessTypeResetsAfterPrepend -ProcessType $ProcessType -Config $Config)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET_SKIPPED' -Message 'Process type reset not configured for lane.' -Data @{
+                qcProcessType = $ProcessType
+            } | Out-Null
+        }
+        return @{ reset = $false; skipped = $true }
+    }
+
+    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
+    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
+    $docGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid', 'documentGuid')
+    if (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue) {
+        try {
+            Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid ([string]$docGuid) `
+                -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalReviewType 'production' | Out-Null
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET' -Message 'Reset qc_process_type to production after successful lane prepend.' -Data @{
+                    fromProcessType = $ProcessType
+                    toProcessType = 'production'
+                    folderPath = $folder
+                    documentName = $docName
+                } | Out-Null
+            }
+            return @{ reset = $true; toProcessType = 'production' }
+        } catch {
+            return @{ reset = $false; error = [string]$_.Exception.Message }
+        }
+    }
+    return @{ reset = $false }
 }
 
 function _QCP-ResolveSourcePdf([hashtable]$Job) {
@@ -1027,6 +1148,12 @@ function Invoke-QCPrependProcessor {
         return New-QCFailureResult -Code 'QC_PREPEND_SOURCE_NOT_FOUND' -Message "Source PDF not found: $sourcePdf" -Data @{ jobId = [string]$Job.id; sourcePdf = $sourcePdf }
     }
 
+    $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+    $laneSuffix = if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
+        Get-QCProcessTypePdfSuffix -ProcessType $processType -Config $Config
+    } else { 'prod' }
+    $isProductionLane = ($processType -eq 'production')
+
     $histRes = _QCP-ResolveHistoryPath -Job $Job -Config $Config
     if (-not $histRes.IsSuccess) { return $histRes }
     $historyPdf = [string]$histRes.Data.historyPdf
@@ -1044,7 +1171,14 @@ function Invoke-QCPrependProcessor {
     $overlayOutPdf = $null
     if (-not (_QCP-IsNullOrWhiteSpace $outputRoot)) {
         _QCP-EnsureDir -Path $outputRoot
-        $base = [System.IO.Path]::GetFileNameWithoutExtension([string]$Job.sourceName)
+        $sourceName = if ($Job.sourceName) { [string]$Job.sourceName } else { [System.IO.Path]::GetFileName($sourcePdf) }
+        $base = $sourceName
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $stem = Get-PWSheetStemFromDocumentName -DocumentName $sourceName
+            if (-not (_QCP-IsNullOrWhiteSpace $stem)) { $base = $stem }
+        } else {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($sourceName)
+        }
         if (_QCP-IsNullOrWhiteSpace $base) { $base = [string]$Job.id }
         $folderKey = 'root'
         if ($histRes.Data -and ($histRes.Data -is [hashtable]) -and $histRes.Data.ContainsKey('folderKey') -and $histRes.Data.folderKey) {
@@ -1052,8 +1186,15 @@ function Invoke-QCPrependProcessor {
         }
         $outDir = Join-Path $outputRoot $folderKey
         _QCP-EnsureDir -Path $outDir
-        # Primary QC deliverable naming: <base>-qc.pdf
-        $overlayOutPdf = Join-Path $outDir ($base + '-qc.pdf')
+        $overlayOutPdf = Join-Path $outDir ($base + '-' + $laneSuffix + '.pdf')
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_LANE_RESOLVED' -Message 'Prepend lane output resolved.' -Data @{
+                qcProcessType = $processType
+                pdfSuffix = $laneSuffix
+                qcOutputPdf = $overlayOutPdf
+                sheetBaseName = $base
+            } | Out-Null
+        }
     }
 
     $overlayTemplate = if ($qc.ContainsKey('overlayArgumentsTemplate') -and $qc.overlayArgumentsTemplate) { [string]$qc.overlayArgumentsTemplate } else { '' }
@@ -1160,7 +1301,7 @@ function Invoke-QCPrependProcessor {
                     -OverlayExe $overlayExePath
                 $jobRt = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
                 if (_QCP-IsNullOrWhiteSpace $jobRt) { $jobRt = [string]$stampRes.reviewType }
-                if (_QCP-ReviewStampRequiredForReviewType -StampSettings $stampCfg -ReviewType $jobRt -and -not $stampRes.skipped -and -not $stampRes.applied) {
+                if (_QCP-ReviewStampRequiredForReviewType -StampSettings $stampCfg -ReviewType $jobRt -ProcessType $processType -and -not $stampRes.skipped -and -not $stampRes.applied) {
                     return New-QCFailureResult -Code 'QC_REVIEW_STAMP_FAILED' -Message 'Review stamp failed on QC PDF.' -Data $stampRes
                 }
             }
@@ -1171,10 +1312,29 @@ function Invoke-QCPrependProcessor {
             } catch {
                 return New-QCFailureResult -Code 'QC_PREPEND_QC_WRITE_FAILED' -Message 'Failed to write QC output PDF.' -Data @{ tmpQcOut = $tmpQcOut; qcOutputPdf = $overlayOutPdf; errorMessage = $_.Exception.Message }
             }
+
+            if (-not $isProductionLane) {
+                $laneSuccess = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND lane PDF updated.' -Data @{
+                    jobId = [string]$Job.id
+                    sourcePdf = $sourcePdf
+                    qcOutputPdf = $overlayOutPdf
+                    qcProcessType = $processType
+                    overlayEnabled = $enableOverlay
+                }
+                $laneResult = _QCP-AppendWorkflowWriteback -Result $laneSuccess -Job $Job -Config $Config -SourcePath $sourcePdf -OutputPath $overlayOutPdf -HistoryPath $null
+                if ($laneResult.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
+                    -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
+                    _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
+                }
+                return $laneResult
+            }
         }
 
-        # 2) Update history:
+        # 2) Update history (production lane only):
         #    history.pdf = source + oldHistory  (or init from source)
+        if (-not $isProductionLane) {
+            return New-QCFailureResult -Code 'QC_PREPEND_LANE_HISTORY_SKIPPED' -Message 'Non-production lane requires overlay output.' -Data @{ qcProcessType = $processType }
+        }
         if (-not $historyExists) {
             try {
                 Copy-Item -LiteralPath $sourcePdf -Destination $tmpHistory -Force -ErrorAction Stop

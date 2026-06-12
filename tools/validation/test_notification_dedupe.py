@@ -13,6 +13,7 @@ required_snippets = {
     "transition source helper exists": "function _QCN-ResolveNotificationTransitionSource",
     "notification sent helper exists": "function Test-QCNotificationResultSent",
     "default key includes logical transition anchor": "logicalTransitionAnchor', 'recipientKey')",
+    "default key includes qc process type": "qcProcessType",
     "recipient key helper exists": "function _QCN-BuildRecipientKey",
     "transition id is opt-in only": "Backward-compatible opt-in only. Not part of the default key",
     "send attempt log code exists": "QC_NOTIFICATION_SEND_ATTEMPT",

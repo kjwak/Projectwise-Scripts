@@ -8,6 +8,7 @@ if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction S
     Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 }
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCW-ToHashtable([object]$Value) {
@@ -890,29 +891,30 @@ function _QCW-ObjectNameMatches([object]$Object, [string]$ExpectedName, [string[
 
 function _QCW-DefaultWorkflowStates {
     return @{
-        production = 'In Production'
-        qcInitiated = 'QC Initiated'
-        qcReceived = 'Ready for QC'
-        readyForQc = 'Ready for QC'
+        production = 'In Development'
+        qcInitiated = 'Initiate Origination'
+        qcReceived = 'Originated'
+        readyForQc = 'Originated'
         redlinesReceived = 'Redlines Received'
         correctionsReceived = 'Corrections Received'
-        qcFinalizing = 'QC Finalizing'
-        complete = 'QC Complete'
+        qcFinalizing = 'Initiate Verification'
+        complete = 'Verified'
         error = 'Error Needs Attention'
     }
 }
 
 function _QCW-DefaultReviewTypes {
     return @{
-        productionQc = 'Production QC'
-        peerReview = 'Peer Review'
-        independentCheck = 'Independent Check'
+        productionQc = 'Production'
+        peerReview = 'Review'
+        independentCheck = 'Check'
     }
 }
 
 function _QCW-DefaultAttributeMap {
     return @{
         qcActive = 'QC_Active'
+        processType = 'QC_Process_Type'
         reviewType = 'QC_Review_Type'
         cycleId = 'QC_Cycle_ID'
         cycleNumber = 'QC_Cycle_Number'
@@ -1174,16 +1176,21 @@ function Resolve-QCWorkflowAssignee {
     if (-not $reviewTypes) { $reviewTypes = _QCW-DefaultReviewTypes }
 
     $resolvedReviewType = [string]$Settings.defaultReviewType
+    if ($Settings.defaultProcessType) { $resolvedReviewType = [string]$Settings.defaultProcessType }
     if (-not (_QCW-IsNullOrWhiteSpace $ReviewType)) { $resolvedReviewType = [string]$ReviewType }
-    if (_QCW-IsNullOrWhiteSpace $resolvedReviewType) { $resolvedReviewType = [string]$reviewTypes.productionQc }
+    if (_QCW-IsNullOrWhiteSpace $resolvedReviewType) { $resolvedReviewType = 'production' }
 
-    $independentCheck = [string]$reviewTypes.independentCheck
-    $useChecker = (-not (_QCW-IsNullOrWhiteSpace $independentCheck)) -and ($resolvedReviewType.Trim() -eq $independentCheck.Trim())
+    $normalizedProcessType = $resolvedReviewType
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $resolvedReviewType
+        if ($norm) { $normalizedProcessType = $norm }
+    }
+    $useChecker = ($normalizedProcessType -eq 'check')
 
     $state = if ($StateName) { [string]$StateName } else { '' }
     $production = [string]$states.production
-    $qcInitiated = if ($states.qcInitiated) { [string]$states.qcInitiated } else { 'QC Initiated' }
-    $ready = if ($states.readyForQc) { [string]$states.readyForQc } elseif ($states.qcReceived) { [string]$states.qcReceived } else { 'Ready for QC' }
+    $qcInitiated = if ($states.qcInitiated) { [string]$states.qcInitiated } else { 'Initiate Origination' }
+    $ready = if ($states.readyForQc) { [string]$states.readyForQc } elseif ($states.qcReceived) { [string]$states.qcReceived } else { 'Originated' }
     $redlinesReceived = if ($states.redlinesReceived) { [string]$states.redlinesReceived } elseif ($states.redlinesIssued) { [string]$states.redlinesIssued } else { 'Redlines Received' }
     $correctionsReceived = if ($states.correctionsReceived) { [string]$states.correctionsReceived } elseif ($states.verificationInProgress) { [string]$states.verificationInProgress } elseif ($states.correctionsInProgress) { [string]$states.correctionsInProgress } else { 'Corrections Received' }
     $complete = [string]$states.complete
@@ -1674,7 +1681,17 @@ function Set-PWQCWorkflowState {
             } catch { }
         }
 
-        if ($cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
+        $skipSiblingSync = $false
+        if ($Context -and $Context.ContainsKey('skipSiblingStateSync')) {
+            try { $skipSiblingSync = [bool]$Context.skipSiblingStateSync } catch { $skipSiblingSync = $false }
+        }
+        if (-not $skipSiblingSync -and $Context -and $Context.ContainsKey('qcProcessType')) {
+            if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
+                $skipSiblingSync = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType ([string]$Context.qcProcessType) -Config $cfg)
+            }
+        }
+
+        if (-not $skipSiblingSync -and $cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
             -and (Get-Command -Name 'Sync-PWAssociatedSheetMembersToWorkflowState' -ErrorAction SilentlyContinue)) {
             try {
                 $sheetSync = Sync-PWAssociatedSheetMembersToWorkflowState -Config $cfg -FolderPath $folderPath `

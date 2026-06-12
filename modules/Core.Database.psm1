@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.17.0'
+    $targetVersion = '1.18.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1659,6 +1659,96 @@ OUTER APPLY (
     ) AS t(v)
     WHERE v IS NOT NULL
 ) lc;
+'@
+}
+
+function _QDB-GetSchemaV1dot18Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_index', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_index', 'qc_process_type') IS NULL
+    ALTER TABLE sheet_index ADD qc_process_type NVARCHAR(32) NULL;
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_packages', 'qc_process_type') IS NULL
+    ALTER TABLE sheet_packages ADD qc_process_type NVARCHAR(32) NULL;
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_packages', 'qc_chk_pdf_guid') IS NULL
+    ALTER TABLE sheet_packages ADD qc_chk_pdf_guid UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_packages', 'qc_chk_pdf_name') IS NULL
+    ALTER TABLE sheet_packages ADD qc_chk_pdf_name NVARCHAR(512) NULL;
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_packages', 'qc_rev_pdf_guid') IS NULL
+    ALTER TABLE sheet_packages ADD qc_rev_pdf_guid UNIQUEIDENTIFIER NULL;
+GO
+IF OBJECT_ID('dbo.sheet_packages', 'U') IS NOT NULL AND COL_LENGTH('dbo.sheet_packages', 'qc_rev_pdf_name') IS NULL
+    ALTER TABLE sheet_packages ADD qc_rev_pdf_name NVARCHAR(512) NULL;
+GO
+IF OBJECT_ID('dbo.qc_workflow_events', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_workflow_events', 'qc_process_type') IS NULL
+    ALTER TABLE qc_workflow_events ADD qc_process_type NVARCHAR(32) NULL;
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND COL_LENGTH('dbo.qc_cycle_completions', 'qc_process_type') IS NULL
+    ALTER TABLE qc_cycle_completions ADD qc_process_type NVARCHAR(32) NULL;
+GO
+IF OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL AND COL_LENGTH('dbo.notification_log', 'qc_process_type') IS NULL
+    ALTER TABLE notification_log ADD qc_process_type NVARCHAR(32) NULL;
+GO
+IF OBJECT_ID('dbo.qc_cycle_completions', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_qc_cycle_completions_package_process')
+    CREATE UNIQUE INDEX UQ_qc_cycle_completions_package_process ON qc_cycle_completions (sheet_package_id, qc_cycle_id, qc_process_type)
+    WHERE sheet_package_id IS NOT NULL AND qc_process_type IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_sheet_package_status', 'V') IS NOT NULL DROP VIEW v_sheet_package_status;
+GO
+CREATE VIEW v_sheet_package_status AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.pw_state_name,
+    sp.qc_review_type,
+    COALESCE(
+        sp.qc_process_type,
+        CASE LOWER(LTRIM(RTRIM(ISNULL(sp.qc_review_type, ''))))
+            WHEN 'production qc' THEN 'production'
+            WHEN 'independent check' THEN 'check'
+            WHEN 'peer review' THEN 'review'
+            WHEN 'peer_review' THEN 'review'
+            WHEN 'independent_check' THEN 'check'
+            ELSE LOWER(LTRIM(RTRIM(sp.qc_review_type)))
+        END
+    ) AS qc_process_type,
+  CASE COALESCE(
+        sp.qc_process_type,
+        CASE LOWER(LTRIM(RTRIM(ISNULL(sp.qc_review_type, ''))))
+            WHEN 'production qc' THEN 'production'
+            WHEN 'independent check' THEN 'check'
+            WHEN 'peer review' THEN 'review'
+            WHEN 'peer_review' THEN 'review'
+            WHEN 'independent_check' THEN 'check'
+            ELSE LOWER(LTRIM(RTRIM(sp.qc_review_type)))
+        END
+    )
+        WHEN 'production' THEN 'Production'
+        WHEN 'check' THEN 'Check'
+        WHEN 'review' THEN 'Review'
+        ELSE NULL
+    END AS qc_process_type_display,
+    sp.qc_assigned_to,
+    sp.production_qc_completed_count,
+    sp.peer_review_completed_count AS review_completed_count,
+    sp.independent_check_completed_count AS check_completed_count,
+    sp.production_qc_last_completed_at,
+    sp.peer_review_last_completed_at AS review_last_completed_at,
+    sp.independent_check_last_completed_at AS check_last_completed_at,
+    sp.peer_review_completed_count,
+    sp.independent_check_completed_count,
+    sp.peer_review_last_completed_at,
+    sp.independent_check_last_completed_at,
+    sp.dgn_guid,
+    sp.sheet_pdf_guid,
+    sp.qc_pdf_guid,
+    sp.qc_chk_pdf_guid,
+    sp.qc_rev_pdf_guid
+FROM sheet_packages sp;
 '@
 }
 
@@ -4795,18 +4885,22 @@ VALUES
 function Get-QCReviewTypeBucket {
     <#
     .SYNOPSIS
-    Maps QC review type labels to reporting buckets: production, peer_review, independent_check.
+    Maps QC process/review type labels to normalized buckets: production, check, review.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ReviewType
     )
 
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        return (Normalize-QCProcessType -ProcessType $ReviewType)
+    }
+
     $norm = ([string]$ReviewType).Trim().ToLowerInvariant()
     switch -Regex ($norm) {
         '^production(\s+qc)?$|^production$|^qc$' { return 'production' }
-        '^peer(\s+review)?$|^peer_review$|^peer$' { return 'peer_review' }
-        '^independent(\s+(check|review))?$|^independent_check$|^independent$|^ic$' { return 'independent_check' }
+        '^check$|^independent(\s+(check|review))?$|^independent_check$|^independent$|^ic$' { return 'check' }
+        '^review$|^peer(\s+review)?$|^peer_review$|^peer$' { return 'review' }
         default { return $null }
     }
 }
@@ -5059,11 +5153,11 @@ GROUP BY qc_review_type
                         $productionCount += $cnt
                         if ($null -eq $productionLast -or ($null -ne $lastAt -and $lastAt -gt $productionLast)) { $productionLast = $lastAt }
                     }
-                    'peer_review' {
+                    'review' {
                         $peerCount += $cnt
                         if ($null -eq $peerLast -or ($null -ne $lastAt -and $lastAt -gt $peerLast)) { $peerLast = $lastAt }
                     }
-                    'independent_check' {
+                    'check' {
                         $independentCount += $cnt
                         if ($null -eq $independentLast -or ($null -ne $lastAt -and $lastAt -gt $independentLast)) { $independentLast = $lastAt }
                     }

@@ -1607,6 +1607,32 @@ function _QCAT-BuildNotificationDocument {
     return [pscustomobject]$doc
 }
 
+function Resolve-QCWorkflowEventQcProcessType {
+    <#
+    .SYNOPSIS
+    Resolves normalized qc_process_type for workflow events and telemetry.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = @{},
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$DocumentName = '',
+        [hashtable]$Context = $null,
+        [hashtable]$PwAttributes = $null,
+        [object]$Document = $null
+    )
+
+    $raw = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $DocumentGuid `
+        -FolderPath $FolderPath -DocumentName $DocumentName -Context $Context `
+        -PwAttributes $PwAttributes -Document $Document
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $raw -Context $Context
+        if ($norm) { return $norm }
+    }
+    return $raw
+}
+
 function Resolve-QCWorkflowEventQcReviewType {
     <#
     .SYNOPSIS
@@ -2633,5 +2659,5 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Get-QCSheetGroupTransitionKey, Test-QCIsQcPdfDocumentName, `
     Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification, Test-QCShouldSuppressAuditSheetStateSync, `
-    Resolve-QCWorkflowEventQcReviewType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
+    Resolve-QCWorkflowEventQcReviewType, Resolve-QCWorkflowEventQcProcessType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

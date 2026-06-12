@@ -23,9 +23,9 @@ function Get-QCPackageSettings {
         enabled = $true
         canonicalDocumentRole = 'ProductionPdf'
         fallbackOrder = @('ProductionPdf','QcPdf','Dgn')
-        namingRules = @{ dgnExtensions=@('.dgn'); productionPdfExtensions=@('.pdf'); qcPdfSuffixes=@('_QC','-QC','_QC_HISTORY') }
-        statePrecedence = @('Error Needs Attention','QC Initiated','QC Finalizing','Ready for QC','Corrections Received','Redlines Received','In Production')
-        userOwnedAttributes = @('QC_Review_Type','QC_Designer_Email','QC_Reviewer_Email','QC_Checker_Email','QC_Originator','QC_Due_Date')
+        namingRules = @{ dgnExtensions=@('.dgn'); productionPdfExtensions=@('.pdf'); qcPdfSuffixes=@('-prod','-chk','-rev','_QC','-QC','_QC_HISTORY') }
+        statePrecedence = @('Error Needs Attention','Initiate Origination','Initiate Verification','Originated','Corrections Received','Redlines Received','In Development')
+        userOwnedAttributes = @('QC_Process_Type','QC_Review_Type','QC_Designer_Email','QC_Reviewer_Email','QC_Checker_Email','QC_Originator','QC_Due_Date')
         automationOwnedAttributes = @('QC_Prepend_Status','QC_Last_Automation_Run','QC_Last_Email_Sent','QC_Automation_JobId','QC_Error_Message','QC_PackageId','QC_Source_Dgn_Guid','QC_Production_Pdf_Guid','QC_QcPdf_Guid')
         syncUserAttributesFromNonCanonical = $true
         nonCanonicalUserEditBehavior = 'CopyOnceThenNormalize'

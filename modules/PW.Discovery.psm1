@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 function Ensure-PWDiscoveryModuleLoaded {
     <#
@@ -1230,7 +1231,7 @@ function Get-PWSheetStemFromDocumentName {
     )
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
     if ([string]::IsNullOrWhiteSpace($stem)) { return '' }
-    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
     return $stem
 }
 
@@ -1246,7 +1247,10 @@ function Test-PWSheetPdfHasMatchingPair {
         [hashtable]$PairCache = $null
     )
 
-    if ($DocumentName -notmatch '(?i)\.pdf$' -or $DocumentName -match '(?i)-qc\.pdf$') { return $false }
+    if ($DocumentName -notmatch '(?i)\.pdf$') { return $false }
+    if (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) {
+        if (Test-PWQcPdfLaneSuffix -DocumentName $DocumentName) { return $false }
+    } elseif ($DocumentName -match '(?i)-(prod|chk|rev)\.pdf$') { return $false }
     if ($DocumentName -match '(?i)_statusset\.pdf$') { return $false }
 
     $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
@@ -1278,10 +1282,10 @@ function Test-PWSheetPdfHasMatchingPair {
     return $found
 }
 
-function Get-PWAssociatedSheetDocumentNames {
+function Get-PWAssociatedSheetSyncDocumentNames {
     <#
     .SYNOPSIS
-    Expected sibling filenames (sheet PDF, DGN, QC PDF) for one sheet stem.
+    Sibling filenames that participate in normal workflow state sync (DGN, sheet PDF, production QC PDF).
     #>
     [CmdletBinding()]
     param(
@@ -1291,8 +1295,89 @@ function Get-PWAssociatedSheetDocumentNames {
     return @(
         ($SheetStem + '.pdf')
         ($SheetStem + '.dgn')
-        ($SheetStem + '-qc.pdf')
+        ($SheetStem + '-prod.pdf')
     )
+}
+
+function Get-PWAssociatedSheetDocumentNames {
+    <#
+    .SYNOPSIS
+    Expected sibling filenames for discovery (sheet PDF, DGN, all lane QC PDFs).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SheetStem
+    )
+    if ([string]::IsNullOrWhiteSpace($SheetStem)) { return @() }
+    return @(
+        ($SheetStem + '.pdf')
+        ($SheetStem + '.dgn')
+        ($SheetStem + '-prod.pdf')
+        ($SheetStem + '-chk.pdf')
+        ($SheetStem + '-rev.pdf')
+    )
+}
+
+function _PWD-LogExcludedLaneSyncMembers {
+    param(
+        [array]$AllMembers,
+        [array]$SyncMembers,
+        [string]$FolderPath = '',
+        [string]$TriggerSource = ''
+    )
+    if (-not (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) { return }
+    $syncNames = @{}
+    foreach ($m in @($SyncMembers)) {
+        $dn = [string]$m.documentName
+        if ($dn) { $syncNames[$dn.ToLowerInvariant()] = $true }
+    }
+    foreach ($m in @($AllMembers)) {
+        $dn = [string]$m.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+        if (-not $lane) { continue }
+        if ($lane -eq 'production') { continue }
+        if ($syncNames.ContainsKey($dn.ToLowerInvariant())) { continue }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_SIBLING_SYNC_LANE_EXCLUDED' `
+                -Message 'Check/review lane QC PDF excluded from sibling workflow state sync.' -Data @{
+                documentName = $dn
+                documentGuid = [string]$m.documentGuid
+                lane = $lane
+                reason = 'process_lane_not_in_sync_set'
+                folderPath = $FolderPath
+                triggerSource = $TriggerSource
+            } | Out-Null
+        }
+    }
+}
+
+function Get-PWAssociatedSheetSyncMembers {
+    <#
+    .SYNOPSIS
+    Resolves DGN, sheet PDF, and production QC PDF siblings for workflow state sync.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [string]$TriggerSource = ''
+    )
+    $all = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    $syncNames = @{}
+    $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    foreach ($n in @(Get-PWAssociatedSheetSyncDocumentNames -SheetStem $stem)) {
+        $syncNames[$n.ToLowerInvariant()] = $true
+    }
+    $sync = @($all | Where-Object {
+        $dn = [string]$_.documentName
+        $dn -and $syncNames.ContainsKey($dn.ToLowerInvariant())
+    })
+    _PWD-LogExcludedLaneSyncMembers -AllMembers $all -SyncMembers $sync -FolderPath $FolderPath -TriggerSource $TriggerSource
+    return $sync
 }
 
 function _PWD-InvokeSetPwDocumentState {
@@ -1430,13 +1515,17 @@ WHERE folder_path = @folderPath
   AND (
     LOWER(document_name) = LOWER(@pdfName)
     OR LOWER(document_name) = LOWER(@dgnName)
-    OR LOWER(document_name) = LOWER(@qcName)
+    OR LOWER(document_name) = LOWER(@prodName)
+    OR LOWER(document_name) = LOWER(@chkName)
+    OR LOWER(document_name) = LOWER(@revName)
   )
 "@ -Parameters @{
                     folderPath = $FolderPath
                     pdfName    = $expectedNames[0]
                     dgnName    = $expectedNames[1]
-                    qcName     = $expectedNames[2]
+                    prodName   = $expectedNames[2]
+                    chkName    = if ($expectedNames.Count -gt 3) { $expectedNames[3] } else { '' }
+                    revName    = if ($expectedNames.Count -gt 4) { $expectedNames[4] } else { '' }
                 }
                 if ($dbRes.IsSuccess -and $dbRes.Data.table) {
                     foreach ($row in @($dbRes.Data.table.Rows)) {
@@ -1476,7 +1565,7 @@ WHERE folder_path = @folderPath
             $members[$key] = @{
                 documentGuid = ''
                 documentName = $name
-                sourceType   = if ($name -match '(?i)\.dgn$') { 'dgn' } elseif ($name -match '(?i)-qc\.pdf$') { 'pdf' } else { 'pdf' }
+                sourceType   = if ($name -match '(?i)\.dgn$') { 'dgn' } elseif ($name -match '(?i)-(prod|chk|rev)\.pdf$') { 'pdf' } else { 'pdf' }
             }
         }
     }
@@ -1523,8 +1612,8 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     $target = ([string]$TargetStateName).Trim()
     if ([string]::IsNullOrWhiteSpace($target)) { return @{ updates = @(); memberCount = 0 } }
 
-    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
-        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource $TriggerSource)
     if ($members.Count -eq 0) { return @{ updates = @(); memberCount = 0 } }
 
     $guids = @($members | ForEach-Object { [string]$_.documentGuid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ })
@@ -1683,11 +1772,16 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
     $canonical = ([string]$CanonicalReviewType).Trim()
     if ([string]::IsNullOrWhiteSpace($canonical)) { return }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $canonical
+        if ($norm) { $canonical = $norm }
+    }
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
+    $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
     $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
-    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
-        -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource 'process_type_sync')
     if ($members.Count -eq 0) { return }
 
     $stateUpdates = @()
@@ -1699,9 +1793,12 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
         $prevDb = _PWD-GetSheetIndexQcReviewType -Config $Config -DocumentGuid $dg
         $currentPw = ''
-        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($reviewCol)
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($processCol, $reviewCol)
         if ($attrRead.found) {
-            $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewCol
+            $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $processCol
+            if ([string]::IsNullOrWhiteSpace($currentPw)) {
+                $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewCol
+            }
             if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
         }
         if (-not $doc) {
@@ -1730,7 +1827,14 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                 $change.planned = $true
             } else {
                 try {
-                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes @{ $reviewCol = $canonical })
+                    $attrs = @{ $processCol = $canonical }
+                    if ($reviewCol -and $reviewCol -ne $processCol) {
+                        $display = if (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue) {
+                            Get-QCProcessTypeDisplayLabel -ProcessType $canonical
+                        } else { $canonical }
+                        $attrs[$reviewCol] = $display
+                    }
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs)
                     $change.applied = $true
                 } catch {
                     $change.error = [string]$_.Exception.Message
@@ -2292,9 +2396,9 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     foreach ($member in $Members) {
         $dn = [string]$member.documentName
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
-        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
             $sheetPdfGuid = [string]$member.documentGuid
-        } elseif ($dn -match '(?i)-qc\.pdf$') {
+        } elseif ($dn -match '(?i)-prod\.pdf$') {
             $qcPdfGuid = [string]$member.documentGuid
             $qcPdfName = $dn
         }
@@ -2684,8 +2788,10 @@ function Sync-PWAssociatedSheetWorkflowState {
         }
     }
 
-    $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+    $allMembers = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource 'user_audit')
     if ($members.Count -eq 0) { return }
 
     $previousSheetState = ''
@@ -2694,9 +2800,9 @@ function Sync-PWAssociatedSheetWorkflowState {
         $sheetStemForPrepend = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
     }
     if (-not [string]::IsNullOrWhiteSpace($sheetStemForPrepend)) {
-        foreach ($member in $members) {
+        foreach ($member in $allMembers) {
             $dn = [string]$member.documentName
-            if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) {
+            if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
                 $dg = [string]$member.documentGuid
                 if ($dg) {
                     $previousSheetState = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $dg
@@ -3577,8 +3683,10 @@ function Get-PWQcReviewTypeEnabledEnvironments {
         $rta = $null
         if ($Config.ContainsKey('projectWise') -and $Config.projectWise) {
             $pw = $Config.projectWise
-            if ($pw -is [hashtable] -and $pw.ContainsKey('qcReviewTypeAttributes')) { $rta = $pw['qcReviewTypeAttributes'] }
-            elseif ($pw.qcReviewTypeAttributes) { $rta = $pw.qcReviewTypeAttributes }
+            if ($pw -is [hashtable] -and $pw.ContainsKey('qcProcessTypeAttributes')) { $rta = $pw['qcProcessTypeAttributes'] }
+            elseif ($pw.qcProcessTypeAttributes) { $rta = $pw.qcProcessTypeAttributes }
+            if (-not $rta -and $pw -is [hashtable] -and $pw.ContainsKey('qcReviewTypeAttributes')) { $rta = $pw['qcReviewTypeAttributes'] }
+            elseif (-not $rta -and $pw.qcReviewTypeAttributes) { $rta = $pw.qcReviewTypeAttributes }
         }
         if ($rta) {
             $list = $null
@@ -3681,7 +3789,23 @@ function Test-PWQcReviewTypeAttributesEnabled {
     return $false
 }
 
+function Get-PWQcProcessTypeAttributeName {
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    $col = 'QC_Process_Type'
+    try {
+        $am = $Config['qcWorkflow']['attributeMap']
+        if ($am -and $am['processType']) { $col = [string]$am['processType'] }
+    } catch { }
+    return $col
+}
+
 function Get-PWQcReviewTypeAttributeName {
+    <#
+    .SYNOPSIS
+    Legacy read column for QC_Review_Type (compatibility).
+    #>
     [CmdletBinding()]
     param([hashtable]$Config = @{})
 
@@ -3693,27 +3817,48 @@ function Get-PWQcReviewTypeAttributeName {
     return $col
 }
 
-function Get-PWQcDefaultReviewType {
+function Get-PWQcDefaultProcessType {
     <#
     .SYNOPSIS
-    Configured default QC_Review_Type (qcWorkflow.defaultReviewType), usually Production QC.
+    Configured default qc_process_type (normalized lowercase), usually production.
     #>
     [CmdletBinding()]
     param([hashtable]$Config = @{})
 
-    $default = 'Production QC'
+    $default = 'production'
     if (-not $Config) { return $default }
     try {
         $wf = $null
         if ($Config.ContainsKey('qcWorkflow')) { $wf = $Config.qcWorkflow }
-        if ($wf -is [hashtable] -and $wf.ContainsKey('defaultReviewType') -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultReviewType)) {
-            return [string]$wf.defaultReviewType
+        if ($wf -is [hashtable] -and $wf.ContainsKey('defaultProcessType') -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultProcessType)) {
+            $norm = if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                Normalize-QCProcessType -ProcessType ([string]$wf.defaultProcessType)
+            } else { [string]$wf.defaultProcessType }
+            if ($norm) { return $norm }
         }
-        if ($wf -and $wf.PSObject.Properties['defaultReviewType'] -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultReviewType)) {
-            return [string]$wf.defaultReviewType
+        if ($wf -is [hashtable] -and $wf.ContainsKey('defaultReviewType') -and -not [string]::IsNullOrWhiteSpace([string]$wf.defaultReviewType)) {
+            $norm = if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                Normalize-QCProcessType -ProcessType ([string]$wf.defaultReviewType)
+            } else { $null }
+            if ($norm) { return $norm }
         }
     } catch { }
     return $default
+}
+
+function Get-PWQcDefaultReviewType {
+    <#
+    .SYNOPSIS
+    Display label for default process type (backward compatibility).
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config = @{})
+
+    $pt = Get-PWQcDefaultProcessType -Config $Config
+    if (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue) {
+        return Get-QCProcessTypeDisplayLabel -ProcessType $pt
+    }
+    return 'Production'
 }
 
 function Ensure-PWQcReviewTypeOnAssociatedSheet {
