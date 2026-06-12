@@ -12,13 +12,15 @@ For a single Sheets (or any) folder:
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
 sheet_index, sheet_packages, and sheet_documents rows are never deleted. By default the script updates pw_state_name (and clears
-qc_stage/qc_status on sheet_index unless -KeepSheetIndexQcFields), clears qc_cycle_id/qc_cycle_number, zeros
-production_qc_completed_count, production_qc_last_completed_at, peer_review_completed_count,
-peer_review_last_completed_at, independent_check_completed_count, and
-independent_check_last_completed_at on sheet_index and sheet_packages, clears qc_review_type/qc_assigned_to on
-sheet_packages, updates sheet_documents.pw_state_name, and deletes qc_cycle_completions rows for the folder
-(by document_guid or sheet_package_id).Pass -SkipSheetIndexUpdate to leave sheet_index completely unchanged. Does not remove queue JSON jobs
-(use Purge-QCPendingByFilters or manual queue cleanup separately).
+qc_stage/qc_status on sheet_index unless -KeepSheetIndexQcFields), clears qc_process_type and lane QC PDF pairing
+(qc_pdf_guid/name on sheet_index; qc_pdf_*, qc_chk_pdf_*, qc_rev_pdf_* on sheet_packages), deletes sheet_package_qc_pdfs
+rows for matched packages, clears qc_cycle_id/qc_cycle_number, zeros production_qc_completed_count,
+production_qc_last_completed_at, peer_review_completed_count, peer_review_last_completed_at,
+independent_check_completed_count, and independent_check_last_completed_at on sheet_index and sheet_packages,
+clears qc_review_type/qc_assigned_to on sheet_index (unless -KeepSheetIndexQcFields) and sheet_packages,
+updates sheet_documents.pw_state_name, and deletes qc_cycle_completions rows for the folder
+(by document_guid or sheet_package_id). Pass -SkipSheetIndexUpdate to leave sheet_index completely unchanged.
+Does not remove queue JSON jobs (use Purge-QCPendingByFilters or manual queue cleanup separately).
 
 Does not delete ProjectWise documents, sheet_index rows, sheet_packages rows, or sheet_documents rows.
 
@@ -306,6 +308,7 @@ $summary = [ordered]@{
     sheetIndexUpdated = 0
     sheetPackagesUpdated = 0
     sheetDocumentsUpdated = 0
+    sheetPackageQcPdfsDeleted = 0
 }
 
 # --- ProjectWise ---
@@ -423,6 +426,12 @@ SELECT COUNT_BIG(1) FROM audit_events a WHERE ($whereAudit)
             $dbCounts.processing_jobs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM processing_jobs j WHERE ($whereJobs)
 "@
+            try {
+                $dbCounts.sheet_package_qc_pdfs = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_package_qc_pdfs q
+WHERE EXISTS (SELECT 1 FROM sheet_packages sp WHERE sp.sheet_package_id = q.sheet_package_id AND ($spFolderClause))
+"@
+            } catch { }
             if ($IncludeCommentTelemetry.IsPresent) {
                 $whereCommentHistory = _RQCF-TelemetryScopeClause -DocumentGuidColumn 'h.document_id' @scopeArgs
                 $dbCounts.qc_comment_status_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
@@ -450,6 +459,16 @@ SELECT COUNT_BIG(1) FROM sheet_documents sd
 INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
 WHERE ($spFolderClause)
 "@
+
+        $sheetPackageQcPdfsMatched = 0L
+        try {
+            $sheetPackageQcPdfsMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_package_qc_pdfs q
+WHERE EXISTS (SELECT 1 FROM sheet_packages sp WHERE sp.sheet_package_id = q.sheet_package_id AND ($spFolderClause))
+"@
+        } catch {
+            $sheetPackageQcPdfsMatched = 0L
+        }
 
         $sheetIndexMatched = 0L
         $sheetIndexCompletionData = 0L
@@ -499,6 +518,7 @@ WHERE ($spFolderClause)
             sheetPackagesMatched = $sheetPackagesMatched
             sheetDocumentsMatched = $sheetDocumentsMatched
             sheetPackageCompletionData = $sheetPackageCompletionData
+            sheetPackageQcPdfsMatched = $sheetPackageQcPdfsMatched
             queryTimeoutSeconds = $QueryTimeoutSeconds
         }
         if (-not $SkipPreviewCounts.IsPresent) {
@@ -515,6 +535,7 @@ WHERE ($spFolderClause)
             Write-Host ('  sheet_packages: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetPackagesMatched) -ForegroundColor DarkGray
             Write-Host ('  sheet_packages completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetPackageCompletionData) -ForegroundColor DarkGray
             Write-Host ('  sheet_documents: {0} row(s) matched - pw_state_name UPDATE only, rows are not deleted.' -f $sheetDocumentsMatched) -ForegroundColor DarkGray
+            Write-Host ('  sheet_package_qc_pdfs: {0} row(s) matched - DELETE on confirm.' -f $sheetPackageQcPdfsMatched) -ForegroundColor DarkGray
         }
 
         if ($doApply) {
@@ -572,9 +593,23 @@ WHERE id IN (SELECT a.id FROM audit_events a WHERE ($whereAudit))
 DELETE TOP (@batchSize) FROM processing_jobs
 WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($whereJobs))
 "@
+            try {
+                $deleted.sheet_package_qc_pdfs = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'sheet_package_qc_pdfs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
+DELETE TOP (@batchSize) FROM sheet_package_qc_pdfs
+WHERE id IN (
+  SELECT q.id FROM sheet_package_qc_pdfs q
+  WHERE EXISTS (SELECT 1 FROM sheet_packages sp WHERE sp.sheet_package_id = q.sheet_package_id AND ($spFolderClause))
+)
+"@
+            } catch {
+                Write-Host ("  [sheet_package_qc_pdfs] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+            }
 
             foreach ($k in @($deleted.Keys)) {
                 $summary.totalRowsDeleted += [long]$deleted[$k]
+            }
+            if ($deleted.ContainsKey('sheet_package_qc_pdfs')) {
+                $summary.sheetPackageQcPdfsDeleted = [long]$deleted.sheet_package_qc_pdfs
             }
 
             if (-not $SkipSheetIndexUpdate.IsPresent) {
@@ -586,8 +621,57 @@ WHERE id IN (SELECT j.id FROM processing_jobs j WHERE ($whereJobs))
     independent_check_completed_count = 0,
     independent_check_last_completed_at = NULL,
 "@
+                $sheetIndexLaneResetSql = @"
+    qc_process_type = NULL,
+    qc_pdf_guid = NULL,
+    qc_pdf_name = NULL,
+"@
+                $sheetIndexQcFieldResetSql = ''
+                if (-not $KeepSheetIndexQcFields.IsPresent) {
+                    $sheetIndexQcFieldResetSql = @"
+    qc_review_type = NULL,
+    qc_assigned_to = NULL,
+"@
+                }
                 if (-not $KeepSheetIndexQcFields.IsPresent) {
                     $sheetSql = @"
+UPDATE si
+SET pw_state_name = @targetState,
+    last_updated_at = SYSDATETIMEOFFSET(),
+    qc_stage = NULL,
+    qc_status = NULL,
+    last_audit_event_at = NULL,
+$completionResetSql
+$sheetIndexLaneResetSql
+$sheetIndexQcFieldResetSql
+    qc_cycle_id = NULL,
+    qc_cycle_number = NULL
+FROM sheet_index si
+WHERE ($siFolderClause)
+"@
+                } else {
+                    $sheetSql = @"
+UPDATE si
+SET pw_state_name = @targetState,
+    last_updated_at = SYSDATETIMEOFFSET(),
+$completionResetSql
+$sheetIndexLaneResetSql
+$sheetIndexQcFieldResetSql
+    qc_cycle_id = NULL,
+    qc_cycle_number = NULL
+FROM sheet_index si
+WHERE ($siFolderClause)
+"@
+                }
+
+                if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
+                    try {
+                        $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                        Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_process_type, lane QC pairing, qc_cycle/completion fields cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                    } catch {
+                        Write-Host ("  [sheet_index] extended reset failed ({0}); retrying without v1.18 columns." -f $_.Exception.Message) -ForegroundColor Yellow
+                        $sheetSqlLegacy = if (-not $KeepSheetIndexQcFields.IsPresent) {
+                            @"
 UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -600,8 +684,8 @@ $completionResetSql
 FROM sheet_index si
 WHERE ($siFolderClause)
 "@
-                } else {
-                    $sheetSql = @"
+                        } else {
+                            @"
 UPDATE si
 SET pw_state_name = @targetState,
     last_updated_at = SYSDATETIMEOFFSET(),
@@ -611,11 +695,10 @@ $completionResetSql
 FROM sheet_index si
 WHERE ($siFolderClause)
 "@
-                }
-
-                if ($PSCmdlet.ShouldProcess('sheet_index', 'UPDATE pw_state_name')) {
-                    $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSql -Params $params -CommandTimeout $QueryTimeoutSeconds
-                    Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_cycle_id/number, production/peer/independent completion counts and last_completed_at cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                        }
+                        $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSqlLegacy -Params $params -CommandTimeout $QueryTimeoutSeconds
+                        Write-Host ('  [sheet_index] updated {0} row(s) (legacy columns only).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                    }
                 }
 
                 $packageResetSql = @"
@@ -634,13 +717,38 @@ $packageResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL,
     qc_review_type = NULL,
-    qc_assigned_to = NULL
+    qc_assigned_to = NULL,
+    qc_process_type = NULL,
+    qc_pdf_guid = NULL,
+    qc_pdf_name = NULL,
+    qc_chk_pdf_guid = NULL,
+    qc_chk_pdf_name = NULL,
+    qc_rev_pdf_guid = NULL,
+    qc_rev_pdf_name = NULL
 FROM sheet_packages sp
 WHERE ($spFolderClause)
 "@
                 if ($PSCmdlet.ShouldProcess('sheet_packages', 'UPDATE pw_state_name')) {
-                    $summary.sheetPackagesUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $packageSql -Params $params -CommandTimeout $QueryTimeoutSeconds
-                    Write-Host ('  [sheet_packages] updated {0} row(s): pw_state_name, qc_cycle_id/number, review fields, completion counts/timestamps cleared (not deleted).' -f $summary.sheetPackagesUpdated) -ForegroundColor Green
+                    try {
+                        $summary.sheetPackagesUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $packageSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                        Write-Host ('  [sheet_packages] updated {0} row(s): pw_state_name, qc_process_type, lane PDF aliases, qc_cycle/completion fields cleared (not deleted).' -f $summary.sheetPackagesUpdated) -ForegroundColor Green
+                    } catch {
+                        Write-Host ("  [sheet_packages] extended reset failed ({0}); retrying without v1.18 lane columns." -f $_.Exception.Message) -ForegroundColor Yellow
+                        $packageSqlLegacy = @"
+UPDATE sp
+SET pw_state_name = @targetState,
+    last_updated_at = SYSDATETIMEOFFSET(),
+$packageResetSql
+    qc_cycle_id = NULL,
+    qc_cycle_number = NULL,
+    qc_review_type = NULL,
+    qc_assigned_to = NULL
+FROM sheet_packages sp
+WHERE ($spFolderClause)
+"@
+                        $summary.sheetPackagesUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $packageSqlLegacy -Params $params -CommandTimeout $QueryTimeoutSeconds
+                        Write-Host ('  [sheet_packages] updated {0} row(s) (legacy columns only).' -f $summary.sheetPackagesUpdated) -ForegroundColor Green
+                    }
                 }
 
                 $docSql = @"
