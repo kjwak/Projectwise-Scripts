@@ -75,11 +75,80 @@ param(
 
   # initialQcPdf | finalQcComplete — QC Finalizing prepend must not apply review stamps.
   [Parameter(Mandatory=$false)]
-  [string] $PrependTrigger = ""
+  [string] $PrependTrigger = "",
+
+  # Lane-aware prepend (required when invoked from QC_PREPEND processor).
+  [Parameter(Mandatory=$false)]
+  [ValidateSet('production', 'check', 'review', '')]
+  [string] $QcProcessType = "",
+
+  [Parameter(Mandatory=$false)]
+  [ValidateSet('prod', 'chk', 'rev', '')]
+  [string] $QcPdfSuffix = "",
+
+  [Parameter(Mandatory=$false)]
+  [string] $HistoryDocumentName = ""
 )
 
-if (-not $HistoryDocName) {
-  $HistoryDocName = [System.IO.Path]::GetFileNameWithoutExtension($IncomingDocName) + "-qc.pdf"
+$strictLaneMode = $PSBoundParameters.ContainsKey('QcProcessType') -or $PSBoundParameters.ContainsKey('QcPdfSuffix') -or $PSBoundParameters.ContainsKey('HistoryDocumentName')
+
+if (-not [string]::IsNullOrWhiteSpace($HistoryDocumentName)) {
+  $HistoryDocName = [string]$HistoryDocumentName
+}
+
+if ([string]::IsNullOrWhiteSpace($HistoryDocName)) {
+  if ($strictLaneMode) {
+    $stemForLane = [System.IO.Path]::GetFileNameWithoutExtension($IncomingDocName)
+    if ($stemForLane -match '(?i)-(prod|chk|rev)$') {
+      $stemForLane = $stemForLane -replace '(?i)-(prod|chk|rev)$', ''
+    }
+    $resolvedType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+    $resolvedSuffix = ([string]$QcPdfSuffix).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($resolvedType) -and -not [string]::IsNullOrWhiteSpace($resolvedSuffix)) {
+      switch ($resolvedSuffix) {
+        'prod' { $resolvedType = 'production' }
+        'chk' { $resolvedType = 'check' }
+        'rev' { $resolvedType = 'review' }
+      }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedType) -and [string]::IsNullOrWhiteSpace($resolvedSuffix)) {
+      switch ($resolvedType) {
+        'production' { $resolvedSuffix = 'prod' }
+        'check' { $resolvedSuffix = 'chk' }
+        'review' { $resolvedSuffix = 'rev' }
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedType) -or [string]::IsNullOrWhiteSpace($resolvedSuffix)) {
+      throw 'QC_PROCESS_TYPE_UNKNOWN: QcProcessType and QcPdfSuffix are required for lane prepend.'
+    }
+    $HistoryDocName = ($stemForLane + '-' + $resolvedSuffix + '.pdf')
+    $QcProcessType = $resolvedType
+    $QcPdfSuffix = $resolvedSuffix
+  } else {
+    $HistoryDocName = [System.IO.Path]::GetFileNameWithoutExtension($IncomingDocName) + "-qc.pdf"
+  }
+} elseif ($strictLaneMode) {
+  if ([string]::IsNullOrWhiteSpace($QcProcessType) -and -not [string]::IsNullOrWhiteSpace($QcPdfSuffix)) {
+    switch (([string]$QcPdfSuffix).Trim().ToLowerInvariant()) {
+      'prod' { $QcProcessType = 'production' }
+      'chk' { $QcProcessType = 'check' }
+      'rev' { $QcProcessType = 'review' }
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($QcProcessType) -and [string]::IsNullOrWhiteSpace($QcPdfSuffix)) {
+    switch (([string]$QcProcessType).Trim().ToLowerInvariant()) {
+      'production' { $QcPdfSuffix = 'prod' }
+      'check' { $QcPdfSuffix = 'chk' }
+      'review' { $QcPdfSuffix = 'rev' }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($QcProcessType) -or [string]::IsNullOrWhiteSpace($QcPdfSuffix)) {
+    throw 'QC_LANE_PDF_RESOLUTION_FAILED: HistoryDocumentName provided without QcProcessType/QcPdfSuffix.'
+  }
+  $expectedSuffix = '-' + ([string]$QcPdfSuffix).Trim().ToLowerInvariant() + '.pdf'
+  if (-not ($HistoryDocName -like ('*' + $expectedSuffix))) {
+    throw ("QC_LANE_PDF_RESOLUTION_FAILED: History doc '$HistoryDocName' does not match suffix '$QcPdfSuffix'.")
+  }
 }
 
 # Prefer local tools\qpdf if present (e.g. unpacked qpdf MSVC64 package)
@@ -111,9 +180,9 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
     throw "MTA relaunch: could not resolve script path (PSCommandPath / MyInvocation). Tried: $scriptPath"
   }
   $paramNames = @(
-    'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'LocalRoot', 'QpdfExe',
+    'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'HistoryDocumentName', 'LocalRoot', 'QpdfExe',
     'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'OverlaySheetWorkDir', 'NoOverlayLayers',
-    'PromptForCredential', 'LogDir', 'AppsettingsPath', 'PrependTrigger'
+    'PromptForCredential', 'LogDir', 'AppsettingsPath', 'PrependTrigger', 'QcProcessType', 'QcPdfSuffix'
   )
   $bp = @{}
   foreach ($n in $paramNames) {
@@ -323,6 +392,8 @@ Write-Log "Datasource: $DatasourceName"
 Write-Log "Folder (incoming + history): $IncomingFolderPath"
 Write-Log "Incoming doc:    $IncomingDocName"
 Write-Log "History doc:     $HistoryDocName"
+if (-not [string]::IsNullOrWhiteSpace($QcProcessType)) { Write-Log "QC process type: $QcProcessType" }
+if (-not [string]::IsNullOrWhiteSpace($QcPdfSuffix)) { Write-Log "QC PDF suffix:   $QcPdfSuffix" }
 Write-Log "LocalRoot:       $LocalRoot"
 Write-Log "qpdf:            $QpdfExe"
 

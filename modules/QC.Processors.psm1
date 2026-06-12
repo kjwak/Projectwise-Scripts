@@ -178,48 +178,181 @@ function _QCP-ResolveProcessTypeFromJob {
         [hashtable]$Job,
         [hashtable]$Config
     )
-    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
-    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
-    if (-not (_QCP-IsNullOrWhiteSpace $docName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
-        $laneFromTrigger = Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$docName)
-        if ($laneFromTrigger) { return $laneFromTrigger }
+    $laneRes = _QCP-TryResolvePrependLaneContext -Job $Job -Config $Config
+    if ($laneRes.IsSuccess -and $laneRes.Data -and $laneRes.Data.qcProcessType) {
+        return [string]$laneRes.Data.qcProcessType
     }
-    $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType')
-    $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
+    return $null
+}
+
+function _QCP-EnsureJobMetadataHashtable {
+    param([hashtable]$Job)
+    if (-not $Job) { return @{} }
+    if (-not $Job.ContainsKey('metadata') -or -not $Job.metadata) {
+        $Job['metadata'] = @{}
+    } elseif (-not ($Job.metadata -is [hashtable])) {
+        $md = _QCP-ToHashtable $Job.metadata
+        if (-not $md) { $md = @{} }
+        $Job['metadata'] = $md
+    }
+    return [hashtable]$Job.metadata
+}
+
+function _QCP-LogPrependLaneResolved {
+    param(
+        [hashtable]$Job,
+        [hashtable]$LaneData,
+        [string]$Stage = 'before_execution'
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    if (-not $LaneData) { return }
+    Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_LANE_RESOLVED' `
+        -Message 'QC_PREPEND lane context resolved.' -Data @{
+        jobId = if ($Job -and $Job.id) { [string]$Job.id } else { '' }
+        stage = $Stage
+        qc_process_type = [string]$LaneData.qcProcessType
+        qcProcessType = [string]$LaneData.qcProcessType
+        pdfSuffix = [string]$LaneData.pdfSuffix
+        expectedLanePdfName = [string]$LaneData.expectedLanePdfName
+        triggerDocumentName = [string]$LaneData.triggerDocumentName
+        sourceDocumentGuid = [string]$LaneData.sourceDocumentGuid
+        resolutionSource = [string]$LaneData.resolutionSource
+    } | Out-Null
+}
+
+function _QCP-TryResolvePrependLaneContext {
+    <#
+    .SYNOPSIS
+    Resolves QC process type and lane PDF naming before prepend execution or workflow writeback.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Job,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
+    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName', 'triggerDocumentName')
+    if (_QCP-IsNullOrWhiteSpace $docName) {
+        $docName = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
+    }
+    if (-not (_QCP-IsNullOrWhiteSpace $docName) -and $docName -match '\\') {
+        $docName = [System.IO.Path]::GetFileName([string]$docName)
+    }
+    $sourceDocumentGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid', 'documentGuid', 'sourceDocumentGuid')
+
+    $processType = $null
+    $resolutionSource = ''
+
+    $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType', 'qc_process_type')
+    $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType', 'qc_review_type')
     if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
         $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview) -AllowNullOnEmpty
-        if ($norm) { return $norm }
+        if ($norm) {
+            $processType = $norm
+            $resolutionSource = 'job_metadata'
+        }
     }
-    if (-not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
+
+    if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $docName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+        $laneFromTrigger = Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$docName)
+        if ($laneFromTrigger) {
+            $processType = $laneFromTrigger
+            $resolutionSource = 'document_name_lane'
+        }
+    }
+
+    if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
         if (_QCP-IsStemSheetDocumentName ([string]$docName)) {
             $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
             if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
                 $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
-                if ($norm) { return $norm }
+                if ($norm) {
+                    $processType = $norm
+                    $resolutionSource = 'sheet_index'
+                }
             }
         }
-        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+        if (-not $processType -and (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
             if ($pw.found) {
                 $pwProcess = if ($pw.qcProcessType) { [string]$pw.qcProcessType } else { '' }
                 if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
                     $norm = Normalize-QCProcessType -ProcessType $pwProcess -ReviewType ([string]$pw.qcReviewType) -AllowNullOnEmpty
-                    if ($norm) { return $norm }
+                    if ($norm) {
+                        $processType = $norm
+                        $resolutionSource = 'projectwise_attributes'
+                    }
                 }
             }
         }
-        if (-not (_QCP-IsStemSheetDocumentName ([string]$docName))) {
+        if (-not $processType -and -not (_QCP-IsStemSheetDocumentName ([string]$docName))) {
             $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
             if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
                 $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
-                if ($norm) { return $norm }
+                if ($norm) {
+                    $processType = $norm
+                    $resolutionSource = 'sheet_index'
+                }
             }
         }
     }
-    if (Get-Command -Name 'Get-PWQcDefaultProcessType' -ErrorAction SilentlyContinue) {
-        return Get-PWQcDefaultProcessType -Config $Config
+
+    if (-not $processType) {
+        return New-QCFailureResult -Code 'QC_PROCESS_TYPE_UNKNOWN' `
+            -Message 'QC_PREPEND could not resolve qc_process_type; refusing to default to production.' -Data @{
+            jobId = if ($Job.id) { [string]$Job.id } else { '' }
+            folderPath = [string]$folder
+            triggerDocumentName = [string]$docName
+            sourceDocumentGuid = [string]$sourceDocumentGuid
+            metadataQcProcessType = [string]$rawProcess
+        }
     }
-    return 'production'
+
+    $laneSuffix = ''
+    if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
+        $laneSuffix = Get-QCProcessTypePdfSuffix -ProcessType $processType -Config $Config
+    }
+    if (_QCP-IsNullOrWhiteSpace $laneSuffix) {
+        return New-QCFailureResult -Code 'QC_LANE_PDF_RESOLUTION_FAILED' `
+            -Message 'QC_PREPEND could not resolve lane PDF suffix for process type.' -Data @{
+            jobId = if ($Job.id) { [string]$Job.id } else { '' }
+            qcProcessType = $processType
+            triggerDocumentName = [string]$docName
+        }
+    }
+
+    $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension([string]$docName)
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName ([string]$docName)
+        if (-not (_QCP-IsNullOrWhiteSpace $resolvedStem)) { $sheetStem = [string]$resolvedStem }
+    }
+    $expectedLanePdfName = $null
+    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+        $expectedLanePdfName = Get-QCLaneQcPdfExpectedName -SheetBaseName $sheetStem -ProcessType $processType -Config $Config
+    }
+    if (_QCP-IsNullOrWhiteSpace $expectedLanePdfName) {
+        $expectedLanePdfName = ($sheetStem + '-' + $laneSuffix + '.pdf')
+    }
+
+    $laneData = @{
+        qcProcessType = $processType
+        pdfSuffix = [string]$laneSuffix
+        expectedLanePdfName = [string]$expectedLanePdfName
+        sheetStem = [string]$sheetStem
+        triggerDocumentName = [string]$docName
+        sourceDocumentGuid = [string]$sourceDocumentGuid
+        resolutionSource = $resolutionSource
+        folderPath = [string]$folder
+    }
+
+    $md = _QCP-EnsureJobMetadataHashtable -Job $Job
+    $md['qcProcessType'] = $processType
+    $md['pdfSuffix'] = [string]$laneSuffix
+    $md['expectedLanePdfName'] = [string]$expectedLanePdfName
+    if (-not (_QCP-IsNullOrWhiteSpace $sourceDocumentGuid)) { $md['sourceDocumentGuid'] = [string]$sourceDocumentGuid }
+
+    return New-QCSuccessResult -Code 'QC_PREPEND_LANE_RESOLVED' -Message 'QC_PREPEND lane context resolved.' -Data $laneData
 }
 
 function _QCP-ReviewStampRequiredForReviewType {
@@ -642,12 +775,19 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     if ($document) { $ctx['document'] = $document }
     $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
     if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) { $ctx['prependTrigger'] = $prependTrigger }
-    $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+    $laneRes = _QCP-TryResolvePrependLaneContext -Job $Job -Config $Config
+    if (-not $laneRes.IsSuccess) { return $laneRes }
+    $laneCtx = [hashtable]$laneRes.Data
+    $processType = [string]$laneCtx.qcProcessType
     $ctx['qcProcessType'] = $processType
+    $ctx['expectedLanePdfName'] = [string]$laneCtx.expectedLanePdfName
+    $ctx['pdfSuffix'] = [string]$laneCtx.pdfSuffix
     if (-not $Job.ContainsKey('metadata') -or -not ($Job.metadata -is [hashtable])) {
         $Job['metadata'] = @{}
     }
     $Job.metadata['qcProcessType'] = $processType
+    $Job.metadata['expectedLanePdfName'] = [string]$laneCtx.expectedLanePdfName
+    $Job.metadata['pdfSuffix'] = [string]$laneCtx.pdfSuffix
     if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
         $ctx['skipSiblingStateSync'] = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType $processType -Config $Config)
     } else {
@@ -680,7 +820,9 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
 
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
-    if ($Result.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
+    if ($Result.IsSuccess -and $prependTrigger -eq 'initialQcPdf') {
+        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType -Force | Out-Null
+    } elseif ($Result.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
         -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
         _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
     }
@@ -706,16 +848,19 @@ function _QCP-TryResetProcessTypeAfterPrepend {
     param(
         [hashtable]$Job,
         [hashtable]$Config,
-        [string]$ProcessType
+        [string]$ProcessType,
+        [switch]$Force
     )
-    if (-not (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
-    if (-not (Test-QCProcessTypeResetsAfterPrepend -ProcessType $ProcessType -Config $Config)) {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET_SKIPPED' -Message 'Process type reset not configured for lane.' -Data @{
-                qcProcessType = $ProcessType
-            } | Out-Null
+    if (-not $Force) {
+        if (-not (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
+        if (-not (Test-QCProcessTypeResetsAfterPrepend -ProcessType $ProcessType -Config $Config)) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET_SKIPPED' -Message 'Process type reset not configured for lane.' -Data @{
+                    qcProcessType = $ProcessType
+                } | Out-Null
+            }
+            return @{ reset = $false; skipped = $true }
         }
-        return @{ reset = $false; skipped = $true }
     }
 
     $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
@@ -726,7 +871,7 @@ function _QCP-TryResetProcessTypeAfterPrepend {
             Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid ([string]$docGuid) `
                 -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalReviewType 'production' | Out-Null
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET' -Message 'Reset qc_process_type to production after successful lane prepend.' -Data @{
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET' -Message 'Reset stem/DGN qc_process_type to Production after Initiate Origination prepend.' -Data @{
                     fromProcessType = $ProcessType
                     toProcessType = 'production'
                     folderPath = $folder
@@ -774,19 +919,32 @@ function _QCP-ResolveHistoryPath([hashtable]$Job, [hashtable]$Config) {
     $historyRoot = if ($qc -and $qc.historyRoot) { [string]$qc.historyRoot } else { $null }
     if (_QCP-IsNullOrWhiteSpace $historyRoot) { return New-QCFailureResult -Code 'QC_PREPEND_CONFIG_MISSING_HISTORY_ROOT' -Message 'qcPrepend.historyRoot is required.' -Data @{} }
 
-    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('historyPdfPath') -and $Job.metadata.historyPdfPath) {
-        return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from job metadata.' -Data @{ historyPdf = [string]$Job.metadata.historyPdfPath }
+    $md = $null
+    try {
+        if ($Job.ContainsKey('metadata') -and $Job.metadata) { $md = _QCP-ToHashtable $Job.metadata }
+    } catch { }
+    if ($md -and $md.ContainsKey('historyPdfPath') -and $md.historyPdfPath) {
+        return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from job metadata.' -Data @{ historyPdf = [string]$md.historyPdfPath }
     }
 
-    $sourceName = if ($Job.ContainsKey('sourceName') -and $Job.sourceName) { [string]$Job.sourceName } else { ([System.IO.Path]::GetFileName([string]$Job.sourcePath)) }
-    if (_QCP-IsNullOrWhiteSpace $sourceName) { $sourceName = ([string]$Job.id + '.pdf') }
+    $laneRes = _QCP-TryResolvePrependLaneContext -Job $Job -Config $Config
+    if (-not $laneRes.IsSuccess) { return $laneRes }
+    $laneCtx = [hashtable]$laneRes.Data
+    $historyFileName = [string]$laneCtx.expectedLanePdfName
 
     $sourceFolder = if ($Job.ContainsKey('sourceFolder') -and $Job.sourceFolder) { [string]$Job.sourceFolder } else { '' }
     $folderKey = if (_QCP-IsNullOrWhiteSpace $sourceFolder) { 'root' } else { (_QCP-Sha256Hex -Text $sourceFolder).Substring(0, 8) }
 
     $destDir = Join-Path $historyRoot $folderKey
-    $historyPdf = Join-Path $destDir $sourceName
-    return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from config.' -Data @{ historyPdf = $historyPdf; historyDir = $destDir; folderKey = $folderKey }
+    $historyPdf = Join-Path $destDir $historyFileName
+    return New-QCSuccessResult -Code 'QC_PREPEND_HISTORY_PATH' -Message 'History path resolved from lane context.' -Data @{
+        historyPdf = $historyPdf
+        historyDir = $destDir
+        folderKey = $folderKey
+        qcProcessType = [string]$laneCtx.qcProcessType
+        pdfSuffix = [string]$laneCtx.pdfSuffix
+        expectedLanePdfName = $historyFileName
+    }
 }
 
 function _QCP-RunQpdfPrepend([string]$QpdfExe, [string]$SourcePdf, [string]$HistoryPdf, [string]$OutPdf) {
@@ -1007,6 +1165,11 @@ function Invoke-QCPrependProcessor {
 
     _QCP-ApplyFsThrottleConfig -Config $Config
 
+    $laneRes = _QCP-TryResolvePrependLaneContext -Job $Job -Config $Config
+    if (-not $laneRes.IsSuccess) { return $laneRes }
+    $laneCtx = [hashtable]$laneRes.Data
+    _QCP-LogPrependLaneResolved -Job $Job -LaneData $laneCtx -Stage 'before_execution'
+
     $qc = @{}
     if ($Config.ContainsKey('qcPrepend') -and $Config.qcPrepend) {
         $qcNorm = _QCP-ToHashtable $Config.qcPrepend
@@ -1093,9 +1256,13 @@ function Invoke-QCPrependProcessor {
                 localRoot = $localRoot
                 qpdfExe = $qpdfExe
                 overlayExe = $overlayExe
+                qcProcessType = [string]$laneCtx.qcProcessType
+                pdfSuffix = [string]$laneCtx.pdfSuffix
+                expectedLanePdfName = [string]$laneCtx.expectedLanePdfName
             }
         }
 
+        $historyDocName = [string]$laneCtx.expectedLanePdfName
         $args = @(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
@@ -1120,20 +1287,27 @@ function Invoke-QCPrependProcessor {
         if (-not (_QCP-IsNullOrWhiteSpace $prependTrigger)) {
             $args += @('-PrependTrigger', $prependTrigger)
         }
+        $args += @(
+            '-QcProcessType', [string]$laneCtx.qcProcessType,
+            '-QcPdfSuffix', [string]$laneCtx.pdfSuffix,
+            '-HistoryDocumentName', $historyDocName,
+            '-HistoryDocName', $historyDocName
+        )
 
-        $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
-        $laneSuffix = 'prod'
-        if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
-            $resolvedSuffix = Get-QCProcessTypePdfSuffix -ProcessType $processType -Config $Config
-            if (-not (_QCP-IsNullOrWhiteSpace $resolvedSuffix)) { $laneSuffix = [string]$resolvedSuffix }
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_LEGACY_LANE_PARAMS' `
+                -Message 'Legacy prepend_qc.ps1 invoked with resolved lane parameters.' -Data @{
+                jobId = [string]$Job.id
+                qc_process_type = [string]$laneCtx.qcProcessType
+                qcProcessType = [string]$laneCtx.qcProcessType
+                pdfSuffix = [string]$laneCtx.pdfSuffix
+                expectedLanePdfName = $historyDocName
+                historyDocumentName = $historyDocName
+                triggerDocumentName = [string]$laneCtx.triggerDocumentName
+                sourceDocumentGuid = [string]$laneCtx.sourceDocumentGuid
+                legacyScript = $legacyPrepend
+            } | Out-Null
         }
-        $sheetBase = [System.IO.Path]::GetFileNameWithoutExtension($incomingDocName)
-        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-            $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName $incomingDocName
-            if (-not (_QCP-IsNullOrWhiteSpace $resolvedStem)) { $sheetBase = [string]$resolvedStem }
-        }
-        $historyDocName = ($sheetBase + '-' + $laneSuffix + '.pdf')
-        $args += @('-HistoryDocName', $historyDocName)
 
         $stdoutPath = [System.IO.Path]::GetTempFileName()
         $stderrPath = [System.IO.Path]::GetTempFileName()
@@ -1243,10 +1417,8 @@ function Invoke-QCPrependProcessor {
         return New-QCFailureResult -Code 'QC_PREPEND_SOURCE_NOT_FOUND' -Message "Source PDF not found: $sourcePdf" -Data @{ jobId = [string]$Job.id; sourcePdf = $sourcePdf }
     }
 
-    $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
-    $laneSuffix = if (Get-Command -Name 'Get-QCProcessTypePdfSuffix' -ErrorAction SilentlyContinue) {
-        Get-QCProcessTypePdfSuffix -ProcessType $processType -Config $Config
-    } else { 'prod' }
+    $processType = [string]$laneCtx.qcProcessType
+    $laneSuffix = [string]$laneCtx.pdfSuffix
     $isProductionLane = ($processType -eq 'production')
 
     $histRes = _QCP-ResolveHistoryPath -Job $Job -Config $Config
@@ -1281,13 +1453,17 @@ function Invoke-QCPrependProcessor {
         }
         $outDir = Join-Path $outputRoot $folderKey
         _QCP-EnsureDir -Path $outDir
-        $overlayOutPdf = Join-Path $outDir ($base + '-' + $laneSuffix + '.pdf')
+        $overlayOutPdf = Join-Path $outDir ([string]$laneCtx.expectedLanePdfName)
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_LANE_RESOLVED' -Message 'Prepend lane output resolved.' -Data @{
+                qc_process_type = $processType
                 qcProcessType = $processType
                 pdfSuffix = $laneSuffix
+                expectedLanePdfName = [string]$laneCtx.expectedLanePdfName
                 qcOutputPdf = $overlayOutPdf
                 sheetBaseName = $base
+                triggerDocumentName = [string]$laneCtx.triggerDocumentName
+                sourceDocumentGuid = [string]$laneCtx.sourceDocumentGuid
             } | Out-Null
         }
     }
@@ -1417,9 +1593,14 @@ function Invoke-QCPrependProcessor {
                     overlayEnabled = $enableOverlay
                 }
                 $laneResult = _QCP-AppendWorkflowWriteback -Result $laneSuccess -Job $Job -Config $Config -SourcePath $sourcePdf -OutputPath $overlayOutPdf -HistoryPath $null
-                if ($laneResult.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
-                    -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
-                    _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
+                if ($laneResult.IsSuccess) {
+                    $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
+                    if ($prependTrigger -eq 'initialQcPdf') {
+                        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType -Force | Out-Null
+                    } elseif ((Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
+                        -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
+                        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
+                    }
                 }
                 return $laneResult
             }
@@ -1976,6 +2157,10 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     if ($null -ne $ChangedByUser) { $md['changedByUser'] = $ChangedByUser }
     if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
+    $laneEnqueue = _QCP-TryResolvePrependLaneContext -Job $job -Config $Config
+    if ($laneEnqueue.IsSuccess) {
+        $md = _QCP-EnsureJobMetadataHashtable -Job $job
+    }
 
     if ($DryRun) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

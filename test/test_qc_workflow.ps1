@@ -307,7 +307,7 @@ try {
         qcWorkflow = @{ enabled = $false }
         qcPrepend = @{ historyRoot = (Join-Path $tmp 'history'); tempRoot = (Join-Path $tmp 'temp'); outputRoot = (Join-Path $tmp 'output'); enableOverlay = $false; qpdfExePath = $qpdf }
     }
-    $job = @{ id='prepend'; type='QC_PREPEND'; sourcePath=$src; sourceName='a.pdf'; sourceFolder=$tmp; metadata=@{} }
+    $job = @{ id='prepend'; type='QC_PREPEND'; sourcePath=$src; sourceName='a.pdf'; sourceFolder=$tmp; metadata=@{ qcProcessType = 'production' } }
     $pre = Invoke-QCPrependProcessor -Job $job -Config $cfg
     Assert-True $pre.IsSuccess 'QC_PREPEND should succeed'
     Assert-Eq $pre.Code 'QC_PREPEND_OK' 'QC_PREPEND success code'

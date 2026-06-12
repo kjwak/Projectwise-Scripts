@@ -1643,15 +1643,7 @@ function Set-PWQCWorkflowState {
     $referenceState = ''
     if ($Context) {
         $prependTrigger = if ($Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) { [string]$Context.prependTrigger } else { '' }
-        $skipForLane = $false
-        if ($Context.ContainsKey('skipSiblingStateSync')) {
-            try { $skipForLane = [bool]$Context.skipSiblingStateSync } catch { $skipForLane = $false }
-        }
-        $cfgEarly = if ($Context.ContainsKey('config')) { $Context.config } else { $null }
-        if (-not $skipForLane -and (Get-Command -Name 'Test-QCLegacySiblingStateSyncEnabled' -ErrorAction SilentlyContinue)) {
-            try { $skipForLane = -not (Test-QCLegacySiblingStateSyncEnabled -Config $cfgEarly) } catch { }
-        }
-        if ($prependTrigger -eq 'initialQcPdf' -and $skipForLane) {
+        if ($prependTrigger -eq 'initialQcPdf') {
             $referenceState = Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
             if (-not (_QCW-IsNullOrWhiteSpace $referenceState)) {
                 $laneIndependentInitialPrepend = $true
@@ -1781,17 +1773,29 @@ function Set-PWQCWorkflowState {
             -and (Get-Command -Name 'Sync-PWPostInitialPrependLaneStates' -ErrorAction SilentlyContinue)) {
             try {
                 $laneType = if ($Context -and $Context.activeQcProcessType) { [string]$Context.activeQcProcessType } `
-                    elseif ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { 'production' }
-                $laneSplit = Sync-PWPostInitialPrependLaneStates -Config $cfg -FolderPath $folderPath `
-                    -DocumentName $docName -DocumentGuid $docGuid -QcProcessType $laneType `
-                    -LaneTargetState $laneTargetState -ReferenceState $referenceState -DryRun:$DryRun
+                    elseif ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }
+                $expectedLanePdf = if ($Context -and $Context.expectedLanePdfName) { [string]$Context.expectedLanePdfName } else { '' }
+                $laneSplitParams = @{
+                    Config = $cfg
+                    FolderPath = $folderPath
+                    DocumentName = $docName
+                    DocumentGuid = $docGuid
+                    QcProcessType = $laneType
+                    LaneTargetState = $laneTargetState
+                    ReferenceState = $referenceState
+                    DryRun = $DryRun
+                }
+                if (-not (_QCW-IsNullOrWhiteSpace $expectedLanePdf)) {
+                    $laneSplitParams['ExpectedLanePdfName'] = $expectedLanePdf
+                }
+                $laneSplit = Sync-PWPostInitialPrependLaneStates @laneSplitParams
                 $data.lanePostPrependSplit = $laneSplit
             } catch {
                 $data.lanePostPrependSplitError = [string]$_.Exception.Message
             }
         }
 
-        if (-not $skipSiblingSync -and $cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
+        if (-not $skipSiblingSync -and -not $laneIndependentInitialPrepend -and $cfg -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName) `
             -and (Get-Command -Name 'Sync-PWAssociatedSheetMembersToWorkflowState' -ErrorAction SilentlyContinue)) {
             try {
                 $sheetSync = Sync-PWAssociatedSheetMembersToWorkflowState -Config $cfg -FolderPath $folderPath `

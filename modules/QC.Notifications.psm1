@@ -793,13 +793,16 @@ function _QCN-ResolveNotificationProcessType {
         [hashtable]$Job = $null
     )
 
-    if ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.qcProcessType) {
-        $fromJob = [string]$Job.metadata.qcProcessType
-        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-            $norm = Normalize-QCProcessType -ProcessType $fromJob -AllowNullOnEmpty
-            if ($norm) { return $norm }
+    if ($Job -and $Job.metadata) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd -and $jobMd.ContainsKey('qcProcessType') -and -not (_QCN-IsBlank $jobMd['qcProcessType'])) {
+            $fromJob = [string]$jobMd['qcProcessType']
+            if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                $norm = Normalize-QCProcessType -ProcessType $fromJob -AllowNullOnEmpty
+                if ($norm) { return $norm }
+            }
+            if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
         }
-        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
     }
 
     if ($Event) {
@@ -2295,6 +2298,11 @@ function Get-QCNotificationDedupeKey {
     $auditIdForKey = _QCN-GetNotificationAuditEventId -Event $Event
     if ($null -ne $auditIdForKey -and $auditIdForKey -gt 0) { $Event['auditEventId'] = $auditIdForKey }
 
+    $resolvedProcessForDedupe = _QCN-ResolveNotificationProcessType -Event $Event -Config $Config -Job $Job
+    if (-not (_QCN-IsBlank $resolvedProcessForDedupe)) {
+        $Event['qcProcessType'] = $resolvedProcessForDedupe
+    }
+
     $parts = [System.Collections.Generic.List[string]]::new()
     foreach ($field in @($fields)) {
         $value = ''
@@ -2310,14 +2318,18 @@ function Get-QCNotificationDedupeKey {
                 }
             }
             'qcProcessType' {
-                if ($Event.qcProcessType) {
-                    $value = [string]$Event.qcProcessType
-                } elseif (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-                    $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
-                    if (-not $norm) {
-                        $norm = Normalize-QCProcessType -ProcessType ([string]$Event.processType) -ReviewType ([string]$Event.reviewType) -Context $Event
+                $value = ''
+                if (Get-Command -Name '_QCN-ResolveNotificationProcessType' -ErrorAction SilentlyContinue) {
+                    $value = _QCN-ResolveNotificationProcessType -Event $Event -Config $Config -Job $Job
+                }
+                if (_QCN-IsBlank $value) {
+                    if ($Event.qcProcessType) {
+                        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event -AllowNullOnEmpty
+                            if ($norm) { $value = $norm }
+                        }
+                        if (_QCN-IsBlank $value) { $value = ([string]$Event.qcProcessType).Trim().ToLowerInvariant() }
                     }
-                    if ($norm) { $value = $norm }
                 }
             }
             'folderPath' { $value = [string]$Event.folderPath }
@@ -3991,8 +4003,11 @@ function Invoke-QCNotificationForStateChange {
         $event['qcReviewType'] = $resolvedReviewType
     }
     $resolvedProcessType = ''
-    if ($Job -and $Job.metadata -is [hashtable] -and $Job.metadata.qcProcessType) {
-        $resolvedProcessType = [string]$Job.metadata.qcProcessType
+    if ($Job -and $Job.metadata) {
+        $jobMdForPt = _QCN-ToHashtable $Job.metadata
+        if ($jobMdForPt -and $jobMdForPt.ContainsKey('qcProcessType') -and -not (_QCN-IsBlank $jobMdForPt['qcProcessType'])) {
+            $resolvedProcessType = [string]$jobMdForPt['qcProcessType']
+        }
     }
     if (_QCN-IsBlank $resolvedProcessType) {
         $resolvedProcessType = _QCN-ResolveNotificationProcessType -Event $event -Config $Config -Job $Job

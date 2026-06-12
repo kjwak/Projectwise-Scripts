@@ -117,7 +117,7 @@ function New-Job([string]$Id, [string]$SourcePdf) {
         dedupeKey = ('dq_' + $Id)
         triggerRule = @{ id = 'r1'; jobType = 'QC_PREPEND' }
         attempts = 0
-        metadata = @{}
+        metadata = @{ qcProcessType = 'production' }
     }
 }
 

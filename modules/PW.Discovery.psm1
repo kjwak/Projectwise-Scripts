@@ -1679,21 +1679,17 @@ WHERE folder_path = @folderPath
     return @($resolved)
 }
 
-function Sync-PWPostInitialPrependLaneStates {
+function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
     <#
     .SYNOPSIS
-    After initial QC prepend (Initiate Origination), sets lane QC PDF to Originated and reverts stem PDF + DGN to production state.
-    Resets qc_process_type to production on reference documents.
+    Sets QC_Process_Type on a lane QC PDF when unset. Never overwrites an existing lane value.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$FolderPath,
-        [Parameter(Mandatory)][string]$DocumentName,
-        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$LanePdfName,
         [Parameter(Mandatory)][string]$QcProcessType,
-        [Parameter(Mandatory)][string]$LaneTargetState,
-        [Parameter(Mandatory)][string]$ReferenceState,
         [bool]$DryRun = $false
     )
 
@@ -1702,7 +1698,90 @@ function Sync-PWPostInitialPrependLaneStates {
         $norm = Normalize-QCProcessType -ProcessType $laneType -AllowNullOnEmpty
         if ($norm) { $laneType = $norm }
     }
-    if ([string]::IsNullOrWhiteSpace($laneType)) { $laneType = 'production' }
+    if ([string]::IsNullOrWhiteSpace($laneType) -or [string]::IsNullOrWhiteSpace($LanePdfName)) {
+        return @{ ensured = $false; skipped = 'missing_input' }
+    }
+
+    $targetDisplay = $laneType
+    if (Get-Command -Name 'Format-QCProcessTypeAttributeValue' -ErrorAction SilentlyContinue) {
+        $targetDisplay = Format-QCProcessTypeAttributeValue -ProcessType $laneType
+    }
+
+    $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $LanePdfName -DocumentGuid ''
+    if (-not $doc) {
+        return @{ ensured = $false; skipped = 'lane_doc_not_found'; lanePdfName = $LanePdfName }
+    }
+
+    $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
+    $currentPw = ''
+    $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $LanePdfName -ColumnsToReturn @($processCol)
+    if ($attrRead.found) {
+        $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $processCol
+    }
+    if (-not [string]::IsNullOrWhiteSpace($currentPw)) {
+        return @{
+            ensured = $false
+            skipped = 'lane_process_type_already_set'
+            lanePdfName = $LanePdfName
+            currentValue = [string]$currentPw
+        }
+    }
+
+    $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
+    if (-not $pwWritesEnabled) {
+        return @{ ensured = $false; skipped = 'qc_process_type_not_enabled_for_environment'; lanePdfName = $LanePdfName }
+    }
+    if ($DryRun) {
+        return @{ ensured = $false; planned = $true; lanePdfName = $LanePdfName; toValue = $targetDisplay }
+    }
+
+    try {
+        $attrs = @{ $processCol = $targetDisplay }
+        [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs -Config $Config)
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_PROCESS_TYPE_ENSURED' `
+                -Message 'Set lane QC PDF QC_Process_Type from triggering process type.' -Data @{
+                folderPath = $FolderPath
+                lanePdfName = $LanePdfName
+                qcProcessType = $laneType
+                toValue = $targetDisplay
+            } | Out-Null
+        }
+        return @{ ensured = $true; lanePdfName = $LanePdfName; toValue = $targetDisplay; qcProcessType = $laneType }
+    } catch {
+        return @{ ensured = $false; error = [string]$_.Exception.Message; lanePdfName = $LanePdfName }
+    }
+}
+
+function Sync-PWPostInitialPrependLaneStates {
+    <#
+    .SYNOPSIS
+    After initial QC prepend (Initiate Origination), sets lane QC PDF to Originated and reverts stem PDF + DGN to production state.
+    Resets qc_process_type to Production on stem/DGN only; lane QC PDFs keep lane-specific types and are never overwritten.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$QcProcessType,
+        [Parameter(Mandatory)][string]$LaneTargetState,
+        [Parameter(Mandatory)][string]$ReferenceState,
+        [string]$ExpectedLanePdfName = '',
+        [bool]$DryRun = $false
+    )
+
+    $laneType = [string]$QcProcessType
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $laneType -AllowNullOnEmpty
+        if ($norm) { $laneType = $norm }
+    }
+    if ([string]::IsNullOrWhiteSpace($laneType)) {
+        return @{ updates = @(); skipped = $true; skipReason = 'empty_qc_process_type' }
+    }
 
     $laneTarget = ([string]$LaneTargetState).Trim()
     $referenceTarget = ([string]$ReferenceState).Trim()
@@ -1724,8 +1803,8 @@ function Sync-PWPostInitialPrependLaneStates {
         $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
     }
 
-    $lanePdfName = ''
-    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+    $lanePdfName = ([string]$ExpectedLanePdfName).Trim()
+    if ([string]::IsNullOrWhiteSpace($lanePdfName) -and (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue)) {
         $lanePdfName = Get-QCLaneQcPdfExpectedName -SheetBaseName $sheetStem -ProcessType $laneType -Config $Config
     }
     if ([string]::IsNullOrWhiteSpace($lanePdfName)) {
@@ -1805,17 +1884,23 @@ function Sync-PWPostInitialPrependLaneStates {
         _PWD-ApplyPostPrependState -TargetName $refName -TargetGuid '' -TargetState $referenceTarget
     }
 
-    if (-not $DryRun -and (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue)) {
-        $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
-        $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
-            [string]$DocumentName
-        } else {
-            $sheetStem + '.pdf'
+    if (-not $DryRun) {
+        if (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue) {
+            $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
+            $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
+                [string]$DocumentName
+            } else {
+                $sheetStem + '.pdf'
+            }
+            try {
+                Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $resetGuid `
+                    -DocumentName $resetName -FolderPath $FolderPath -CanonicalReviewType 'production' -DryRun:$DryRun
+            } catch { }
         }
-        try {
-            Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $resetGuid `
-                -DocumentName $resetName -FolderPath $FolderPath -CanonicalReviewType 'production' -DryRun:$DryRun
-        } catch { }
+        $laneProcessType = _PWD-EnsureLaneQcPdfProcessTypeAttribute -Config $Config -FolderPath $FolderPath `
+            -LanePdfName $lanePdfName -QcProcessType $laneType -DryRun:$DryRun
+    } else {
+        $laneProcessType = @{ planned = $true }
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -1837,6 +1922,7 @@ function Sync-PWPostInitialPrependLaneStates {
         qcProcessType = $laneType
         laneTargetState = $laneTarget
         referenceState = $referenceTarget
+        laneProcessTypeEnsure = $laneProcessType
     }
 }
 
@@ -2024,10 +2110,11 @@ SELECT qc_review_type FROM sheet_index WHERE document_guid = @docGuid
 function Sync-PWAssociatedSheetReviewTypeAttributes {
     <#
     .SYNOPSIS
-    Propagates QC_Review_Type from a DOCUMENT_ATTR change to associated DGN, sheet PDF, and QC PDF siblings.
+    Propagates QC_Review_Type from a DOCUMENT_ATTR change to associated DGN and sheet PDF siblings.
     .DESCRIPTION
-    Updates ProjectWise environment attributes and sheet_index.qc_review_type for every associated member
-    when the canonical review type differs. Mirrors sibling workflow-state sync for user-owned QC attributes.
+    Updates ProjectWise environment attributes and sheet_index.qc_review_type for associated stem members
+    when the canonical review type differs. Lane QC PDFs (-prod/-chk/-rev) are excluded; their QC_Process_Type
+    is lane-specific and is never modified by this sync.
     #>
     [CmdletBinding()]
     param(
@@ -2067,6 +2154,11 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         $dn = [string]$member.documentName
         $doc = $member.document
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+
+        if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+            $memberLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+            if ($memberLane) { continue }
+        }
 
         $prevDb = _PWD-GetSheetIndexQcReviewType -Config $Config -DocumentGuid $dg
         $currentPw = ''
