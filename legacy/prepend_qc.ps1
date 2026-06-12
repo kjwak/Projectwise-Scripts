@@ -477,7 +477,8 @@ function Invoke-PrependQcPdfAttributeSync {
   param(
     [Parameter(Mandatory)][string]$FolderPath,
     [Parameter(Mandatory)][string]$SourceDocumentName,
-    [Parameter(Mandatory)][string]$QcDocumentName
+    [Parameter(Mandatory)][string]$QcDocumentName,
+    [string]$QcProcessType = ''
   )
   $cfg = Get-PrependQcConfig
   Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName
@@ -495,7 +496,26 @@ function Invoke-PrependQcPdfAttributeSync {
       Write-Log "Email attribute sync failed: $($_.Exception.Message)" -Severity WARNING
     }
   }
-  if (Get-Command -Name 'Sync-PWQcPdfReviewTypeFromSourcePdf' -ErrorAction SilentlyContinue) {
+  $laneType = ([string]$QcProcessType).Trim()
+  if (-not [string]::IsNullOrWhiteSpace($laneType) `
+    -and (Get-Command -Name '_PWD-EnsureLaneQcPdfProcessTypeAttribute' -ErrorAction SilentlyContinue)) {
+    try {
+      $ensure = _PWD-EnsureLaneQcPdfProcessTypeAttribute -Config $cfg -FolderPath $FolderPath `
+        -LanePdfName $QcDocumentName -QcProcessType $laneType
+      if ($ensure.ensured) {
+        $from = if ($ensure.fromValue) { " from $($ensure.fromValue)" } else { '' }
+        Write-Log "Set lane QC PDF QC_Process_Type to $($ensure.toValue)$from."
+      } elseif ($ensure.skipped -eq 'lane_process_type_already_set') {
+        Write-Log "Lane QC PDF QC_Process_Type already correct ($($ensure.currentValue))."
+      } elseif ($ensure.skipped) {
+        Write-Log "Lane QC PDF process type: $($ensure.skipped)."
+      } elseif ($ensure.error) {
+        Write-Log "Lane QC PDF process type failed: $($ensure.error)" -Severity WARNING
+      }
+    } catch {
+      Write-Log "Lane QC PDF process type failed: $($_.Exception.Message)" -Severity WARNING
+    }
+  } elseif (Get-Command -Name 'Sync-PWQcPdfReviewTypeFromSourcePdf' -ErrorAction SilentlyContinue) {
     try {
       $rt = Sync-PWQcPdfReviewTypeFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName `
         -QcDocumentName $QcDocumentName -Config $cfg -PassThru
@@ -652,7 +672,7 @@ if (-not $historyDoc) {
     Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
     New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
     Write-Log "Created history document."
-    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
+    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
     if (Test-Path $localIncoming) { Remove-ItemWithRetry $localIncoming }
   } else {
     Write-Log "WhatIf: would create history document."
@@ -810,7 +830,7 @@ if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content 
   Update-PWDocumentFile @pwUpdateFileParams | Out-Null
 
   Write-Log "Updated history document."
-  Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName
+  Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
   # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
   @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {

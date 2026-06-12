@@ -52,7 +52,7 @@ InModuleScope -ModuleName PW.Discovery {
     function Write-QCJsonLog { param($Level, $Code, $Message, $Data) }
     function Get-PWSheetStemFromDocumentName { param($DocumentName) return 'CA001' }
     function Format-QCWorkflowStateName { param($StateName, $Config) return $StateName }
-    function Format-QCProcessTypeAttributeValue { param($ProcessType) if ($ProcessType -eq 'review') { return 'Review' } return 'Production' }
+    function Format-QCProcessTypeAttributeValue { param($ProcessType) switch ($ProcessType) { 'review' { return 'Review' } 'check' { return 'Check' } default { return 'Production' } } }
     function Get-PWQcProcessTypeAttributeName { param($Config) return 'QC_Process_Type' }
     function Test-PWQcReviewTypeAttributesEnabled { param($Config, $FolderPath) return $true }
     function Get-PWDocumentAttributesByColumns { param($FolderPath, $DocumentName, $ColumnsToReturn) return @{ found = $true; attributes = @{} } }
@@ -85,6 +85,18 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $script:stemProcessReset.canonicalProcessType 'production' 'resets stem/DGN qc_process_type via prepend path'
     Assert-True $split.laneProcessTypeEnsure.ensured 'sets lane qc_process_type when unset'
     Assert-Eq $split.laneProcessTypeEnsure.toValue 'Review' 'lane qc_process_type matches triggering review lane'
+
+    $script:laneAttrWrite = $null
+    function Get-PWDocumentAttributesByColumns {
+        param($FolderPath, $DocumentName, $ColumnsToReturn)
+        return @{ found = $true; attributes = @{ 'QC_Process_Type' = 'Production' } }
+    }
+    $wrong = Sync-PWPostInitialPrependLaneStates -Config @{} -FolderPath 'Drawings\X' `
+        -DocumentName 'CA001.pdf' -DocumentGuid 'stem-guid' -QcProcessType 'check' `
+        -ExpectedLanePdfName 'CA001-chk.pdf' -LaneTargetState 'Originated' -ReferenceState 'In Development'
+    Assert-True $wrong.laneProcessTypeEnsure.ensured 'corrects wrong lane qc_process_type'
+    Assert-True $wrong.laneProcessTypeEnsure.corrected 'marks lane qc_process_type correction'
+    Assert-Eq $wrong.laneProcessTypeEnsure.toValue 'Check' 'corrects wrong lane qc_process_type to Check'
 
     $empty = Sync-PWPostInitialPrependLaneStates -Config @{} -FolderPath 'Drawings\X' `
         -DocumentName 'CA001.pdf' -QcProcessType '' -LaneTargetState 'Originated' -ReferenceState 'In Development'

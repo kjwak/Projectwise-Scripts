@@ -1835,7 +1835,31 @@ function Set-PWQCWorkflowState {
                     -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
             }
         }
-        $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $info.Data.stateName -CurrentState $StateName -Document $document
+        $notifyPrevious = if ($laneIndependentInitialPrepend) {
+            Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
+        } else {
+            $info.Data.stateName
+        }
+        $notifyCurrent = if ($laneIndependentInitialPrepend) { $laneTargetState } else { $StateName }
+        if ($laneIndependentInitialPrepend) {
+            $notifyCurrent = Format-QCWorkflowStateName -StateName $notifyCurrent -Settings $Settings
+            if (-not (_QCW-IsNullOrWhiteSpace $notifyPrevious)) {
+                $notifyPrevious = Format-QCWorkflowStateName -StateName $notifyPrevious -Settings $Settings
+            }
+        }
+        $notifyDocument = $document
+        if ($laneIndependentInitialPrepend -and $data.lanePostPrependSplit -and -not (_QCW-IsNullOrWhiteSpace $folderPath)) {
+            $lanePdfName = ''
+            $splitData = _QCW-ToHashtable $data.lanePostPrependSplit
+            if ($splitData -and $splitData.ContainsKey('lanePdfName')) { $lanePdfName = [string]$splitData.lanePdfName }
+            if (-not (_QCW-IsNullOrWhiteSpace $lanePdfName) -and (Get-Command -Name '_PWD-ResolvePwDocumentInFolder' -ErrorAction SilentlyContinue)) {
+                try {
+                    $laneDoc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $folderPath -DocumentName $lanePdfName -DocumentGuid ''
+                    if ($laneDoc) { $notifyDocument = $laneDoc }
+                } catch { }
+            }
+        }
+        $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $notifyPrevious -CurrentState $notifyCurrent -Document $notifyDocument
         if ($notify) { $data.notification = $notify }
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Message 'QC workflow state write succeeded.' -Data $data
     } catch {

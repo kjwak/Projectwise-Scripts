@@ -1860,7 +1860,8 @@ WHERE folder_path = @folderPath
 function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
     <#
     .SYNOPSIS
-    Sets QC_Process_Type on a lane QC PDF when unset. Never overwrites an existing lane value.
+    Sets QC_Process_Type on a lane QC PDF from the triggering lane type when unset or incorrect.
+    Skips only when the current value already matches the expected lane type.
     #>
     [CmdletBinding()]
     param(
@@ -1896,7 +1897,10 @@ function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
     if ($attrRead.found) {
         $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $processCol
     }
-    if (-not [string]::IsNullOrWhiteSpace($currentPw)) {
+    $currentCanonical = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $currentPw -Config $Config
+    $expectedCanonical = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $laneType -Config $Config
+    if (-not [string]::IsNullOrWhiteSpace($currentCanonical) -and -not [string]::IsNullOrWhiteSpace($expectedCanonical) `
+        -and $currentCanonical -eq $expectedCanonical) {
         return @{
             ensured = $false
             skipped = 'lane_process_type_already_set'
@@ -1904,6 +1908,7 @@ function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
             currentValue = [string]$currentPw
         }
     }
+    $correctingWrongValue = -not [string]::IsNullOrWhiteSpace($currentPw)
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
     if (-not $pwWritesEnabled) {
@@ -1918,14 +1923,27 @@ function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
         [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs -Config $Config)
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_PROCESS_TYPE_ENSURED' `
-                -Message 'Set lane QC PDF QC_Process_Type from triggering process type.' -Data @{
+                -Message $(if ($correctingWrongValue) {
+                    'Corrected lane QC PDF QC_Process_Type from triggering process type.'
+                } else {
+                    'Set lane QC PDF QC_Process_Type from triggering process type.'
+                }) -Data @{
                 folderPath = $FolderPath
                 lanePdfName = $LanePdfName
                 qcProcessType = $laneType
+                fromValue = [string]$currentPw
                 toValue = $targetDisplay
+                corrected = [bool]$correctingWrongValue
             } | Out-Null
         }
-        return @{ ensured = $true; lanePdfName = $LanePdfName; toValue = $targetDisplay; qcProcessType = $laneType }
+        return @{
+            ensured = $true
+            lanePdfName = $LanePdfName
+            toValue = $targetDisplay
+            qcProcessType = $laneType
+            fromValue = [string]$currentPw
+            corrected = [bool]$correctingWrongValue
+        }
     } catch {
         return @{ ensured = $false; error = [string]$_.Exception.Message; lanePdfName = $LanePdfName }
     }
@@ -2039,6 +2057,37 @@ function Sync-PWPostInitialPrependLaneStates {
                 config = $Config
             }
             $change.applied = $true
+            $readBack = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
+            $change.readBackState = [string]$readBack
+            if ((_PWD-NormalizeSheetIndexValue $readBack) -ne (_PWD-NormalizeSheetIndexValue $TargetState)) {
+                $change.verified = $false
+                try {
+                    _PWD-InvokeSetPwDocumentState -Document $doc -StateName $TargetState -GuardContext @{
+                        callSite = 'Sync-PWPostInitialPrependLaneStates_verify_retry'
+                        documentName = $TargetName
+                        folderPath = $FolderPath
+                        sourceVariableName = 'target'
+                        livePwState = [string]$readBack
+                        config = $Config
+                    }
+                    $readBack = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
+                    $change.readBackState = [string]$readBack
+                    $change.verified = ((_PWD-NormalizeSheetIndexValue $readBack) -eq (_PWD-NormalizeSheetIndexValue $TargetState))
+                } catch {
+                    $change.verifyRetryError = [string]$_.Exception.Message
+                }
+                if ($change.verified -eq $false -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+                    Write-QCJsonLog -Level 'Warning' -Code 'QC_POST_PREPEND_STATE_VERIFY_FAILED' `
+                        -Message 'Post-prepend workflow state did not read back at target after write.' -Data @{
+                        folderPath = $FolderPath
+                        documentName = $TargetName
+                        targetState = $TargetState
+                        readBackState = [string]$readBack
+                    } | Out-Null
+                }
+            } else {
+                $change.verified = $true
+            }
             if ($dg -and (Get-Command -Name 'Update-QCSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
                 try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $TargetState) } catch { }
             }
@@ -2057,7 +2106,6 @@ function Sync-PWPostInitialPrependLaneStates {
         $stateUpdates.Add($change) | Out-Null
     }
 
-    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget
     foreach ($refName in @($referenceNames)) {
         _PWD-ApplyPostPrependState -TargetName $refName -TargetGuid '' -TargetState $referenceTarget
     }
@@ -2080,6 +2128,8 @@ function Sync-PWPostInitialPrependLaneStates {
     } else {
         $laneProcessType = @{ planned = $true }
     }
+
+    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level 'Information' -Code 'QC_POST_PREPEND_LANE_SPLIT' `
