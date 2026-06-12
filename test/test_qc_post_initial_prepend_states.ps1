@@ -16,11 +16,10 @@ function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } 
 Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'production' -Config @{}) 'production lane default ResetToProductionAfterPrepend is false'
 Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane resets by default'
 
-# Lane QC PDFs are never modified by associated review/process type sync
+# Lane QC PDFs are never modified by associated review/process type sync (legacy path only)
 InModuleScope -ModuleName PW.Discovery {
     function Write-QCJsonLog { param($Level, $Code, $Message, $Data) }
     function Get-PWQcProcessTypeAttributeName { param($Config) return 'QC_Process_Type' }
-    function Get-PWQcReviewTypeAttributeName { param($Config) return 'QC_Review_Type' }
     function Test-PWQcReviewTypeAttributesEnabled { param($Config, $FolderPath) return $true }
     function _PWD-GetSheetIndexQcReviewType { param($Config, $DocumentGuid) return '' }
     function _PWD-NormalizeSheetIndexValue { param($Value) return ([string]$Value).Trim().ToLowerInvariant() }
@@ -36,11 +35,16 @@ InModuleScope -ModuleName PW.Discovery {
         )
     }
     function Get-PWDocumentAttributesByColumns { param($FolderPath, $DocumentName, $ColumnsToReturn) return @{ found = $true; attributes = @{} } }
+    function Get-PWQcPdfLaneFromDocumentName { param($DocumentName) if ($DocumentName -match '(?i)-rev\.pdf$') { return 'review' } return $null }
+    function Invoke-QCAuditWorkflowAttributeChangeTriggers { param($Config, $DocumentGuid, $DocumentName, $FolderPath, $FieldChanges) }
+    function Write-QCSheetIndex { param($Config, $DocumentGuid, $DocumentName, $FolderPath, $WatchRoot, $Extension, $SourceType, $QcReviewType, $LastAuditEventAt, $SetOwnershipFromProjectWise) }
 
+    $legacyCfg = @{ QCProcess = @{ EnableLegacyReviewTypeAttributeSync = $true; EnableLegacySiblingStateSync = $true } }
     $script:attrWrites = @()
-    Sync-PWAssociatedSheetReviewTypeAttributes -Config @{} -DocumentGuid '1' -DocumentName 'CA001.pdf' `
+    Sync-PWAssociatedSheetReviewTypeAttributes -Config $legacyCfg -DocumentGuid '1' -DocumentName 'CA001.pdf' `
         -FolderPath 'Drawings\X' -CanonicalReviewType 'production'
-    Assert-Eq $script:attrWrites.Count 2 'lane QC PDF excluded from process type sync'
+    Assert-Eq $script:attrWrites.Count 2 'lane QC PDF excluded from legacy process type sync'
+    Assert-False ($script:attrWrites[0].ContainsKey('QC_Review_Type')) 'legacy sync writes QC_Process_Type only'
 }
 
 # Sync-PWPostInitialPrependLaneStates uses ExpectedLanePdfName and rejects empty process type
@@ -63,11 +67,12 @@ InModuleScope -ModuleName PW.Discovery {
     function Get-PWQcPdfLaneFromDocumentName { param($DocumentName) if ($DocumentName -match '(?i)-rev\.pdf$') { return 'review' } return $null }
     function Update-SheetPackageQcPdfLaneState { param($Config, $DocumentGuid, $CurrentPwState, $QcProcessType) return $true }
     $script:reviewTypeSync = $null
-    function Sync-PWAssociatedSheetReviewTypeAttributes {
-        param($Config, $DocumentGuid, $DocumentName, $FolderPath, $CanonicalReviewType, $DryRun)
-        $script:reviewTypeSync = @{
+    $script:stemProcessReset = $null
+    function _PWD-SyncReferenceSheetProcessTypeAttributes {
+        param($Config, $DocumentGuid, $DocumentName, $FolderPath, $CanonicalProcessType, $WatchRoot, $LastAuditEventAt, $DryRun)
+        $script:stemProcessReset = @{
             documentName = $DocumentName
-            canonicalReviewType = $CanonicalReviewType
+            canonicalProcessType = $CanonicalProcessType
         }
     }
 
@@ -77,7 +82,7 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $split.lanePdfName 'CA001-rev.pdf' 'uses ExpectedLanePdfName'
     Assert-Eq $split.laneTargetState 'Originated' 'lane target preserved'
     Assert-Eq $split.referenceState 'In Development' 'reference target preserved'
-    Assert-Eq $script:reviewTypeSync.canonicalReviewType 'production' 'resets stem/DGN qc_process_type to production'
+    Assert-Eq $script:stemProcessReset.canonicalProcessType 'production' 'resets stem/DGN qc_process_type via prepend path'
     Assert-True $split.laneProcessTypeEnsure.ensured 'sets lane qc_process_type when unset'
     Assert-Eq $split.laneProcessTypeEnsure.toValue 'Review' 'lane qc_process_type matches triggering review lane'
 

@@ -34,6 +34,7 @@ function _QCPT-DefaultProcessTypeSettings {
     return @{
         DefaultProcessType = 'production'
         EnableLegacySiblingStateSync = $false
+        EnableLegacyReviewTypeAttributeSync = $false
         ProcessTypes = @{
             production = @{
                 PdfSuffix = 'prod'
@@ -233,6 +234,25 @@ function Test-QCLegacySiblingStateSyncEnabled {
     }
     if ($settings.ContainsKey('enableLegacySiblingStateSync')) {
         try { return [bool]$settings.enableLegacySiblingStateSync } catch { }
+    }
+    return $false
+}
+
+function Test-QCLegacyReviewTypeAttributeSyncEnabled {
+    <#
+    .SYNOPSIS
+    True when legacy DOCUMENT_ATTR QC process/review type sibling sync is enabled (default: false).
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null
+    )
+    $settings = Get-QCProcessTypeSettings -Config $Config
+    if ($settings.ContainsKey('EnableLegacyReviewTypeAttributeSync')) {
+        try { return [bool]$settings.EnableLegacyReviewTypeAttributeSync } catch { }
+    }
+    if ($settings.ContainsKey('enableLegacyReviewTypeAttributeSync')) {
+        try { return [bool]$settings.enableLegacyReviewTypeAttributeSync } catch { }
     }
     return $false
 }
@@ -728,6 +748,7 @@ Export-ModuleMember -Function `
     Format-QCProcessTypeAttributeValue, `
     Get-QCProcessTypePdfSuffix, `
     Test-QCLegacySiblingStateSyncEnabled, `
+    Test-QCLegacyReviewTypeAttributeSyncEnabled, `
     Test-QCProcessTypeSyncsWithSiblingSheets, `
     Test-QCProcessTypeResetsAfterPrepend, `
     Get-PWQcPdfLaneFromDocumentName, `

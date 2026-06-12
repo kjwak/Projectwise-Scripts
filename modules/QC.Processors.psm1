@@ -866,10 +866,10 @@ function _QCP-TryResetProcessTypeAfterPrepend {
     $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
     $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
     $docGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid', 'documentGuid')
-    if (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue) {
+    if (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
         try {
-            Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid ([string]$docGuid) `
-                -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalReviewType 'production' | Out-Null
+            _PWD-SyncReferenceSheetProcessTypeAttributes -Config $Config -DocumentGuid ([string]$docGuid) `
+                -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalProcessType 'production' | Out-Null
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET' -Message 'Reset stem/DGN qc_process_type to Production after Initiate Origination prepend.' -Data @{
                     fromProcessType = $ProcessType

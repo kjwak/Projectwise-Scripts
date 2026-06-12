@@ -869,7 +869,7 @@ function _PWD-EnrichSheetIndexReviewType {
 function _PWD-ResolveSheetIndexQcReviewType {
     <#
     .SYNOPSIS
-    Resolves QC_Review_Type for sheet_index sync: direct PW read, source-PDF fallback, then column-only re-read.
+    Resolves process/review type for sheet_index sync: QC_Process_Type first, QC_Review_Type read-only fallback.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Config,
@@ -879,21 +879,199 @@ function _PWD-ResolveSheetIndexQcReviewType {
         [bool]$EnrichFromSourcePdf = $true
     )
 
-    $resolved = [string]$FieldsFromPwRead.qcReviewType
+    $resolved = [string]$FieldsFromPwRead.qcProcessType
+    if ([string]::IsNullOrWhiteSpace($resolved)) {
+        $resolved = [string]$FieldsFromPwRead.qcReviewType
+    }
     if ($EnrichFromSourcePdf -and [string]::IsNullOrWhiteSpace($resolved)) {
         $enriched = _PWD-EnrichSheetIndexReviewType -Config $Config -Fields $FieldsFromPwRead `
             -FolderPath $FolderPath -DocumentName $DocumentName
-        $resolved = [string]$enriched.qcReviewType
+        if (-not [string]::IsNullOrWhiteSpace([string]$enriched.qcProcessType)) {
+            $resolved = [string]$enriched.qcProcessType
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$enriched.qcReviewType)) {
+            $resolved = [string]$enriched.qcReviewType
+        }
     }
     if ([string]::IsNullOrWhiteSpace($resolved)) {
+        $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
         $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
         $solo = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $DocumentName `
-            -ColumnsToReturn @($reviewCol)
+            -ColumnsToReturn @($processCol, $reviewCol)
         if ($solo.found) {
-            $resolved = _PWD-GetPwAttributeValue -PwAttributes $solo.attributes -ColumnName $reviewCol
+            $resolved = _PWD-GetPwAttributeValue -PwAttributes $solo.attributes -ColumnName $processCol
+            if ([string]::IsNullOrWhiteSpace($resolved)) {
+                $resolved = _PWD-GetPwAttributeValue -PwAttributes $solo.attributes -ColumnName $reviewCol
+            }
         }
     }
     return ([string]$resolved).Trim()
+}
+
+function _PWD-ResolveCanonicalProcessTypeForSync {
+    param(
+        [string]$RawValue,
+        [hashtable]$Config = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($RawValue)) { return $null }
+    if (-not (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) { return $null }
+    return Normalize-QCProcessType -ProcessType ([string]$RawValue).Trim()
+}
+
+function _PWD-LogProcessTypeSyncSkipped {
+    param(
+        [Parameter(Mandatory)][string]$Reason,
+        [hashtable]$Config = $null,
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [hashtable]$ExtraData = $null
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    $data = @{
+        reason = [string]$Reason
+        documentGuid = [string]$DocumentGuid
+        documentName = [string]$DocumentName
+        folderPath = [string]$FolderPath
+    }
+    if ($ExtraData) {
+        foreach ($k in $ExtraData.Keys) { $data[$k] = $ExtraData[$k] }
+    }
+    Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PROCESS_TYPE_SYNC_SKIPPED' `
+        -Message 'Skipped QC process type attribute sync.' -Data $data | Out-Null
+}
+
+function _PWD-LogProcessTypeUnknown {
+    param(
+        [hashtable]$Config = $null,
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [string]$FolderPath = '',
+        [string]$RawValue = '',
+        [string]$Source = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PROCESS_TYPE_UNKNOWN' `
+        -Message 'Could not resolve canonical QC process type; no ProjectWise attribute write performed.' -Data @{
+        documentGuid = [string]$DocumentGuid
+        documentName = [string]$DocumentName
+        folderPath = [string]$FolderPath
+        rawValue = [string]$RawValue
+        source = [string]$Source
+    } | Out-Null
+}
+
+function _PWD-SyncReferenceSheetProcessTypeAttributes {
+    <#
+    .SYNOPSIS
+    Writes QC_Process_Type on stem PDF and DGN only (prepend stem reset path). Never touches lane QC PDFs or QC_Review_Type.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CanonicalProcessType,
+        [string]$WatchRoot = '',
+        [string]$LastAuditEventAt = '',
+        [bool]$DryRun = $false
+    )
+
+    $canonicalNorm = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $CanonicalProcessType -Config $Config
+    if (-not $canonicalNorm) {
+        _PWD-LogProcessTypeUnknown -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -RawValue $CanonicalProcessType -Source 'prepend_stem_reset'
+        _PWD-LogProcessTypeSyncSkipped -Reason 'null_canonical_process_type' -Config $Config `
+            -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+            -ExtraData @{ source = 'prepend_stem_reset'; rawValue = [string]$CanonicalProcessType }
+        return @{ skipped = $true; reason = 'null_canonical_process_type' }
+    }
+
+    $canonicalDisplay = $canonicalNorm
+    if (Get-Command -Name 'Format-QCProcessTypeAttributeValue' -ErrorAction SilentlyContinue) {
+        $canonicalDisplay = Format-QCProcessTypeAttributeValue -ProcessType $canonicalNorm
+    }
+
+    $sheetStem = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) {
+        $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    }
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) {
+        return @{ skipped = $true; reason = 'missing_sheet_stem' }
+    }
+
+    $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
+    $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
+    $targetNames = @(
+        ($sheetStem + '.pdf')
+        ($sheetStem + '.dgn')
+    )
+    $updates = @()
+
+    foreach ($dn in @($targetNames)) {
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $dn -DocumentGuid ''
+        if (-not $doc) { continue }
+        $dg = try { [string]$doc.DocumentGUID } catch { '' }
+
+        $currentPw = ''
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($processCol)
+        if ($attrRead.found) {
+            $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $processCol
+            if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
+        }
+        if ((_PWD-NormalizeSheetIndexValue $currentPw) -eq (_PWD-NormalizeSheetIndexValue $canonicalNorm)) { continue }
+
+        $change = @{
+            documentGuid = $dg
+            documentName = $dn
+            fromValue = [string]$currentPw
+            toValue = $canonicalDisplay
+            applied = $false
+            planned = $false
+        }
+        if (-not $pwWritesEnabled) {
+            $change.pwWriteSkipped = 'qc_process_type_not_enabled_for_environment'
+        } elseif ($DryRun) {
+            $change.planned = $true
+        } else {
+            try {
+                [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes @{ $processCol = $canonicalNorm } -Config $Config)
+                $change.applied = $true
+                if ($dg -and (Get-Command -Name 'Write-QCSheetIndex' -ErrorAction SilentlyContinue)) {
+                    try {
+                        $ext = [System.IO.Path]::GetExtension($dn)
+                        if ($ext) { $ext = $ext.ToLowerInvariant() }
+                        $sourceType = if ($ext -eq '.pdf') { 'pdf' } elseif ($ext -eq '.dgn') { 'dgn' } else { $null }
+                        Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
+                            -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonicalDisplay `
+                            -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                    } catch { }
+                }
+            } catch {
+                $change.error = [string]$_.Exception.Message
+            }
+        }
+        $updates += $change
+    }
+
+    if ($updates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_STEM_PROCESS_TYPE_RESET' `
+            -Message 'Reset stem/DGN QC_Process_Type after Initiate Origination prepend.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath = $FolderPath
+            canonicalProcessType = $canonicalNorm
+            updateCount = $updates.Count
+            updates = @($updates)
+            dryRun = [bool]$DryRun
+        } | Out-Null
+    }
+
+    return @{ updates = @($updates); canonicalProcessType = $canonicalNorm; targetState = $canonicalDisplay }
 }
 
 function Get-PWDocumentAttributesByColumns {
@@ -1885,7 +2063,7 @@ function Sync-PWPostInitialPrependLaneStates {
     }
 
     if (-not $DryRun) {
-        if (Get-Command -Name 'Sync-PWAssociatedSheetReviewTypeAttributes' -ErrorAction SilentlyContinue) {
+        if (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
             $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
             $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
                 [string]$DocumentName
@@ -1893,8 +2071,8 @@ function Sync-PWPostInitialPrependLaneStates {
                 $sheetStem + '.pdf'
             }
             try {
-                Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $resetGuid `
-                    -DocumentName $resetName -FolderPath $FolderPath -CanonicalReviewType 'production' -DryRun:$DryRun
+                _PWD-SyncReferenceSheetProcessTypeAttributes -Config $Config -DocumentGuid $resetGuid `
+                    -DocumentName $resetName -FolderPath $FolderPath -CanonicalProcessType 'production' -DryRun:$DryRun
             } catch { }
         }
         $laneProcessType = _PWD-EnsureLaneQcPdfProcessTypeAttribute -Config $Config -FolderPath $FolderPath `
@@ -2110,11 +2288,10 @@ SELECT qc_review_type FROM sheet_index WHERE document_guid = @docGuid
 function Sync-PWAssociatedSheetReviewTypeAttributes {
     <#
     .SYNOPSIS
-    Propagates QC_Review_Type from a DOCUMENT_ATTR change to associated DGN and sheet PDF siblings.
+    Legacy DOCUMENT_ATTR sibling QC process type sync (disabled by default).
     .DESCRIPTION
-    Updates ProjectWise environment attributes and sheet_index.qc_review_type for associated stem members
-    when the canonical review type differs. Lane QC PDFs (-prod/-chk/-rev) are excluded; their QC_Process_Type
-    is lane-specific and is never modified by this sync.
+    When EnableLegacyReviewTypeAttributeSync is true, propagates a resolved QC_Process_Type to associated stem
+    members. Lane QC PDFs are excluded. QC_Review_Type is read-only and is never written.
     #>
     [CmdletBinding()]
     param(
@@ -2122,20 +2299,32 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         [Parameter(Mandatory)][string]$DocumentGuid,
         [Parameter(Mandatory)][string]$DocumentName,
         [Parameter(Mandatory)][string]$FolderPath,
-        [Parameter(Mandatory)][string]$CanonicalReviewType,
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$CanonicalReviewType,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
         [bool]$DryRun = $false
     )
 
-    if ([string]::IsNullOrWhiteSpace($CanonicalReviewType)) { return }
-
-    $canonicalNorm = ([string]$CanonicalReviewType).Trim()
-    if ([string]::IsNullOrWhiteSpace($canonicalNorm)) { return }
-    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-        $norm = Normalize-QCProcessType -ProcessType $canonicalNorm
-        if ($norm) { $canonicalNorm = $norm }
+    if (-not (Get-Command -Name 'Test-QCLegacyReviewTypeAttributeSyncEnabled' -ErrorAction SilentlyContinue) `
+        -or -not (Test-QCLegacyReviewTypeAttributeSyncEnabled -Config $Config)) {
+        _PWD-LogProcessTypeSyncSkipped -Reason 'legacy_sync_disabled' -Config $Config `
+            -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+            -ExtraData @{ source = 'legacy_review_type_attribute_sync' }
+        return
     }
+
+    $canonicalNorm = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $CanonicalReviewType -Config $Config
+    if (-not $canonicalNorm) {
+        _PWD-LogProcessTypeUnknown -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -RawValue $CanonicalReviewType -Source 'legacy_review_type_attribute_sync'
+        _PWD-LogProcessTypeSyncSkipped -Reason 'null_canonical_process_type' -Config $Config `
+            -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+            -ExtraData @{ source = 'legacy_review_type_attribute_sync'; rawValue = [string]$CanonicalReviewType }
+        return
+    }
+
     $canonicalDisplay = $canonicalNorm
     if (Get-Command -Name 'Format-QCProcessTypeAttributeValue' -ErrorAction SilentlyContinue) {
         $canonicalDisplay = Format-QCProcessTypeAttributeValue -ProcessType $canonicalNorm
@@ -2143,7 +2332,6 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
     $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
-    $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config
     $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource 'process_type_sync')
     if ($members.Count -eq 0) { return }
@@ -2162,12 +2350,9 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
         $prevDb = _PWD-GetSheetIndexQcReviewType -Config $Config -DocumentGuid $dg
         $currentPw = ''
-        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($processCol, $reviewCol)
+        $attrRead = Get-PWDocumentAttributesByColumns -FolderPath $FolderPath -DocumentName $dn -ColumnsToReturn @($processCol)
         if ($attrRead.found) {
             $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $processCol
-            if ([string]::IsNullOrWhiteSpace($currentPw)) {
-                $currentPw = _PWD-GetPwAttributeValue -PwAttributes $attrRead.attributes -ColumnName $reviewCol
-            }
             if (-not $doc -and $attrRead.document) { $doc = $attrRead.document }
         }
         if (-not $doc) {
@@ -2191,22 +2376,18 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
         if ($pwNeedsWrite) {
             if (-not $pwWritesEnabled) {
-                $change.pwWriteSkipped = 'qc_review_type_not_enabled_for_environment'
+                $change.pwWriteSkipped = 'qc_process_type_not_enabled_for_environment'
             } elseif ($DryRun) {
                 $change.planned = $true
             } else {
                 try {
-                    $attrs = @{ $processCol = $canonicalDisplay }
-                    if ($reviewCol -and $reviewCol -ne $processCol) {
-                        $attrs[$reviewCol] = $canonicalDisplay
-                    }
-                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs -Config $Config)
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes @{ $processCol = $canonicalNorm } -Config $Config)
                     $change.applied = $true
                 } catch {
                     $change.error = [string]$_.Exception.Message
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC_FAILED' `
-                            -Message 'Failed to align associated sheet QC_Review_Type.' -Data @{
+                            -Message 'Failed to align associated sheet QC_Process_Type (legacy sync).' -Data @{
                             documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
                             fromValue = [string]$currentPw; toValue = $canonicalDisplay; error = [string]$_.Exception.Message
                         }
@@ -2237,7 +2418,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                 $prevAudit = if ($currentPw) { [string]$currentPw } else { [string]$prevDb }
                 Invoke-QCAuditWorkflowAttributeChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
                     -FolderPath $FolderPath -FieldChanges @{
-                    qc_review_type = @{ oldValue = $prevAudit; newValue = $canonical }
+                    qc_review_type = @{ oldValue = $prevAudit; newValue = $canonicalDisplay }
                 } | Out-Null
             }
         }
@@ -2247,17 +2428,18 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
     if ($stateUpdates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC' `
-            -Message 'Associated sheet QC_Review_Type aligned from DOCUMENT_ATTR audit event.' -Data @{
+            -Message 'Associated sheet QC_Process_Type aligned from DOCUMENT_ATTR audit event (legacy sync enabled).' -Data @{
             triggerDocumentGuid = $DocumentGuid
             triggerDocumentName = $DocumentName
             folderPath          = $FolderPath
-            canonicalReviewType = $canonical
-            reviewTypeColumn    = $reviewCol
+            canonicalProcessType = $canonicalNorm
+            canonicalReviewType = $canonicalNorm
+            processTypeColumn   = $processCol
             pwWritesEnabled     = $pwWritesEnabled
             memberCount         = $members.Count
             updates             = @($stateUpdates)
             dryRun              = [bool]$DryRun
-        }
+        } | Out-Null
     }
 }
 
@@ -3936,15 +4118,39 @@ WHERE document_guid = @docGuid
             -LastAuditEventAt $LastAuditEventAt -DryRun:$false
     }
 
-    if ($isDocumentAttr -and $reviewTypeDiffer -and -not [string]::IsNullOrWhiteSpace($pwReviewType)) {
-        Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
-            -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $pwReviewType `
-            -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -DryRun:$false
-    } elseif ($isDocumentAttr -and $reviewTypeDiffer -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC_SKIPPED' `
-            -Message 'DOCUMENT_ATTR review type change detected but canonical QC_Review_Type could not be read from ProjectWise.' -Data @{
-            documentGuid = $DocumentGuid; documentName = $DocumentName; folderPath = $FolderPath
-            rawReviewType = $rawReviewType; dbReviewType = $dbReviewType; resolvedReviewType = $pwReviewType
+    if ($isDocumentAttr -and $reviewTypeDiffer) {
+        $canonicalRaw = [string]$fieldsRaw.qcProcessType
+        if ([string]::IsNullOrWhiteSpace($canonicalRaw)) {
+            $canonicalRaw = [string]$fieldsRaw.qcReviewType
+        }
+        $canonicalProcess = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $canonicalRaw -Config $Config
+        if (-not (Get-Command -Name 'Test-QCLegacyReviewTypeAttributeSyncEnabled' -ErrorAction SilentlyContinue) `
+            -or -not (Test-QCLegacyReviewTypeAttributeSyncEnabled -Config $Config)) {
+            _PWD-LogProcessTypeSyncSkipped -Reason 'legacy_sync_disabled' -Config $Config `
+                -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+                -ExtraData @{
+                source = 'document_attr_audit'
+                rawProcessType = [string]$fieldsRaw.qcProcessType
+                rawReviewType = [string]$fieldsRaw.qcReviewType
+                resolvedReviewType = [string]$pwReviewType
+                dbReviewType = [string]$dbReviewType
+            }
+        } elseif (-not $canonicalProcess) {
+            _PWD-LogProcessTypeUnknown -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+                -FolderPath $FolderPath -RawValue $canonicalRaw -Source 'document_attr_audit'
+            _PWD-LogProcessTypeSyncSkipped -Reason 'null_canonical_process_type' -Config $Config `
+                -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
+                -ExtraData @{
+                source = 'document_attr_audit'
+                rawProcessType = [string]$fieldsRaw.qcProcessType
+                rawReviewType = [string]$fieldsRaw.qcReviewType
+                resolvedReviewType = [string]$pwReviewType
+                dbReviewType = [string]$dbReviewType
+            }
+        } else {
+            Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config -DocumentGuid $DocumentGuid `
+                -DocumentName $DocumentName -FolderPath $FolderPath -CanonicalReviewType $canonicalProcess `
+                -WatchRoot $WatchRoot -LastAuditEventAt $LastAuditEventAt -DryRun:$false
         }
     }
 

@@ -45,14 +45,19 @@ def test_write_sheet_index_merges_checker_and_qc_fields():
 def test_document_attr_propagates_qc_review_type_to_associated_sheet():
     text = DISCOVERY.read_text(encoding="utf-8")
     assert "Sync-PWAssociatedSheetReviewTypeAttributes -Config $Config" in text
+    assert "Test-QCLegacyReviewTypeAttributeSyncEnabled" in text
+    assert "QC_PROCESS_TYPE_SYNC_SKIPPED" in text
     assert "$reviewTypeDiffer" in text
     assert "WATCH_SHEET_REVIEW_TYPE_SYNC" in text
     assert "-not $isDocumentAttr" in text
     assert "CustomAttributes" in text
     assert "_PWD-ResolveSheetIndexQcReviewType" in text
-    assert "CanonicalReviewType $pwReviewType" in text
+    assert "_PWD-SyncReferenceSheetProcessTypeAttributes" in text
+    assert "fieldsRaw.qcProcessType" in text
     assert "_PWD-NormalizePwEnvironmentForQcReviewType" in text
     assert "pwWritesEnabled" in text
+    appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
+    assert appsettings["QCProcess"]["EnableLegacyReviewTypeAttributeSync"] is False
 
 
 def test_document_attr_propagates_role_emails_to_associated_sheet():
