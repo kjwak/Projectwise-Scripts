@@ -1455,6 +1455,11 @@ function _PWD-InvokeSetPwDocumentState {
         [string]$StateName = '',
         [hashtable]$GuardContext = @{}
     )
+    if (-not [string]::IsNullOrWhiteSpace($StateName) -and (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+        $cfg = $null
+        if ($GuardContext -and $GuardContext.config) { $cfg = $GuardContext.config }
+        try { $StateName = Format-QCWorkflowStateName -StateName $StateName -Config $cfg } catch { }
+    }
     if ([string]::IsNullOrWhiteSpace($StateName)) {
         if (-not $GuardContext) { $GuardContext = @{} }
         $guardCallSite = '_PWD-InvokeSetPwDocumentState'
@@ -1701,6 +1706,12 @@ function Sync-PWPostInitialPrependLaneStates {
 
     $laneTarget = ([string]$LaneTargetState).Trim()
     $referenceTarget = ([string]$ReferenceState).Trim()
+    if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            $laneTarget = Format-QCWorkflowStateName -StateName $laneTarget -Config $Config
+            $referenceTarget = Format-QCWorkflowStateName -StateName $referenceTarget -Config $Config
+        } catch { }
+    }
     if ([string]::IsNullOrWhiteSpace($laneTarget) -or [string]::IsNullOrWhiteSpace($referenceTarget)) {
         return @{ updates = @(); skipped = $true; skipReason = 'empty_target_state' }
     }
@@ -1768,6 +1779,7 @@ function Sync-PWPostInitialPrependLaneStates {
                 folderPath = $FolderPath
                 sourceVariableName = 'target'
                 livePwState = [string]$currentState
+                config = $Config
             }
             $change.applied = $true
             if ($dg -and (Get-Command -Name 'Update-QCSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
@@ -2031,11 +2043,15 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
 
     if ([string]::IsNullOrWhiteSpace($CanonicalReviewType)) { return }
 
-    $canonical = ([string]$CanonicalReviewType).Trim()
-    if ([string]::IsNullOrWhiteSpace($canonical)) { return }
+    $canonicalNorm = ([string]$CanonicalReviewType).Trim()
+    if ([string]::IsNullOrWhiteSpace($canonicalNorm)) { return }
     if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-        $norm = Normalize-QCProcessType -ProcessType $canonical
-        if ($norm) { $canonical = $norm }
+        $norm = Normalize-QCProcessType -ProcessType $canonicalNorm
+        if ($norm) { $canonicalNorm = $norm }
+    }
+    $canonicalDisplay = $canonicalNorm
+    if (Get-Command -Name 'Format-QCProcessTypeAttributeValue' -ErrorAction SilentlyContinue) {
+        $canonicalDisplay = Format-QCProcessTypeAttributeValue -ProcessType $canonicalNorm
     }
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
@@ -2067,15 +2083,15 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         }
         if (-not $doc) { continue }
 
-        $pwNeedsWrite = (_PWD-NormalizeSheetIndexValue $currentPw) -ne (_PWD-NormalizeSheetIndexValue $canonical)
-        $indexNeedsWrite = (_PWD-NormalizeSheetIndexValue $prevDb) -ne (_PWD-NormalizeSheetIndexValue $canonical)
+        $pwNeedsWrite = (_PWD-NormalizeSheetIndexValue $currentPw) -ne (_PWD-NormalizeSheetIndexValue $canonicalNorm)
+        $indexNeedsWrite = (_PWD-NormalizeSheetIndexValue $prevDb) -ne (_PWD-NormalizeSheetIndexValue $canonicalNorm)
         if (-not $pwNeedsWrite -and -not $indexNeedsWrite) { continue }
 
         $change = @{
             documentGuid = $dg
             documentName = $dn
             fromValue    = [string]$currentPw
-            toValue      = $canonical
+            toValue      = $canonicalDisplay
             applied      = $false
             planned      = $false
             indexUpdated = $false
@@ -2088,14 +2104,11 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                 $change.planned = $true
             } else {
                 try {
-                    $attrs = @{ $processCol = $canonical }
+                    $attrs = @{ $processCol = $canonicalDisplay }
                     if ($reviewCol -and $reviewCol -ne $processCol) {
-                        $display = if (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue) {
-                            Get-QCProcessTypeDisplayLabel -ProcessType $canonical
-                        } else { $canonical }
-                        $attrs[$reviewCol] = $display
+                        $attrs[$reviewCol] = $canonicalDisplay
                     }
-                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs)
+                    [void](_PWD-InvokeUpdatePWDocumentAttributes -Document $doc -Attributes $attrs -Config $Config)
                     $change.applied = $true
                 } catch {
                     $change.error = [string]$_.Exception.Message
@@ -2103,7 +2116,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                         Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_SHEET_REVIEW_TYPE_SYNC_FAILED' `
                             -Message 'Failed to align associated sheet QC_Review_Type.' -Data @{
                             documentGuid = $dg; documentName = $dn; folderPath = $FolderPath
-                            fromValue = [string]$currentPw; toValue = $canonical; error = [string]$_.Exception.Message
+                            fromValue = [string]$currentPw; toValue = $canonicalDisplay; error = [string]$_.Exception.Message
                         }
                     }
                     continue
@@ -2120,7 +2133,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                     if ($ext -eq '.pdf') { $sourceType = 'pdf' }
                     elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
                     Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
-                        -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonical `
+                        -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonicalDisplay `
                         -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
                     $change.indexUpdated = $true
                 } catch { }
@@ -2701,6 +2714,26 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
                         Import-Module $notifPath -Force -ErrorAction SilentlyContinue
                     }
                 } catch { }
+            }
+            if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
+                try {
+                    $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
+                    Import-Module $procPath -Force -ErrorAction SilentlyContinue
+                } catch { }
+            }
+            if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
+                $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
+                    -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf'
+                if ($sheetBlock -and [bool]$sheetBlock.blocked) {
+                    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                        Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
+                            -Message 'QC_PREPEND skipped after sheet sync: prepend already pending, running, or recently succeeded for this sheet.' -Data @{
+                            folderPath = $FolderPath; sheetPdf = $sheetPdfName; sheetStem = $sheetStem
+                            reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches); canonicalState = $canonical
+                        } | Out-Null
+                    }
+                    return
+                }
             }
             if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
                 $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
@@ -3567,6 +3600,27 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
     }
     if (-not (Test-QCWorkflowStateIsQcInitiated -StateName $sheetState -Config $Config)) { return }
 
+    if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
+        try {
+            $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
+            Import-Module $procPath -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+    if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
+        $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
+            -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf'
+        if ($sheetBlock -and [bool]$sheetBlock.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QC_INITIATED_FALLBACK_SKIPPED' `
+                    -Message 'QC Initiated sheet-PDF fallback skipped: prepend already pending, running, or recently succeeded.' -Data @{
+                    triggerDocumentGuid = $DocumentGuid; triggerDocumentName = $DocumentName; folderPath = $FolderPath
+                    sheetPdfName = $sheetPdfName; reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches)
+                } | Out-Null
+            }
+            return
+        }
+    }
+
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QC_INITIATED_SHEET_PDF_FALLBACK' `
             -Message 'Associated sheet PDF is QC Initiated; running state sync/prepend fallback from sibling audit event.' -Data @{
@@ -3813,12 +3867,27 @@ WHERE document_guid = @docGuid
 function _PWD-InvokeUpdatePWDocumentAttributes {
     param(
         [Parameter(Mandatory)][object]$Document,
-        [Parameter(Mandatory)][hashtable]$Attributes
+        [Parameter(Mandatory)][hashtable]$Attributes,
+        [hashtable]$Config = $null
     )
 
     $cmd = Get-Command -Name 'Update-PWDocumentAttributes' -ErrorAction SilentlyContinue
     if (-not $cmd) { throw 'Update-PWDocumentAttributes is not available.' }
     if (-not $Attributes -or $Attributes.Keys.Count -eq 0) { return $false }
+
+    $attrsToWrite = @{}
+    $processCol = ''
+    if ($Config) {
+        try { $processCol = Get-PWQcProcessTypeAttributeName -Config $Config } catch { $processCol = '' }
+    }
+    foreach ($key in @($Attributes.Keys)) {
+        $val = [string]$Attributes[$key]
+        if ($processCol -and ([string]$key -eq $processCol) -and (Get-Command -Name 'Format-QCProcessTypeAttributeValue' -ErrorAction SilentlyContinue)) {
+            try { $val = Format-QCProcessTypeAttributeValue -ProcessType $val } catch { }
+        }
+        $attrsToWrite[[string]$key] = $val
+    }
+    $Attributes = $attrsToWrite
 
     $args = @{}
     $docParam = if ($cmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' }

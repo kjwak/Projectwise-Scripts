@@ -3931,6 +3931,9 @@ function Update-QCSheetIndexPwStateName {
         [Parameter(Mandatory)][string]$PwStateName
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
+    if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try { $PwStateName = Format-QCWorkflowStateName -StateName $PwStateName -Config $Config } catch { }
+    }
     try {
         $sql = @"
 UPDATE sheet_index
@@ -5504,6 +5507,12 @@ function Update-SheetPackageQcPdfLaneState {
     if (-not $parsedGuid) { return $null }
     $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
     if ($processType -notin @('production', 'check', 'review')) { return $null }
+    if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            if ($CurrentPwState) { $CurrentPwState = Format-QCWorkflowStateName -StateName $CurrentPwState -Config $Config }
+            if ($PreviousPwState) { $PreviousPwState = Format-QCWorkflowStateName -StateName $PreviousPwState -Config $Config }
+        } catch { }
+    }
     try {
         $sql = @"
 UPDATE sheet_package_qc_pdfs

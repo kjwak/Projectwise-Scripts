@@ -1130,6 +1130,32 @@ function Resolve-QCWorkflowStateAfterPrepend {
     return [string](_QCW-DefaultWorkflowStates).readyForQc
 }
 
+function Format-QCWorkflowStateName {
+    <#
+    .SYNOPSIS
+    Returns the canonical workflow state label (configured casing, e.g. "In Development", "Originated").
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateName,
+        [hashtable]$Settings = $null,
+        [hashtable]$Config = $null
+    )
+
+    if (_QCW-IsNullOrWhiteSpace $StateName) { return '' }
+    $trimmed = ([string]$StateName).Trim()
+    if (-not $Settings -and $Config) {
+        try { $Settings = Get-QCWorkflowSettings -Config $Config } catch { $Settings = $null }
+    }
+    if ($Settings) {
+        foreach ($label in @(_QCW-GetConfiguredWorkflowStateLabels -Settings $Settings)) {
+            if (_QCW-StateNameEquals $label $trimmed) { return $label }
+        }
+    }
+    $textInfo = [System.Globalization.CultureInfo]::GetCultureInfo('en-US').TextInfo
+    return $textInfo.ToTitleCase($trimmed.ToLowerInvariant())
+}
+
 function Get-QCWorkflowStateName {
     [CmdletBinding()]
     param(
@@ -1646,6 +1672,16 @@ function Set-PWQCWorkflowState {
         $data.warnings = @('Target workflow state is empty; no state change was made.')
         _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message $data.warnings[0] -Data $data
         return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_STATE_MISSING' -Message $data.warnings[0] -Data $data
+    }
+    $StateName = Format-QCWorkflowStateName -StateName $StateName -Settings $Settings
+    $data.stateName = $StateName
+    if ($laneIndependentInitialPrepend) {
+        $laneTargetState = Format-QCWorkflowStateName -StateName $laneTargetState -Settings $Settings
+        $referenceState = Format-QCWorkflowStateName -StateName $referenceState -Settings $Settings
+        if ($Context) {
+            $Context['laneTargetState'] = $laneTargetState
+            $Context['referenceState'] = $referenceState
+        }
     }
     $transition = Test-QCWorkflowStateTransition -Settings $Settings -CurrentStateName $info.Data.stateName -TargetStateName $StateName -WorkflowName ([string]$Settings.expectedWorkflowName) -ValidatePath
     $data.transition = $transition
@@ -2202,4 +2238,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Format-QCWorkflowStateName,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

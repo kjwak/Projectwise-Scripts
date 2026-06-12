@@ -881,6 +881,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
             $preSyncLiveState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document)
         }
         $finalState = _QCAT-NormalizeValue $target
+        if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+            $fmtCfg = if ($Context -and $Context.config) { $Context.config } elseif ($Config) { $Config } else { $null }
+            try { $finalState = Format-QCWorkflowStateName -StateName $finalState -Config $fmtCfg } catch { }
+        }
         if ($Context -and $Context.ContainsKey('laneIndependentInitialPrepend') -and $Context.laneIndependentInitialPrepend) {
             $laneTarget = if ($Context.ContainsKey('laneTargetState') -and $Context.laneTargetState) {
                 _QCAT-NormalizeValue ([string]$Context.laneTargetState)
@@ -900,6 +904,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 } elseif ($dn -match '(?i)\.dgn$' -or ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
                     $finalState = $refState
                 }
+            }
+            if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+                $fmtCfg = if ($Context -and $Context.config) { $Context.config } elseif ($Config) { $Config } else { $null }
+                try { $finalState = Format-QCWorkflowStateName -StateName $finalState -Config $fmtCfg } catch { }
             }
         }
 

@@ -24,6 +24,11 @@ Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'review') 'rev' 'review suffi
 Assert-Eq (Get-QCLaneQcPdfExpectedName -SheetBaseName 'CA001' -ProcessType 'production') 'CA001-prod.pdf' 'prod pdf name'
 Assert-Eq (Get-QCLaneQcPdfExpectedName -SheetBaseName 'CA001' -ProcessType 'check') 'CA001-chk.pdf' 'chk pdf name'
 
+Assert-Eq (Format-QCProcessTypeAttributeValue -ProcessType 'production') 'Production' 'production display'
+Assert-Eq (Format-QCProcessTypeAttributeValue -ProcessType 'check') 'Check' 'check display'
+Assert-Eq (Format-QCProcessTypeAttributeValue -ProcessType 'review') 'Review' 'review display'
+Assert-Eq (Format-QCProcessTypeAttributeValue -ProcessType 'PRODUCTION') 'Production' 'uppercase input display'
+
 Assert-False (Test-QCLegacySiblingStateSyncEnabled -Config @{}) 'legacy sibling sync off by default'
 Assert-False (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType 'production' -Config @{}) 'production sibling sync off by default'
 

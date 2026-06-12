@@ -1700,6 +1700,144 @@ function _QCP-GetSheetPrependStateTransitionKey {
     return ('sheet:' + $stem + '|from:' + $from + '|to:' + $to)
 }
 
+function _QCP-GetQueueRootFromConfig {
+    param([hashtable]$Config)
+    if ($Config.ContainsKey('queue') -and $Config.queue) {
+        if ($Config.queue.ContainsKey('rootDir') -and $Config.queue.rootDir) { return [string]$Config.queue.rootDir }
+        if ($Config.queue.ContainsKey('root') -and $Config.queue.root) { return [string]$Config.queue.root }
+        if ($Config.queue.ContainsKey('path') -and $Config.queue.path) { return [string]$Config.queue.path }
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    return (Join-Path $repoRoot 'queue')
+}
+
+function _QCP-NormalizePrependFolderPath {
+    param([string]$FolderPath)
+    $path = ([string]$FolderPath).Trim()
+    if ($path.Length -eq 0) { return '' }
+    if (Get-Command -Name 'Normalize-QCDocumentsFolderPath' -ErrorAction SilentlyContinue) {
+        try {
+            $norm = Normalize-QCDocumentsFolderPath -Path $path
+            if ($norm.IsSuccess -and $norm.Data.path) { $path = [string]$norm.Data.path }
+        } catch { }
+    }
+    return $path.TrimEnd('\', '/').ToLowerInvariant()
+}
+
+function _QCP-JobMatchesPrependSheet {
+    param(
+        [object]$Job,
+        [string]$NormFolder,
+        [string]$NormSheetPdfName,
+        [string]$PrependTrigger = ''
+    )
+    if ($null -eq $Job) { return $false }
+    $jobType = ''
+    try { $jobType = [string]$Job.type } catch { }
+    if ($jobType -ne 'QC_PREPEND') { return $false }
+
+    $triggerFilter = ([string]$PrependTrigger).Trim().ToLowerInvariant()
+    if ($triggerFilter.Length -gt 0) {
+        $jobTrigger = ''
+        try {
+            if ($Job.metadata -and $Job.metadata.prependTrigger) { $jobTrigger = [string]$Job.metadata.prependTrigger }
+        } catch { }
+        if ($jobTrigger.Length -gt 0 -and $jobTrigger.ToLowerInvariant() -ne $triggerFilter) { return $false }
+    }
+
+    $jobFolder = ''
+    try {
+        if ($Job.sourceFolder) { $jobFolder = [string]$Job.sourceFolder }
+        elseif ($Job.sourcePath) { $jobFolder = [System.IO.Path]::GetDirectoryName([string]$Job.sourcePath) }
+    } catch { }
+    $jobFolder = _QCP-NormalizePrependFolderPath -FolderPath $jobFolder
+    if ($jobFolder.Length -eq 0 -or $jobFolder -ne $NormFolder) { return $false }
+
+    $jobName = ''
+    try {
+        if ($Job.sourceName) { $jobName = [string]$Job.sourceName }
+        elseif ($Job.sourcePath) { $jobName = [System.IO.Path]::GetFileName([string]$Job.sourcePath) }
+    } catch { }
+    $jobName = ([string]$jobName).ToLowerInvariant()
+    return ($jobName.Length -gt 0 -and $jobName -eq $NormSheetPdfName)
+}
+
+function Test-QCPrependEnqueueBlockedForSheet {
+    <#
+    .SYNOPSIS
+    Returns whether a QC_PREPEND for the same sheet PDF should not be enqueued.
+    .DESCRIPTION
+    Blocks when another initialQcPdf prepend is pending or running for the same folder + sheet PDF,
+    or when one succeeded very recently (covers fallback enqueue racing a just-finished audit job).
+  #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SheetPdfName,
+        [string]$PrependTrigger = 'initialQcPdf',
+        [int]$SucceededWithinMinutes = 20
+    )
+
+    try { _QCP-EnsureQueueModulesLoaded } catch { return @{ blocked = $false } }
+
+    $normFolder = _QCP-NormalizePrependFolderPath -FolderPath $FolderPath
+    $normName = ([System.IO.Path]::GetFileName([string]$SheetPdfName)).ToLowerInvariant()
+    if ($normFolder.Length -eq 0 -or $normName.Length -eq 0) { return @{ blocked = $false } }
+
+    $root = _QCP-GetQueueRootFromConfig -Config $Config
+    $states = @('pending', 'running', 'succeeded')
+    $matches = @()
+    $now = [DateTime]::UtcNow
+
+    foreach ($state in $states) {
+        $dir = Join-Path $root $state
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+        foreach ($f in $files) {
+            $job = $null
+            try { $job = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
+            if (-not (_QCP-JobMatchesPrependSheet -Job $job -NormFolder $normFolder -NormSheetPdfName $normName -PrependTrigger $PrependTrigger)) {
+                continue
+            }
+            $dedupeKey = ''
+            $stKey = ''
+            try { $dedupeKey = [string]$job.dedupeKey } catch { }
+            try {
+                if ($job.metadata -and $job.metadata.stateTransitionKey) {
+                    $stKey = [string]$job.metadata.stateTransitionKey
+                }
+            } catch { }
+            $entry = @{
+                jobId = [string]$job.id
+                state = $state
+                dedupeKey = $dedupeKey
+                stateTransitionKey = $stKey
+            }
+            if ($state -eq 'pending' -or $state -eq 'running') {
+                return @{ blocked = $true; reason = ('queue_' + $state); matches = @($entry) }
+            }
+            if ($state -eq 'succeeded' -and $SucceededWithinMinutes -gt 0) {
+                $updated = $null
+                try {
+                    if ($job.updatedAtUtc) { $updated = [DateTime]::Parse([string]$job.updatedAtUtc).ToUniversalTime() }
+                    elseif ($job.completedAtUtc) { $updated = [DateTime]::Parse([string]$job.completedAtUtc).ToUniversalTime() }
+                } catch { $updated = $null }
+                if ($null -ne $updated) {
+                    $age = $now - $updated
+                    if ($age.TotalMinutes -le $SucceededWithinMinutes) {
+                        $entry['succeededMinutesAgo'] = [math]::Round($age.TotalMinutes, 2)
+                        return @{ blocked = $true; reason = 'queue_succeeded_recent'; matches = @($entry) }
+                    }
+                }
+            }
+            $matches += $entry
+        }
+    }
+
+    return @{ blocked = $false; matches = $matches }
+}
+
 function Add-QCPrependJobForQcInitiatedStateChange {
     <#
     .SYNOPSIS
@@ -1775,12 +1913,30 @@ function Add-QCPrependJobForQcInitiatedStateChange {
         }
         $stateTransitionKey = Get-QCPrependStateTransitionDedupeKey -AuditEventId $AuditEventId `
             -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
-            -SheetStem $sheetStem -PreviousSheetState '' -TargetStateName $curr
+            -SheetStem $sheetStem -PreviousSheetState '' -TargetStateName $curr -PrependTrigger 'initialQcPdf'
     }
     if (_QCP-IsNullOrWhiteSpace $stateTransitionKey) {
         $stateTransitionKey = _QCP-GetQcInitiatedStateTransitionKey -AuditEventId $AuditEventId `
             -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
     }
+
+    $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
+        -SheetPdfName $sheetPdf -PrependTrigger 'initialQcPdf'
+    if ($sheetBlock -and [bool]$sheetBlock.blocked) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
+                -Message 'QC_PREPEND skipped: another prepend for this sheet is pending, running, or recently succeeded.' -Data @{
+                folderPath = $FolderPath; sheetPdf = $sheetPdf; reason = [string]$sheetBlock.reason
+                matches = @($sheetBlock.matches); stateTransitionKey = $stateTransitionKey
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
+            -Message 'QC_PREPEND skipped because another prepend for this sheet is already active or recently completed.' -Data @{
+            reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches); sheetPdf = $sheetPdf
+            folderPath = $FolderPath; stateTransitionKey = $stateTransitionKey
+        }
+    }
+
     $candidate = @{
         path = $sourcePath
         fileName = $sheetPdf

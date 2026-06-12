@@ -158,12 +158,35 @@ function Get-QCProcessTypeDisplayLabel {
     param(
         [Parameter(Mandatory)][string]$ProcessType
     )
-    switch (([string]$ProcessType).Trim().ToLowerInvariant()) {
+    $norm = ''
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType ([string]$ProcessType) -AllowNullOnEmpty
+    }
+    if (-not $norm) {
+        $norm = ([string]$ProcessType).Trim().ToLowerInvariant()
+    }
+    switch ($norm) {
         'production' { return 'Production' }
         'check' { return 'Check' }
         'review' { return 'Review' }
-        default { return [string]$ProcessType }
+        default {
+            $t = ([string]$ProcessType).Trim()
+            if (_QCPT-IsBlank $t) { return '' }
+            return $t.Substring(0, 1).ToUpperInvariant() + $t.Substring(1).ToLowerInvariant()
+        }
     }
+}
+
+function Format-QCProcessTypeAttributeValue {
+    <#
+    .SYNOPSIS
+    Canonical display value for QC_Process_Type (Production, Check, Review).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProcessType
+    )
+    return Get-QCProcessTypeDisplayLabel -ProcessType $ProcessType
 }
 
 function Get-QCProcessTypePdfSuffix {
@@ -702,6 +725,7 @@ Export-ModuleMember -Function `
     Get-QCProcessTypeSettings, `
     Normalize-QCProcessType, `
     Get-QCProcessTypeDisplayLabel, `
+    Format-QCProcessTypeAttributeValue, `
     Get-QCProcessTypePdfSuffix, `
     Test-QCLegacySiblingStateSyncEnabled, `
     Test-QCProcessTypeSyncsWithSiblingSheets, `

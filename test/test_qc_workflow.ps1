@@ -105,11 +105,16 @@ function New-WorkflowContext() {
 $defaultSettings = Get-QCWorkflowSettings -Config @{}
 Assert-Eq $defaultSettings.mode 'AttributesOnly' 'AttributesOnly should remain the default workflow mode'
 Assert-Eq $defaultSettings.autoSetState $false 'autoSetState should remain false by default'
-Assert-Eq $defaultSettings.states.readyForQc 'Ready for QC' 'Default ready for QC state'
+Assert-Eq $defaultSettings.states.readyForQc 'Originated' 'Default ready for QC state'
 Assert-Eq $defaultSettings.states.redlinesReceived 'Redlines Received' 'Default redlines received state'
 Assert-Eq $defaultSettings.states.correctionsReceived 'Corrections Received' 'Default corrections received state'
 Assert-Eq $defaultSettings.states.qcFinalizing 'QC Finalizing' 'Default QC Finalizing state'
 Assert-True (-not $defaultSettings.attributeMap.ContainsKey('stage')) 'Default attribute map must not include stage'
+
+$prodCfg = @{ qcWorkflow = @{ states = @{ production = 'In Development'; readyForQc = 'Originated' } } }
+Assert-Eq (Format-QCWorkflowStateName -StateName 'in development' -Config $prodCfg) 'In Development' 'Lowercase state maps to configured label'
+Assert-Eq (Format-QCWorkflowStateName -StateName 'originated' -Config $prodCfg) 'Originated' 'Lowercase originated maps to configured label'
+Assert-Eq (Format-QCWorkflowStateName -StateName 'redlines received' -Settings $defaultSettings) 'Redlines Received' 'Title-cases unknown multi-word states'
 
 # review-type-based assignment
 $assignReviewer = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Ready for QC' -ReviewType 'Production QC' `
