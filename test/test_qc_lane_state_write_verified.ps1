@@ -11,8 +11,8 @@ function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (
 function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
 Assert-True (Test-QCWorkflowStateWritebackUseForce -Config @{}) 'useForce defaults true'
-Assert-True (Test-QCWorkflowStateWritebackUseForce -Config @{ qcWorkflow = @{ stateWriteback = @{ useForce = $true } } }) 'useForce true from config'
-Assert-False (Test-QCWorkflowStateWritebackUseForce -Config @{ qcWorkflow = @{ stateWriteback = @{ useForce = $false } } }) 'useForce false only when explicitly configured'
+Assert-True (Test-QCWorkflowStateWritebackUseVerified -Config @{}) 'useVerified defaults true'
+Assert-False (Test-QCWorkflowStateWritebackUseVerified -Config @{ qcWorkflow = @{ stateWriteback = @{ useVerified = $false } } }) 'useVerified false only when explicitly configured'
 
 InModuleScope -ModuleName PW.Discovery {
     function Write-QCJsonLog { param($Level, $Code, $Message, $Data) $script:jsonLogs += ,@{ Code = $Code; Data = $Data } }
@@ -95,7 +95,7 @@ InModuleScope -ModuleName PW.Discovery {
 
     $script:stateTargets = @()
     function Set-PWDocumentWorkflowStateVerified {
-        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName)
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority)
         $script:stateTargets += [string]$DocumentName
         return @{
             documentGuid = 'guid-' + $DocumentName
@@ -106,6 +106,7 @@ InModuleScope -ModuleName PW.Discovery {
             applied = $true
             verified = $true
             usedForce = $true
+            isLaneAuthority = [bool]$IsLaneAuthority
             commandShape = "Set-PWDocumentState -InputDocuments @(`$cleanDoc) -State '$TargetState' -Force"
         }
     }
@@ -121,9 +122,10 @@ InModuleScope -ModuleName PW.Discovery {
             -DocumentName '080J082001ab001.pdf' -DocumentGuid 'stem-guid' -QcProcessType $lane.lane `
             -ExpectedLanePdfName $lane.pdf -LaneTargetState 'Originated' -ReferenceState 'In Development'
         $uniqueTargets = @($script:stateTargets | Select-Object -Unique)
-        Assert-Eq $uniqueTargets.Count 1 "$($lane.lane) prepend writes lane PDF state only"
+        Assert-Eq $uniqueTargets.Count 2 "$($lane.lane) prepend writes lane and stem PDF states"
         Assert-Eq $uniqueTargets[0] $lane.pdf "$($lane.lane) prepend targets expected lane PDF"
-        Assert-False $split.writeReferenceStates "$($lane.lane) prepend does not write reference states"
+        Assert-True ($uniqueTargets -contains '080J082001ab001.pdf') "$($lane.lane) prepend returns stem PDF to reference state"
+        Assert-True $split.writeStemPdfReferenceState "$($lane.lane) prepend enables stem reference writeback"
     }
 }
 

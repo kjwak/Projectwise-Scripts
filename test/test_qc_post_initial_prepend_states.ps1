@@ -1,4 +1,4 @@
-# Post-Initiate Origination prepend: lane PDF -> Originated; reference docs are not workflow authorities.
+# Post-Initiate Origination prepend: lane PDF -> Originated; stem PDF -> In Development (verified); DGN untouched.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -67,6 +67,22 @@ InModuleScope -ModuleName PW.Discovery {
     function Update-SheetPackageQcPdfLaneState { param($Config, $DocumentGuid, $CurrentPwState, $QcProcessType) return $true }
     function Test-QCResetProcessTypeAfterLanePrepend { param($Config) return $false }
     function Get-QCWorkflowSettings { param($Config) return @{ expectedWorkflowName = 'TYPSA QC' } }
+    function Test-QCWorkflowStateWritebackUseForce { param($Config) return $true }
+    function Set-PWDocumentWorkflowStateVerified {
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority)
+        return @{
+            documentGuid = 'guid-' + $DocumentName
+            documentName = $DocumentName
+            fromState = 'Initiate Origination'
+            targetState = $TargetState
+            readBackState = $TargetState
+            applied = $true
+            verified = $true
+            usedForce = $true
+            isLaneAuthority = [bool]$IsLaneAuthority
+            commandShape = "Set-PWDocumentState -InputDocuments @(`$cleanDoc) -State '$TargetState' -Force"
+        }
+    }
 
     $split = Sync-PWPostInitialPrependLaneStates -Config @{} -FolderPath 'Drawings\X' `
         -DocumentName 'CA001.pdf' -DocumentGuid 'stem-guid' -QcProcessType 'review' `
@@ -74,7 +90,8 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $split.lanePdfName 'CA001-rev.pdf' 'uses ExpectedLanePdfName'
     Assert-Eq $split.laneTargetState 'Originated' 'lane target preserved'
     Assert-Eq $split.referenceState 'In Development' 'reference target preserved'
-    Assert-False $split.writeReferenceStates 'review prepend does not write reference workflow states'
+    Assert-True $split.writeStemPdfReferenceState 'prepend writes stem PDF back to reference state'
+    Assert-Eq $split.stemPdfName 'CA001.pdf' 'stem PDF name resolved'
     Assert-Eq $split.processTypeReset.reason 'reset_disabled' 'process type reset skipped by default'
     Assert-True $split.laneProcessTypeEnsure.ensured 'sets lane qc_process_type when unset'
     Assert-Eq $split.laneProcessTypeEnsure.toValue 'Review' 'lane qc_process_type matches triggering review lane'

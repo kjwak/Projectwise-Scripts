@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force
 
 function _QCSP-Get([object]$Object,[string[]]$Names){ foreach($n in @($Names)){ try{ if($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n){ return $Object.$n }}catch{}; if($Object -is [hashtable] -and $Object.ContainsKey($n)){ return $Object[$n] } }; return $null }
 function _QCSP-State([object]$Doc){ return [string](_QCSP-Get $Doc @('WorkflowState','StateName','CurrentState','DocumentState','state')) }
@@ -33,16 +34,26 @@ function Set-QCPackageState {
     }
     $roleToDoc=@{Dgn=$Package.DgnDocument;ProductionPdf=$Package.PdfDocument;QcPdf=$Package.QcPdfDocument}; $actions=[System.Collections.Generic.List[object]]::new()
     foreach($role in @($Roles)){ $doc=$roleToDoc[$role]; if(-not $doc){ continue }; $cur=_QCSP-State $doc; $guid=[string](_QCSP-Get $doc @('Guid','DocumentGuid','ObjectGuid','guid'))
-        $planned = -not ($cur -ieq $StateName); $changed=$false
+        $docName=[string](_QCSP-Get $doc @('Name','DocumentName'))
+        $folderPath=[string](_QCSP-Get $doc @('FolderPath','folderPath'))
+        $planned = -not ($cur -ieq $StateName); $changed=$false; $verified=$false
         if($planned -and -not $DryRun){
             if([string]::IsNullOrWhiteSpace($StateName)){
                 _QCSP-Log -Event 'WATCH_AUDIT_EMPTY_STATE_GUARDED' -Level 'Information' -Message 'Skipped package document state write because StateName was empty.' -Data @{
                     callSite = 'Set-QCPackageState.Set-PWDocumentState'; auditEventId = $null; documentName = ''; folderPath = ''
                     sourceVariableName = 'StateName'; sourceValue = $StateName; livePwState = $cur; changedByUsername = ''
                 }
-            } elseif(Get-Command Set-PWDocumentState -ErrorAction SilentlyContinue){ Set-PWDocumentState -InputDocument $doc -StateName $StateName | Out-Null; $changed=$true } else { return New-QCFailureResult -Code 'PACKAGE_STATE_CMDLET_MISSING' -Message 'Set-PWDocumentState is not available.' -Data @{ role=$role; documentGuid=$guid } }
+            } elseif((Get-Command Set-PWDocumentWorkflowStateVerified -ErrorAction SilentlyContinue) -and $folderPath -and $docName -and (Get-Command Test-QCWorkflowStateWritebackUseVerified -ErrorAction SilentlyContinue) -and (Test-QCWorkflowStateWritebackUseVerified -Config $Config)){
+                $writeResult = Set-PWDocumentWorkflowStateVerified -Config $(if($Config){$Config}else{@{}}) -FolderPath $folderPath -DocumentName $docName -DocumentGuid $guid -TargetState $StateName -WriteScope 'workflow' -IsLaneAuthority:$false
+                $changed=[bool]$writeResult.applied; $verified=[bool]$writeResult.verified
+                if(-not $verified){ return New-QCFailureResult -Code 'PACKAGE_STATE_WRITE_UNVERIFIED' -Message 'Package workflow state write did not verify after read-back.' -Data @{ role=$role; documentGuid=$guid; readBackState=$writeResult.readBackState } }
+            } elseif(Get-Command _PWD-InvokeSetPwDocumentState -ErrorAction SilentlyContinue){
+                $writeResult = _PWD-InvokeSetPwDocumentState -Document $doc -StateName $StateName -GuardContext @{ callSite='Set-QCPackageState'; config=$Config; folderPath=$folderPath; documentName=$docName; documentGuid=$guid; writeScope='workflow' }
+                $changed=[bool]$writeResult.applied; $verified=[bool]$writeResult.verified
+                if((Get-Command Test-QCWorkflowStateWritebackUseVerified -ErrorAction SilentlyContinue) -and (Test-QCWorkflowStateWritebackUseVerified -Config $Config) -and -not $verified){ return New-QCFailureResult -Code 'PACKAGE_STATE_WRITE_UNVERIFIED' -Message 'Package workflow state write did not verify after read-back.' -Data @{ role=$role; documentGuid=$guid; readBackState=$writeResult.readBackState } }
+            } else { return New-QCFailureResult -Code 'PACKAGE_STATE_CMDLET_MISSING' -Message 'Set-PWDocumentState is not available.' -Data @{ role=$role; documentGuid=$guid } }
         }
-        $actions.Add([pscustomobject]@{ Role=$role; DocumentGuid=$guid; CurrentState=$cur; TargetState=$StateName; Planned=$planned; Changed=$changed; DryRun=[bool]$DryRun }) | Out-Null
+        $actions.Add([pscustomobject]@{ Role=$role; DocumentGuid=$guid; CurrentState=$cur; TargetState=$StateName; Planned=$planned; Changed=$changed; Verified=$verified; DryRun=[bool]$DryRun }) | Out-Null
     }
     _QCSP-Log -Event 'PACKAGE_STATE_SYNCED' -Level 'Information' -Message 'QC package state sync planned or completed.' -Data @{ packageId=$Package.PackageId; state=$StateName; dryRun=[bool]$DryRun; actions=@($actions) }
     return New-QCSuccessResult -Code 'PACKAGE_STATE_SYNCED' -Message 'QC package state sync planned or completed.' -Data @{ actions=@($actions); dryRun=[bool]$DryRun }

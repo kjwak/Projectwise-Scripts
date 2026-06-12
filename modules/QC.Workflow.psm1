@@ -1294,7 +1294,7 @@ function Get-QCWorkflowSettings {
         stateAfterPrependByTrigger = @{}
         autoSetState = $false
         autoWriteAttributes = $true
-        stateWriteback = @{ useForce = $true }
+        stateWriteback = @{ useForce = $true; useVerified = $true }
         attributeMap = _QCW-DefaultAttributeMap
         attributeWritebackExcludeDisabled = $false
         attributeWritebackExclude = @()
@@ -1371,6 +1371,7 @@ function Get-QCWorkflowSettings {
     }
     if ($settings.stateWriteback) {
         try { $settings.stateWriteback.useForce = [bool]$settings.stateWriteback.useForce } catch { $settings.stateWriteback.useForce = $true }
+        try { $settings.stateWriteback.useVerified = [bool]$settings.stateWriteback.useVerified } catch { $settings.stateWriteback.useVerified = $true }
     }
     if ($settings.attributeWritebackExclude -isnot [System.Array] -and $null -ne $settings.attributeWritebackExclude) {
         $settings.attributeWritebackExclude = @($settings.attributeWritebackExclude)
@@ -1389,6 +1390,7 @@ function Get-QCWorkflowStateWritebackSettings {
     param([hashtable]$Config = $null)
 
     $useForce = $true
+    $useVerified = $true
     if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
         $wf = Get-QCWorkflowSettings -Config $Config
         if ($wf -and $wf.stateWriteback) {
@@ -1396,15 +1398,24 @@ function Get-QCWorkflowStateWritebackSettings {
             if ($sb -and $sb.ContainsKey('useForce')) {
                 try { $useForce = [bool]$sb.useForce } catch { }
             }
+            if ($sb -and $sb.ContainsKey('useVerified')) {
+                try { $useVerified = [bool]$sb.useVerified } catch { }
+            }
         }
     }
-    return @{ useForce = $useForce }
+    return @{ useForce = $useForce; useVerified = $useVerified }
 }
 
 function Test-QCWorkflowStateWritebackUseForce {
     [CmdletBinding()]
     param([hashtable]$Config = $null)
     return (Get-QCWorkflowStateWritebackSettings -Config $Config).useForce
+}
+
+function Test-QCWorkflowStateWritebackUseVerified {
+    [CmdletBinding()]
+    param([hashtable]$Config = $null)
+    return (Get-QCWorkflowStateWritebackSettings -Config $Config).useVerified
 }
 
 function Test-QCWorkflowConfig {
@@ -1699,8 +1710,7 @@ function Set-PWQCWorkflowState {
     $laneIndependentInitialPrepend = $false
     $laneTargetState = $StateName
     $referenceState = ''
-    # The lane PDF is the process record. Source PDF and DGN are references only.
-    # For check/review prepends, do not write workflow state or process type back to source/reference siblings.
+    # The lane PDF is the process record. Stem PDF returns to In Development via verified writeback; DGN is not written.
     # Success notification requires verified lane PDF state.
     if ($Context) {
         $prependTrigger = if ($Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) { [string]$Context.prependTrigger } else { '' }
@@ -1761,7 +1771,33 @@ function Set-PWQCWorkflowState {
     }
 
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
-    if (-not $laneIndependentInitialPrepend -and (-not $document -or -not $cmd)) {
+    $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
+    $folderPath = ''
+    $docName = ''
+    $docGuid = ''
+    if ($Context) {
+        if ($Context.ContainsKey('documentPath') -and $Context.documentPath) {
+            $dp = [string]$Context.documentPath
+            if ($dp -match '\\') {
+                $folderPath = [System.IO.Path]::GetDirectoryName($dp)
+                if (-not $docName) { $docName = [System.IO.Path]::GetFileName($dp) }
+            }
+        }
+        if ($Context.ContainsKey('job') -and $Context.job) {
+            $job = $Context.job
+            if (-not $folderPath -and $job.ContainsKey('sourceFolder')) { $folderPath = [string]$job.sourceFolder }
+            if (-not $docName -and $job.ContainsKey('sourceName')) { $docName = [string]$job.sourceName }
+        }
+    }
+    if ($document) {
+        try {
+            if (-not $docGuid -and $document.PSObject.Properties['DocumentGUID']) { $docGuid = [string]$document.DocumentGUID }
+            if (-not $docName -and $document.PSObject.Properties['Name']) { $docName = [string]$document.Name }
+            if (-not $folderPath -and $document.PSObject.Properties['FolderPath']) { $folderPath = [string]$document.FolderPath }
+        } catch { }
+    }
+
+    if (-not $laneIndependentInitialPrepend -and (-not $document -or (-not $cmd -and -not (Get-Command -Name 'Set-PWDocumentWorkflowStateVerified' -ErrorAction SilentlyContinue)))) {
         $data.warnings = @('ProjectWise state update requires a document object and Set-PWDocumentState; no state change was made.')
         _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message $data.warnings[0] -Data $data
         return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_STATE_UNAVAILABLE' -Message $data.warnings[0] -Data $data
@@ -1769,46 +1805,49 @@ function Set-PWQCWorkflowState {
 
     try {
         if (-not $laneIndependentInitialPrepend) {
-            $args = @{}
-            $docParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('InputDocuments','InputDocument','Document')
-            $stateParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('StateName','State')
-            if ($docParam) { $args[$docParam] = @($document) }
-            if ($stateParam) { $args[$stateParam] = $StateName }
-            if ((Get-Command -Name 'Set-PWDocumentState').Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
-            if ($docParam -and $stateParam) { & $cmd @args -ErrorAction Stop | Out-Null }
-            elseif ($stateParam) { & $cmd $document @args -ErrorAction Stop | Out-Null }
-            else { & $cmd $document $StateName -ErrorAction Stop | Out-Null }
-            $data.changed = $true
+            $useVerifiedWrite = $false
+            if ((Get-Command -Name 'Set-PWDocumentWorkflowStateVerified' -ErrorAction SilentlyContinue) `
+                -and (Get-Command -Name 'Test-QCWorkflowStateWritebackUseVerified' -ErrorAction SilentlyContinue) `
+                -and (Test-QCWorkflowStateWritebackUseVerified -Config $cfg) `
+                -and -not (_QCW-IsNullOrWhiteSpace $folderPath) -and -not (_QCW-IsNullOrWhiteSpace $docName)) {
+                $useVerifiedWrite = $true
+            }
+            if ($useVerifiedWrite) {
+                $writeResult = Set-PWDocumentWorkflowStateVerified -Config $(if ($cfg) { $cfg } else { @{} }) `
+                    -FolderPath $folderPath -DocumentName $docName -DocumentGuid $docGuid `
+                    -TargetState $StateName -QcProcessType $(if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }) `
+                    -DryRun:$DryRun -WorkflowName ([string]$Settings.expectedWorkflowName) `
+                    -IsLaneAuthority:$false -WriteScope 'workflow'
+                if (-not $writeResult.verified) {
+                    throw "Workflow state write unverified for '$docName' (read-back: '$($writeResult.readBackState)', target: '$StateName')."
+                }
+                $data.changed = [bool]$writeResult.applied
+                $data.stateWriteVerified = $true
+                $data.stateWriteResult = $writeResult
+            } elseif (Get-Command -Name '_PWD-InvokeSetPwDocumentState' -ErrorAction SilentlyContinue) {
+                $writeResult = _PWD-InvokeSetPwDocumentState -Document $document -StateName $StateName -GuardContext @{
+                    callSite = 'Set-PWQCWorkflowState.primary'
+                    config = $cfg
+                    folderPath = $folderPath
+                    documentName = $docName
+                    documentGuid = $docGuid
+                    dryRun = $DryRun
+                    writeScope = 'workflow'
+                }
+                $data.changed = [bool]$writeResult.applied
+                $data.stateWriteVerified = [bool]$writeResult.verified
+                $data.stateWriteResult = $writeResult
+                if ((Get-Command -Name 'Test-QCWorkflowStateWritebackUseVerified' -ErrorAction SilentlyContinue) `
+                    -and (Test-QCWorkflowStateWritebackUseVerified -Config $cfg) -and -not $writeResult.verified) {
+                    throw "Workflow state write unverified for '$docName'."
+                }
+            } else {
+                throw 'ProjectWise verified workflow state write is unavailable.'
+            }
             _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
         } else {
             $data.skippedPrimaryReferenceWrite = $true
             $data.primaryWriteReason = 'lane_pdf_is_workflow_authority'
-        }
-        $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
-
-        $folderPath = ''
-        $docName = ''
-        $docGuid = ''
-        if ($Context) {
-            if ($Context.ContainsKey('documentPath') -and $Context.documentPath) {
-                $dp = [string]$Context.documentPath
-                if ($dp -match '\\') {
-                    $folderPath = [System.IO.Path]::GetDirectoryName($dp)
-                    if (-not $docName) { $docName = [System.IO.Path]::GetFileName($dp) }
-                }
-            }
-            if ($Context.ContainsKey('job') -and $Context.job) {
-                $job = $Context.job
-                if (-not $folderPath -and $job.ContainsKey('sourceFolder')) { $folderPath = [string]$job.sourceFolder }
-                if (-not $docName -and $job.ContainsKey('sourceName')) { $docName = [string]$job.sourceName }
-            }
-        }
-        if ($document) {
-            try {
-                if (-not $docGuid -and $document.PSObject.Properties['DocumentGUID']) { $docGuid = [string]$document.DocumentGUID }
-                if (-not $docName -and $document.PSObject.Properties['Name']) { $docName = [string]$document.Name }
-                if (-not $folderPath -and $document.PSObject.Properties['FolderPath']) { $folderPath = [string]$document.FolderPath }
-            } catch { }
         }
 
         $skipSiblingSync = $false
@@ -2408,4 +2447,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowStateWritebackSettings,Test-QCWorkflowStateWritebackUseForce,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Format-QCWorkflowStateName,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowStateWritebackSettings,Test-QCWorkflowStateWritebackUseForce,Test-QCWorkflowStateWritebackUseVerified,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Format-QCWorkflowStateName,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

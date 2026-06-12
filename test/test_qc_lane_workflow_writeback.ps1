@@ -34,7 +34,7 @@ InModuleScope -ModuleName PW.Discovery {
     function _PWD-ResolvePwDocumentInFolder { param($DocByGuid, $FolderPath, $DocumentName, $DocumentGuid) return [pscustomobject]@{ DocumentGUID = ('guid-' + $DocumentName); Name = $DocumentName } }
     function Test-QCWorkflowStateWritebackUseForce { param($Config) return $true }
     function Set-PWDocumentWorkflowStateVerified {
-        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName)
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority)
         $script:stateTargets += [string]$DocumentName
         return @{
             documentGuid = 'guid-' + $DocumentName
@@ -45,10 +45,12 @@ InModuleScope -ModuleName PW.Discovery {
             applied = $true
             verified = $true
             usedForce = $true
+            isLaneAuthority = [bool]$IsLaneAuthority
             commandShape = "Set-PWDocumentState -InputDocuments @(`$cleanDoc) -State '$TargetState' -Force"
         }
     }
 
+    $stemPdf = '080J082001ab001.pdf'
     foreach ($lane in @('review', 'check')) {
         $script:stateTargets = @()
         $script:processResetCalled = $false
@@ -57,11 +59,14 @@ InModuleScope -ModuleName PW.Discovery {
             -DocumentName '080J082001ab001.pdf' -DocumentGuid 'stem-guid' -QcProcessType $lane `
             -ExpectedLanePdfName $expectedPdf -LaneTargetState 'Originated' -ReferenceState 'In Development'
         Assert-Eq $split.lanePdfName $expectedPdf "$lane prepend targets expected lane PDF"
-        Assert-False $split.writeReferenceStates "$lane prepend does not write reference states"
+        Assert-Eq $split.stemPdfName $stemPdf "$lane prepend resolves stem PDF name"
+        Assert-True $split.writeStemPdfReferenceState "$lane prepend writes stem PDF reference state"
         Assert-False $script:processResetCalled "$lane prepend does not reset source/DGN process type by default"
         $uniqueTargets = @($script:stateTargets | Select-Object -Unique)
-        Assert-Eq $uniqueTargets.Count 1 "$lane prepend writes lane PDF state only"
+        Assert-Eq $uniqueTargets.Count 2 "$lane prepend writes lane PDF and stem PDF states only"
         Assert-Eq $uniqueTargets[0] $expectedPdf "$lane prepend targets expected lane PDF"
+        Assert-True ($uniqueTargets -contains $stemPdf) "$lane prepend returns stem PDF to reference state"
+        Assert-False ($uniqueTargets -contains ($stemPdf -replace '\.pdf$', '.dgn')) "$lane prepend does not write DGN state"
     }
 }
 
@@ -83,7 +88,7 @@ InModuleScope -ModuleName PW.Discovery {
     function _PWD-ResolvePwDocumentInFolder { param($DocByGuid, $FolderPath, $DocumentName, $DocumentGuid) return [pscustomobject]@{ DocumentGUID = 'lane-guid'; Name = $DocumentName } }
     function Test-QCWorkflowStateWritebackUseForce { param($Config) return $true }
     function Set-PWDocumentWorkflowStateVerified {
-        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName)
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority)
         return @{
             documentGuid = 'lane-guid'
             documentName = $DocumentName
@@ -93,6 +98,7 @@ InModuleScope -ModuleName PW.Discovery {
             applied = $true
             verified = $false
             usedForce = $true
+            isLaneAuthority = [bool]$IsLaneAuthority
             commandShape = "Set-PWDocumentState -InputDocuments @(`$cleanDoc) -State '$TargetState' -Force"
         }
     }
