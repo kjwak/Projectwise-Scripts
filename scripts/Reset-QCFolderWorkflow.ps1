@@ -608,8 +608,8 @@ WHERE id IN (
             foreach ($k in @($deleted.Keys)) {
                 $summary.totalRowsDeleted += [long]$deleted[$k]
             }
-            if ($deleted.ContainsKey('sheet_package_qc_pdfs')) {
-                $summary.sheetPackageQcPdfsDeleted = [long]$deleted.sheet_package_qc_pdfs
+            if ($null -ne $deleted['sheet_package_qc_pdfs']) {
+                $summary.sheetPackageQcPdfsDeleted = [long]$deleted['sheet_package_qc_pdfs']
             }
 
             if (-not $SkipSheetIndexUpdate.IsPresent) {
