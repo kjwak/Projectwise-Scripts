@@ -1,5 +1,4 @@
-# Post-Initiate Origination prepend: lane PDF -> Originated, stem/DGN -> In Development;
-# stem/DGN qc_process_type -> Production; lane QC PDFs keep lane type and are never overwritten.
+# Post-Initiate Origination prepend: lane PDF -> Originated; reference docs are not workflow authorities.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -12,9 +11,9 @@ function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
 function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
-# initialQcPdf resets stem/DGN qc_process_type to Production (lane PDFs excluded)
+Assert-False (Test-QCResetProcessTypeAfterLanePrepend -Config @{}) 'ResetProcessTypeAfterLanePrepend defaults false'
 Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'production' -Config @{}) 'production lane default ResetToProductionAfterPrepend is false'
-Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane resets by default'
+Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane does not reset by default'
 
 # Lane QC PDFs are never modified by associated review/process type sync (legacy path only)
 InModuleScope -ModuleName PW.Discovery {
@@ -66,15 +65,8 @@ InModuleScope -ModuleName PW.Discovery {
     function Update-QCSheetIndexPwStateName { param($Config, $DocumentGuid, $PwStateName) return $true }
     function Get-PWQcPdfLaneFromDocumentName { param($DocumentName) if ($DocumentName -match '(?i)-rev\.pdf$') { return 'review' } return $null }
     function Update-SheetPackageQcPdfLaneState { param($Config, $DocumentGuid, $CurrentPwState, $QcProcessType) return $true }
-    $script:reviewTypeSync = $null
-    $script:stemProcessReset = $null
-    function _PWD-SyncReferenceSheetProcessTypeAttributes {
-        param($Config, $DocumentGuid, $DocumentName, $FolderPath, $CanonicalProcessType, $WatchRoot, $LastAuditEventAt, $DryRun)
-        $script:stemProcessReset = @{
-            documentName = $DocumentName
-            canonicalProcessType = $CanonicalProcessType
-        }
-    }
+    function Test-QCResetProcessTypeAfterLanePrepend { param($Config) return $false }
+    function Get-QCWorkflowSettings { param($Config) return @{ expectedWorkflowName = 'TYPSA QC' } }
 
     $split = Sync-PWPostInitialPrependLaneStates -Config @{} -FolderPath 'Drawings\X' `
         -DocumentName 'CA001.pdf' -DocumentGuid 'stem-guid' -QcProcessType 'review' `
@@ -82,7 +74,8 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $split.lanePdfName 'CA001-rev.pdf' 'uses ExpectedLanePdfName'
     Assert-Eq $split.laneTargetState 'Originated' 'lane target preserved'
     Assert-Eq $split.referenceState 'In Development' 'reference target preserved'
-    Assert-Eq $script:stemProcessReset.canonicalProcessType 'production' 'resets stem/DGN qc_process_type via prepend path'
+    Assert-False $split.writeReferenceStates 'review prepend does not write reference workflow states'
+    Assert-Eq $split.processTypeReset.reason 'reset_disabled' 'process type reset skipped by default'
     Assert-True $split.laneProcessTypeEnsure.ensured 'sets lane qc_process_type when unset'
     Assert-Eq $split.laneProcessTypeEnsure.toValue 'Review' 'lane qc_process_type matches triggering review lane'
 
@@ -149,7 +142,8 @@ Assert-True $result.IsSuccess 'initialQcPdf state write should succeed'
 Assert-True ($null -ne $result.Data.lanePostPrependSplit) 'lane split should run for initialQcPdf even when sibling sync would be enabled'
 Assert-Eq $result.Data.lanePostPrependSplit.lanePdfName 'CA001-prod.pdf' 'lane split uses expected lane PDF name'
 Assert-True (-not $result.Data.sheetStateSync) 'sibling sync must not run after lane-independent initial prepend'
-Assert-Eq $script:stateWrites[0] 'In Development' 'stem primary write should target In Development'
+Assert-Eq $script:stateWrites.Count 0 'stem primary write skipped; lane PDF is workflow authority'
+Assert-True $result.Data.skippedPrimaryReferenceWrite 'marks skipped primary reference write'
 Assert-True $ctx.laneIndependentInitialPrepend 'context marks lane-independent prepend'
 
 Write-Host 'test_qc_post_initial_prepend_states: OK' -ForegroundColor Green

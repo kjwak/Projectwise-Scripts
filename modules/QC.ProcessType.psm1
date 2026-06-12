@@ -35,6 +35,7 @@ function _QCPT-DefaultProcessTypeSettings {
         DefaultProcessType = 'production'
         EnableLegacySiblingStateSync = $false
         EnableLegacyReviewTypeAttributeSync = $false
+        ResetProcessTypeAfterLanePrepend = $false
         ProcessTypes = @{
             production = @{
                 PdfSuffix = 'prod'
@@ -44,13 +45,13 @@ function _QCPT-DefaultProcessTypeSettings {
             }
             check = @{
                 PdfSuffix = 'chk'
-                ResetToProductionAfterPrepend = $true
+                ResetToProductionAfterPrepend = $false
                 SyncWithSiblingSheets = $false
                 DefaultStamp = 'Check'
             }
             review = @{
                 PdfSuffix = 'rev'
-                ResetToProductionAfterPrepend = $true
+                ResetToProductionAfterPrepend = $false
                 SyncWithSiblingSheets = $false
                 DefaultStamp = 'Review'
             }
@@ -280,12 +281,33 @@ function Test-QCProcessTypeSyncsWithSiblingSheets {
     return ($normalized -eq 'production')
 }
 
+function Test-QCResetProcessTypeAfterLanePrepend {
+    <#
+    .SYNOPSIS
+    When true, prepend may reset QC_Process_Type on the control (source) PDF only after lane prepend.
+    Default is false; DGN, lane PDFs, and siblings are never reset.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null
+    )
+    $settings = Get-QCProcessTypeSettings -Config $Config
+    if ($settings.ContainsKey('ResetProcessTypeAfterLanePrepend')) {
+        try { return [bool]$settings.ResetProcessTypeAfterLanePrepend } catch { }
+    }
+    if ($settings.ContainsKey('resetProcessTypeAfterLanePrepend')) {
+        try { return [bool]$settings.resetProcessTypeAfterLanePrepend } catch { }
+    }
+    return $false
+}
+
 function Test-QCProcessTypeResetsAfterPrepend {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ProcessType,
         [hashtable]$Config = $null
     )
+    if (-not (Test-QCResetProcessTypeAfterLanePrepend -Config $Config)) { return $false }
     $normalized = Normalize-QCProcessType -ProcessType $ProcessType
     if (-not $normalized) { return $false }
     $settings = Get-QCProcessTypeSettings -Config $Config
@@ -299,7 +321,7 @@ function Test-QCProcessTypeResetsAfterPrepend {
             try { return [bool]$entry.resetToProductionAfterPrepend } catch { }
         }
     }
-    return ($normalized -in @('check', 'review'))
+    return $false
 }
 
 function Get-PWQcPdfLaneFromDocumentName {
@@ -750,6 +772,7 @@ Export-ModuleMember -Function `
     Test-QCLegacySiblingStateSyncEnabled, `
     Test-QCLegacyReviewTypeAttributeSyncEnabled, `
     Test-QCProcessTypeSyncsWithSiblingSheets, `
+    Test-QCResetProcessTypeAfterLanePrepend, `
     Test-QCProcessTypeResetsAfterPrepend, `
     Get-PWQcPdfLaneFromDocumentName, `
     Test-PWQcPdfLaneSuffix, `

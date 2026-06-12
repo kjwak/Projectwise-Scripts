@@ -576,6 +576,15 @@ function _QCW-InvokeStateChangeNotification {
         } elseif ($job -and $job.metadata -is [hashtable] -and $job.metadata.qcProcessType) {
             $notifJob.metadata['qcProcessType'] = [string]$job.metadata.qcProcessType
         }
+        if ($Context -and $Context.ContainsKey('expectedLanePdfName') -and -not (_QCW-IsNullOrWhiteSpace $Context.expectedLanePdfName)) {
+            $notifJob.metadata['expectedLanePdfName'] = [string]$Context.expectedLanePdfName
+            $notifJob.sourceName = [string]$Context.expectedLanePdfName
+        } elseif ($Context -and $Context.ContainsKey('notificationLaneDocumentName') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentName)) {
+            $notifJob.sourceName = [string]$Context.notificationLaneDocumentName
+        }
+        if ($Context -and $Context.ContainsKey('notificationLaneDocumentGuid') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentGuid)) {
+            $notifJob.metadata['documentGuid'] = [string]$Context.notificationLaneDocumentGuid
+        }
         if ($Context -and $Context.ContainsKey('transitionSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.transitionSource)) {
             $notifJob.metadata['transitionSource'] = [string]$Context.transitionSource
         } elseif ($Context -and $Context.ContainsKey('notificationStateSource') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationStateSource)) {
@@ -618,8 +627,20 @@ function _QCW-InvokeStateChangeNotification {
         } elseif (-not $notifJob.sourceName -and $Document) {
             try {
                 $derivedName = [string]$Document.Name
-                if ($derivedName -match '(?i)-qc\.pdf$') {
-                    $notifJob.sourceName = [System.IO.Path]::GetFileNameWithoutExtension($derivedName) + '.pdf'
+                if ($derivedName -match '(?i)-(prod|chk|rev)\.pdf$') {
+                    $notifJob.sourceName = $derivedName
+                } elseif ($derivedName -match '(?i)-qc\.pdf$') {
+                    $laneTypeForName = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { 'production' }
+                    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
+                        $stem = Get-PWSheetStemFromDocumentName -DocumentName $derivedName
+                        if (-not (_QCW-IsNullOrWhiteSpace $stem)) {
+                            $expected = Get-QCLaneQcPdfExpectedName -SheetBaseName $stem -ProcessType $laneTypeForName -Config $Config
+                            if ($expected) { $notifJob.sourceName = [string]$expected }
+                        }
+                    }
+                    if (-not $notifJob.sourceName) {
+                        $notifJob.sourceName = [System.IO.Path]::GetFileNameWithoutExtension($derivedName) + '.pdf'
+                    }
                 } elseif (-not (_QCW-IsNullOrWhiteSpace $derivedName)) {
                     $notifJob.sourceName = $derivedName
                 }
@@ -1273,6 +1294,7 @@ function Get-QCWorkflowSettings {
         stateAfterPrependByTrigger = @{}
         autoSetState = $false
         autoWriteAttributes = $true
+        stateWriteback = @{ useForce = $true }
         attributeMap = _QCW-DefaultAttributeMap
         attributeWritebackExcludeDisabled = $false
         attributeWritebackExclude = @()
@@ -1302,6 +1324,12 @@ function Get-QCWorkflowSettings {
             $incoming = _QCW-ToHashtable $raw[$k]
             if ($incoming) {
                 foreach ($sk in $incoming.Keys) { $settings[$k][$sk] = $incoming[$sk] }
+            }
+        }
+        elseif ($k -eq 'stateWriteback') {
+            $incoming = _QCW-ToHashtable $raw.stateWriteback
+            if ($incoming) {
+                foreach ($sk in $incoming.Keys) { $settings.stateWriteback[$sk] = $incoming[$sk] }
             }
         }
         elseif ($k -ne 'stageMap') {
@@ -1341,12 +1369,42 @@ function Get-QCWorkflowSettings {
     foreach ($boolKey in @('enabled','strictMode','dryRunWriteback','autoSetState','autoWriteAttributes','attributeWritebackExcludeDisabled')) {
         try { $settings[$boolKey] = [bool]$settings[$boolKey] } catch { }
     }
+    if ($settings.stateWriteback) {
+        try { $settings.stateWriteback.useForce = [bool]$settings.stateWriteback.useForce } catch { $settings.stateWriteback.useForce = $true }
+    }
     if ($settings.attributeWritebackExclude -isnot [System.Array] -and $null -ne $settings.attributeWritebackExclude) {
         $settings.attributeWritebackExclude = @($settings.attributeWritebackExclude)
     } elseif ($null -eq $settings.attributeWritebackExclude) {
         $settings.attributeWritebackExclude = @()
     }
     return $settings
+}
+
+function Get-QCWorkflowStateWritebackSettings {
+    <#
+    .SYNOPSIS
+    Returns qcWorkflow.stateWriteback settings. useForce defaults to true (required for verified lane writes in PWPS_DAB).
+    #>
+    [CmdletBinding()]
+    param([hashtable]$Config = $null)
+
+    $useForce = $true
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        $wf = Get-QCWorkflowSettings -Config $Config
+        if ($wf -and $wf.stateWriteback) {
+            $sb = _QCW-ToHashtable $wf.stateWriteback
+            if ($sb -and $sb.ContainsKey('useForce')) {
+                try { $useForce = [bool]$sb.useForce } catch { }
+            }
+        }
+    }
+    return @{ useForce = $useForce }
+}
+
+function Test-QCWorkflowStateWritebackUseForce {
+    [CmdletBinding()]
+    param([hashtable]$Config = $null)
+    return (Get-QCWorkflowStateWritebackSettings -Config $Config).useForce
 }
 
 function Test-QCWorkflowConfig {
@@ -1641,6 +1699,9 @@ function Set-PWQCWorkflowState {
     $laneIndependentInitialPrepend = $false
     $laneTargetState = $StateName
     $referenceState = ''
+    # The lane PDF is the process record. Source PDF and DGN are references only.
+    # For check/review prepends, do not write workflow state or process type back to source/reference siblings.
+    # Success notification requires verified lane PDF state.
     if ($Context) {
         $prependTrigger = if ($Context.ContainsKey('prependTrigger') -and $Context.prependTrigger) { [string]$Context.prependTrigger } else { '' }
         if ($prependTrigger -eq 'initialQcPdf') {
@@ -1675,7 +1736,8 @@ function Set-PWQCWorkflowState {
             $Context['referenceState'] = $referenceState
         }
     }
-    $transition = Test-QCWorkflowStateTransition -Settings $Settings -CurrentStateName $info.Data.stateName -TargetStateName $StateName -WorkflowName ([string]$Settings.expectedWorkflowName) -ValidatePath
+    $transitionTargetName = if ($laneIndependentInitialPrepend) { $laneTargetState } else { $StateName }
+    $transition = Test-QCWorkflowStateTransition -Settings $Settings -CurrentStateName $info.Data.stateName -TargetStateName $transitionTargetName -WorkflowName ([string]$Settings.expectedWorkflowName) -ValidatePath
     $data.transition = $transition
     if ($transition.Data -and $transition.Data.warnings) { $data.warnings = @($transition.Data.warnings) }
     if (-not $transition.IsSuccess -or ($transition.Data -and $transition.Data.transitionValid -eq $false)) {
@@ -1699,24 +1761,29 @@ function Set-PWQCWorkflowState {
     }
 
     $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
-    if (-not $document -or -not $cmd) {
+    if (-not $laneIndependentInitialPrepend -and (-not $document -or -not $cmd)) {
         $data.warnings = @('ProjectWise state update requires a document object and Set-PWDocumentState; no state change was made.')
         _QCW-Log -Event 'QC_WORKFLOW_WARNING' -Level 'Warning' -Message $data.warnings[0] -Data $data
         return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) -Code 'QC_WORKFLOW_STATE_UNAVAILABLE' -Message $data.warnings[0] -Data $data
     }
 
     try {
-        $args = @{}
-        $docParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('InputDocuments','InputDocument','Document')
-        $stateParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('StateName','State')
-        if ($docParam) { $args[$docParam] = @($document) }
-        if ($stateParam) { $args[$stateParam] = $StateName }
-        if ((Get-Command -Name 'Set-PWDocumentState').Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
-        if ($docParam -and $stateParam) { & $cmd @args -ErrorAction Stop | Out-Null }
-        elseif ($stateParam) { & $cmd $document @args -ErrorAction Stop | Out-Null }
-        else { & $cmd $document $StateName -ErrorAction Stop | Out-Null }
-        $data.changed = $true
-        _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
+        if (-not $laneIndependentInitialPrepend) {
+            $args = @{}
+            $docParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('InputDocuments','InputDocument','Document')
+            $stateParam = _QCW-GetCommandParameterName -CommandName 'Set-PWDocumentState' -CandidateNames @('StateName','State')
+            if ($docParam) { $args[$docParam] = @($document) }
+            if ($stateParam) { $args[$stateParam] = $StateName }
+            if ((Get-Command -Name 'Set-PWDocumentState').Parameters.ContainsKey('ReturnBoolean')) { $args['ReturnBoolean'] = $true }
+            if ($docParam -and $stateParam) { & $cmd @args -ErrorAction Stop | Out-Null }
+            elseif ($stateParam) { & $cmd $document @args -ErrorAction Stop | Out-Null }
+            else { & $cmd $document $StateName -ErrorAction Stop | Out-Null }
+            $data.changed = $true
+            _QCW-Log -Event 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Level 'Information' -Message 'QC workflow state write succeeded.' -Data $data
+        } else {
+            $data.skippedPrimaryReferenceWrite = $true
+            $data.primaryWriteReason = 'lane_pdf_is_workflow_authority'
+        }
         $cfg = if ($Context -and $Context.ContainsKey('config')) { $Context.config } else { $null }
 
         $folderPath = ''
@@ -1835,8 +1902,28 @@ function Set-PWQCWorkflowState {
                     -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
             }
         }
+        $laneStateVerified = $true
+        $lanePreviousState = ''
+        if ($laneIndependentInitialPrepend -and $data.lanePostPrependSplit) {
+            $splitData = _QCW-ToHashtable $data.lanePostPrependSplit
+            if ($splitData) {
+                try { $laneStateVerified = [bool]$splitData.laneStateVerified } catch { $laneStateVerified = $false }
+                $lanePdfForNotify = [string]$splitData.lanePdfName
+                foreach ($upd in @($splitData.updates)) {
+                    $uh = _QCW-ToHashtable $upd
+                    if (-not $uh) { continue }
+                    if ([string]$uh.documentName -eq $lanePdfForNotify) {
+                        $lanePreviousState = [string]$uh.fromState
+                        break
+                    }
+                }
+            }
+        }
+
         $notifyPrevious = if ($laneIndependentInitialPrepend) {
-            Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
+            if (-not (_QCW-IsNullOrWhiteSpace $lanePreviousState)) { $lanePreviousState } else {
+                Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
+            }
         } else {
             $info.Data.stateName
         }
@@ -1848,6 +1935,8 @@ function Set-PWQCWorkflowState {
             }
         }
         $notifyDocument = $document
+        $notifyDocumentGuid = $docGuid
+        $notifyDocumentName = $docName
         if ($laneIndependentInitialPrepend -and $data.lanePostPrependSplit -and -not (_QCW-IsNullOrWhiteSpace $folderPath)) {
             $lanePdfName = ''
             $splitData = _QCW-ToHashtable $data.lanePostPrependSplit
@@ -1855,12 +1944,65 @@ function Set-PWQCWorkflowState {
             if (-not (_QCW-IsNullOrWhiteSpace $lanePdfName) -and (Get-Command -Name '_PWD-ResolvePwDocumentInFolder' -ErrorAction SilentlyContinue)) {
                 try {
                     $laneDoc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $folderPath -DocumentName $lanePdfName -DocumentGuid ''
-                    if ($laneDoc) { $notifyDocument = $laneDoc }
+                    if ($laneDoc) {
+                        $notifyDocument = $laneDoc
+                        $notifyDocumentName = $lanePdfName
+                        try { $notifyDocumentGuid = [string]$laneDoc.DocumentGUID } catch { }
+                    }
                 } catch { }
             }
+            if ($Context) {
+                $Context['expectedLanePdfName'] = $lanePdfName
+                $Context['notificationLaneDocumentName'] = $notifyDocumentName
+                $Context['notificationLaneDocumentGuid'] = $notifyDocumentGuid
+            }
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_LANE_CONTEXT_RESOLVED' `
+                    -Message 'Resolved notification context from verified lane PDF target.' -Data @{
+                    folderPath = $folderPath
+                    documentGuid = $notifyDocumentGuid
+                    documentName = $notifyDocumentName
+                    qcProcessType = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }
+                    previousState = $notifyPrevious
+                    currentState = $notifyCurrent
+                    laneStateVerified = [bool]$laneStateVerified
+                } | Out-Null
+            }
         }
-        $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $notifyPrevious -CurrentState $notifyCurrent -Document $notifyDocument
-        if ($notify) { $data.notification = $notify }
+
+        if ($laneIndependentInitialPrepend -and -not $laneStateVerified) {
+            $warnMsg = 'Lane PDF workflow state was not verified after write; notification skipped.'
+            $data.warnings = @($data.warnings) + @($warnMsg)
+            $data.notificationSkipped = 'lane_state_unverified'
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_NOTIFICATION_SKIPPED_UNVERIFIED_STATE' `
+                    -Message $warnMsg -Data @{
+                    folderPath = $folderPath
+                    documentName = $notifyDocumentName
+                    documentGuid = $notifyDocumentGuid
+                    qcProcessType = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }
+                    targetState = $notifyCurrent
+                    readBackUnverified = $true
+                } | Out-Null
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' `
+                    -Message 'Lane workflow writeback completed but lane PDF state was not verified.' -Data @{
+                    folderPath = $folderPath
+                    lanePdfName = if ($splitData) { [string]$splitData.lanePdfName } else { '' }
+                    qcProcessType = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }
+                    targetState = $notifyCurrent
+                    lanePostPrependSplit = $data.lanePostPrependSplit
+                } | Out-Null
+            }
+        } else {
+            $notify = _QCW-InvokeStateChangeNotification -Config $cfg -Context $Context -PreviousState $notifyPrevious -CurrentState $notifyCurrent -Document $notifyDocument
+            if ($notify) { $data.notification = $notify }
+        }
+
+        if ($laneIndependentInitialPrepend -and -not $laneStateVerified) {
+            return _QCW-NewWorkflowResult -IsSuccess (-not ([bool]$Settings.strictMode)) `
+                -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' `
+                -Message 'Lane PDF workflow state was not verified after write.' -Data $data
+        }
         return New-QCSuccessResult -Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' -Message 'QC workflow state write succeeded.' -Data $data
     } catch {
         $data.warnings = @($_.Exception.Message)
@@ -2266,4 +2408,4 @@ function Invoke-QCWorkflowWriteback {
     return New-QCSuccessResult -Code 'QC_WORKFLOW_WRITEBACK_OK' -Message 'QC workflow writeback completed.' -Data @{ enabled = $true; dryRun = $dryRun; actions = @($actions); warnings = @($warnings); settings = $settings }
 }
 
-Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Format-QCWorkflowStateName,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification
+Export-ModuleMember -Function Test-QCWorkflowConfig,Get-QCWorkflowSettings,Get-QCWorkflowStateWritebackSettings,Test-QCWorkflowStateWritebackUseForce,Get-QCWorkflowAttributeWritebackExcludeDefaults,Get-QCWorkflowDeprecationWarnings,Format-QCWorkflowStateName,Get-QCWorkflowStateName,Normalize-QCPrependTriggerKey,Resolve-QCWorkflowStateAfterPrepend,Resolve-QCWorkflowAssignee,Get-PWDocumentWorkflowInfo,Ensure-PWQCWorkflowAssignment,Test-QCWorkflowStateTransition,Set-PWQCWorkflowState,Set-PWQCAttributes,Start-QCWorkflowCycleIfReadyForQc,Advance-QCWorkflowCycleForRedlinesResubmit,Invoke-QCWorkflowWriteback,Invoke-QCWorkflowStateChangeNotification

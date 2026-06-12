@@ -1708,21 +1708,43 @@ function _QCN-ResolveQcPdfNotificationTarget {
     }
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
 
-    if ($DocumentName -match '(?i)-qc\.pdf$') {
-        $hintGuid = $DocumentGuid
-        if (_QCN-IsBlank $hintGuid) { $hintGuid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID', 'DocumentGuid', 'GUID')) }
-        $stemForResolve = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
-        if ($stemForResolve -match '(?i)-qc$') { $stemForResolve = $stemForResolve.Substring(0, $stemForResolve.Length - 3) }
-        $resolutionSource = ''
-        $liveGuid = _QCN-ResolveLiveQcPdfDocumentGuid -Config $Config -FolderPath $folderPath `
-            -QcPdfName $DocumentName -SheetStem $stemForResolve -HintGuid $hintGuid `
-            -SheetPackageId $sheetPackageId -ResolutionSource ([ref]$resolutionSource)
-        if (-not (_QCN-IsBlank $liveGuid)) { $out.documentGuid = $liveGuid }
-        if (-not (_QCN-IsBlank $resolutionSource)) { $out.resolutionSource = $resolutionSource }
+    $qcProcessType = ''
+    if ($Job) {
+        $qcProcessType = [string](_QCN-GetJobValue -Job $Job -Keys @('qcProcessType'))
+        if (_QCN-IsBlank $qcProcessType -and $Job.metadata) {
+            $md = _QCN-ToHashtable $Job.metadata
+            if ($md -and $md.qcProcessType) { $qcProcessType = [string]$md.qcProcessType }
+            if (_QCN-IsBlank $qcProcessType -and $md -and $md.expectedLanePdfName) {
+                $out.documentName = [string]$md.expectedLanePdfName
+                $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $out.documentName) } else { $DocumentPath }
+                $out.resolutionSource = 'job_expected_lane_pdf'
+                return $out
+            }
+        }
+    }
+
+    if ($DocumentName -match '(?i)-(prod|chk|rev)\.pdf$') {
+        $out.documentName = $DocumentName
         if (-not (_QCN-IsBlank $folderPath)) {
             $out.documentPath = $folderPath.TrimEnd('\') + '\' + $DocumentName
         }
+        $out.resolutionSource = 'lane_pdf_name'
         return $out
+    }
+
+    if ($DocumentName -match '(?i)-qc\.pdf$') {
+        $stemForResolve = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+        if ($stemForResolve -match '(?i)-qc$') { $stemForResolve = $stemForResolve.Substring(0, $stemForResolve.Length - 3) }
+        $normalized = _QCN-NormalizeQcPdfDocumentName -DocumentName $DocumentName -SheetStem $stemForResolve `
+            -ProcessType $qcProcessType -Config $Config
+        if (-not (_QCN-IsBlank $normalized)) {
+            $out.documentName = $normalized
+            if (-not (_QCN-IsBlank $folderPath)) {
+                $out.documentPath = $folderPath.TrimEnd('\') + '\' + $normalized
+            }
+            $out.resolutionSource = 'legacy_qc_pdf_normalized'
+            return $out
+        }
     }
 
     $triggerName = $DocumentName
@@ -1741,7 +1763,11 @@ function _QCN-ResolveQcPdfNotificationTarget {
                 $members = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $folderPath -DocumentName $triggerName -DocumentGuid $guid)
                 foreach ($m in $members) {
                     $dn = [string]$m.documentName
-                    if ($dn -match '(?i)-qc\.pdf$') {
+                    if ($dn -match '(?i)-(prod|chk|rev)\.pdf$') {
+                        if (-not (_QCN-IsBlank $qcProcessType) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+                            $memberLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+                            if ($memberLane -and $memberLane -ne (Normalize-QCProcessType -ProcessType $qcProcessType)) { continue }
+                        }
                         $out.documentName = $dn
                         $resolvedGuid = [string]$m.documentGuid
                         if (-not (_QCN-IsBlank $resolvedGuid)) {
@@ -1749,33 +1775,23 @@ function _QCN-ResolveQcPdfNotificationTarget {
                         }
                         $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $dn) } else { $DocumentPath }
                         if ($m.document) { $out.document = $m.document }
-                        $resolutionSource = ''
-                        $liveGuid = _QCN-ResolveLiveQcPdfDocumentGuid -Config $Config -FolderPath $folderPath `
-                            -QcPdfName $dn -HintGuid $out.documentGuid -SourceSheetPdfName $triggerName `
-                            -SheetPackageId $sheetPackageId -ResolutionSource ([ref]$resolutionSource)
-                        if (-not (_QCN-IsBlank $liveGuid)) { $out.documentGuid = $liveGuid }
-                        if (-not (_QCN-IsBlank $resolutionSource)) { $out.resolutionSource = $resolutionSource }
+                        $out.resolutionSource = 'associated_lane_pdf'
                         return $out
                     }
                 }
             } catch { }
         }
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($triggerName)
-        if ($out.documentName -notmatch '(?i)-qc\.pdf$') {
-            if ($stem) {
-                $qcName = $stem + '-qc.pdf'
-                $out.documentName = $qcName
-                $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $qcName) } else { $DocumentPath }
-            }
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName $triggerName
+            if (-not (_QCN-IsBlank $resolvedStem)) { $stem = $resolvedStem }
         }
-        if ($out.documentName -match '(?i)-qc\.pdf$') {
-            $resolutionSource = ''
-            $liveGuid = _QCN-ResolveLiveQcPdfDocumentGuid -Config $Config -FolderPath $folderPath `
-                -QcPdfName $out.documentName -SheetStem $stem -HintGuid $out.documentGuid `
-                -SourceSheetPdfName $triggerName -SheetPackageId $sheetPackageId `
-                -ResolutionSource ([ref]$resolutionSource)
-            if (-not (_QCN-IsBlank $liveGuid)) { $out.documentGuid = $liveGuid }
-            if (-not (_QCN-IsBlank $resolutionSource)) { $out.resolutionSource = $resolutionSource }
+        $normalized = _QCN-NormalizeQcPdfDocumentName -DocumentName $triggerName -SheetStem $stem `
+            -ProcessType $qcProcessType -Config $Config
+        if (-not (_QCN-IsBlank $normalized)) {
+            $out.documentName = $normalized
+            $out.documentPath = if ($folderPath) { ($folderPath.TrimEnd('\') + '\' + $normalized) } else { $DocumentPath }
+            $out.resolutionSource = 'expected_lane_pdf_name'
         }
     }
     return $out

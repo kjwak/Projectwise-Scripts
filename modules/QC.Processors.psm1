@@ -820,11 +820,18 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
 
     $writeback = Invoke-QCWorkflowWriteback -Config $Config -Context $ctx
     _QCP-LogPrependWorkflowWriteback -Job $Job -Config $Config -Writeback $writeback -PrependTrigger $prependTrigger
-    if ($Result.IsSuccess -and $prependTrigger -eq 'initialQcPdf') {
-        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType -Force | Out-Null
-    } elseif ($Result.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
+    if ($Result.IsSuccess -and (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
         -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
         _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
+    } elseif ($Result.IsSuccess -and (Get-Command -Name 'Test-QCResetProcessTypeAfterLanePrepend' -ErrorAction SilentlyContinue) `
+        -and -not (Test-QCResetProcessTypeAfterLanePrepend -Config $Config)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PROCESS_TYPE_RESET_SKIPPED' `
+                -Message 'Process type reset after lane prepend is disabled.' -Data @{
+                qcProcessType = $processType
+                prependTrigger = $prependTrigger
+            } | Out-Null
+        }
     }
     $strict = $false
     try {
@@ -837,7 +844,11 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
         if ($rd) { foreach ($k in $rd.Keys) { $data[$k] = $rd[$k] } }
     }
     $data['workflowWriteback'] = $writeback
-    if (-not $writeback.IsSuccess -and $strict) {
+    $writebackUnverified = ($writeback.Code -eq 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED')
+    if ($writebackUnverified) {
+        $data['laneStateVerified'] = $false
+    }
+    if ((-not $writeback.IsSuccess -or $writebackUnverified) -and $strict) {
         return New-QCFailureResult -Code 'QC_PREPEND_WORKFLOW_WRITEBACK_FAILED' -Message 'QC_PREPEND succeeded but strict QC workflow writeback failed.' -Data $data
     }
 
@@ -848,19 +859,25 @@ function _QCP-TryResetProcessTypeAfterPrepend {
     param(
         [hashtable]$Job,
         [hashtable]$Config,
-        [string]$ProcessType,
-        [switch]$Force
+        [string]$ProcessType
     )
-    if (-not $Force) {
-        if (-not (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
-        if (-not (Test-QCProcessTypeResetsAfterPrepend -ProcessType $ProcessType -Config $Config)) {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET_SKIPPED' -Message 'Process type reset not configured for lane.' -Data @{
-                    qcProcessType = $ProcessType
-                } | Out-Null
-            }
-            return @{ reset = $false; skipped = $true }
+    if (-not (Get-Command -Name 'Test-QCResetProcessTypeAfterLanePrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
+    if (-not (Test-QCResetProcessTypeAfterLanePrepend -Config $Config)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PROCESS_TYPE_RESET_SKIPPED' -Message 'Process type reset after lane prepend is disabled.' -Data @{
+                qcProcessType = $ProcessType
+            } | Out-Null
         }
+        return @{ reset = $false; skipped = $true; reason = 'reset_disabled' }
+    }
+    if (-not (Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue)) { return @{ reset = $false } }
+    if (-not (Test-QCProcessTypeResetsAfterPrepend -ProcessType $ProcessType -Config $Config)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PROCESS_TYPE_RESET_SKIPPED' -Message 'Process type reset not configured for lane.' -Data @{
+                qcProcessType = $ProcessType
+            } | Out-Null
+        }
+        return @{ reset = $false; skipped = $true }
     }
 
     $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
@@ -869,7 +886,7 @@ function _QCP-TryResetProcessTypeAfterPrepend {
     if (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
         try {
             _PWD-SyncReferenceSheetProcessTypeAttributes -Config $Config -DocumentGuid ([string]$docGuid) `
-                -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalProcessType 'production' | Out-Null
+                -DocumentName ([string]$docName) -FolderPath ([string]$folder) -CanonicalProcessType 'production' -ControlDocumentOnly | Out-Null
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PROCESS_RESET' -Message 'Reset stem/DGN qc_process_type to Production after Initiate Origination prepend.' -Data @{
                     fromProcessType = $ProcessType
@@ -1593,15 +1610,6 @@ function Invoke-QCPrependProcessor {
                     overlayEnabled = $enableOverlay
                 }
                 $laneResult = _QCP-AppendWorkflowWriteback -Result $laneSuccess -Job $Job -Config $Config -SourcePath $sourcePdf -OutputPath $overlayOutPdf -HistoryPath $null
-                if ($laneResult.IsSuccess) {
-                    $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
-                    if ($prependTrigger -eq 'initialQcPdf') {
-                        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType -Force | Out-Null
-                    } elseif ((Get-Command -Name 'Test-QCProcessTypeResetsAfterPrepend' -ErrorAction SilentlyContinue) `
-                        -and (Test-QCProcessTypeResetsAfterPrepend -ProcessType $processType -Config $Config)) {
-                        _QCP-TryResetProcessTypeAfterPrepend -Job $Job -Config $Config -ProcessType $processType | Out-Null
-                    }
-                }
                 return $laneResult
             }
         }

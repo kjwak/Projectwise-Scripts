@@ -963,7 +963,8 @@ function _PWD-LogProcessTypeUnknown {
 function _PWD-SyncReferenceSheetProcessTypeAttributes {
     <#
     .SYNOPSIS
-    Writes QC_Process_Type on stem PDF and DGN only (prepend stem reset path). Never touches lane QC PDFs or QC_Review_Type.
+    Writes QC_Process_Type on stem PDF and optionally DGN (prepend reset path). Never touches lane QC PDFs or QC_Review_Type.
+    When -ControlDocumentOnly is set, only the stem PDF is updated (not DGN or siblings).
     #>
     [CmdletBinding()]
     param(
@@ -974,7 +975,8 @@ function _PWD-SyncReferenceSheetProcessTypeAttributes {
         [Parameter(Mandatory)][string]$CanonicalProcessType,
         [string]$WatchRoot = '',
         [string]$LastAuditEventAt = '',
-        [bool]$DryRun = $false
+        [bool]$DryRun = $false,
+        [bool]$ControlDocumentOnly = $false
     )
 
     $canonicalNorm = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $CanonicalProcessType -Config $Config
@@ -1005,10 +1007,10 @@ function _PWD-SyncReferenceSheetProcessTypeAttributes {
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
     $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
-    $targetNames = @(
-        ($sheetStem + '.pdf')
-        ($sheetStem + '.dgn')
-    )
+    $targetNames = @($sheetStem + '.pdf')
+    if (-not $ControlDocumentOnly) {
+        $targetNames += ($sheetStem + '.dgn')
+    }
     $updates = @()
 
     foreach ($dn in @($targetNames)) {
@@ -1059,19 +1061,26 @@ function _PWD-SyncReferenceSheetProcessTypeAttributes {
     }
 
     if ($updates.Count -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_STEM_PROCESS_TYPE_RESET' `
-            -Message 'Reset stem/DGN QC_Process_Type after Initiate Origination prepend.' -Data @{
+        $logCode = if ($ControlDocumentOnly) { 'QC_PROCESS_TYPE_RESET_CONTROL_DOCUMENT_ONLY' } else { 'QC_PREPEND_STEM_PROCESS_TYPE_RESET' }
+        $logMsg = if ($ControlDocumentOnly) {
+            'Reset control sheet PDF QC_Process_Type after lane prepend.'
+        } else {
+            'Reset stem/DGN QC_Process_Type after Initiate Origination prepend.'
+        }
+        Write-QCJsonLog -Level 'Information' -Code $logCode `
+            -Message $logMsg -Data @{
             triggerDocumentGuid = $DocumentGuid
             triggerDocumentName = $DocumentName
             folderPath = $FolderPath
             canonicalProcessType = $canonicalNorm
+            controlDocumentOnly = [bool]$ControlDocumentOnly
             updateCount = $updates.Count
             updates = @($updates)
             dryRun = [bool]$DryRun
         } | Out-Null
     }
 
-    return @{ updates = @($updates); canonicalProcessType = $canonicalNorm; targetState = $canonicalDisplay }
+    return @{ updates = @($updates); canonicalProcessType = $canonicalNorm; targetState = $canonicalDisplay; controlDocumentOnly = [bool]$ControlDocumentOnly }
 }
 
 function Get-PWDocumentAttributesByColumns {
@@ -1627,6 +1636,239 @@ function _PWD-GetLaneIndependentAuditMembers {
     return @($match)
 }
 
+function _PWD-GetWorkflowStateFromPwDocument {
+    param(
+        [object]$Document,
+        [string]$FolderPath = '',
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = ''
+    )
+    if ($Document) {
+        foreach ($name in @('WorkflowState', 'StateName', 'State', 'WorkflowStateName', 'CurrentState')) {
+            try {
+                if ($Document.PSObject.Properties[$name]) {
+                    $v = [string]$Document.$name
+                    if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+                }
+            } catch { }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
+        try {
+            $pw = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+            if (-not [string]::IsNullOrWhiteSpace($pw)) { return [string]$pw }
+        } catch { }
+    }
+    return ''
+}
+
+function _PWD-GetCleanPwDocumentForStateChange {
+    <#
+    .SYNOPSIS
+    Reloads a ProjectWise document without attribute bags for Set-PWDocumentState.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = ''
+    )
+    $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+    if ($searchCmd) {
+        $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
+        if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
+        try {
+            $params = @{
+                FolderPath     = $apiPath
+                JustThisFolder = $true
+                DocumentName   = $DocumentName
+                ErrorAction    = 'Stop'
+            }
+            if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+            if ($searchCmd.Parameters.ContainsKey('GetAttributes')) { $params['GetAttributes'] = $false }
+            $doc = & $searchCmd @params | Select-Object -First 1
+            if ($doc) { return $doc }
+        } catch { }
+    }
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+        if ($guidCmd) {
+            try {
+                $guidParams = @{ DocumentGUIDs = @($DocumentGuid); ErrorAction = 'Stop' }
+                if ($guidCmd.Parameters.ContainsKey('GetAttributes')) { $guidParams['GetAttributes'] = $false }
+                $byGuid = & $guidCmd @guidParams | Select-Object -First 1
+                if ($byGuid) { return $byGuid }
+            } catch { }
+        }
+    }
+    return $null
+}
+
+function Set-PWDocumentWorkflowStateVerified {
+    <#
+    .SYNOPSIS
+    Writes lane PDF workflow state using clean document reload, -Force (default), and read-back verification.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$DocumentGuid = '',
+        [Parameter(Mandatory)][string]$TargetState,
+        [string]$QcProcessType = '',
+        [int]$ReadBackDelayMs = 2000,
+        [bool]$DryRun = $false,
+        [string]$WorkflowName = ''
+    )
+
+    $targetFormatted = ([string]$TargetState).Trim()
+    if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try { $targetFormatted = Format-QCWorkflowStateName -StateName $TargetState -Config $Config } catch { }
+    }
+
+    $useForce = $true
+    if (Get-Command -Name 'Test-QCWorkflowStateWritebackUseForce' -ErrorAction SilentlyContinue) {
+        try { $useForce = Test-QCWorkflowStateWritebackUseForce -Config $Config } catch { }
+    }
+
+    $commandShapeBase = "Set-PWDocumentState -InputDocuments @(`$cleanDoc) -State '$targetFormatted'"
+    if ($useForce) { $commandShapeBase += ' -Force' }
+
+    $result = @{
+        documentGuid   = ''
+        documentName   = $DocumentName
+        fromState      = ''
+        targetState    = $targetFormatted
+        readBackState  = ''
+        applied        = $false
+        verified       = $false
+        usedForce      = [bool]$useForce
+        commandShape   = $commandShapeBase
+        error          = ''
+        planned        = $false
+        qcProcessType  = [string]$QcProcessType
+        attemptedCommand = 'Set-PWDocumentState'
+    }
+
+    $cleanDoc = _PWD-GetCleanPwDocumentForStateChange -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+    if (-not $cleanDoc) {
+        $result.error = 'clean_document_not_found'
+        return $result
+    }
+
+    try { $result.documentGuid = [string]$cleanDoc.DocumentGUID } catch { }
+    if ([string]::IsNullOrWhiteSpace($result.documentGuid) -and $DocumentGuid) {
+        $result.documentGuid = [string]$DocumentGuid
+    }
+
+    $fromState = _PWD-GetWorkflowStateFromPwDocument -Document $cleanDoc -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $result.documentGuid
+    $result.fromState = [string]$fromState
+
+    function _PWD-WriteLaneStateWriteTelemetry {
+        param([string]$Code, [string]$Level, [string]$Message)
+        if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+        Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data @{
+            documentGuid   = $result.documentGuid
+            documentName   = $DocumentName
+            qcProcessType  = [string]$QcProcessType
+            fromState      = [string]$result.fromState
+            targetState    = $targetFormatted
+            commandShape   = $commandShapeBase
+            usedForce      = [bool]$useForce
+            readBackState  = [string]$result.readBackState
+            verified       = [bool]$result.verified
+            workflowName   = $WorkflowName
+            attemptedCommand = 'Set-PWDocumentState'
+            error          = [string]$result.error
+        } | Out-Null
+    }
+
+    _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_WORKFLOW_WRITEBACK_TARGET_RESOLVED' -Level 'Information' `
+        -Message 'Lane workflow state write target resolved with clean document.'
+
+    if ((_PWD-NormalizeSheetIndexValue $fromState) -eq (_PWD-NormalizeSheetIndexValue $targetFormatted)) {
+        $result.readBackState = [string]$fromState
+        $result.verified = $true
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_STATE_WRITE_VERIFIED' -Level 'Information' `
+            -Message 'Lane PDF workflow state already at target.'
+        return $result
+    }
+
+    if ($DryRun) {
+        $result.planned = $true
+        return $result
+    }
+
+    $cmd = Get-Command -Name 'Set-PWDocumentState' -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        $result.error = 'Set-PWDocumentState unavailable.'
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state write failed before read-back.'
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state write failed before read-back.'
+        return $result
+    }
+
+    try {
+        $invokeParams = @{ ErrorAction = 'Stop' }
+        $docParam = if ($cmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' }
+            elseif ($cmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' }
+            elseif ($cmd.Parameters.ContainsKey('Document')) { 'Document' }
+            else { $null }
+        $stateParam = if ($cmd.Parameters.ContainsKey('State')) { 'State' }
+            elseif ($cmd.Parameters.ContainsKey('StateName')) { 'StateName' }
+            else { $null }
+        if (-not $docParam -or -not $stateParam) {
+            throw 'Set-PWDocumentState missing InputDocuments/State parameters.'
+        }
+        $invokeParams[$docParam] = @($cleanDoc)
+        $invokeParams[$stateParam] = $targetFormatted
+        if ($useForce -and $cmd.Parameters.ContainsKey('Force')) { $invokeParams['Force'] = $true }
+        if ($cmd.Parameters.ContainsKey('ReturnBoolean')) { $invokeParams['ReturnBoolean'] = $true }
+        $writeResult = & $cmd @invokeParams
+        if ($cmd.Parameters.ContainsKey('ReturnBoolean')) {
+            try {
+                if ($writeResult -eq $false) {
+                    throw "Set-PWDocumentState returned false for state '$targetFormatted'."
+                }
+            } catch {
+                if ($_.Exception.Message -match 'returned false') { throw }
+            }
+        }
+        $result.applied = $true
+    } catch {
+        $result.error = [string]$_.Exception.Message
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state write threw or returned false.'
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state write threw or returned false.'
+        return $result
+    }
+
+    if ($ReadBackDelayMs -gt 0) { Start-Sleep -Milliseconds $ReadBackDelayMs }
+
+    $readDoc = _PWD-GetCleanPwDocumentForStateChange -FolderPath $FolderPath -DocumentName $DocumentName `
+        -DocumentGuid $result.documentGuid
+    $readBack = _PWD-GetWorkflowStateFromPwDocument -Document $readDoc -FolderPath $FolderPath `
+        -DocumentName $DocumentName -DocumentGuid $result.documentGuid
+    $result.readBackState = [string]$readBack
+    $result.verified = ((_PWD-NormalizeSheetIndexValue $readBack) -eq (_PWD-NormalizeSheetIndexValue $targetFormatted))
+
+    if ($result.verified) {
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_STATE_WRITE_VERIFIED' -Level 'Information' `
+            -Message 'Lane PDF workflow state verified after write.'
+    } else {
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_LANE_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state did not read back at target after write.'
+        _PWD-WriteLaneStateWriteTelemetry -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' -Level 'Warning' `
+            -Message 'Lane workflow state did not read back at target after write.'
+    }
+
+    return $result
+}
+
 function _PWD-InvokeSetPwDocumentState {
     param(
         [Parameter(Mandatory)][object]$Document,
@@ -1952,8 +2194,11 @@ function _PWD-EnsureLaneQcPdfProcessTypeAttribute {
 function Sync-PWPostInitialPrependLaneStates {
     <#
     .SYNOPSIS
-    After initial QC prepend (Initiate Origination), sets lane QC PDF to Originated and reverts stem PDF + DGN to production state.
-    Resets qc_process_type to Production on stem/DGN only; lane QC PDFs keep lane-specific types and are never overwritten.
+    After initial QC prepend (Initiate Origination), sets the active lane QC PDF to Originated.
+    .DESCRIPTION
+    The lane PDF is the process record. The source PDF and DGN are references only.
+    For check/review prepends, do not write workflow state or process type back to source/reference siblings.
+    Success notification requires verified lane PDF state.
     #>
     [CmdletBinding()]
     param(
@@ -1991,6 +2236,9 @@ function Sync-PWPostInitialPrependLaneStates {
         return @{ updates = @(); skipped = $true; skipReason = 'empty_target_state' }
     }
 
+    # check/review: lane PDF only. production: lane PDF only (reference docs are not workflow authorities).
+    $writeReferenceStates = $false
+
     $sheetStem = ''
     if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
         $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
@@ -2017,17 +2265,81 @@ function Sync-PWPostInitialPrependLaneStates {
         ($sheetStem + '.dgn')
     )
     $stateUpdates = [System.Collections.Generic.List[object]]::new()
+    $workflowName = ''
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try { $workflowName = [string](Get-QCWorkflowSettings -Config $Config).expectedWorkflowName } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_WORKFLOW_WRITEBACK_TARGET_RESOLVED' `
+            -Message 'Resolved lane workflow writeback target for initial prepend.' -Data @{
+            folderPath = $FolderPath
+            sheetStem = $sheetStem
+            qcProcessType = $laneType
+            lanePdfName = $lanePdfName
+            laneTargetState = $laneTarget
+            referenceState = $referenceTarget
+            writeReferenceStates = [bool]$writeReferenceStates
+            workflowName = $workflowName
+        } | Out-Null
+    }
 
     function _PWD-ApplyPostPrependState {
         param(
             [string]$TargetName,
             [string]$TargetGuid,
-            [string]$TargetState
+            [string]$TargetState,
+            [bool]$IsLaneAuthority = $false
         )
         if ([string]::IsNullOrWhiteSpace($TargetName)) { return }
+        $dg = [string]$TargetGuid
+        if ($IsLaneAuthority) {
+            $writeResult = Set-PWDocumentWorkflowStateVerified -Config $Config -FolderPath $FolderPath `
+                -DocumentName $TargetName -DocumentGuid $TargetGuid -TargetState $TargetState `
+                -QcProcessType $laneType -DryRun:$DryRun -WorkflowName $workflowName
+            $change = @{
+                documentGuid = [string]$writeResult.documentGuid
+                documentName = $TargetName
+                fromState = [string]$writeResult.fromState
+                toState = $TargetState
+                applied = [bool]$writeResult.applied
+                planned = [bool]$writeResult.planned
+                verified = [bool]$writeResult.verified
+                readBackState = [string]$writeResult.readBackState
+                usedForce = [bool]$writeResult.usedForce
+                commandShape = [string]$writeResult.commandShape
+                isLaneAuthority = $true
+                qcProcessType = $laneType
+                attemptedCommand = 'Set-PWDocumentState'
+                workflowName = $workflowName
+                error = [string]$writeResult.error
+            }
+            if ([string]$writeResult.error) {
+                $stateUpdates.Add($change) | Out-Null
+                return
+            }
+            if ($change.verified -and -not $DryRun) {
+                $dg = [string]$change.documentGuid
+                if ($dg -and (Get-Command -Name 'Update-QCSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+                    try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $TargetState) } catch { }
+                }
+                if ($dg -and (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue)) {
+                    $laneForRow = Get-PWQcPdfLaneFromDocumentName -DocumentName $TargetName
+                    if ($laneForRow) {
+                        try {
+                            [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $dg `
+                                -CurrentPwState $TargetState -QcProcessType $laneForRow)
+                        } catch { }
+                    }
+                }
+            }
+            $stateUpdates.Add($change) | Out-Null
+            return
+        }
+
         $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $TargetGuid
         if (-not $doc) { return }
-        $dg = if ($TargetGuid) { [string]$TargetGuid } else { try { [string]$doc.DocumentGUID } catch { '' } }
+        if (-not $dg) { try { $dg = [string]$doc.DocumentGUID } catch { $dg = '' } }
         $currentState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
         $change = @{
             documentGuid = $dg
@@ -2036,9 +2348,14 @@ function Sync-PWPostInitialPrependLaneStates {
             toState = $TargetState
             applied = $false
             planned = $false
+            isLaneAuthority = $false
+            qcProcessType = $laneType
+            attemptedCommand = 'Set-PWDocumentState'
+            workflowName = $workflowName
         }
         if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $TargetState)) {
             $change.skipped = 'already_at_target'
+            $change.verified = $true
             $stateUpdates.Add($change) | Out-Null
             return
         }
@@ -2059,46 +2376,23 @@ function Sync-PWPostInitialPrependLaneStates {
             $change.applied = $true
             $readBack = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
             $change.readBackState = [string]$readBack
-            if ((_PWD-NormalizeSheetIndexValue $readBack) -ne (_PWD-NormalizeSheetIndexValue $TargetState)) {
-                $change.verified = $false
-                try {
-                    _PWD-InvokeSetPwDocumentState -Document $doc -StateName $TargetState -GuardContext @{
-                        callSite = 'Sync-PWPostInitialPrependLaneStates_verify_retry'
-                        documentName = $TargetName
-                        folderPath = $FolderPath
-                        sourceVariableName = 'target'
-                        livePwState = [string]$readBack
-                        config = $Config
-                    }
-                    $readBack = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $TargetName -DocumentGuid $dg
-                    $change.readBackState = [string]$readBack
-                    $change.verified = ((_PWD-NormalizeSheetIndexValue $readBack) -eq (_PWD-NormalizeSheetIndexValue $TargetState))
-                } catch {
-                    $change.verifyRetryError = [string]$_.Exception.Message
-                }
-                if ($change.verified -eq $false -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-                    Write-QCJsonLog -Level 'Warning' -Code 'QC_POST_PREPEND_STATE_VERIFY_FAILED' `
-                        -Message 'Post-prepend workflow state did not read back at target after write.' -Data @{
-                        folderPath = $FolderPath
-                        documentName = $TargetName
-                        targetState = $TargetState
-                        readBackState = [string]$readBack
-                    } | Out-Null
-                }
-            } else {
-                $change.verified = $true
+            $change.verified = ((_PWD-NormalizeSheetIndexValue $readBack) -eq (_PWD-NormalizeSheetIndexValue $TargetState))
+            if ($change.verified -eq $false -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_WORKFLOW_STATE_WRITE_UNVERIFIED' `
+                    -Message 'Post-prepend workflow state did not read back at target after write.' -Data @{
+                    folderPath = $FolderPath
+                    documentGuid = $dg
+                    documentName = $TargetName
+                    qcProcessType = $laneType
+                    fromState = [string]$change.fromState
+                    targetState = $TargetState
+                    readBackState = [string]$readBack
+                    workflowName = $workflowName
+                    attemptedCommand = 'Set-PWDocumentState'
+                } | Out-Null
             }
             if ($dg -and (Get-Command -Name 'Update-QCSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
                 try { [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $dg -PwStateName $TargetState) } catch { }
-            }
-            if ($dg -and (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue)) {
-                $laneForRow = Get-PWQcPdfLaneFromDocumentName -DocumentName $TargetName
-                if ($laneForRow) {
-                    try {
-                        [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $dg `
-                            -CurrentPwState $TargetState -QcProcessType $laneForRow)
-                    } catch { }
-                }
             }
         } catch {
             $change.error = [string]$_.Exception.Message
@@ -2106,12 +2400,28 @@ function Sync-PWPostInitialPrependLaneStates {
         $stateUpdates.Add($change) | Out-Null
     }
 
-    foreach ($refName in @($referenceNames)) {
-        _PWD-ApplyPostPrependState -TargetName $refName -TargetGuid '' -TargetState $referenceTarget
+    if ($writeReferenceStates) {
+        foreach ($refName in @($referenceNames)) {
+            _PWD-ApplyPostPrependState -TargetName $refName -TargetGuid '' -TargetState $referenceTarget
+        }
     }
 
     if (-not $DryRun) {
-        if (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
+        $shouldResetProcessType = $false
+        if (Get-Command -Name 'Test-QCResetProcessTypeAfterLanePrepend' -ErrorAction SilentlyContinue) {
+            $shouldResetProcessType = Test-QCResetProcessTypeAfterLanePrepend -Config $Config
+        }
+        if (-not $shouldResetProcessType) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PROCESS_TYPE_RESET_SKIPPED' `
+                    -Message 'Process type reset after lane prepend is disabled.' -Data @{
+                    folderPath = $FolderPath
+                    qcProcessType = $laneType
+                    lanePdfName = $lanePdfName
+                } | Out-Null
+            }
+            $processTypeReset = @{ skipped = $true; reason = 'reset_disabled' }
+        } elseif (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
             $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
             $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
                 [string]$DocumentName
@@ -2119,28 +2429,55 @@ function Sync-PWPostInitialPrependLaneStates {
                 $sheetStem + '.pdf'
             }
             try {
-                _PWD-SyncReferenceSheetProcessTypeAttributes -Config $Config -DocumentGuid $resetGuid `
-                    -DocumentName $resetName -FolderPath $FolderPath -CanonicalProcessType 'production' -DryRun:$DryRun
-            } catch { }
+                $processTypeReset = _PWD-SyncReferenceSheetProcessTypeAttributes -Config $Config -DocumentGuid $resetGuid `
+                    -DocumentName $resetName -FolderPath $FolderPath -CanonicalProcessType 'production' `
+                    -DryRun:$DryRun -ControlDocumentOnly
+            } catch {
+                $processTypeReset = @{ skipped = $true; error = [string]$_.Exception.Message }
+            }
+        } else {
+            $processTypeReset = @{ skipped = $true; reason = 'sync_unavailable' }
         }
         $laneProcessType = _PWD-EnsureLaneQcPdfProcessTypeAttribute -Config $Config -FolderPath $FolderPath `
             -LanePdfName $lanePdfName -QcProcessType $laneType -DryRun:$DryRun
     } else {
+        $processTypeReset = @{ planned = $true }
         $laneProcessType = @{ planned = $true }
     }
 
-    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget
+    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget -IsLaneAuthority:$true
+
+    $laneStateVerified = $false
+    $laneUpdateFound = $false
+    $unverifiedUpdates = [System.Collections.Generic.List[object]]::new()
+    foreach ($upd in @($stateUpdates)) {
+        $u = $upd
+        if ($u -isnot [hashtable]) {
+            try { $u = @{}; foreach ($p in $upd.PSObject.Properties) { $u[$p.Name] = $p.Value } } catch { continue }
+        }
+        if ([string]$u.documentName -ne $lanePdfName) { continue }
+        $laneUpdateFound = $true
+        if ($u.verified -eq $true -or [string]$u.skipped -eq 'already_at_target') {
+            $laneStateVerified = $true
+        } elseif ($u.applied -eq $true -and $u.verified -eq $false) {
+            $unverifiedUpdates.Add($u) | Out-Null
+        }
+    }
+    $allVerified = $laneUpdateFound -and ($unverifiedUpdates.Count -eq 0) -and $laneStateVerified
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level 'Information' -Code 'QC_POST_PREPEND_LANE_SPLIT' `
-            -Message 'Applied lane-independent post-prepend state split.' -Data @{
+            -Message 'Applied lane-independent post-prepend workflow writeback.' -Data @{
             folderPath = $FolderPath
             sheetStem = $sheetStem
             qcProcessType = $laneType
             lanePdfName = $lanePdfName
             laneTargetState = $laneTarget
             referenceState = $referenceTarget
+            writeReferenceStates = [bool]$writeReferenceStates
             updateCount = $stateUpdates.Count
+            laneStateVerified = [bool]$laneStateVerified
+            allVerified = [bool]$allVerified
         } | Out-Null
     }
 
@@ -2150,7 +2487,12 @@ function Sync-PWPostInitialPrependLaneStates {
         qcProcessType = $laneType
         laneTargetState = $laneTarget
         referenceState = $referenceTarget
+        writeReferenceStates = [bool]$writeReferenceStates
         laneProcessTypeEnsure = $laneProcessType
+        processTypeReset = $processTypeReset
+        laneStateVerified = [bool]$laneStateVerified
+        allVerified = [bool]$allVerified
+        unverifiedUpdates = @($unverifiedUpdates)
     }
 }
 
