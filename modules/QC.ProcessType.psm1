@@ -33,11 +33,12 @@ function _QCPT-Log([string]$Code, [string]$Level, [string]$Message, [hashtable]$
 function _QCPT-DefaultProcessTypeSettings {
     return @{
         DefaultProcessType = 'production'
+        EnableLegacySiblingStateSync = $false
         ProcessTypes = @{
             production = @{
                 PdfSuffix = 'prod'
                 ResetToProductionAfterPrepend = $false
-                SyncWithSiblingSheets = $true
+                SyncWithSiblingSheets = $false
                 DefaultStamp = 'Production'
             }
             check = @{
@@ -194,14 +195,34 @@ function Get-QCProcessTypePdfSuffix {
     }
 }
 
+function Test-QCLegacySiblingStateSyncEnabled {
+    <#
+    .SYNOPSIS
+    True when legacy sibling workflow state synchronization is enabled (default: false).
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config = $null
+    )
+    $settings = Get-QCProcessTypeSettings -Config $Config
+    if ($settings.ContainsKey('EnableLegacySiblingStateSync')) {
+        try { return [bool]$settings.EnableLegacySiblingStateSync } catch { }
+    }
+    if ($settings.ContainsKey('enableLegacySiblingStateSync')) {
+        try { return [bool]$settings.enableLegacySiblingStateSync } catch { }
+    }
+    return $false
+}
+
 function Test-QCProcessTypeSyncsWithSiblingSheets {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ProcessType,
         [hashtable]$Config = $null
     )
+    if (-not (Test-QCLegacySiblingStateSyncEnabled -Config $Config)) { return $false }
     $normalized = Normalize-QCProcessType -ProcessType $ProcessType
-    if (-not $normalized) { return $true }
+    if (-not $normalized) { return $false }
     $settings = Get-QCProcessTypeSettings -Config $Config
     $pt = _QCPT-ToHashtable $settings.ProcessTypes
     if ($pt -and $pt.ContainsKey($normalized)) {
@@ -682,6 +703,7 @@ Export-ModuleMember -Function `
     Normalize-QCProcessType, `
     Get-QCProcessTypeDisplayLabel, `
     Get-QCProcessTypePdfSuffix, `
+    Test-QCLegacySiblingStateSyncEnabled, `
     Test-QCProcessTypeSyncsWithSiblingSheets, `
     Test-QCProcessTypeResetsAfterPrepend, `
     Get-PWQcPdfLaneFromDocumentName, `

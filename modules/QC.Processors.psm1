@@ -121,14 +121,18 @@ function _QCP-ResolveProcessTypeFromJob {
         [hashtable]$Job,
         [hashtable]$Config
     )
+    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
+    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
+    if (-not (_QCP-IsNullOrWhiteSpace $docName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+        $laneFromTrigger = Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$docName)
+        if ($laneFromTrigger) { return $laneFromTrigger }
+    }
     $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType')
     $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
     if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
         $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview)
         if ($norm) { return $norm }
     }
-    $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
-    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
     if (-not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config

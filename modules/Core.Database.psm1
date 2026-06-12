@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.18.0'
+    $targetVersion = '1.19.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -1752,6 +1752,130 @@ FROM sheet_packages sp;
 '@
 }
 
+function _QDB-GetSchemaV1dot19Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.sheet_package_qc_pdfs', 'U') IS NULL
+CREATE TABLE sheet_package_qc_pdfs (
+    id                        INT IDENTITY(1,1) NOT NULL,
+    sheet_package_id          UNIQUEIDENTIFIER NOT NULL,
+    qc_process_type           NVARCHAR(32) NOT NULL,
+    document_guid             UNIQUEIDENTIFIER NOT NULL,
+    document_name             NVARCHAR(512) NOT NULL,
+    folder_path               NVARCHAR(1000) NULL,
+    current_pw_state          NVARCHAR(256) NULL,
+    previous_pw_state         NVARCHAR(256) NULL,
+    assigned_reviewer_email   NVARCHAR(320) NULL,
+    assigned_reviewer_name    NVARCHAR(256) NULL,
+    review_cycle              INT NULL,
+    created_at                DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_sheet_package_qc_pdfs_created DEFAULT SYSDATETIMEOFFSET(),
+    updated_at                DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_sheet_package_qc_pdfs_updated DEFAULT SYSDATETIMEOFFSET(),
+    last_seen_at              DATETIMEOFFSET(3) NULL,
+    is_active                 BIT NOT NULL CONSTRAINT DF_sheet_package_qc_pdfs_active DEFAULT 1,
+    CONSTRAINT PK_sheet_package_qc_pdfs PRIMARY KEY (id),
+    CONSTRAINT FK_sheet_package_qc_pdfs_package FOREIGN KEY (sheet_package_id) REFERENCES sheet_packages(sheet_package_id),
+    CONSTRAINT CK_sheet_package_qc_pdfs_process CHECK (qc_process_type IN ('production', 'check', 'review'))
+);
+GO
+IF OBJECT_ID('dbo.sheet_package_qc_pdfs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ux_sheet_package_qc_pdfs_package_process_active')
+    CREATE UNIQUE INDEX ux_sheet_package_qc_pdfs_package_process_active
+    ON sheet_package_qc_pdfs(sheet_package_id, qc_process_type)
+    WHERE is_active = 1;
+GO
+IF OBJECT_ID('dbo.sheet_package_qc_pdfs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_sheet_package_qc_pdfs_document_guid')
+    CREATE INDEX ix_sheet_package_qc_pdfs_document_guid ON sheet_package_qc_pdfs(document_guid);
+GO
+IF OBJECT_ID('dbo.sheet_package_qc_pdfs', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_sheet_package_qc_pdfs_sheet_package_id')
+    CREATE INDEX ix_sheet_package_qc_pdfs_sheet_package_id ON sheet_package_qc_pdfs(sheet_package_id);
+GO
+IF OBJECT_ID('dbo.v_sheet_package_qc_pdf_matrix', 'V') IS NOT NULL DROP VIEW v_sheet_package_qc_pdf_matrix;
+GO
+CREATE VIEW v_sheet_package_qc_pdf_matrix AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem AS package_key,
+    sp.sheet_stem AS sheet_number,
+    sp.folder_path,
+    MAX(CASE WHEN q.qc_process_type = 'production' THEN CAST(q.document_guid AS NVARCHAR(36)) END) AS production_qc_pdf_guid,
+    MAX(CASE WHEN q.qc_process_type = 'production' THEN q.document_name END) AS production_qc_pdf_name,
+    MAX(CASE WHEN q.qc_process_type = 'production' THEN q.current_pw_state END) AS production_state,
+    MAX(CASE WHEN q.qc_process_type = 'check' THEN CAST(q.document_guid AS NVARCHAR(36)) END) AS check_qc_pdf_guid,
+    MAX(CASE WHEN q.qc_process_type = 'check' THEN q.document_name END) AS check_qc_pdf_name,
+    MAX(CASE WHEN q.qc_process_type = 'check' THEN q.current_pw_state END) AS check_state,
+    MAX(CASE WHEN q.qc_process_type = 'review' THEN CAST(q.document_guid AS NVARCHAR(36)) END) AS review_qc_pdf_guid,
+    MAX(CASE WHEN q.qc_process_type = 'review' THEN q.document_name END) AS review_qc_pdf_name,
+    MAX(CASE WHEN q.qc_process_type = 'review' THEN q.current_pw_state END) AS review_state
+FROM sheet_packages sp
+LEFT JOIN sheet_package_qc_pdfs q
+    ON q.sheet_package_id = sp.sheet_package_id
+    AND q.is_active = 1
+GROUP BY
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path;
+GO
+IF OBJECT_ID('dbo.v_sheet_package_status', 'V') IS NOT NULL DROP VIEW v_sheet_package_status;
+GO
+CREATE VIEW v_sheet_package_status AS
+SELECT
+    sp.sheet_package_id,
+    sp.sheet_stem,
+    sp.folder_path,
+    sp.qc_review_type,
+    COALESCE(
+        sp.qc_process_type,
+        CASE LOWER(LTRIM(RTRIM(ISNULL(sp.qc_review_type, ''))))
+            WHEN 'production qc' THEN 'production'
+            WHEN 'independent check' THEN 'check'
+            WHEN 'peer review' THEN 'review'
+            WHEN 'peer_review' THEN 'review'
+            WHEN 'independent_check' THEN 'check'
+            ELSE LOWER(LTRIM(RTRIM(sp.qc_review_type)))
+        END
+    ) AS qc_process_type,
+    CASE COALESCE(
+        sp.qc_process_type,
+        CASE LOWER(LTRIM(RTRIM(ISNULL(sp.qc_review_type, ''))))
+            WHEN 'production qc' THEN 'production'
+            WHEN 'independent check' THEN 'check'
+            WHEN 'peer review' THEN 'review'
+            WHEN 'peer_review' THEN 'review'
+            WHEN 'independent_check' THEN 'check'
+            ELSE LOWER(LTRIM(RTRIM(sp.qc_review_type)))
+        END
+    )
+        WHEN 'production' THEN 'Production'
+        WHEN 'check' THEN 'Check'
+        WHEN 'review' THEN 'Review'
+        ELSE NULL
+    END AS qc_process_type_display,
+    sp.qc_assigned_to,
+    sp.production_qc_completed_count,
+    sp.peer_review_completed_count AS review_completed_count,
+    sp.independent_check_completed_count AS check_completed_count,
+    sp.production_qc_last_completed_at,
+    sp.peer_review_last_completed_at AS review_last_completed_at,
+    sp.independent_check_last_completed_at AS check_last_completed_at,
+    sp.peer_review_completed_count,
+    sp.independent_check_completed_count,
+    sp.peer_review_last_completed_at,
+    sp.independent_check_last_completed_at,
+    CASE WHEN sp.production_qc_completed_count > 0 THEN 1 ELSE 0 END AS production_completed,
+    CASE WHEN sp.independent_check_completed_count > 0 THEN 1 ELSE 0 END AS check_completed,
+    CASE WHEN sp.peer_review_completed_count > 0 THEN 1 ELSE 0 END AS review_completed,
+    m.production_state,
+    m.check_state,
+    m.review_state,
+    sp.dgn_guid,
+    sp.sheet_pdf_guid,
+    sp.qc_pdf_guid,
+    sp.qc_chk_pdf_guid,
+    sp.qc_rev_pdf_guid
+FROM sheet_packages sp
+LEFT JOIN v_sheet_package_qc_pdf_matrix m ON m.sheet_package_id = sp.sheet_package_id;
+'@
+}
+
 function _QDB-GetSchemaV1dot9Additive {
     return @'
 GO
@@ -3020,17 +3144,28 @@ function _QDB-GetSheetStemFromDocumentName {
     param([Parameter(Mandatory)][string]$DocumentName)
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
     if ([string]::IsNullOrWhiteSpace($stem)) { return '' }
-    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
+    elseif ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
     return $stem
 }
 
 function _QDB-ResolveSheetDocumentRole {
     param([string]$DocumentName)
     $dn = [string]$DocumentName
+    if ($dn -match '(?i)-(prod|chk|rev)\.pdf$') { return 'qc_pdf' }
     if ($dn -match '(?i)-qc\.pdf$') { return 'qc_pdf' }
     if ($dn -match '(?i)\.dgn$') { return 'dgn' }
     if ($dn -match '(?i)\.pdf$') { return 'sheet_pdf' }
     return 'other'
+}
+
+function _QDB-GetQcPdfLaneFromDocumentName {
+    param([string]$DocumentName)
+    $dn = [string]$DocumentName
+    if ($dn -match '(?i)-prod\.pdf$') { return 'production' }
+    if ($dn -match '(?i)-chk\.pdf$') { return 'check' }
+    if ($dn -match '(?i)-rev\.pdf$') { return 'review' }
+    return ''
 }
 
 function _QDB-TryParseDocumentGuid {
@@ -3176,6 +3311,10 @@ function Ensure-SheetPackage {
         return New-QCSuccessResult -Code 'SHEET_PACKAGE_SKIPPED' -Message 'Document role is not a sheet package member.' -Data @{ written = $false; documentRole = $role }
     }
     $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    $qcLane = ''
+    if ($role -eq 'qc_pdf' -and $DocumentName) {
+        $qcLane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $DocumentName
+    }
     try {
         $sql = @"
 DECLARE @ids TABLE (sheet_package_id UNIQUEIDENTIFIER);
@@ -3187,8 +3326,12 @@ WHEN MATCHED THEN UPDATE SET
     dgn_name = CASE WHEN @documentRole = 'dgn' AND @docName IS NOT NULL THEN @docName ELSE tgt.dgn_name END,
     sheet_pdf_guid = CASE WHEN @documentRole = 'sheet_pdf' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.sheet_pdf_guid END,
     sheet_pdf_name = CASE WHEN @documentRole = 'sheet_pdf' AND @docName IS NOT NULL THEN @docName ELSE tgt.sheet_pdf_name END,
-    qc_pdf_guid = CASE WHEN @documentRole = 'qc_pdf' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.qc_pdf_guid END,
-    qc_pdf_name = CASE WHEN @documentRole = 'qc_pdf' AND @docName IS NOT NULL THEN @docName ELSE tgt.qc_pdf_name END,
+    qc_pdf_guid = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'production' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.qc_pdf_guid END,
+    qc_pdf_name = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'production' AND @docName IS NOT NULL THEN @docName ELSE tgt.qc_pdf_name END,
+    qc_chk_pdf_guid = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'check' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.qc_chk_pdf_guid END,
+    qc_chk_pdf_name = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'check' AND @docName IS NOT NULL THEN @docName ELSE tgt.qc_chk_pdf_name END,
+    qc_rev_pdf_guid = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'review' AND @docGuid IS NOT NULL THEN @docGuid ELSE tgt.qc_rev_pdf_guid END,
+    qc_rev_pdf_name = CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'review' AND @docName IS NOT NULL THEN @docName ELSE tgt.qc_rev_pdf_name END,
     designer_email = CASE WHEN @documentRole = 'dgn' THEN COALESCE(@designerEmail, tgt.designer_email)
                           WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@designerEmail, tgt.designer_email)
                           ELSE tgt.designer_email END,
@@ -3200,15 +3343,14 @@ WHEN MATCHED THEN UPDATE SET
                          ELSE tgt.checker_email END,
     qc_review_type = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcReviewType, tgt.qc_review_type) ELSE tgt.qc_review_type END,
     qc_assigned_to = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcAssignedTo, tgt.qc_assigned_to) ELSE tgt.qc_assigned_to END,
-    pw_state_name = CASE WHEN @documentRole = 'qc_pdf' THEN COALESCE(@pwStateName, tgt.pw_state_name)
-                         WHEN tgt.qc_pdf_guid IS NULL THEN COALESCE(@pwStateName, tgt.pw_state_name)
-                         ELSE tgt.pw_state_name END,
+    pw_state_name = tgt.pw_state_name,
     qc_cycle_id = CASE WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@qcCycleId, tgt.qc_cycle_id) ELSE tgt.qc_cycle_id END,
     qc_cycle_number = CASE WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@qcCycleNumber, tgt.qc_cycle_number) ELSE tgt.qc_cycle_number END,
     last_updated_at = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT (
     sheet_package_id, sheet_stem, folder_path,
     dgn_guid, dgn_name, sheet_pdf_guid, sheet_pdf_name, qc_pdf_guid, qc_pdf_name,
+    qc_chk_pdf_guid, qc_chk_pdf_name, qc_rev_pdf_guid, qc_rev_pdf_name,
     designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, pw_state_name,
     qc_cycle_id, qc_cycle_number
 ) VALUES (
@@ -3217,14 +3359,18 @@ WHEN NOT MATCHED THEN INSERT (
     CASE WHEN @documentRole = 'dgn' THEN @docName END,
     CASE WHEN @documentRole = 'sheet_pdf' THEN @docGuid END,
     CASE WHEN @documentRole = 'sheet_pdf' THEN @docName END,
-    CASE WHEN @documentRole = 'qc_pdf' THEN @docGuid END,
-    CASE WHEN @documentRole = 'qc_pdf' THEN @docName END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'production' THEN @docGuid END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'production' THEN @docName END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'check' THEN @docGuid END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'check' THEN @docName END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'review' THEN @docGuid END,
+    CASE WHEN @documentRole = 'qc_pdf' AND @qcLane = 'review' THEN @docName END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @designerEmail END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @reviewerEmail END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @checkerEmail END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcReviewType END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcAssignedTo END,
-    @pwStateName,
+    NULL,
     CASE WHEN @documentRole = 'sheet_pdf' THEN @qcCycleId END,
     CASE WHEN @documentRole = 'sheet_pdf' THEN @qcCycleNumber END
 )
@@ -3235,6 +3381,7 @@ SELECT TOP 1 sheet_package_id FROM @ids;
             folderPath = $folder
             sheetStem = $stem
             documentRole = $role
+            qcLane = if ($qcLane) { $qcLane } else { [DBNull]::Value }
             docGuid = if ($parsedGuid) { $parsedGuid } else { [DBNull]::Value }
             docName = if ($DocumentName) { [string]$DocumentName } else { [DBNull]::Value }
             designerEmail = if ($DesignerEmail) { $DesignerEmail } else { [DBNull]::Value }
@@ -3983,8 +4130,8 @@ WHERE folder_path = @folderPath
 function Resolve-QCSheetQcPdfGuid {
     <#
     .SYNOPSIS
-    Resolves the live ProjectWise GUID for a sheet's *-qc.pdf after prepend.
-    Prefers newest sheet_index / sheet_packages rows over ambiguous PW search hits.
+    Resolves the live ProjectWise GUID for a lane QC PDF (*-prod/-chk/-rev.pdf).
+    Prefers sheet_package_qc_pdfs, then sheet_index / production alias columns on sheet_packages.
     #>
     [CmdletBinding()]
     param(
@@ -3997,7 +4144,23 @@ function Resolve-QCSheetQcPdfGuid {
     $folder = [string]$FolderPath
     $qcName = [string]$QcPdfName
     if ([string]::IsNullOrWhiteSpace($folder) -or [string]::IsNullOrWhiteSpace($qcName)) { return '' }
+    $lane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $qcName
     try {
+        if ($lane) {
+            $laneRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_guid
+FROM sheet_package_qc_pdfs
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@qcPdfName)
+  AND qc_process_type = @qcProcessType
+  AND is_active = 1
+ORDER BY updated_at DESC
+"@ -Parameters @{ folderPath = $folder; qcPdfName = $qcName; qcProcessType = $lane }
+            if ($laneRes.IsSuccess -and $laneRes.Data.table -and $laneRes.Data.table.Rows.Count -gt 0) {
+                $lg = if ($laneRes.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$laneRes.Data.table.Rows[0].document_guid }
+                if (-not [string]::IsNullOrWhiteSpace($lg)) { return $lg.Trim() }
+            }
+        }
         $idxRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT TOP 1 document_guid
 FROM sheet_index
@@ -4024,16 +4187,27 @@ WHERE si.document_guid = @sourceDocGuid
                 if (-not [string]::IsNullOrWhiteSpace($g2)) { return $g2.Trim() }
             }
         }
+        $pkgCol = switch ($lane) {
+            'check' { 'qc_chk_pdf_guid' }
+            'review' { 'qc_rev_pdf_guid' }
+            default { 'qc_pdf_guid' }
+        }
+        $pkgNameCol = switch ($lane) {
+            'check' { 'qc_chk_pdf_name' }
+            'review' { 'qc_rev_pdf_name' }
+            default { 'qc_pdf_name' }
+        }
+        if (-not $lane) { return '' }
         $pkgNameRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 qc_pdf_guid
+SELECT TOP 1 $pkgCol AS lane_guid
 FROM sheet_packages
 WHERE folder_path = @folderPath
-  AND qc_pdf_guid IS NOT NULL
-  AND LOWER(qc_pdf_name) = LOWER(@qcPdfName)
+  AND $pkgCol IS NOT NULL
+  AND LOWER($pkgNameCol) = LOWER(@qcPdfName)
 ORDER BY last_updated_at DESC
 "@ -Parameters @{ folderPath = $folder; qcPdfName = $qcName }
         if ($pkgNameRes.IsSuccess -and $pkgNameRes.Data.table -and $pkgNameRes.Data.table.Rows.Count -gt 0) {
-            $g3 = if ($pkgNameRes.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$pkgNameRes.Data.table.Rows[0].qc_pdf_guid }
+            $g3 = if ($pkgNameRes.Data.table.Rows[0].lane_guid -is [DBNull]) { '' } else { [string]$pkgNameRes.Data.table.Rows[0].lane_guid }
             if (-not [string]::IsNullOrWhiteSpace($g3)) { return $g3.Trim() }
         }
     } catch { }
@@ -5200,4 +5374,265 @@ WHERE sheet_package_id = @sheetPackageId
     }
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+function Upsert-SheetPackageQcPdf {
+    <#
+    .SYNOPSIS
+    Upserts one active lane QC PDF row for a sheet package (one active row per package + qc_process_type).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][guid]$SheetPackageId,
+        [Parameter(Mandatory)][string]$QcProcessType,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$FolderPath = '',
+        [string]$CurrentPwState = '',
+        [string]$PreviousPwState = '',
+        [string]$AssignedReviewerEmail = '',
+        [string]$AssignedReviewerName = '',
+        [Nullable[int]]$ReviewCycle = $null,
+        [switch]$Required
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'SHEET_PACKAGE_QC_PDF_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+    $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+    if ($processType -notin @('production', 'check', 'review')) {
+        return New-QCFailureResult -Code 'SHEET_PACKAGE_QC_PDF_INVALID_TYPE' -Message 'qc_process_type must be production, check, or review.' -Data @{ qcProcessType = $processType }
+    }
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsedGuid) {
+        if ($Required) {
+            return New-QCFailureResult -Code 'QC_PACKAGE_QC_PDF_REQUIRED_MISSING' -Message 'Required lane QC PDF GUID is missing.' -Data @{
+                sheetPackageId = $SheetPackageId; qcProcessType = $processType; documentName = $DocumentName
+            }
+        }
+        return New-QCSuccessResult -Code 'QC_PACKAGE_QC_PDF_MISSING_OPTIONAL' -Message 'Optional lane QC PDF not resolved.' -Data @{
+            written = $false; sheetPackageId = $SheetPackageId; qcProcessType = $processType
+        }
+    }
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    try {
+        $sql = @"
+UPDATE sheet_package_qc_pdfs
+SET is_active = 0, updated_at = SYSDATETIMEOFFSET()
+WHERE sheet_package_id = @sheetPackageId
+  AND qc_process_type = @qcProcessType
+  AND is_active = 1
+  AND document_guid <> @docGuid;
+
+MERGE sheet_package_qc_pdfs AS tgt
+USING (
+    SELECT @sheetPackageId AS sheet_package_id, @qcProcessType AS qc_process_type, @docGuid AS document_guid
+) AS src
+ON tgt.sheet_package_id = src.sheet_package_id
+   AND tgt.qc_process_type = src.qc_process_type
+   AND tgt.document_guid = src.document_guid
+   AND tgt.is_active = 1
+WHEN MATCHED THEN UPDATE SET
+    document_name = @docName,
+    folder_path = COALESCE(@folderPath, tgt.folder_path),
+    current_pw_state = COALESCE(@currentPwState, tgt.current_pw_state),
+    previous_pw_state = COALESCE(@previousPwState, tgt.previous_pw_state),
+    assigned_reviewer_email = COALESCE(@assignedReviewerEmail, tgt.assigned_reviewer_email),
+    assigned_reviewer_name = COALESCE(@assignedReviewerName, tgt.assigned_reviewer_name),
+    review_cycle = COALESCE(@reviewCycle, tgt.review_cycle),
+    last_seen_at = SYSDATETIMEOFFSET(),
+    updated_at = SYSDATETIMEOFFSET(),
+    is_active = 1
+WHEN NOT MATCHED THEN INSERT (
+    sheet_package_id, qc_process_type, document_guid, document_name, folder_path,
+    current_pw_state, previous_pw_state, assigned_reviewer_email, assigned_reviewer_name,
+    review_cycle, last_seen_at, is_active
+) VALUES (
+    @sheetPackageId, @qcProcessType, @docGuid, @docName, @folderPath,
+    @currentPwState, @previousPwState,
+    @assignedReviewerEmail, @assignedReviewerName,
+    @reviewCycle, SYSDATETIMEOFFSET(), 1
+);
+"@
+        $params = @{
+            sheetPackageId = $SheetPackageId
+            qcProcessType = $processType
+            docGuid = $parsedGuid
+            docName = [string]$DocumentName
+            folderPath = if ($folder) { $folder } else { [DBNull]::Value }
+            currentPwState = if ($CurrentPwState) { $CurrentPwState } else { [DBNull]::Value }
+            previousPwState = if ($PreviousPwState) { $PreviousPwState } else { [DBNull]::Value }
+            assignedReviewerEmail = if ($AssignedReviewerEmail) { $AssignedReviewerEmail } else { [DBNull]::Value }
+            assignedReviewerName = if ($AssignedReviewerName) { $AssignedReviewerName } else { [DBNull]::Value }
+            reviewCycle = if ($null -ne $ReviewCycle) { $ReviewCycle } else { [DBNull]::Value }
+        }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if (-not $dbRes.IsSuccess) {
+            return New-QCErrorResult -Code 'SHEET_PACKAGE_QC_PDF_WRITE_FAILED' -Message $dbRes.Message -Data @{
+                sheetPackageId = $SheetPackageId; qcProcessType = $processType
+            }
+        }
+        return New-QCSuccessResult -Code 'QC_PACKAGE_QC_PDF_UPSERTED' -Message 'Lane QC PDF upserted.' -Data @{
+            written = $true
+            sheetPackageId = $SheetPackageId
+            qcProcessType = $processType
+            documentGuid = $parsedGuid
+            documentName = $DocumentName
+            currentPwState = $CurrentPwState
+        }
+    } catch {
+        return New-QCErrorResult -Code 'SHEET_PACKAGE_QC_PDF_EXCEPTION' -Message $_.Exception.Message -Data @{
+            sheetPackageId = $SheetPackageId; qcProcessType = $processType
+        }
+    }
+}
+
+function Update-SheetPackageQcPdfLaneState {
+    <#
+    .SYNOPSIS
+    Updates workflow state for one active lane QC PDF row (sheet_package_id + qc_process_type + document_guid).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [string]$CurrentPwState = '',
+        [string]$PreviousPwState = '',
+        [Parameter(Mandatory)][string]$QcProcessType,
+        [guid]$SheetPackageId = [guid]::Empty
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return $null }
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsedGuid) { return $null }
+    $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+    if ($processType -notin @('production', 'check', 'review')) { return $null }
+    try {
+        $sql = @"
+UPDATE sheet_package_qc_pdfs
+SET previous_pw_state = CASE WHEN @previousPwState IS NOT NULL THEN @previousPwState ELSE current_pw_state END,
+    current_pw_state = COALESCE(@currentPwState, current_pw_state),
+    updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+  AND qc_process_type = @qcProcessType
+  AND is_active = 1
+"@
+        if ($SheetPackageId -ne [guid]::Empty) {
+            $sql += "  AND sheet_package_id = @sheetPackageId`n"
+        }
+        $params = @{
+            docGuid = $parsedGuid
+            qcProcessType = $processType
+            currentPwState = if ($CurrentPwState) { $CurrentPwState } else { [DBNull]::Value }
+            previousPwState = if ($PreviousPwState) { $PreviousPwState } else { [DBNull]::Value }
+        }
+        if ($SheetPackageId -ne [guid]::Empty) { $params['sheetPackageId'] = $SheetPackageId }
+        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        if ($dbRes.IsSuccess -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+            $unchanged = [string]::IsNullOrWhiteSpace($CurrentPwState)
+            Write-QCJsonLog -Level 'Information' -Code $(if ($unchanged) { 'QC_LANE_STATE_UNCHANGED' } else { 'QC_LANE_STATE_UPDATED' }) `
+                -Message $(if ($unchanged) { 'Lane QC PDF state unchanged.' } else { 'Lane QC PDF state updated.' }) -Data @{
+                documentGuid = $parsedGuid
+                qcProcessType = $QcProcessType
+                previousPwState = $PreviousPwState
+                currentPwState = $CurrentPwState
+            } | Out-Null
+        }
+        return $dbRes
+    } catch { return $null }
+}
+
+function Sync-SheetPackageLaneQcPdfsFromMembers {
+    <#
+    .SYNOPSIS
+    Discovers lane QC PDFs from resolved sheet members and upserts sheet_package_qc_pdfs rows.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SheetStem,
+        [Parameter(Mandatory)][array]$Members,
+        [hashtable]$StateByGuid = @{},
+        [string]$ActiveQcProcessType = '',
+        [switch]$RequireActiveLane
+    )
+    if (-not (_QDB-IsEnabled -Config $Config)) { return @() }
+    if ([string]::IsNullOrWhiteSpace($SheetStem)) { return @() }
+
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    $ensure = Ensure-SheetPackage -Config $Config -FolderPath $folder -SheetStem $SheetStem -DocumentRole 'sheet_pdf'
+    if (-not $ensure.IsSuccess -or -not $ensure.Data.sheetPackageId) { return @() }
+    $packageId = [guid]$ensure.Data.sheetPackageId
+
+    $laneTypes = @('production', 'check', 'review')
+    $suffixMap = @{ production = '-prod.pdf'; check = '-chk.pdf'; review = '-rev.pdf' }
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($lane in $laneTypes) {
+        $expectedSuffix = $suffixMap[$lane]
+        $expectedName = ($SheetStem + $expectedSuffix).ToLowerInvariant()
+        $member = @($Members | Where-Object {
+            $dn = [string]$_.documentName
+            $dn -and ($dn.ToLowerInvariant() -eq $expectedName)
+        } | Select-Object -First 1)
+
+        if ($member.Count -eq 0 -or -not $member[0]) {
+            if ($RequireActiveLane -and $ActiveQcProcessType -eq $lane) {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Level 'Warning' -Code 'QC_PACKAGE_QC_PDF_REQUIRED_MISSING' `
+                        -Message 'Required lane QC PDF missing during package discovery.' -Data @{
+                        sheetPackageId = $packageId; qcProcessType = $lane; folderPath = $folder; sheetStem = $SheetStem
+                    } | Out-Null
+                }
+            } elseif (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PACKAGE_QC_PDF_MISSING_OPTIONAL' `
+                    -Message 'Optional lane QC PDF not present in package discovery.' -Data @{
+                    sheetPackageId = $packageId; qcProcessType = $lane; folderPath = $folder; sheetStem = $SheetStem
+                } | Out-Null
+            }
+            continue
+        }
+
+        $m = $member[0]
+        $dg = [string]$m.documentGuid
+        $dn = [string]$m.documentName
+        $pwState = ''
+        if ($dg -and $StateByGuid -and $StateByGuid.ContainsKey($dg.ToLowerInvariant())) {
+            $pwState = [string]$StateByGuid[$dg.ToLowerInvariant()]
+        } elseif ($m.document -and (Get-Command -Name '_PWD-GetWorkflowStateFromDocumentRow' -ErrorAction SilentlyContinue)) {
+            $pwState = [string](_PWD-GetWorkflowStateFromDocumentRow -DocRow $m.document)
+        }
+
+        $upsert = Upsert-SheetPackageQcPdf -Config $Config -SheetPackageId $packageId `
+            -QcProcessType $lane -DocumentGuid $dg -DocumentName $dn -FolderPath $folder `
+            -CurrentPwState $pwState -Required:($RequireActiveLane -and $ActiveQcProcessType -eq $lane)
+        $results.Add($upsert) | Out-Null
+
+        # Mirror lane GUID columns on sheet_packages for backward-compatible reporting.
+        $colGuid = switch ($lane) {
+            'production' { 'qc_pdf_guid' }
+            'check' { 'qc_chk_pdf_guid' }
+            'review' { 'qc_rev_pdf_guid' }
+        }
+        $colName = switch ($lane) {
+            'production' { 'qc_pdf_name' }
+            'check' { 'qc_chk_pdf_name' }
+            'review' { 'qc_rev_pdf_name' }
+        }
+        $laneGuid = _QDB-TryParseDocumentGuid -DocumentGuid $dg
+        if ($upsert.IsSuccess -and $laneGuid) {
+            try {
+                [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_packages SET $colGuid = @docGuid, $colName = @docName, last_updated_at = SYSDATETIMEOFFSET()
+WHERE sheet_package_id = @sheetPackageId
+"@ -Parameters @{
+                    docGuid = $laneGuid
+                    docName = $dn
+                    sheetPackageId = $packageId
+                })
+            } catch { }
+        }
+    }
+
+    return @($results)
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Upsert-SheetPackageQcPdf, Update-SheetPackageQcPdfLaneState, Sync-SheetPackageLaneQcPdfsFromMembers, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

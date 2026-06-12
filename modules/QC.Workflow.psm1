@@ -1685,9 +1685,36 @@ function Set-PWQCWorkflowState {
         if ($Context -and $Context.ContainsKey('skipSiblingStateSync')) {
             try { $skipSiblingSync = [bool]$Context.skipSiblingStateSync } catch { $skipSiblingSync = $false }
         }
+        if (-not $skipSiblingSync -and (Get-Command -Name 'Test-QCLegacySiblingStateSyncEnabled' -ErrorAction SilentlyContinue)) {
+            if (-not (Test-QCLegacySiblingStateSyncEnabled -Config $cfg)) { $skipSiblingSync = $true }
+        }
         if (-not $skipSiblingSync -and $Context -and $Context.ContainsKey('qcProcessType')) {
             if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
                 $skipSiblingSync = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType ([string]$Context.qcProcessType) -Config $cfg)
+            }
+        }
+
+        if ($skipSiblingSync -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+            $laneType = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { '' }
+            Write-QCJsonLog -Level 'Information' -Code 'QC_SIBLING_STATE_SYNC_DISABLED' `
+                -Message 'Workflow writeback skipped sibling state sync; lane states are independent.' -Data @{
+                folderPath = $folderPath
+                documentName = $docName
+                documentGuid = $docGuid
+                qcProcessType = $laneType
+                targetState = $StateName
+            } | Out-Null
+            if (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue) {
+                $laneForUpdate = $laneType
+                if (_QCW-IsNullOrWhiteSpace $laneForUpdate) {
+                    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                        $laneForUpdate = Get-PWQcPdfLaneFromDocumentName -DocumentName $docName
+                    }
+                }
+                if (-not (_QCW-IsNullOrWhiteSpace $laneForUpdate)) {
+                    [void](Update-SheetPackageQcPdfLaneState -Config $cfg -DocumentGuid $docGuid `
+                        -CurrentPwState $StateName -QcProcessType $laneForUpdate)
+                }
             }
         }
 

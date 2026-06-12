@@ -163,7 +163,7 @@ function Get-QCNotificationSettings {
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
             # Logical sheet-transition identity.  Do not key by transitionId by default because
             # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
-            keyFields = @('sheetStem', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
+            keyFields = @('sheetStem', 'qcProcessType', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
             sheetPackageKeyFields = @('sheetStem', 'currentState', 'cycleId')
         }
         graph = @{
@@ -1095,7 +1095,7 @@ function _QCN-GetQcPdfLookupCandidateNames {
         if ($base -match '(?i)-qc$') { $base = $base.Substring(0, $base.Length - 3) }
     }
     if (-not (_QCN-IsBlank $base)) {
-        foreach ($suffix in @('prod', 'chk', 'rev', 'qc')) {
+        foreach ($suffix in @('prod', 'chk', 'rev')) {
             _AddCandidate ($base + '-' + $suffix + '.pdf')
         }
         if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
@@ -1154,35 +1154,98 @@ ORDER BY sp.last_updated_at DESC
     return ''
 }
 
+function _QCN-NormalizeNotificationProcessType {
+    param(
+        [string]$ProcessType = '',
+        [hashtable]$Event = $null
+    )
+    if (-not (_QCN-IsBlank $ProcessType)) {
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $n = Normalize-QCProcessType -ProcessType $ProcessType
+            if ($n) { return $n }
+        }
+    }
+    if ($Event -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+        $n = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -ReviewType ([string]$Event.qcReviewType) -Context $Event
+        if ($n) { return $n }
+    }
+    return 'production'
+}
+
+function _QCN-LookupLaneQcPdfGuidFromPackageQcPdfs {
+    param(
+        [hashtable]$Config,
+        [string]$SheetPackageId = '',
+        [string]$FolderPath = '',
+        [string]$QcPdfName = '',
+        [string]$ProcessType = ''
+    )
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
+    $lane = _QCN-NormalizeNotificationProcessType -ProcessType $ProcessType
+    try {
+        if (-not (_QCN-IsBlank $SheetPackageId)) {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_guid
+FROM sheet_package_qc_pdfs
+WHERE sheet_package_id = @sheetPackageId
+  AND qc_process_type = @qcProcessType
+  AND is_active = 1
+ORDER BY updated_at DESC
+"@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim(); qcProcessType = $lane }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $g = if ($res.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].document_guid }
+                if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
+            }
+        }
+        if ((-not (_QCN-IsBlank $FolderPath)) -and (-not (_QCN-IsBlank $QcPdfName))) {
+            $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 document_guid
+FROM sheet_package_qc_pdfs
+WHERE folder_path = @folderPath
+  AND LOWER(document_name) = LOWER(@qcPdfName)
+  AND qc_process_type = @qcProcessType
+  AND is_active = 1
+ORDER BY updated_at DESC
+"@ -Parameters @{ folderPath = [string]$FolderPath; qcPdfName = [string]$QcPdfName; qcProcessType = $lane }
+            if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
+                $g2 = if ($res2.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].document_guid }
+                if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
+            }
+        }
+    } catch { }
+    return ''
+}
+
 function _QCN-LookupQcPdfGuidBySheetPackageId {
     param(
         [hashtable]$Config,
-        [string]$SheetPackageId = ''
+        [string]$SheetPackageId = '',
+        [string]$ProcessType = '',
+        [hashtable]$Event = $null
     )
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
     if (_QCN-IsBlank $SheetPackageId) { return '' }
+    $lane = _QCN-NormalizeNotificationProcessType -ProcessType $ProcessType -Event $Event
+    $fromLaneTable = _QCN-LookupLaneQcPdfGuidFromPackageQcPdfs -Config $Config -SheetPackageId $SheetPackageId -ProcessType $lane
+    if (-not (_QCN-IsBlank $fromLaneTable)) { return $fromLaneTable }
     try {
+        $col = switch ($lane) {
+            'check' { 'qc_chk_pdf_guid' }
+            'review' { 'qc_rev_pdf_guid' }
+            default { 'qc_pdf_guid' }
+        }
         $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 qc_pdf_guid
+SELECT TOP 1 $col AS lane_guid
 FROM sheet_packages
 WHERE sheet_package_id = @sheetPackageId
-  AND qc_pdf_guid IS NOT NULL
+  AND $col IS NOT NULL
 "@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim() }
         if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
-            $g = if ($res.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_pdf_guid }
+            $g = if ($res.Data.table.Rows[0].lane_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].lane_guid }
             if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
-        }
-        $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 sd.document_guid
-FROM sheet_documents sd
-WHERE sd.sheet_package_id = @sheetPackageId
-  AND sd.document_role = 'qc_pdf'
-"@ -Parameters @{ sheetPackageId = [string]$SheetPackageId.Trim() }
-        if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
-            $g2 = if ($res2.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].document_guid }
-            if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
         }
     } catch { }
     return ''
@@ -1193,38 +1256,54 @@ function _QCN-LookupQcPdfGuidFromSheetPackages {
         [hashtable]$Config,
         [string]$FolderPath = '',
         [string]$QcPdfName = '',
-        [string]$SheetStem = ''
+        [string]$SheetStem = '',
+        [string]$ProcessType = '',
+        [hashtable]$Event = $null
     )
 
     if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return '' }
     if (-not (Test-QCDatabaseEnabled -Config $Config)) { return '' }
     if (_QCN-IsBlank $FolderPath) { return '' }
+    $lane = _QCN-NormalizeNotificationProcessType -ProcessType $ProcessType -Event $Event
+    $fromLaneTable = _QCN-LookupLaneQcPdfGuidFromPackageQcPdfs -Config $Config -FolderPath $FolderPath `
+        -QcPdfName $QcPdfName -ProcessType $lane
+    if (-not (_QCN-IsBlank $fromLaneTable)) { return $fromLaneTable }
+    $guidCol = switch ($lane) {
+        'check' { 'qc_chk_pdf_guid' }
+        'review' { 'qc_rev_pdf_guid' }
+        default { 'qc_pdf_guid' }
+    }
+    $nameCol = switch ($lane) {
+        'check' { 'qc_chk_pdf_name' }
+        'review' { 'qc_rev_pdf_name' }
+        default { 'qc_pdf_name' }
+    }
     try {
         if (-not (_QCN-IsBlank $QcPdfName)) {
             $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 qc_pdf_guid
+SELECT TOP 1 $guidCol AS lane_guid
 FROM sheet_packages
 WHERE folder_path = @folderPath
-  AND qc_pdf_guid IS NOT NULL
-  AND LOWER(qc_pdf_name) = LOWER(@qcPdfName)
+  AND $guidCol IS NOT NULL
+  AND LOWER($nameCol) = LOWER(@qcPdfName)
 ORDER BY last_updated_at DESC
 "@ -Parameters @{ folderPath = [string]$FolderPath; qcPdfName = [string]$QcPdfName }
             if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
-                $g = if ($res.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_pdf_guid }
+                $g = if ($res.Data.table.Rows[0].lane_guid -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].lane_guid }
                 if (-not (_QCN-IsBlank $g)) { return $g.Trim() }
             }
         }
         if (-not (_QCN-IsBlank $SheetStem)) {
             $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT TOP 1 qc_pdf_guid
+SELECT TOP 1 $guidCol AS lane_guid
 FROM sheet_packages
 WHERE folder_path = @folderPath
-  AND qc_pdf_guid IS NOT NULL
+  AND $guidCol IS NOT NULL
   AND LOWER(sheet_stem) = LOWER(@sheetStem)
 ORDER BY last_updated_at DESC
 "@ -Parameters @{ folderPath = [string]$FolderPath; sheetStem = [string]$SheetStem }
             if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
-                $g2 = if ($res2.Data.table.Rows[0].qc_pdf_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].qc_pdf_guid }
+                $g2 = if ($res2.Data.table.Rows[0].lane_guid -is [DBNull]) { '' } else { [string]$res2.Data.table.Rows[0].lane_guid }
                 if (-not (_QCN-IsBlank $g2)) { return $g2.Trim() }
             }
         }
@@ -1384,19 +1463,26 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
 
     $packageGuid = ''
     if (-not (_QCN-IsBlank $SheetPackageId)) {
-        $packageGuid = _QCN-LookupQcPdfGuidBySheetPackageId -Config $Config -SheetPackageId $SheetPackageId
+        $packageGuid = _QCN-LookupQcPdfGuidBySheetPackageId -Config $Config -SheetPackageId $SheetPackageId `
+            -ProcessType $processType -Event $Event
         if (-not (_QCN-IsBlank $packageGuid)) {
-            return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_id' }
+            return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_qc_pdfs' }
         }
     }
 
     foreach ($candidate in @($candidateNames)) {
         if (_QCN-IsBlank $candidate) { continue }
 
+        $laneGuid = _QCN-LookupLaneQcPdfGuidFromPackageQcPdfs -Config $Config -FolderPath $FolderPath `
+            -QcPdfName $candidate -ProcessType $processType
+        if (-not (_QCN-IsBlank $laneGuid)) {
+            return @{ documentGuid = $laneGuid; resolutionSource = 'sheet_package_qc_pdfs' }
+        }
+
         $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
-            -QcPdfName $candidate -SheetStem $stem
+            -QcPdfName $candidate -SheetStem $stem -ProcessType $processType -Event $Event
         if (-not (_QCN-IsBlank $pkgGuid)) {
-            return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages' }
+            return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages_lane_alias' }
         }
 
         $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $candidate

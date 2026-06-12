@@ -5,6 +5,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 function Assert-Null($Actual, $Message) {
     if ($null -ne $Actual) { throw "ASSERT FAILED: $Message`nExpected null, got: $Actual" }
 }
+function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
@@ -22,5 +23,8 @@ Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'check') 'chk' 'check suffix'
 Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'review') 'rev' 'review suffix'
 Assert-Eq (Get-QCLaneQcPdfExpectedName -SheetBaseName 'CA001' -ProcessType 'production') 'CA001-prod.pdf' 'prod pdf name'
 Assert-Eq (Get-QCLaneQcPdfExpectedName -SheetBaseName 'CA001' -ProcessType 'check') 'CA001-chk.pdf' 'chk pdf name'
+
+Assert-False (Test-QCLegacySiblingStateSyncEnabled -Config @{}) 'legacy sibling sync off by default'
+Assert-False (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType 'production' -Config @{}) 'production sibling sync off by default'
 
 Write-Host 'test_qc_process_type.ps1: OK'

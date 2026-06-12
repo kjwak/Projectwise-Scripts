@@ -25,7 +25,7 @@ $dbText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Core.Database.p
 Assert-True ($dbText -match '_QDB-GetSchemaV1dot17Additive') 'schema v1.17 additive patch exists'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_status') 'v_sheet_package_status defined'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_cycle_aging') 'v_sheet_package_cycle_aging defined'
-Assert-True ($dbText -match "targetVersion = '1.17.0'") 'schema target version is 1.17.0'
+Assert-True ($dbText -match "targetVersion = '1.19.0'") 'schema target version is 1.19.0'
 
 InModuleScope -ModuleName Core.Database {
     function _QDB-IsEnabled { param([hashtable]$Config) return $true }

@@ -34,9 +34,15 @@ InModuleScope -ModuleName QC.Notifications {
     function Invoke-QCDatabaseQuery {
         param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
 
+        if ($Sql -match 'sheet_package_qc_pdfs') {
+            $table = New-Object System.Data.DataTable
+            [void]$table.Columns.Add('document_guid', [string])
+            [void]$table.Rows.Add($liveGuid)
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+        }
         if ($Sql -match 'FROM sheet_packages' -and $Sql -match 'qc_pdf_guid') {
             $table = New-Object System.Data.DataTable
-            [void]$table.Columns.Add('qc_pdf_guid', [string])
+            [void]$table.Columns.Add('lane_guid', [string])
             [void]$table.Rows.Add($liveGuid)
             return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
         }
@@ -56,9 +62,10 @@ InModuleScope -ModuleName QC.Notifications {
     }
 
     $resolved = _QCN-ResolveLiveQcPdfDocumentGuidResult -Config $config -FolderPath $folder `
-        -QcPdfName $qcName -SheetStem '080J082001ab001' -HintGuid $staleGuid
-    Assert-Eq $resolved.documentGuid $liveGuid 'sheet_packages GUID should win over stale sheet_documents, PW search, hint, and sheet_index'
-    Assert-Eq $resolved.resolutionSource 'sheet_packages' 'resolution source should identify sheet_packages'
+        -QcPdfName '080J082001ab001-prod.pdf' -SheetStem '080J082001ab001' -HintGuid $staleGuid `
+        -Event @{ qcProcessType = 'production' }
+    Assert-Eq $resolved.documentGuid $liveGuid 'lane QC PDF GUID should win over stale sheet_documents, PW search, hint, and sheet_index'
+    Assert-Eq $resolved.resolutionSource 'sheet_package_qc_pdfs' 'resolution source should identify lane table'
 
     $url = 'https://example.test/pwlink?objectId=0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b&objectType=doc&datasource=x&app=pwe'
     Assert-Eq (_QCN-ExtractPwLinkDocumentGuid -Url $url) $liveGuid 'pwlink objectId should be extracted from URL'

@@ -1320,37 +1320,75 @@ function Get-PWAssociatedSheetDocumentNames {
     )
 }
 
-function _PWD-LogExcludedLaneSyncMembers {
+function _PWD-TestLegacySiblingStateSyncEnabled {
+    param([hashtable]$Config)
+    if (Get-Command -Name 'Test-QCLegacySiblingStateSyncEnabled' -ErrorAction SilentlyContinue) {
+        try { return (Test-QCLegacySiblingStateSyncEnabled -Config $Config) } catch { }
+    }
+    return $false
+}
+
+function _PWD-LogLaneStateIndependentTelemetry {
     param(
         [array]$AllMembers,
-        [array]$SyncMembers,
         [string]$FolderPath = '',
-        [string]$TriggerSource = ''
+        [string]$TriggerSource = '',
+        [string]$TriggerDocumentName = '',
+        [string]$TriggerDocumentGuid = ''
     )
-    if (-not (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) { return }
-    $syncNames = @{}
-    foreach ($m in @($SyncMembers)) {
-        $dn = [string]$m.documentName
-        if ($dn) { $syncNames[$dn.ToLowerInvariant()] = $true }
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    $sheetStem = ''
+    if ($TriggerDocumentName -and (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+        $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $TriggerDocumentName
     }
-    foreach ($m in @($AllMembers)) {
-        $dn = [string]$m.documentName
-        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
-        $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
-        if (-not $lane) { continue }
-        if ($lane -eq 'production') { continue }
-        if ($syncNames.ContainsKey($dn.ToLowerInvariant())) { continue }
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Level 'Information' -Code 'QC_SIBLING_SYNC_LANE_EXCLUDED' `
-                -Message 'Check/review lane QC PDF excluded from sibling workflow state sync.' -Data @{
+    Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_STATE_INDEPENDENT' `
+        -Message 'QC process lanes maintain independent workflow state; sibling sync disabled by design.' -Data @{
+        folderPath = $FolderPath
+        triggerSource = $TriggerSource
+        triggerDocumentName = $TriggerDocumentName
+        triggerDocumentGuid = $TriggerDocumentGuid
+        sheetStem = $sheetStem
+        memberCount = @($AllMembers).Count
+    } | Out-Null
+    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+        foreach ($m in @($AllMembers)) {
+            $dn = [string]$m.documentName
+            if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+            $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+            if (-not $lane) { continue }
+            Write-QCJsonLog -Level 'Information' -Code 'QC_SIBLING_STATE_SYNC_DISABLED' `
+                -Message 'Sibling workflow state sync skipped; lane state is independent.' -Data @{
                 documentName = $dn
                 documentGuid = [string]$m.documentGuid
-                lane = $lane
-                reason = 'process_lane_not_in_sync_set'
+                qcProcessType = $lane
                 folderPath = $FolderPath
                 triggerSource = $TriggerSource
             } | Out-Null
         }
+    }
+}
+
+function _PWD-SyncSheetPackageLaneQcPdfs {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$SheetStem,
+        [array]$Members,
+        [hashtable]$StateByGuid = @{},
+        [string]$ActiveQcProcessType = '',
+        [switch]$RequireActiveLane
+    )
+    if (-not (Get-Command -Name 'Sync-SheetPackageLaneQcPdfsFromMembers' -ErrorAction SilentlyContinue)) {
+        try {
+            Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+    if (Get-Command -Name 'Sync-SheetPackageLaneQcPdfsFromMembers' -ErrorAction SilentlyContinue) {
+        try {
+            Sync-SheetPackageLaneQcPdfsFromMembers -Config $Config -FolderPath $FolderPath -SheetStem $SheetStem `
+                -Members $Members -StateByGuid $StateByGuid -ActiveQcProcessType $ActiveQcProcessType `
+                -RequireActiveLane:$RequireActiveLane | Out-Null
+        } catch { }
     }
 }
 
@@ -1378,8 +1416,37 @@ function Get-PWAssociatedSheetSyncMembers {
         $dn = [string]$_.documentName
         $dn -and $syncNames.ContainsKey($dn.ToLowerInvariant())
     })
-    _PWD-LogExcludedLaneSyncMembers -AllMembers $all -SyncMembers $sync -FolderPath $FolderPath -TriggerSource $TriggerSource
+    if (-not (_PWD-TestLegacySiblingStateSyncEnabled -Config $Config)) {
+        _PWD-LogLaneStateIndependentTelemetry -AllMembers $all -FolderPath $FolderPath -TriggerSource $TriggerSource `
+            -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
+        return @()
+    }
     return $sync
+}
+
+function _PWD-GetLaneIndependentAuditMembers {
+    param(
+        [array]$AllMembers,
+        [string]$TriggerDocumentGuid = '',
+        [string]$TriggerDocumentName = ''
+    )
+    $triggerKey = ([string]$TriggerDocumentName).ToLowerInvariant()
+    $triggerGuidKey = ([string]$TriggerDocumentGuid).ToLowerInvariant()
+    $seen = @{}
+    $match = [System.Collections.Generic.List[object]]::new()
+    foreach ($m in @($AllMembers)) {
+        $dn = [string]$m.documentName
+        $dg = ([string]$m.documentGuid).ToLowerInvariant()
+        $hit = $false
+        if ($triggerGuidKey -and $dg -eq $triggerGuidKey) { $hit = $true }
+        elseif ($triggerKey -and $dn -and ($dn.ToLowerInvariant() -eq $triggerKey)) { $hit = $true }
+        if (-not $hit) { continue }
+        $dedupeKey = if ($dg) { $dg } else { $dn.ToLowerInvariant() }
+        if ($seen.ContainsKey($dedupeKey)) { continue }
+        $seen[$dedupeKey] = $true
+        $match.Add($m) | Out-Null
+    }
+    return @($match)
 }
 
 function _PWD-InvokeSetPwDocumentState {
@@ -1589,6 +1656,21 @@ WHERE folder_path = @folderPath
             sourceType   = [string]$entry.sourceType
         }) | Out-Null
     }
+
+    $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    if ($resolved.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($sheetStem)) {
+        $stateByGuid = @{}
+        foreach ($r in $resolved) {
+            $dg = [string]$r.documentGuid
+            if (-not $dg) { continue }
+            try {
+                $st = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName ([string]$r.documentName) -DocumentGuid $dg
+                if ($st) { $stateByGuid[$dg.ToLowerInvariant()] = $st }
+            } catch { }
+        }
+        _PWD-SyncSheetPackageLaneQcPdfs -Config $Config -FolderPath $FolderPath -SheetStem $sheetStem `
+            -Members @($resolved) -StateByGuid $stateByGuid
+    }
     return @($resolved)
 }
 
@@ -1613,6 +1695,29 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
 
     $target = ([string]$TargetStateName).Trim()
     if ([string]::IsNullOrWhiteSpace($target)) { return @{ updates = @(); memberCount = 0 } }
+
+    if (-not (_PWD-TestLegacySiblingStateSyncEnabled -Config $Config)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_SIBLING_STATE_SYNC_DISABLED' `
+                -Message 'Post-prepend sibling workflow state sync skipped; lanes are independent.' -Data @{
+                folderPath = $FolderPath
+                triggerDocumentName = $DocumentName
+                triggerDocumentGuid = $DocumentGuid
+                targetState = $target
+                triggerSource = $TriggerSource
+            } | Out-Null
+        }
+        if (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue) {
+            $lane = 'production'
+            if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                $resolvedLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName
+                if ($resolvedLane) { $lane = $resolvedLane }
+            }
+            [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $DocumentGuid `
+                -CurrentPwState $target -QcProcessType $lane)
+        }
+        return @{ updates = @(); memberCount = 0; siblingSyncDisabled = $true; targetState = $target }
+    }
 
     $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource $TriggerSource)
@@ -2792,9 +2897,28 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     $allMembers = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
-    $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
-        -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource 'user_audit')
-    if ($members.Count -eq 0) { return }
+    $legacySiblingSync = _PWD-TestLegacySiblingStateSyncEnabled -Config $Config
+    if ($legacySiblingSync) {
+        $members = @(Get-PWAssociatedSheetSyncMembers -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TriggerSource 'user_audit')
+    } else {
+        _PWD-LogLaneStateIndependentTelemetry -AllMembers $allMembers -FolderPath $FolderPath `
+            -TriggerSource 'user_audit' -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
+        $members = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $allMembers `
+            -TriggerDocumentGuid $DocumentGuid -TriggerDocumentName $DocumentName)
+    }
+    if ($members.Count -eq 0) {
+        if (-not $legacySiblingSync) {
+            $members = @(@{
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                document     = $null
+                sourceType   = 'pdf'
+            })
+        } else {
+            return
+        }
+    }
 
     $previousSheetState = ''
     $sheetStemForPrepend = ''
@@ -3100,13 +3224,34 @@ WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $dg; lastAudit = $LastAuditEventAt } | Out-Null
                 }
             } catch { }
+            if (-not $legacySiblingSync -and (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue)) {
+                $laneType = $null
+                if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                    $laneType = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+                }
+                if (-not $laneType) {
+                    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                        $laneType = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
+                    }
+                }
+                if ($laneType) {
+                    [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $dg `
+                        -CurrentPwState $canonicalState -PreviousPwState ([string]$currentState) -QcProcessType $laneType)
+                }
+            }
         }
 
         $stateUpdates += $change
     }
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC' -Message 'Associated sheet workflow states aligned from DOCUMENT_STATE audit event.' -Data @{
+        $syncCode = if ($legacySiblingSync) { 'WATCH_SHEET_STATE_SYNC' } else { 'QC_LANE_STATE_INDEPENDENT' }
+        $syncMsg = if ($legacySiblingSync) {
+            'Associated sheet workflow states aligned from DOCUMENT_STATE audit event.'
+        } else {
+            'Lane workflow state recorded from DOCUMENT_STATE audit event without sibling sync.'
+        }
+        Write-QCJsonLog -Flush -Level 'Information' -Code $syncCode -Message $syncMsg -Data @{
             triggerDocumentGuid = $DocumentGuid
             triggerDocumentName = $DocumentName
             folderPath          = $FolderPath
