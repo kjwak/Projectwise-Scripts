@@ -3955,10 +3955,34 @@ function Sync-PWAssociatedSheetWorkflowState {
         }
     }
 
-    $sourcePwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
-    if ([string]::IsNullOrWhiteSpace($sourcePwState)) { return }
     $auditTargetState = _PWD-ResolveAuditWorkflowTargetStateName -Config $Config `
         -AuditTargetStateName $AuditTargetStateName -AuditRawItemDesc $AuditRawItemDesc -AuditRawTextParam $AuditRawTextParam
+    $sourcePwState = Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid
+    $sourcePwStateSource = 'liveProjectWise'
+    if ([string]::IsNullOrWhiteSpace($sourcePwState) -and -not [string]::IsNullOrWhiteSpace($auditTargetState)) {
+        $sourcePwState = $auditTargetState
+        $sourcePwStateSource = 'auditTargetHint'
+    }
+    if ([string]::IsNullOrWhiteSpace($sourcePwState) -and (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
+        $indexFallback = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+        if (-not [string]::IsNullOrWhiteSpace($indexFallback)) {
+            $sourcePwState = $indexFallback
+            $sourcePwStateSource = 'sheet_index'
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($sourcePwState)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_SYNC_NO_SOURCE_STATE' `
+                -Message 'DOCUMENT_STATE sync skipped: live PW state, audit hint, and sheet_index were all unavailable.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                auditTargetStateHint = $auditTargetState
+            } | Out-Null
+        }
+        return
+    }
     # DOCUMENT_STATE audit rows are sparse: the parsed audit state is only a diagnostic hint.
     # Live ProjectWise state remains authoritative for sibling sync and workflow actions.
     $canonicalState = $sourcePwState
@@ -4012,7 +4036,7 @@ function Sync-PWAssociatedSheetWorkflowState {
             sourceDocumentName = $DocumentName
             folderPath = $FolderPath
             pwStateName = $sourcePwState
-            pwStateNameSource = 'liveProjectWise'
+            pwStateNameSource = $sourcePwStateSource
             sourceCurrentPwState = $sourcePwState
             sheetIndexState = $triggerSheetIndexState
             sheetIndexStateSource = 'sheet_index'
@@ -4212,6 +4236,14 @@ function Sync-PWAssociatedSheetWorkflowState {
                     missingFields       = @($gate.missingFields)
                     rollback            = $gate.rollback
                 } | Out-Null
+            }
+            if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+                Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $DocumentGuid `
+                    -TriggerDocumentName $DocumentName -FolderPath $FolderPath -SourceState $previousSheetState `
+                    -TargetState $canonicalState -TransitionSource 'user_audit' -Members $members `
+                    -StateByGuid $stateByGuid -PreviousStateByGuid $previousStateByGuid `
+                    -AuditEventId $AuditEventId -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+                    -LastAuditEventAt $LastAuditEventAt -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' | Out-Null
             }
             return
         }

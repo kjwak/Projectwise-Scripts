@@ -11,7 +11,12 @@ For a single Sheets (or any) folder:
 
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
-sheet_index, sheet_packages, and sheet_documents rows are never deleted. By default the script updates pw_state_name (and clears
+sheet_index, sheet_packages, and sheet_documents rows are never deleted by default, except lane QC PDF
+registry cleanup: *-prod.pdf / *-chk.pdf / *-rev.pdf sheet_index rows are DELETED (ghost GUID cleanup after
+manual lane PDF deletes), and sheet_documents rows with document_role = qc_pdf are DELETED. Pass
+-KeepLanePdfRegistry to preserve lane index rows (legacy UPDATE-only behavior).
+
+By default the script updates pw_state_name on remaining sheet_index rows (stem PDF, DGN, etc.) and clears
 qc_stage/qc_status on sheet_index unless -KeepSheetIndexQcFields), clears qc_process_type and lane QC PDF pairing
 (qc_pdf_guid/name on sheet_index; qc_pdf_*, qc_chk_pdf_*, qc_rev_pdf_* on sheet_packages), deletes sheet_package_qc_pdfs
 rows for matched packages, clears qc_cycle_id/qc_cycle_number, zeros production_qc_completed_count,
@@ -22,7 +27,12 @@ updates sheet_documents.pw_state_name, and deletes qc_cycle_completions rows for
 (by document_guid or sheet_package_id). Pass -SkipSheetIndexUpdate to leave sheet_index completely unchanged.
 Does not remove queue JSON jobs (use Purge-QCPendingByFilters or manual queue cleanup separately).
 
-Does not delete ProjectWise documents, sheet_index rows, sheet_packages rows, or sheet_documents rows.
+Does not delete ProjectWise documents, sheet_packages rows, or non-lane sheet_index / sheet_documents rows.
+
+Recommended lane-PDF recycle workflow:
+1. Manually delete *-prod.pdf / *-chk.pdf / *-rev.pdf in ProjectWise (DOCUMENT_DELETE registry cleanup runs via watcher).
+2. Run this script with -ConfirmReset to purge telemetry and lane registry ghosts, reset stem/DGN states.
+3. Restart QC prepend cycle from Initiate Origination on the stem PDF.
 
 .EXAMPLE
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
@@ -30,6 +40,7 @@ Does not delete ProjectWise documents, sheet_index rows, sheet_packages rows, or
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
+.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -KeepLanePdfRegistry
 .\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipPreviewCounts -QueryTimeoutSeconds 600
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -46,6 +57,7 @@ param(
     [switch]$IncludeCommentTelemetry,
     [switch]$KeepSheetIndexQcFields,
     [switch]$SkipSheetIndexUpdate,
+    [switch]$KeepLanePdfRegistry,
     [int]$BatchSize = 5000,
     [int]$QueryTimeoutSeconds = 300,
     [switch]$SkipPreviewCounts,
@@ -243,6 +255,17 @@ function _RQCF-GetPwDocumentState {
     return ''
 }
 
+function _RQCF-GetLanePdfNameClause {
+    param([string]$DocumentNameColumn = 'document_name')
+    return @"
+(
+    LOWER($DocumentNameColumn) LIKE '%-prod.pdf'
+    OR LOWER($DocumentNameColumn) LIKE '%-chk.pdf'
+    OR LOWER($DocumentNameColumn) LIKE '%-rev.pdf'
+)
+"@
+}
+
 function _RQCF-SetPwDocumentState {
     param(
         [object]$Document,
@@ -272,6 +295,7 @@ $params = @{
     folderLike  = _RQCF-NormalizePathPattern -Pattern $normFolder
 }
 $siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
+$siLaneNameClause = _RQCF-GetLanePdfNameClause -DocumentNameColumn 'si.document_name'
 $spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
 $nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
 $histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
@@ -309,6 +333,8 @@ $summary = [ordered]@{
     sheetPackagesUpdated = 0
     sheetDocumentsUpdated = 0
     sheetPackageQcPdfsDeleted = 0
+    sheetIndexLaneRowsDeleted = 0
+    sheetDocumentsQcPdfDeleted = 0
 }
 
 # --- ProjectWise ---
@@ -471,12 +497,28 @@ WHERE EXISTS (SELECT 1 FROM sheet_packages sp WHERE sp.sheet_package_id = q.shee
         }
 
         $sheetIndexMatched = 0L
+        $sheetIndexLaneMatched = 0L
+        $sheetIndexNonLaneMatched = 0L
+        $sheetDocumentsQcPdfMatched = 0L
         $sheetIndexCompletionData = 0L
         $sheetPackageCompletionData = 0L
         if (-not $SkipSheetIndexUpdate.IsPresent) {
             $sheetIndexMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause)
 "@
+            if (-not $KeepLanePdfRegistry.IsPresent) {
+                $sheetIndexLaneMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause) AND ($siLaneNameClause)
+"@
+                $sheetIndexNonLaneMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_index si WHERE ($siFolderClause) AND NOT ($siLaneNameClause)
+"@
+                $sheetDocumentsQcPdfMatched = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM sheet_documents sd
+INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
+WHERE ($spFolderClause) AND sd.document_role = 'qc_pdf'
+"@
+            }
             try {
                 $sheetIndexCompletionData = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM sheet_index si
@@ -514,6 +556,9 @@ WHERE ($spFolderClause)
             rowsMatched = $dbCounts
             deleted = [ordered]@{}
             sheetIndexMatched = $sheetIndexMatched
+            sheetIndexLaneMatched = $sheetIndexLaneMatched
+            sheetIndexNonLaneMatched = $sheetIndexNonLaneMatched
+            sheetDocumentsQcPdfMatched = $sheetDocumentsQcPdfMatched
             sheetIndexCompletionData = $sheetIndexCompletionData
             sheetPackagesMatched = $sheetPackagesMatched
             sheetDocumentsMatched = $sheetDocumentsMatched
@@ -530,7 +575,13 @@ WHERE ($spFolderClause)
         if ($SkipSheetIndexUpdate.IsPresent) {
             Write-Host '  sheet_index / sheet_packages / sheet_documents: skipped (-SkipSheetIndexUpdate); no rows deleted or updated.' -ForegroundColor DarkGray
         } else {
-            Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
+            if ($KeepLanePdfRegistry.IsPresent) {
+                Write-Host ('  sheet_index: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetIndexMatched) -ForegroundColor DarkGray
+            } else {
+                Write-Host ('  sheet_index: {0} row(s) matched - {1} lane PDF row(s) DELETE, {2} stem/DGN row(s) UPDATE.' -f `
+                    $sheetIndexMatched, $sheetIndexLaneMatched, $sheetIndexNonLaneMatched) -ForegroundColor DarkGray
+                Write-Host ('  sheet_documents qc_pdf role: {0} row(s) matched - DELETE on confirm.' -f $sheetDocumentsQcPdfMatched) -ForegroundColor DarkGray
+            }
             Write-Host ('  sheet_index completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetIndexCompletionData) -ForegroundColor DarkGray
             Write-Host ('  sheet_packages: {0} row(s) matched - UPDATE only, rows are not deleted.' -f $sheetPackagesMatched) -ForegroundColor DarkGray
             Write-Host ('  sheet_packages completion/cycle reset: {0} row(s) with qc_cycle_id or completion counts/timestamps to clear.' -f $sheetPackageCompletionData) -ForegroundColor DarkGray
@@ -613,6 +664,34 @@ WHERE id IN (
             }
 
             if (-not $SkipSheetIndexUpdate.IsPresent) {
+                if (-not $KeepLanePdfRegistry.IsPresent) {
+                    try {
+                        $deleted.sheet_index_lane = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'sheet_index_lane_pdfs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
+DELETE TOP (@batchSize) FROM sheet_index
+WHERE document_guid IN (
+  SELECT si.document_guid FROM sheet_index si
+  WHERE ($siFolderClause) AND ($siLaneNameClause)
+)
+"@
+                        $summary.sheetIndexLaneRowsDeleted = [long]$deleted['sheet_index_lane']
+                    } catch {
+                        Write-Host ("  [sheet_index lane PDF rows] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+                    }
+                    try {
+                        $deleted.sheet_documents_qc_pdf = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'sheet_documents_qc_pdf' -CommandTimeout $QueryTimeoutSeconds -Sql @"
+DELETE TOP (@batchSize) FROM sheet_documents
+WHERE document_guid IN (
+  SELECT sd.document_guid FROM sheet_documents sd
+  INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
+  WHERE ($spFolderClause) AND sd.document_role = 'qc_pdf'
+)
+"@
+                        $summary.sheetDocumentsQcPdfDeleted = [long]$deleted['sheet_documents_qc_pdf']
+                    } catch {
+                        Write-Host ("  [sheet_documents qc_pdf] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+                    }
+                }
+
                 $completionResetSql = @"
     production_qc_completed_count = 0,
     production_qc_last_completed_at = NULL,
@@ -647,7 +726,7 @@ $sheetIndexQcFieldResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
 FROM sheet_index si
-WHERE ($siFolderClause)
+WHERE ($siFolderClause)$(if (-not $KeepLanePdfRegistry.IsPresent) { " AND NOT ($siLaneNameClause)" } else { '' })
 "@
                 } else {
                     $sheetSql = @"
@@ -660,7 +739,7 @@ $sheetIndexQcFieldResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
 FROM sheet_index si
-WHERE ($siFolderClause)
+WHERE ($siFolderClause)$(if (-not $KeepLanePdfRegistry.IsPresent) { " AND NOT ($siLaneNameClause)" } else { '' })
 "@
                 }
 
@@ -668,6 +747,12 @@ WHERE ($siFolderClause)
                     try {
                         $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSql -Params $params -CommandTimeout $QueryTimeoutSeconds
                         Write-Host ('  [sheet_index] updated {0} row(s): pw_state_name, qc_process_type, lane QC pairing, qc_cycle/completion fields cleared (not deleted).' -f $summary.sheetIndexUpdated) -ForegroundColor Green
+                        if (-not $KeepLanePdfRegistry.IsPresent -and $summary.sheetIndexLaneRowsDeleted -gt 0) {
+                            Write-Host ('  [sheet_index] deleted {0} lane PDF row(s) (*-prod/-chk/-rev).' -f $summary.sheetIndexLaneRowsDeleted) -ForegroundColor Green
+                        }
+                        if (-not $KeepLanePdfRegistry.IsPresent -and $summary.sheetDocumentsQcPdfDeleted -gt 0) {
+                            Write-Host ('  [sheet_documents] deleted {0} qc_pdf role row(s).' -f $summary.sheetDocumentsQcPdfDeleted) -ForegroundColor Green
+                        }
                     } catch {
                         Write-Host ("  [sheet_index] extended reset failed ({0}); retrying without v1.18 columns." -f $_.Exception.Message) -ForegroundColor Yellow
                         $sheetSqlLegacy = if (-not $KeepSheetIndexQcFields.IsPresent) {
@@ -682,7 +767,7 @@ $completionResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
 FROM sheet_index si
-WHERE ($siFolderClause)
+WHERE ($siFolderClause)$(if (-not $KeepLanePdfRegistry.IsPresent) { " AND NOT ($siLaneNameClause)" } else { '' })
 "@
                         } else {
                             @"
@@ -693,7 +778,7 @@ $completionResetSql
     qc_cycle_id = NULL,
     qc_cycle_number = NULL
 FROM sheet_index si
-WHERE ($siFolderClause)
+WHERE ($siFolderClause)$(if (-not $KeepLanePdfRegistry.IsPresent) { " AND NOT ($siLaneNameClause)" } else { '' })
 "@
                         }
                         $summary.sheetIndexUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $sheetSqlLegacy -Params $params -CommandTimeout $QueryTimeoutSeconds

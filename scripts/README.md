@@ -51,6 +51,15 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 ### `Stop-QCPipeline.ps1`
 - **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs).
 
+### `Reset-QCFolderWorkflow.ps1`
+- **Purpose**: reset PW workflow states + clear folder-scoped QC telemetry for a clean prepend cycle.
+- **Lane PDF recycle**: after manually deleting `*-prod/-chk/-rev.pdf` in PW, run with `-ConfirmReset` to delete lane
+  `sheet_index` ghosts, `sheet_documents` `qc_pdf` rows, and `sheet_package_qc_pdfs` (default). Use `-KeepLanePdfRegistry`
+  for legacy UPDATE-only behavior.
+
+### `Publish-QCPipelineCode.ps1`
+- **Purpose**: copy `modules/` and key scripts to the production worker root; optional `-ConfirmRestart`.
+
 ### Other helper scripts
 
 This repo also includes queue/status-set helpers such as `Requeue-QCJobs.ps1`, `Purge-QCPendingByFilters.ps1`,
