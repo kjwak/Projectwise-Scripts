@@ -256,6 +256,14 @@ function New-QCNotificationEmailTemplateData {
     elseif ($Event -and $Event.ContainsKey('qcReviewType') -and -not (_QCNT-IsBlank $Event.qcReviewType)) {
         $reviewType = [string]$Event.qcReviewType
     }
+    elseif ($Event -and $Event.ContainsKey('qcProcessType') -and -not (_QCNT-IsBlank $Event.qcProcessType) `
+            -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+        $norm = $null
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Event.qcProcessType) -AllowNullOnEmpty
+        }
+        if ($norm) { $reviewType = Get-QCProcessTypeDisplayLabel -ProcessType $norm }
+    }
     elseif ($EventCfg -and $EventCfg.ContainsKey('reviewType') -and $EventCfg.reviewType) {
         $reviewType = [string]$EventCfg.reviewType
     }
@@ -264,8 +272,34 @@ function New-QCNotificationEmailTemplateData {
         if ($rt) { $reviewType = [string]$rt }
     }
     if (_QCNT-IsBlank $reviewType -and $Document) {
+        $processCol = 'QC_Process_Type'
+        if ($Config -and (Get-Command -Name 'Get-PWQcProcessTypeAttributeName' -ErrorAction SilentlyContinue)) {
+            try { $processCol = Get-PWQcProcessTypeAttributeName -Config $Config } catch { }
+        }
+        $pt = _QCNT-GetDocumentAttribute -Document $Document -AttributeName $processCol
+        if ($pt -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+            $norm = $null
+            if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$pt) -AllowNullOnEmpty
+            }
+            if ($norm) { $reviewType = Get-QCProcessTypeDisplayLabel -ProcessType $norm }
+        }
+    }
+    if ((_QCNT-IsBlank $reviewType) -or ($reviewType.Trim() -eq '0')) {
+        $reviewType = ''
+    }
+    if (_QCNT-IsBlank $reviewType) {
+        $displayName = if ($Event -and $Event.documentName) { [string]$Event.documentName } else { '' }
+        if (-not (_QCNT-IsBlank $displayName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+            $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $displayName
+            if ($lane -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+                $reviewType = Get-QCProcessTypeDisplayLabel -ProcessType $lane
+            }
+        }
+    }
+    if (_QCNT-IsBlank $reviewType -and $Document) {
         $rt = _QCNT-GetDocumentAttribute -Document $Document -AttributeName 'QC_Review_Type'
-        if ($rt) { $reviewType = [string]$rt }
+        if ($rt -and ($rt.Trim() -ne '0') -and ($rt -notmatch '^\d+$')) { $reviewType = [string]$rt }
     }
 
     $assignedTo = ''

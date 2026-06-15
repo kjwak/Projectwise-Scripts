@@ -815,6 +815,35 @@ function _QCN-ResolveNotificationProcessType {
     return ''
 }
 
+function _QCN-ResolveReviewTypeLabelFromProcessType {
+    param([string]$ProcessType = '')
+
+    if (_QCN-IsBlank $ProcessType) { return '' }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType ([string]$ProcessType) -AllowNullOnEmpty
+        if ($norm -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
+            return Get-QCProcessTypeDisplayLabel -ProcessType $norm
+        }
+    }
+    $trimmed = ([string]$ProcessType).Trim()
+    if (_QCN-IsBlank $trimmed) { return '' }
+    return $trimmed.Substring(0, 1).ToUpperInvariant() + $trimmed.Substring(1).ToLowerInvariant()
+}
+
+function _QCN-TestUsableNotificationReviewTypeValue {
+    param([string]$Value = '')
+
+    if (_QCN-IsBlank $Value) { return $false }
+    $trimmed = ([string]$Value).Trim()
+    if ($trimmed -eq '0') { return $false }
+    if ($trimmed -match '^\d+$') { return $false }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $trimmed -AllowNullOnEmpty
+        if ($norm) { return $true }
+    }
+    return $true
+}
+
 function _QCN-ResolveNotificationReviewType {
     param(
         [object]$Document,
@@ -822,15 +851,39 @@ function _QCN-ResolveNotificationReviewType {
         [hashtable]$Config = $null,
         [hashtable]$Job = $null,
         [string]$FolderPath = '',
-        [string]$SourceName = ''
+        [string]$SourceName = '',
+        [string]$DocumentName = ''
     )
+
+    if ($Job -and $Job.metadata) {
+        $jobMd = _QCN-ToHashtable $Job.metadata
+        if ($jobMd -and $jobMd.ContainsKey('qcProcessType') -and -not (_QCN-IsBlank $jobMd['qcProcessType'])) {
+            $fromJobProcess = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$jobMd['qcProcessType'])
+            if (-not (_QCN-IsBlank $fromJobProcess)) { return $fromJobProcess }
+        }
+    }
+
+    $laneName = [string]$DocumentName
+    if (_QCN-IsBlank $laneName) { $laneName = [string]$SourceName }
+    if ($Job -and $Job.metadata) {
+        $jobMdLane = _QCN-ToHashtable $Job.metadata
+        if ($jobMdLane -and $jobMdLane.expectedLanePdfName) { $laneName = [string]$jobMdLane.expectedLanePdfName }
+        elseif ($jobMdLane -and $jobMdLane.notificationLaneDocumentName) { $laneName = [string]$jobMdLane.notificationLaneDocumentName }
+    }
+    if (-not (_QCN-IsBlank $laneName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+        $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $laneName
+        if ($lane) {
+            $fromLane = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType $lane
+            if (-not (_QCN-IsBlank $fromLane)) { return $fromLane }
+        }
+    }
 
     $attr = _QCN-ToHashtable $Settings.attributes
     if (-not $attr) { $attr = @{} }
 
     if ($attr.ContainsKey('reviewTypeField') -and -not (_QCN-IsBlank $attr['reviewTypeField'])) {
         $fromNotify = _QCN-GetAttributeValue -Document $Document -AttributeName ([string]$attr['reviewTypeField'])
-        if (-not (_QCN-IsBlank $fromNotify)) { return ([string]$fromNotify).Trim() }
+        if (_QCN-TestUsableNotificationReviewTypeValue -Value $fromNotify) { return ([string]$fromNotify).Trim() }
     }
 
     $processCol = 'QC_Process_Type'
@@ -839,37 +892,77 @@ function _QCN-ResolveNotificationReviewType {
     }
     $fromProcess = _QCN-GetAttributeValue -Document $Document -AttributeName $processCol
     if (-not (_QCN-IsBlank $fromProcess)) {
-        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-            $norm = Normalize-QCProcessType -ProcessType ([string]$fromProcess)
-            if ($norm -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
-                return Get-QCProcessTypeDisplayLabel -ProcessType $norm
+        $fromProcessLabel = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$fromProcess)
+        if (-not (_QCN-IsBlank $fromProcessLabel)) { return $fromProcessLabel }
+        return ([string]$fromProcess).Trim()
+    }
+
+    $stemSource = [string]$SourceName
+    if (-not (_QCN-IsBlank $stemSource) -and (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) `
+            -and (Test-QCIsQcPdfDocumentName -DocumentName $stemSource)) {
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $stemSource = (Get-PWSheetStemFromDocumentName -DocumentName $stemSource) + '.pdf'
+        }
+    }
+    if (_QCN-IsBlank $stemSource) { $stemSource = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
+    if (-not (_QCN-IsBlank $stemSource) -and (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) `
+            -and (Test-QCIsQcPdfDocumentName -DocumentName $stemSource)) {
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $stemSource = (Get-PWSheetStemFromDocumentName -DocumentName $stemSource) + '.pdf'
+        }
+    }
+    if ($Config -and -not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $stemSource)) {
+        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $stemSource -Config $Config
+            if ($pw.found -and -not (_QCN-IsBlank $pw.qcProcessType)) {
+                $fromPwProcess = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$pw.qcProcessType)
+                if (-not (_QCN-IsBlank $fromPwProcess)) { return $fromPwProcess }
+            }
+            if ($pw.found -and (_QCN-TestUsableNotificationReviewTypeValue -Value $pw.qcReviewType)) {
+                return ([string]$pw.qcReviewType).Trim()
             }
         }
-        return ([string]$fromProcess).Trim()
     }
 
     $qcReviewCol = _QCN-GetQcReviewTypeAttributeName -Config $Config
     $fromDoc = _QCN-GetAttributeValue -Document $Document -AttributeName $qcReviewCol
-    if (-not (_QCN-IsBlank $fromDoc)) {
-        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-            $norm = Normalize-QCProcessType -ProcessType ([string]$fromDoc)
-            if ($norm -and (Get-Command -Name 'Get-QCProcessTypeDisplayLabel' -ErrorAction SilentlyContinue)) {
-                return Get-QCProcessTypeDisplayLabel -ProcessType $norm
-            }
-        }
+    if (_QCN-TestUsableNotificationReviewTypeValue -Value $fromDoc) {
+        $fromLegacy = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$fromDoc)
+        if (-not (_QCN-IsBlank $fromLegacy)) { return $fromLegacy }
         return ([string]$fromDoc).Trim()
-    }
-
-    if ($Config -and -not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceName)) {
-        if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
-            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceName -Config $Config
-            if ($pw.found -and -not (_QCN-IsBlank $pw.qcReviewType)) { return ([string]$pw.qcReviewType).Trim() }
-        }
     }
 
     if ($Job) {
         $fromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('reviewType', 'qcReviewType'))
-        if (-not (_QCN-IsBlank $fromJob)) { return $fromJob.Trim() }
+        if (_QCN-TestUsableNotificationReviewTypeValue -Value $fromJob) {
+            $fromJobLabel = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType $fromJob
+            if (-not (_QCN-IsBlank $fromJobLabel)) { return $fromJobLabel }
+            return $fromJob.Trim()
+        }
+        if ($Job.metadata) {
+            $jobMdRt = _QCN-ToHashtable $Job.metadata
+            if ($jobMdRt -and $jobMdRt.attributes) {
+                $attrs = _QCN-ToHashtable $jobMdRt.attributes
+                if ($attrs) {
+                    foreach ($k in @('reviewType', 'qcReviewType')) {
+                        if ($attrs.ContainsKey($k) -and (_QCN-TestUsableNotificationReviewTypeValue -Value ([string]$attrs[$k]))) {
+                            $fromAttr = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$attrs[$k])
+                            if (-not (_QCN-IsBlank $fromAttr)) { return $fromAttr }
+                            return ([string]$attrs[$k]).Trim()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($Config) {
+        $wf = _QCN-ToHashtable $Config['qcWorkflow']
+        if ($wf -and $wf.defaultReviewType -and (_QCN-TestUsableNotificationReviewTypeValue -Value ([string]$wf.defaultReviewType))) {
+            $fromDefault = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType ([string]$wf.defaultReviewType)
+            if (-not (_QCN-IsBlank $fromDefault)) { return $fromDefault }
+            return ([string]$wf.defaultReviewType).Trim()
+        }
     }
 
     return ''
@@ -4225,11 +4318,7 @@ function Invoke-QCNotificationForStateChange {
     if (_QCN-IsBlank $folderForRt) { $folderForRt = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
     if (_QCN-IsBlank $sourceForRt) { $sourceForRt = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
     $resolvedReviewType = _QCN-ResolveNotificationReviewType -Document $Document -Settings $settings -Config $Config -Job $Job `
-        -FolderPath $folderForRt -SourceName $sourceForRt
-    if (-not (_QCN-IsBlank $resolvedReviewType)) {
-        $event['reviewType'] = $resolvedReviewType
-        $event['qcReviewType'] = $resolvedReviewType
-    }
+        -FolderPath $folderForRt -SourceName $sourceForRt -DocumentName $DocumentName
     $resolvedProcessType = ''
     if ($Job -and $Job.metadata) {
         $jobMdForPt = _QCN-ToHashtable $Job.metadata
@@ -4242,6 +4331,14 @@ function Invoke-QCNotificationForStateChange {
     }
     if (-not (_QCN-IsBlank $resolvedProcessType)) {
         $event['qcProcessType'] = $resolvedProcessType
+    }
+    if ((_QCN-IsBlank $resolvedReviewType) -or (-not (_QCN-TestUsableNotificationReviewTypeValue -Value $resolvedReviewType))) {
+        $fromProcess = _QCN-ResolveReviewTypeLabelFromProcessType -ProcessType $resolvedProcessType
+        if (-not (_QCN-IsBlank $fromProcess)) { $resolvedReviewType = $fromProcess }
+    }
+    if (-not (_QCN-IsBlank $resolvedReviewType)) {
+        $event['reviewType'] = $resolvedReviewType
+        $event['qcReviewType'] = $resolvedReviewType
     }
 
     $resolvedSubmittedBy = Resolve-QCNotificationSubmittedBy -Config $Config -ChangedByUser $ChangedByUser `

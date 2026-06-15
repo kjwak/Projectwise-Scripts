@@ -123,6 +123,16 @@ InModuleScope -ModuleName QC.Notifications {
 
     $url = 'https://example.test/pwlink?objectId=0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b&objectType=doc&datasource=x&app=pwe'
     Assert-Eq (_QCN-ExtractPwLinkDocumentGuid -Url $url) $liveGuid 'pwlink objectId should be extracted from URL'
+
+    $legacyDoc = @{ QC_Review_Type = '0' }
+    $prodJob = @{ metadata = @{ qcProcessType = 'production' } }
+    $prodReview = _QCN-ResolveNotificationReviewType -Document $legacyDoc -Settings @{} -Config @{} -Job $prodJob `
+        -DocumentName '080J082001ab001-prod.pdf'
+    Assert-Eq $prodReview 'Production' 'review type should use qcProcessType instead of deprecated QC_Review_Type 0'
+
+    $laneOnlyReview = _QCN-ResolveNotificationReviewType -Document $legacyDoc -Settings @{} -Config @{} -Job $null `
+        -DocumentName '080J082001ab001-prod.pdf'
+    Assert-Eq $laneOnlyReview 'Production' 'lane PDF suffix should infer Production review type label'
 }
 
 Write-Host 'OK: QC notification GUID resolution tests passed.' -ForegroundColor Green
