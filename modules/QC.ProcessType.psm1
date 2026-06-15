@@ -593,6 +593,70 @@ function _QCPT-ResolveStampAssetPath {
     return $rel
 }
 
+function Get-QCStampProfileLayout {
+    <#
+    .SYNOPSIS
+    Resolves stamp overlay layout (size, position) for a stamp profile.
+    Profile-specific values in QCProcess.StampProfiles.<name>.layout override qcPrepend.reviewStamps defaults.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$StampProfile = 'Default'
+    )
+
+    $stampHeight = 200.0
+    $marginOutside = 12.0
+    $stampX = $null
+    $stampY = $null
+    $populateTextFields = $false
+
+    $qc = _QCPT-ToHashtable $Config.qcPrepend
+    $rs = if ($qc) { _QCPT-ToHashtable $qc.reviewStamps } else { $null }
+    if ($rs) {
+        if ($rs.ContainsKey('populateTextFields')) {
+            try { $populateTextFields = [bool]$rs.populateTextFields } catch { $populateTextFields = $false }
+        }
+        if ($rs.ContainsKey('stampHeightPt')) { try { $stampHeight = [double]$rs.stampHeightPt } catch { } }
+        if ($rs.ContainsKey('marginOutsidePt')) { try { $marginOutside = [double]$rs.marginOutsidePt } catch { } }
+        $pos = _QCPT-ToHashtable $rs.stampPositionPt
+        if ($pos) {
+            if ($pos.ContainsKey('x')) { try { $stampX = [double]$pos.x } catch { } }
+            if ($pos.ContainsKey('y')) { try { $stampY = [double]$pos.y } catch { } }
+        }
+    }
+
+    if (-not (_QCPT-IsBlank $StampProfile)) {
+        $settings = Get-QCProcessTypeSettings -Config $Config
+        $profiles = _QCPT-ToHashtable $settings.StampProfiles
+        $profile = $null
+        if ($profiles -and $profiles.ContainsKey($StampProfile)) {
+            $profile = _QCPT-ToHashtable $profiles[$StampProfile]
+        }
+        $layout = if ($profile) { _QCPT-ToHashtable $profile.layout } else { $null }
+        if ($layout) {
+            if ($layout.ContainsKey('populateTextFields')) {
+                try { $populateTextFields = [bool]$layout.populateTextFields } catch { }
+            }
+            if ($layout.ContainsKey('stampHeightPt')) { try { $stampHeight = [double]$layout.stampHeightPt } catch { } }
+            if ($layout.ContainsKey('marginOutsidePt')) { try { $marginOutside = [double]$layout.marginOutsidePt } catch { } }
+            $layoutPos = _QCPT-ToHashtable $layout.stampPositionPt
+            if ($layoutPos) {
+                if ($layoutPos.ContainsKey('x')) { try { $stampX = [double]$layoutPos.x } catch { } }
+                if ($layoutPos.ContainsKey('y')) { try { $stampY = [double]$layoutPos.y } catch { } }
+            }
+        }
+    }
+
+    return @{
+        stampHeightPt = $stampHeight
+        marginOutsidePt = $marginOutside
+        stampXPt = $stampX
+        stampYPt = $stampY
+        populateTextFields = $populateTextFields
+    }
+}
+
 function Resolve-QCStampForProcess {
     <#
     .SYNOPSIS
@@ -810,4 +874,5 @@ Export-ModuleMember -Function `
     Get-QCLaneQcPdfExpectedName, `
     Resolve-QCLaneQcPdf, `
     Resolve-QCStampForProcess, `
+    Get-QCStampProfileLayout, `
     Resolve-QCProcessTypeFromContext

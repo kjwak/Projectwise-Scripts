@@ -415,6 +415,11 @@ function _QCP-TryApplyReviewStampFromJob {
         $stampResolved = Resolve-QCStampForProcess -Config $Config -ProcessType $processType -FolderPath $FolderPath
         if ($stampResolved.IsSuccess -and $stampResolved.stampPath -and (Get-Command -Name 'Invoke-QCReviewStamp' -ErrorAction SilentlyContinue)) {
             $stampCfg = Get-QCReviewStampSettings -Config $Config
+            $layout = if (Get-Command -Name 'Get-QCStampProfileLayout' -ErrorAction SilentlyContinue) {
+                Get-QCStampProfileLayout -Config $Config -StampProfile ([string]$stampResolved.resolvedStampProfile)
+            } else {
+                $stampCfg
+            }
             $profileKey = if ($stampResolved.profileKey) { [string]$stampResolved.profileKey } else { 'check' }
             $roleValues = @{
                 designerEmail = [string]$roles.designerEmail
@@ -428,9 +433,13 @@ function _QCP-TryApplyReviewStampFromJob {
                 OverlayExe = if ($OverlayExe) { $OverlayExe } else { [string]$stampCfg.overlayExe }
                 PdfPath = $PdfPath
                 StampPath = [string]$stampResolved.stampPath
-                StampHeightPt = if ($stampCfg) { [double]$stampCfg.stampHeightPt } else { 200 }
-                MarginOutsidePt = if ($stampCfg) { [double]$stampCfg.marginOutsidePt } else { 12 }
-                PopulateTextFields = if ($stampCfg) { [bool]$stampCfg.populateTextFields } else { $false }
+                StampHeightPt = if ($layout) { [double]$layout.stampHeightPt } else { 200 }
+                MarginOutsidePt = if ($layout) { [double]$layout.marginOutsidePt } else { 12 }
+                PopulateTextFields = if ($layout) { [bool]$layout.populateTextFields } else { $false }
+            }
+            if ($layout -and $null -ne $layout.stampXPt -and $null -ne $layout.stampYPt) {
+                $stampParams['StampXPt'] = [double]$layout.stampXPt
+                $stampParams['StampYPt'] = [double]$layout.stampYPt
             }
             $result = Invoke-QCReviewStamp @stampParams
             $result['reviewType'] = $processType

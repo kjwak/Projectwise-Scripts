@@ -20,6 +20,15 @@ $config = @{
         StampProfiles = @{
             Default = @{ production = 'Production'; check = 'Check'; review = 'Review' }
             ProjectA = @{ production = 'Production'; check = 'Check'; review = 'Review' }
+            I15_ELPSE = @{
+                production = 'Production'
+                check = 'Check'
+                review = 'Review'
+                layout = @{
+                    stampHeightPt = 250
+                    stampPositionPt = @{ x = -350; y = 10 }
+                }
+            }
         }
         StampAssets = @{
             Production = 'stamps/Production_Stamp.pdf'
@@ -38,6 +47,17 @@ Assert-True $default.IsSuccess 'default check stamp resolves'
 
 $nested = Resolve-QCStampForProcess -Config $config -ProcessType 'review' -FolderPath 'Documents/Projects/Example/Nested/Sheets'
 Assert-Eq $nested.resolvedStampProfile 'ProjectA' 'longest-prefix override'
+
+$layoutDefault = Get-QCStampProfileLayout -Config @{
+    qcPrepend = @{ reviewStamps = @{ stampHeightPt = 300; stampPositionPt = @{ x = -400; y = 0 } } }
+    QCProcess = @{ StampProfiles = @{ Default = @{} } }
+} -StampProfile 'Default'
+Assert-Eq $layoutDefault.stampHeightPt 300 'default layout inherits global height'
+Assert-Eq $layoutDefault.stampXPt -400 'default layout inherits global x'
+
+$layoutI15 = Get-QCStampProfileLayout -Config $config -StampProfile 'I15_ELPSE'
+Assert-Eq $layoutI15.stampHeightPt 250 'profile layout overrides height'
+Assert-Eq $layoutI15.stampXPt -350 'profile layout overrides x'
 
 $missing = Resolve-QCStampForProcess -Config @{
     QCProcess = @{
