@@ -130,11 +130,87 @@ function _QCAT-ResolveMemberFileRole {
     return 'other'
 }
 
+function _QCAT-ResolveLaneProcessTypeFromDocumentName {
+    param([string]$DocumentName)
+    if ([string]::IsNullOrWhiteSpace($DocumentName)) { return '' }
+    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+        try {
+            $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName
+            if ($lane) { return [string]$lane }
+        } catch { }
+    }
+    if ($DocumentName -match '(?i)-(prod)\.pdf$') { return 'production' }
+    if ($DocumentName -match '(?i)-(chk)\.pdf$') { return 'check' }
+    if ($DocumentName -match '(?i)-(rev)\.pdf$') { return 'review' }
+    return ''
+}
+
+function _QCAT-ResolveActiveLaneMemberForNotification {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [array]$Members = @()
+    )
+
+    $qcMembers = @()
+    foreach ($member in @($Members)) {
+        $dn = [string]$member.documentName
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (Test-QCIsQcPdfDocumentName -DocumentName $dn) {
+            $qcMembers += $member
+        }
+    }
+    if ($qcMembers.Count -eq 0) { return $null }
+    if ($qcMembers.Count -eq 1) { return $qcMembers[0] }
+
+    $targetProcessType = ''
+    if ($Config -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) `
+            -and (Test-QCDatabaseEnabled -Config $Config) -and -not [string]::IsNullOrWhiteSpace($SheetStem)) {
+        try {
+            $res = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 qc_review_type, qc_process_type
+FROM sheet_index
+WHERE LOWER(document_name) = LOWER(@stemPdf)
+  AND (@folderPath = '' OR folder_path = @folderPath)
+ORDER BY last_updated_at DESC
+"@ -Parameters @{
+                stemPdf = ($SheetStem + '.pdf')
+                folderPath = if ($FolderPath) { [string]$FolderPath } else { '' }
+            }
+            if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+                $row = $res.Data.table.Rows[0]
+                $raw = if ($row.qc_process_type -isnot [DBNull] -and $row.qc_process_type) {
+                    [string]$row.qc_process_type
+                } elseif ($row.qc_review_type -isnot [DBNull] -and $row.qc_review_type) {
+                    [string]$row.qc_review_type
+                } else { '' }
+                if ($raw -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+                    $targetProcessType = [string](Normalize-QCProcessType -ProcessType $raw -AllowNullOnEmpty)
+                } elseif ($raw) {
+                    $targetProcessType = $raw.Trim().ToLowerInvariant()
+                }
+            }
+        } catch { }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($targetProcessType)) {
+        foreach ($member in $qcMembers) {
+            $lane = _QCAT-ResolveLaneProcessTypeFromDocumentName -DocumentName ([string]$member.documentName)
+            if ($lane -and ($lane -ieq $targetProcessType)) { return $member }
+        }
+    }
+    return $qcMembers[0]
+}
+
 function _QCAT-ResolveSheetPackageNotificationMember {
     param(
         [array]$Members,
         [string]$TriggerDocumentGuid = '',
-        [string]$TriggerDocumentName = ''
+        [string]$TriggerDocumentName = '',
+        [hashtable]$Config = $null,
+        [string]$FolderPath = '',
+        [string]$SheetStem = '',
+        [array]$AllMembers = @()
     )
 
     $triggerName = if ($TriggerDocumentName) { [string]$TriggerDocumentName } else { '' }
@@ -166,9 +242,23 @@ function _QCAT-ResolveSheetPackageNotificationMember {
         }
     }
 
+    $candidateMembers = if (@($AllMembers).Count -gt 0) { @($AllMembers) } else { @($Members) }
+    $qcPdfNotificationsOnly = $false
+    if ($Config -and (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue)) {
+        try {
+            $wt = Get-QCAuditWorkflowTriggerSettings -Config $Config
+            $qcPdfNotificationsOnly = [bool]$wt.qcPdfNotificationsOnly
+        } catch { }
+    }
+    if ($qcPdfNotificationsOnly -and -not $triggerIsQcPdf) {
+        $laneMember = _QCAT-ResolveActiveLaneMemberForNotification -Config $Config -FolderPath $FolderPath `
+            -SheetStem $SheetStem -Members $candidateMembers
+        if ($laneMember) { return $laneMember }
+    }
+
     $qcPdf = $null
     $sheetPdf = $null
-    foreach ($member in @($Members)) {
+    foreach ($member in @($candidateMembers)) {
         $dn = [string]$member.documentName
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
         if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { $qcPdf = $member; break }
@@ -178,6 +268,58 @@ function _QCAT-ResolveSheetPackageNotificationMember {
     if ($sheetPdf) { return $sheetPdf }
     if (@($Members).Count -gt 0) { return $Members[0] }
     return $null
+}
+
+function _QCAT-BuildWorkflowStateNotifyContext {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$NotifyDocumentName,
+        [string]$NotifyDocumentGuid,
+        [string]$TransitionSource,
+        [string]$NotificationStateSource = '',
+        [string]$StateTransitionKey = $null,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$TransitionGroupId = '',
+        [Nullable[int]]$TransitionId = $null,
+        [hashtable]$Attributes = $null
+    )
+
+    $notifyName = [string]$NotifyDocumentName
+    $notifyGuid = [string]$NotifyDocumentGuid
+    $sheetPdfName = $notifyName
+    if (Test-QCIsQcPdfDocumentName -DocumentName $notifyName) {
+        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            Get-PWSheetStemFromDocumentName -DocumentName $notifyName
+        } else {
+            [System.IO.Path]::GetFileNameWithoutExtension($notifyName)
+        }
+        $sheetPdfName = $stem + '.pdf'
+    }
+    $qcProcessType = _QCAT-ResolveLaneProcessTypeFromDocumentName -DocumentName $notifyName
+    $ctx = @{
+        config = $Config
+        folderPath = $FolderPath
+        documentPath = ($FolderPath + '\' + $notifyName)
+        roleSourceDocumentName = $sheetPdfName
+        stateTransitionKey = $StateTransitionKey
+        changedByUser = $ChangedByUser
+        changedByUsername = $ChangedByUsername
+        notificationStateSource = if ($NotificationStateSource) { [string]$NotificationStateSource } else { 'sheet_group_transition' }
+        transitionSource = $TransitionSource
+        notificationLaneDocumentName = $notifyName
+        notificationLaneDocumentGuid = $notifyGuid
+    }
+    if (-not [string]::IsNullOrWhiteSpace($qcProcessType)) {
+        $ctx['qcProcessType'] = $qcProcessType
+    }
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) { $ctx['auditEventId'] = $AuditEventId }
+    if (-not [string]::IsNullOrWhiteSpace($TransitionGroupId)) { $ctx['transitionGroupId'] = $TransitionGroupId }
+    if ($null -ne $TransitionId -and $TransitionId -gt 0) { $ctx['transitionId'] = $TransitionId }
+    if ($Attributes -and $Attributes.Count -gt 0) { $ctx['attributes'] = $Attributes }
+    return $ctx
 }
 
 function _QCAT-ResolveSheetPackageSheetPdfMember {
@@ -832,16 +974,30 @@ function Invoke-QCSheetGroupWorkflowTransition {
     }
 
     $memberResults = [System.Collections.Generic.List[object]]::new()
+    $allMembersForNotify = @($Members)
+    if (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue) {
+        try {
+            $loaded = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
+                -DocumentName $TriggerDocumentName -DocumentGuid $TriggerDocumentGuid)
+            if (@($loaded).Count -gt @($allMembersForNotify).Count) {
+                $allMembersForNotify = @($loaded)
+            }
+        } catch { }
+    }
     $notifyMember = _QCAT-ResolveSheetPackageNotificationMember -Members $Members `
-        -TriggerDocumentGuid $TriggerDocumentGuid -TriggerDocumentName $TriggerDocumentName
+        -TriggerDocumentGuid $TriggerDocumentGuid -TriggerDocumentName $TriggerDocumentName `
+        -Config $Config -FolderPath $FolderPath -SheetStem $sheetStem -AllMembers $allMembersForNotify
     $notifyGuid = if ($notifyMember) { [string]$notifyMember.documentGuid } else { '' }
     $notifyName = if ($notifyMember) { [string]$notifyMember.documentName } else { '' }
-    $packagePreviousState = _QCAT-NormalizeValue $SourceState
-    if ([string]::IsNullOrWhiteSpace($packagePreviousState) -and $notifyGuid) {
+    $packagePreviousState = ''
+    if ($notifyGuid) {
         $notifyKey = $notifyGuid.ToLowerInvariant()
         if ($PreviousStateByGuid.ContainsKey($notifyKey)) {
             $packagePreviousState = _QCAT-NormalizeValue ([string]$PreviousStateByGuid[$notifyKey])
         }
+    }
+    if ([string]::IsNullOrWhiteSpace($packagePreviousState)) {
+        $packagePreviousState = _QCAT-NormalizeValue $SourceState
     }
 
     $expectedRoles = @('dgn', 'pdf', 'qcPdf')
@@ -1007,36 +1163,17 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 $stateTransitionKey = Get-QCAuditStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
                     -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid -TransitionId $notifyTransitionId
             }
-            $sheetPdfName = $notifyName
-            if (Test-QCIsQcPdfDocumentName -DocumentName $notifyName) {
-                $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-                    Get-PWSheetStemFromDocumentName -DocumentName $notifyName
-                } else {
-                    [System.IO.Path]::GetFileNameWithoutExtension($notifyName)
-                }
-                $sheetPdfName = $stem + '.pdf'
-            }
-            $notifyContext = @{
-                config = $Config
-                folderPath = $FolderPath
-                documentPath = ($FolderPath + '\' + $notifyName)
-                sourceName = $sheetPdfName
-                stateTransitionKey = $stateTransitionKey
-                changedByUser = $ChangedByUser
-                changedByUsername = $ChangedByUsername
-                notificationStateSource = 'sheet_group_transition'
-                transitionSource = $TransitionSource
-                auditEventId = $AuditEventId
-                transitionGroupId = $transitionGroupId.ToString()
-            }
+            $notifyAttrs = $null
+            if ($Context -and $Context.ContainsKey('attributes')) { $notifyAttrs = $Context.attributes }
+            $notifyContext = _QCAT-BuildWorkflowStateNotifyContext -Config $Config -FolderPath $FolderPath `
+                -NotifyDocumentName $notifyName -NotifyDocumentGuid $notifyGuid `
+                -TransitionSource $TransitionSource -NotificationStateSource 'sheet_group_transition' `
+                -StateTransitionKey $stateTransitionKey -ChangedByUser $ChangedByUser `
+                -ChangedByUsername $ChangedByUsername -AuditEventId $AuditEventId `
+                -TransitionGroupId $transitionGroupId.ToString() -TransitionId $notifyTransitionId `
+                -Attributes $notifyAttrs
             if ($null -ne $sheetPackageId) {
                 $notifyContext['sheetPackageId'] = $sheetPackageId.ToString()
-            }
-            if ($null -ne $notifyTransitionId -and $notifyTransitionId -gt 0) {
-                $notifyContext['transitionId'] = $notifyTransitionId
-            }
-            if ($Context -and $Context.ContainsKey('attributes')) {
-                $notifyContext['attributes'] = $Context.attributes
             }
             if (-not $DryRun) {
                 try {
@@ -2359,39 +2496,18 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         } | Out-Null
     }
 
-    $sheetPdfName = $DocumentName
-    if (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName) {
-        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-            Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
-        } else {
-            [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
-        }
-        $sheetPdfName = $stem + '.pdf'
-    }
-
-    $notifyContext = @{
-        config = $Config
-        folderPath = $FolderPath
-        documentPath = ($FolderPath + '\' + $DocumentName)
-        sourceName = $sheetPdfName
-        stateTransitionKey = $stateTransitionKey
-        changedByUser = $ChangedByUser
-        changedByUsername = $notifyUsername
-        notificationStateSource = $notificationStateSource
-        transitionSource = 'audit_trigger'
-        auditEventId = $AuditEventId
-    }
-    if ($null -ne $transitionId -and $transitionId -gt 0) {
-        $notifyContext['transitionId'] = $transitionId
-    }
-    if ($attrs -and $attrs.Count -gt 0) {
-        $notifyContext['attributes'] = $attrs
-    }
+    $notifyContext = _QCAT-BuildWorkflowStateNotifyContext -Config $Config -FolderPath $FolderPath `
+        -NotifyDocumentName $DocumentName -NotifyDocumentGuid $DocumentGuid `
+        -TransitionSource 'audit_trigger' -NotificationStateSource $notificationStateSource `
+        -StateTransitionKey $stateTransitionKey -ChangedByUser $ChangedByUser `
+        -ChangedByUsername $notifyUsername -AuditEventId $AuditEventId `
+        -TransitionId $transitionId -Attributes $attrs
     if ($Config -and (Get-Command -Name 'Get-QCSheetIndexCycle' -ErrorAction SilentlyContinue)) {
         try {
             $sheetStem = ''
+            $stemSource = if ($notifyContext.roleSourceDocumentName) { [string]$notifyContext.roleSourceDocumentName } else { [string]$DocumentName }
             if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-                $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $sheetPdfName)
+                $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $stemSource)
             }
             $cycle = Get-QCSheetIndexCycle -Config $Config -DocumentGuid $DocumentGuid -FolderPath $FolderPath -SheetStem $sheetStem
             if ($cycle -and -not [string]::IsNullOrWhiteSpace($cycle.cycleId)) {

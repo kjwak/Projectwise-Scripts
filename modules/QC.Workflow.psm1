@@ -299,8 +299,14 @@ function _QCW-ResolveNotificationRoleAttrsForEnqueue {
         try { $srcName = [string]$Document.Name } catch { }
     }
     if (-not (_QCW-IsNullOrWhiteSpace $srcName) -and (Test-QCIsQcPdfDocumentName -DocumentName $srcName)) {
-        $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcName
-        $srcName = $stem + '.pdf'
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            try {
+                $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcName
+                if (-not (_QCW-IsNullOrWhiteSpace $stem)) { $srcName = $stem + '.pdf' }
+            } catch { }
+        } else {
+            $srcName = [System.IO.Path]::GetFileNameWithoutExtension($srcName) + '.pdf'
+        }
     }
     $folder = [string]$FolderPath
     if ((_QCW-IsNullOrWhiteSpace $folder) -and $Document) {
@@ -460,6 +466,12 @@ function _QCW-InvokeStateChangeNotification {
                     if ($wfMdForDedupe -and $wfMdForDedupe.cycleId -and -not $eventForDedupe.ContainsKey('cycleId')) {
                         $eventForDedupe['cycleId'] = [string]$wfMdForDedupe.cycleId
                     }
+                }
+                if ($Context -and $Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
+                    $eventForDedupe['qcProcessType'] = [string]$Context.qcProcessType
+                }
+                if ($Context -and $Context.ContainsKey('notificationLaneDocumentName') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentName)) {
+                    $eventForDedupe['documentName'] = [string]$Context.notificationLaneDocumentName
                 }
                 if ($Context -and $Context.ContainsKey('attributes') -and $Context.attributes) {
                     $ctxAttrs = _QCW-ToHashtable $Context.attributes
@@ -623,17 +635,38 @@ function _QCW-InvokeStateChangeNotification {
         if (-not $notifJob.sourceFolder -and $Context -and $Context.folderPath) {
             $notifJob.sourceFolder = [string]$Context.folderPath
         }
-        if ($Context -and $Context.ContainsKey('sourceName') -and -not (_QCW-IsNullOrWhiteSpace $Context.sourceName)) {
-            $notifJob.sourceName = [string]$Context.sourceName
+        $laneJobName = ''
+        if ($Context -and $Context.ContainsKey('notificationLaneDocumentName') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentName)) {
+            $laneJobName = [string]$Context.notificationLaneDocumentName
+        } elseif ($Document) {
+            try {
+                $derivedName = [string]$Document.Name
+                if ($derivedName -match '(?i)-(prod|chk|rev)\.pdf$') { $laneJobName = $derivedName }
+            } catch { }
+        }
+        if (-not (_QCW-IsNullOrWhiteSpace $laneJobName)) {
+            $notifJob.sourceName = $laneJobName
         } elseif (-not $notifJob.sourceName -and $Document) {
             try {
                 $derivedName = [string]$Document.Name
-                if ($derivedName -match '(?i)-(prod|chk|rev)\.pdf$') {
-                    $notifJob.sourceName = $derivedName
-                } elseif (-not (_QCW-IsNullOrWhiteSpace $derivedName)) {
-                    $notifJob.sourceName = $derivedName
-                }
+                if (-not (_QCW-IsNullOrWhiteSpace $derivedName)) { $notifJob.sourceName = $derivedName }
             } catch { }
+        }
+        $roleSourceName = ''
+        if ($Context -and $Context.ContainsKey('roleSourceDocumentName') -and -not (_QCW-IsNullOrWhiteSpace $Context.roleSourceDocumentName)) {
+            $roleSourceName = [string]$Context.roleSourceDocumentName
+        } elseif ($Context -and $Context.ContainsKey('sourceName') -and -not (_QCW-IsNullOrWhiteSpace $Context.sourceName)) {
+            $roleSourceName = [string]$Context.sourceName
+        }
+        if (-not (_QCW-IsNullOrWhiteSpace $roleSourceName)) {
+            $notifJob.metadata['roleSourceDocumentName'] = $roleSourceName
+        }
+        if ($Context -and $Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
+            $notifJob.metadata['qcProcessType'] = [string]$Context.qcProcessType
+        }
+        if ($Context -and $Context.ContainsKey('notificationLaneDocumentGuid') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentGuid)) {
+            $notifJob.metadata['notificationLaneDocumentGuid'] = [string]$Context.notificationLaneDocumentGuid
+            $notifJob.metadata['documentGuid'] = [string]$Context.notificationLaneDocumentGuid
         }
         if ($job) {
             if (-not $notifJob.sourceFolder -and $job.sourceFolder) { $notifJob.sourceFolder = [string]$job.sourceFolder }
@@ -647,8 +680,12 @@ function _QCW-InvokeStateChangeNotification {
             $jobMd = _QCW-ToHashtable $job.metadata
             if ($jobMd -and $jobMd.attributes) { $roleAttrs = _QCW-ToHashtable $jobMd.attributes }
         }
+        $roleLookupName = $roleSourceName
+        if ((_QCW-IsNullOrWhiteSpace $roleLookupName) -and -not (_QCW-IsNullOrWhiteSpace $notifJob.sourceName)) {
+            $roleLookupName = [string]$notifJob.sourceName
+        }
         $resolvedRoles = _QCW-ResolveNotificationRoleAttrsForEnqueue -Config $Config -Document $Document `
-            -FolderPath ([string]$notifJob.sourceFolder) -SourceDocumentName ([string]$notifJob.sourceName)
+            -FolderPath ([string]$notifJob.sourceFolder) -SourceDocumentName $roleLookupName
         if ($resolvedRoles -and $resolvedRoles.Count -gt 0) {
             if (-not $roleAttrs) { $roleAttrs = @{} }
             foreach ($k in @('designerEmail', 'reviewerEmail', 'checkerEmail', 'reviewType', 'qcReviewType')) {

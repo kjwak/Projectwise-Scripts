@@ -656,8 +656,14 @@ function Resolve-QCNotificationQcPdfUrl {
     $sheetStem = if ($Event.sheetStem) { [string]$Event.sheetStem } else { '' }
     $srcForGuid = if ($Event.documentName) { [string]$Event.documentName } else { '' }
     if (-not (_QCN-IsBlank $srcForGuid) -and (Test-QCIsQcPdfDocumentName -DocumentName $srcForGuid)) {
-        $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcForGuid
-        $srcForGuid = $stem + '.pdf'
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            try {
+                $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcForGuid
+                if (-not (_QCN-IsBlank $stem)) { $srcForGuid = $stem + '.pdf' }
+            } catch { }
+        } else {
+            $srcForGuid = [System.IO.Path]::GetFileNameWithoutExtension($srcForGuid) + '.pdf'
+        }
     }
     $qcPdfName = _QCN-NormalizeQcPdfDocumentName -DocumentName ([string]$Event.documentName) -SheetStem $sheetStem `
         -ProcessType ([string]$Event.qcProcessType) -Config $Config -Event $Event
@@ -1043,8 +1049,14 @@ WHERE document_guid = @docGuid
         if (-not (_QCN-IsBlank $FolderPath) -and -not (_QCN-IsBlank $SourceDocumentName)) {
             $srcName = [string]$SourceDocumentName
             if (Test-QCIsQcPdfDocumentName -DocumentName $srcName) {
-                $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcName
-                $srcName = $stem + '.pdf'
+                if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                    try {
+                        $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcName
+                        if (-not (_QCN-IsBlank $stem)) { $srcName = $stem + '.pdf' }
+                    } catch { }
+                } else {
+                    $srcName = [System.IO.Path]::GetFileNameWithoutExtension($srcName) + '.pdf'
+                }
             }
             $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT designer_email, reviewer_email, checker_email
@@ -1873,9 +1885,23 @@ function _QCN-ResolveNotificationRoleEmails {
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath','folderPath')) }
     if (_QCN-IsBlank $sourceName) { $sourceName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')) }
     if (_QCN-IsBlank $DocumentGuid) { $DocumentGuid = [string](_QCN-GetProp -Object $Document -Names @('DocumentGUID','DocumentGuid','GUID','Id')) }
+    if ($Job) {
+        $roleFromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('roleSourceDocumentName'))
+        if (-not (_QCN-IsBlank $roleFromJob)) { $sourceName = $roleFromJob }
+        elseif ($Job.metadata) {
+            $mdRole = _QCN-ToHashtable $Job.metadata
+            if ($mdRole -and $mdRole.roleSourceDocumentName) { $sourceName = [string]$mdRole.roleSourceDocumentName }
+        }
+    }
     if (-not (_QCN-IsBlank $sourceName) -and (Test-QCIsQcPdfDocumentName -DocumentName $sourceName)) {
-        $stem = Get-PWSheetStemFromDocumentName -DocumentName $sourceName
-        $sourceName = $stem + '.pdf'
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            try {
+                $stem = Get-PWSheetStemFromDocumentName -DocumentName $sourceName
+                if (-not (_QCN-IsBlank $stem)) { $sourceName = $stem + '.pdf' }
+            } catch { }
+        } else {
+            $sourceName = [System.IO.Path]::GetFileNameWithoutExtension($sourceName) + '.pdf'
+        }
     }
 
     $designer = ''
@@ -4262,6 +4288,12 @@ function Invoke-QCNotificationForStateChange {
     if ($Job) {
         $folderForRoles = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder', 'folderPath', 'incomingFolderPath'))
         $sourceForRoles = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceName', 'sourceDocumentName', 'incomingDocName'))
+        $roleFromJob = [string](_QCN-GetJobValue -Job $Job -Keys @('roleSourceDocumentName'))
+        if (-not (_QCN-IsBlank $roleFromJob)) { $sourceForRoles = $roleFromJob }
+        elseif ($Job.metadata) {
+            $mdRole = _QCN-ToHashtable $Job.metadata
+            if ($mdRole -and $mdRole.roleSourceDocumentName) { $sourceForRoles = [string]$mdRole.roleSourceDocumentName }
+        }
     }
     if (_QCN-IsBlank $folderForRoles) { $folderForRoles = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
     if ((_QCN-IsBlank $folderForRoles) -and (-not (_QCN-IsBlank $DocumentPath)) -and ($DocumentPath -match '\\')) {
@@ -4281,8 +4313,14 @@ function Invoke-QCNotificationForStateChange {
     }
     if (_QCN-IsBlank $sourceForRoles) { $sourceForRoles = [string](_QCN-GetProp -Object $Document -Names @('Name', 'DocumentName', 'FileName')) }
     if (-not (_QCN-IsBlank $sourceForRoles) -and (Test-QCIsQcPdfDocumentName -DocumentName $sourceForRoles)) {
-        $stem = Get-PWSheetStemFromDocumentName -DocumentName $sourceForRoles
-        $sourceForRoles = $stem + '.pdf'
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            try {
+                $stem = Get-PWSheetStemFromDocumentName -DocumentName $sourceForRoles
+                if (-not (_QCN-IsBlank $stem)) { $sourceForRoles = $stem + '.pdf' }
+            } catch { }
+        } else {
+            $sourceForRoles = [System.IO.Path]::GetFileNameWithoutExtension($sourceForRoles) + '.pdf'
+        }
     }
 
     $resolved = Resolve-QCNotificationRecipients -Document $Document -Settings $settings -ToRoles @($eventCfg.to) -CcRoles @($eventCfg.cc) `

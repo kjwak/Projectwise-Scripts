@@ -2517,7 +2517,22 @@ function Invoke-QCNotificationProcessor {
     if ($null -ne $transitionId -and $transitionId -gt 0) {
         $notifyParams['TransitionId'] = $transitionId
     }
-    $res = Invoke-QCNotificationForStateChange @notifyParams
+    $res = $null
+    try {
+        $res = Invoke-QCNotificationForStateChange @notifyParams
+    } catch {
+        $err = [string]$_.Exception.Message
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_NOTIFICATION_PROCESSOR_THROW' -Message $err -Data @{
+                jobId = if ($Job.id) { [string]$Job.id } else { '' }
+                documentName = if ($notifyParams.DocumentName) { [string]$notifyParams.DocumentName } else { '' }
+                currentState = $curr
+                previousState = $prev
+            } | Out-Null
+        }
+        return New-QCFailureResult -Code 'PROCESSOR_HANDLER_THROW' -Message "Handler threw: Invoke-QCNotificationProcessor" `
+            -Data @{ jobId = [string]$Job.id; jobType = 'QC_NOTIFICATION'; handler = 'Invoke-QCNotificationProcessor'; error = $err }
+    }
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         $cp = if ($res -and $res.IsSuccess) { 'notification_complete' } else { 'notification_failed' }
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $cp | Out-Null
