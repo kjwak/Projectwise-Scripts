@@ -902,7 +902,7 @@ function _QDB-GetSchemaV1dot2 {
 
 GO
 
--- qc_comment_runs: one processor execution per *-qc.pdf sync job
+-- qc_comment_runs: one processor execution per lane PDF sync job
 IF OBJECT_ID('dbo.qc_comment_runs', 'U') IS NULL
 CREATE TABLE qc_comment_runs (
     run_id                  BIGINT IDENTITY(1,1) PRIMARY KEY,
@@ -3256,7 +3256,6 @@ function _QDB-GetSheetStemFromDocumentName {
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
     if ([string]::IsNullOrWhiteSpace($stem)) { return '' }
     if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
-    elseif ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
     return $stem
 }
 
@@ -3264,7 +3263,6 @@ function _QDB-ResolveSheetDocumentRole {
     param([string]$DocumentName)
     $dn = [string]$DocumentName
     if ($dn -match '(?i)-(prod|chk|rev)\.pdf$') { return 'qc_pdf' }
-    if ($dn -match '(?i)-qc\.pdf$') { return 'qc_pdf' }
     if ($dn -match '(?i)\.dgn$') { return 'dgn' }
     if ($dn -match '(?i)\.pdf$') { return 'sheet_pdf' }
     return 'other'
@@ -3550,7 +3548,7 @@ function Write-SheetDocument {
         return New-QCFailureResult -Code 'SHEET_DOCUMENT_ROLE_INVALID' -Message 'document_role must be dgn, sheet_pdf, or qc_pdf.' -Data @{ documentRole = $role }
     }
     try {
-        # Upsert by (sheet_package_id, document_role) so a recreated *-qc.pdf with a new
+        # Upsert by (sheet_package_id, document_role) so a recreated lane PDF with a new
         # ProjectWise GUID replaces the prior member row instead of failing the role unique key.
         $sql = @"
 MERGE sheet_documents AS tgt
@@ -4359,7 +4357,7 @@ ORDER BY last_updated_at DESC
 function Update-QCSheetQcPdf {
     <#
     .SYNOPSIS
-    Links a -qc.pdf to its source sheet in the sheet_index table. Fire-and-forget.
+    Links a lane PDF to its source sheet in the sheet_index table. Fire-and-forget.
     Called after a successful QC_PREPEND job.
     #>
     [CmdletBinding()]

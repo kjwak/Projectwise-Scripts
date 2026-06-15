@@ -290,7 +290,7 @@ function _QDM-ParseDocumentPath {
     }
 
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($documentName)
-    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
 
     return @{
         raw_path = $raw
@@ -1523,7 +1523,7 @@ function Compare-QCProjectWiseToDatabase {
         $guids = @($dbDocs | ForEach-Object { $_.document_guid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | Select-Object -Unique)
         $modulesRoot = $PSScriptRoot
         try {
-            $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -ScriptBlock {
+            $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
                 Import-Module (Join-Path $using:modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
                 $states = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $using:guids
                 $names = @{}

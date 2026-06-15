@@ -851,7 +851,7 @@ function _PWD-EnrichSheetIndexReviewType {
 
     $sheetPdfName = [string]$DocumentName
     if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-        if ($sheetPdfName -match '(?i)(?:-qc\.pdf|\.dgn)$') {
+        if ((Test-QCIsQcPdfDocumentName -DocumentName $sheetPdfName) -or ($sheetPdfName -match '(?i)\.dgn$')) {
             $stem = Get-PWSheetStemFromDocumentName -DocumentName $sheetPdfName
             if (-not [string]::IsNullOrWhiteSpace($stem)) { $sheetPdfName = $stem + '.pdf' }
         }
@@ -1215,9 +1215,9 @@ function _PWD-NormalizeSheetIndexValue {
 function _PWD-GetSheetMemberDocRole {
     param([string]$DocumentName)
     $dn = [string]$DocumentName
-    if ($dn -match '(?i)-qc\.pdf$') { return 'qcPdf' }
+    if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { return 'qcPdf' }
     if ($dn -match '(?i)\.dgn$') { return 'dgn' }
-    if ($dn -match '(?i)\.pdf$') { return 'pdf' }
+    if (Test-QCIsSheetPdfDocumentName -DocumentName $dn) { return 'pdf' }
     return 'other'
 }
 
@@ -1452,7 +1452,7 @@ function Build-PWSheetIndexRowsForPairedSheets {
 function Get-PWSheetStemFromDocumentName {
     <#
     .SYNOPSIS
-    Normalized sheet stem from a DGN, sheet PDF, or *-qc.pdf filename.
+    Normalized sheet stem from a DGN, sheet PDF, or lane PDF (*-prod/-chk/-rev.pdf) filename.
     #>
     [CmdletBinding()]
     param(
@@ -3307,13 +3307,11 @@ function _PWD-ResolveSheetPackageNotificationDocumentGuid {
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
         if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
             if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { return [string]$m.documentGuid }
-        } elseif ($dn -match '(?i)-qc\.pdf$') {
-            return [string]$m.documentGuid
         }
     }
     foreach ($m in @($Members)) {
         $dn = [string]$m.documentName
-        if ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-qc\.pdf$') { return [string]$m.documentGuid }
+        if (Test-QCIsSheetPdfDocumentName -DocumentName $dn) { return [string]$m.documentGuid }
     }
     if (@($Members).Count -gt 0) { return [string]$Members[0].documentGuid }
     return ''
@@ -4385,7 +4383,7 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
     $sheetPdfName = $sheetStem + '.pdf'
 
     $sheetGuid = ''
-    if (($DocumentName -match '(?i)\.pdf$') -and ($DocumentName -notmatch '(?i)-qc\.pdf$')) {
+    if (Test-QCIsSheetPdfDocumentName -DocumentName $DocumentName) {
         $sheetGuid = [string]$DocumentGuid
     } else {
         try {
@@ -4393,7 +4391,7 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
                 -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
             foreach ($member in $members) {
                 $mn = [string]$member.documentName
-                if (($mn -match '(?i)\.pdf$') -and ($mn -notmatch '(?i)-qc\.pdf$')) {
+                if (Test-QCIsSheetPdfDocumentName -DocumentName $mn) {
                     $sheetGuid = [string]$member.documentGuid
                     break
                 }

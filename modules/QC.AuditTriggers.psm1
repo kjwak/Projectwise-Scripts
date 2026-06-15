@@ -2,6 +2,7 @@
 # Responsibility: Audit-driven QC workflow state/attribute triggers (telemetry + notifications).
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
 if (-not (Get-Command -Name 'Write-QCDocumentStateHistoryRow' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
 }
@@ -123,9 +124,9 @@ function Get-QCSheetGroupTransitionKey {
 function _QCAT-ResolveMemberFileRole {
     param([string]$DocumentName)
     $dn = [string]$DocumentName
-    if ($dn -match '(?i)-qc\.pdf$') { return 'qcPdf' }
+    if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { return 'qcPdf' }
     if ($dn -match '(?i)\.dgn$') { return 'dgn' }
-    if ($dn -match '(?i)\.pdf$') { return 'pdf' }
+    if (Test-QCIsSheetPdfDocumentName -DocumentName $dn) { return 'pdf' }
     return 'other'
 }
 
@@ -143,7 +144,7 @@ function _QCAT-ResolveSheetPackageNotificationMember {
         if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
             $triggerIsQcPdf = [bool](Test-QCIsQcPdfDocumentName -DocumentName $triggerName)
         } else {
-            $triggerIsQcPdf = ($triggerName -match '(?i)-qc\.pdf$')
+            $triggerIsQcPdf = $false
         }
     }
 
@@ -171,7 +172,7 @@ function _QCAT-ResolveSheetPackageNotificationMember {
         $dn = [string]$member.documentName
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
         if (Test-QCIsQcPdfDocumentName -DocumentName $dn) { $qcPdf = $member; break }
-        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$') -and -not $sheetPdf) { $sheetPdf = $member }
+        if ((Test-QCIsSheetPdfDocumentName -DocumentName $dn) -and -not $sheetPdf) { $sheetPdf = $member }
     }
     if ($qcPdf) { return $qcPdf }
     if ($sheetPdf) { return $sheetPdf }
@@ -184,7 +185,7 @@ function _QCAT-ResolveSheetPackageSheetPdfMember {
     foreach ($member in @($Members)) {
         $dn = [string]$member.documentName
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
-        if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$')) { return $member }
+        if (Test-QCIsSheetPdfDocumentName -DocumentName $dn) { return $member }
     }
     return $null
 }
@@ -994,8 +995,13 @@ function Invoke-QCSheetGroupWorkflowTransition {
                     -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid -TransitionId $notifyTransitionId
             }
             $sheetPdfName = $notifyName
-            if ($notifyName -match '(?i)-qc\.pdf$') {
-                $sheetPdfName = [System.IO.Path]::GetFileNameWithoutExtension($notifyName) + '.pdf'
+            if (Test-QCIsQcPdfDocumentName -DocumentName $notifyName) {
+                $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                    Get-PWSheetStemFromDocumentName -DocumentName $notifyName
+                } else {
+                    [System.IO.Path]::GetFileNameWithoutExtension($notifyName)
+                }
+                $sheetPdfName = $stem + '.pdf'
             }
             $notifyContext = @{
                 config = $Config
@@ -1129,7 +1135,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
 function Test-QCIsQcPdfDocumentName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentName)
-    return ([string]$DocumentName -match '(?i)-qc\.pdf$')
+    if (-not (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
+    }
+    return (Test-PWQcPdfLaneSuffix -DocumentName $DocumentName)
 }
 
 function Get-QCAuditWorkflowTriggerSettings {
@@ -1567,7 +1576,7 @@ function Test-QCShouldSuppressAuditSheetStateSync {
     <#
     .SYNOPSIS
     Skips sibling sheet sync for automation-originated DOCUMENT_STATE echoes (e.g. DGN after QC PDF was already aligned).
-    Allows sync when automation changed a *-qc.pdf (prepend set QC Received → propagate to siblings once).
+    Allows sync when automation changed a lane PDF (*-prod/-chk/-rev.pdf; prepend set QC Received → propagate to siblings once).
     #>
     [CmdletBinding()]
     param(
@@ -1621,8 +1630,13 @@ function _QCAT-BuildNotificationDocument {
     }
     elseif ($Config -and -not [string]::IsNullOrWhiteSpace($FolderPath) -and -not [string]::IsNullOrWhiteSpace($DocumentName)) {
         $srcName = [string]$DocumentName
-        if ($srcName -match '(?i)-qc\.pdf$') {
-            $srcName = [System.IO.Path]::GetFileNameWithoutExtension($srcName) + '.pdf'
+        if (Test-QCIsQcPdfDocumentName -DocumentName $srcName) {
+            $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                Get-PWSheetStemFromDocumentName -DocumentName $srcName
+            } else {
+                [System.IO.Path]::GetFileNameWithoutExtension($srcName)
+            }
+            $srcName = $stem + '.pdf'
         }
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $srcName -Config $Config
@@ -1737,8 +1751,13 @@ function Resolve-QCWorkflowEventQcReviewType {
             if ($job -and $job.sourceName) { $source = [string]$job.sourceName }
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($source) -and $source -match '(?i)-qc\.pdf$') {
-        $source = [string]([System.IO.Path]::GetFileNameWithoutExtension($source)) + '.pdf'
+    if (-not [string]::IsNullOrWhiteSpace($source) -and (Test-QCIsQcPdfDocumentName -DocumentName $source)) {
+        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            Get-PWSheetStemFromDocumentName -DocumentName $source
+        } else {
+            [System.IO.Path]::GetFileNameWithoutExtension($source)
+        }
+        $source = $stem + '.pdf'
     }
     if ($Config -and -not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($source)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
@@ -1818,7 +1837,7 @@ function _QCAT-ResolveSheetStemFromDocumentName {
         try { return [string](Get-PWSheetStemFromDocumentName -DocumentName $DocumentName) } catch { }
     }
     $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$DocumentName)
-    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
     return $stem
 }
 
@@ -1831,7 +1850,9 @@ function _QCAT-ResolveAssociatedSheetMemberNames {
     return @(
         ($SheetStem + '.pdf')
         ($SheetStem + '.dgn')
-        ($SheetStem + '-qc.pdf')
+        ($SheetStem + '-prod.pdf')
+        ($SheetStem + '-chk.pdf')
+        ($SheetStem + '-rev.pdf')
     )
 }
 
@@ -1846,10 +1867,7 @@ function _QCAT-BuildAssociatedStateDiagnostics {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
         if (-not $dn) { continue }
-        $role = 'other'
-        if ($dn -match '(?i)-qc\.pdf$') { $role = 'qcPdf' }
-        elseif ($dn -match '(?i)\.dgn$') { $role = 'dgn' }
-        elseif ($dn -match '(?i)\.pdf$') { $role = 'pdf' }
+        $role = _QCAT-ResolveMemberFileRole -DocumentName $dn
         $liveState = ''
         $key = $dg.ToLowerInvariant()
         if ($dg -and $StateByGuid -and $StateByGuid.ContainsKey($key)) {
@@ -1887,7 +1905,7 @@ function _QCAT-TestSheetPdfWouldRegressFromCanonical {
     $triggerIsQcPdf = Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName
     foreach ($member in @($Members)) {
         $dn = [string]$member.documentName
-        if (-not (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-qc\.pdf$'))) { continue }
+        if (-not (Test-QCIsSheetPdfDocumentName -DocumentName $dn)) { continue }
         $dg = [string]$member.documentGuid
         if (-not $dg) { break }
 
@@ -2028,7 +2046,7 @@ function Test-QCDocumentStateAuditEventIsStale {
                     $decision.newerAuditDocumentName = [string]$newerRes.Data.documentName
                     $decision.newerAuditDocumentGuid = [string]$newerRes.Data.documentGuid
                     $decision.blockingDocumentName = $decision.newerAuditDocumentName
-                    $decision.blockingDocumentRole = if ($decision.newerAuditDocumentName -match '(?i)-qc\.pdf$') { 'qcPdf' } elseif ($decision.newerAuditDocumentName -match '(?i)\.dgn$') { 'dgn' } elseif ($decision.newerAuditDocumentName -match '(?i)\.pdf$') { 'pdf' } else { 'other' }
+                    $decision.blockingDocumentRole = _QCAT-ResolveMemberFileRole -DocumentName $decision.newerAuditDocumentName
                     $decision.newerAuditProcessed = [bool]$newerRes.Data.processed
                     $decision.blockingReasonValid = $true
                     return $decision
@@ -2038,7 +2056,7 @@ function Test-QCDocumentStateAuditEventIsStale {
                     try { $decision.blockingAuditEventId = [long]$newerRes.Data.rejectedBlockingAuditEventId } catch { }
                     $decision.blockingAuditTimeUtc = _QCAT-FormatAuditTimeUtc -ActTime ([string]$newerRes.Data.rejectedBlockingAuditTime)
                     $decision.blockingDocumentName = [string]$newerRes.Data.rejectedBlockingDocumentName
-                    $decision.blockingDocumentRole = if ($decision.blockingDocumentName -match '(?i)-qc\.pdf$') { 'qcPdf' } elseif ($decision.blockingDocumentName -match '(?i)\.dgn$') { 'dgn' } elseif ($decision.blockingDocumentName -match '(?i)\.pdf$') { 'pdf' } else { 'other' }
+                    $decision.blockingDocumentRole = _QCAT-ResolveMemberFileRole -DocumentName $decision.blockingDocumentName
                 }
             }
         } catch { }
@@ -2329,8 +2347,13 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
     }
 
     $sheetPdfName = $DocumentName
-    if ($DocumentName -match '(?i)-qc\.pdf$') {
-        $sheetPdfName = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName) + '.pdf'
+    if (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName) {
+        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+        } else {
+            [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+        }
+        $sheetPdfName = $stem + '.pdf'
     }
 
     $notifyContext = @{

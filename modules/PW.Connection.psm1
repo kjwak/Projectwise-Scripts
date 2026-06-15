@@ -3,6 +3,8 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
+$script:PWC_ActiveDatasource = $null
+
 function _PWC-TestPWDiscoveryCmdlets {
     [CmdletBinding()]
     param()
@@ -274,19 +276,36 @@ function Invoke-PWAuthenticatedCommand {
         [Parameter(Mandatory)]
         [string]$CredentialPath,
         [Parameter(Mandatory)]
-        [scriptblock]$ScriptBlock
+        [scriptblock]$ScriptBlock,
+        [switch]$KeepSession
     )
 
-    $credRes = Get-PWCredentialFromFile -CredentialPath $CredentialPath
-    if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+    $reuse = $false
+    if ($script:PWC_ActiveDatasource -eq $DatasourceName) {
+        $disc = Ensure-PWDiscoveryCmdlets
+        if ($disc.IsSuccess) { $reuse = $true }
+    }
 
-    $conn = Connect-PW -DatasourceName $DatasourceName -Credential ([pscredential]$credRes.Data.credential)
-    if (-not $conn.IsSuccess) { throw ($conn.Code + ': ' + $conn.Message) }
+    if (-not $reuse) {
+        if ($script:PWC_ActiveDatasource) {
+            [void](Disconnect-PW)
+            $script:PWC_ActiveDatasource = $null
+        }
+        $credRes = Get-PWCredentialFromFile -CredentialPath $CredentialPath
+        if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+
+        $conn = Connect-PW -DatasourceName $DatasourceName -Credential ([pscredential]$credRes.Data.credential)
+        if (-not $conn.IsSuccess) { throw ($conn.Code + ': ' + $conn.Message) }
+        $script:PWC_ActiveDatasource = $DatasourceName
+    }
 
     try {
         return (& $ScriptBlock)
     } finally {
-        [void](Disconnect-PW)
+        if (-not $KeepSession) {
+            [void](Disconnect-PW)
+            $script:PWC_ActiveDatasource = $null
+        }
     }
 }
 

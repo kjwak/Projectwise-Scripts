@@ -3,6 +3,7 @@
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 function Get-OrderedTriggerRules {
     [CmdletBinding()]
@@ -140,7 +141,7 @@ function Test-QCStatusSetSourceDocument {
 
     $ext = ([System.IO.Path]::GetExtension($name)).ToLowerInvariant()
     if ($ext -eq '.pdf') {
-        if ($name -match '(?i)-qc\.pdf$') { return $false }
+        if (Test-QCLegacyQcPdfDocumentName -DocumentName $name) { return $false }
         if ($name -match '(?i)_qc\.pdf$') { return $false }
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
         if ($stem -and $stem.EndsWith('_QC', [StringComparison]::OrdinalIgnoreCase)) { return $false }

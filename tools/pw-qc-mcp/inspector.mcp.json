@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "pw-qc-debug": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "./tools/pw-qc-mcp/server.ps1"
+      ],
+      "env": {
+        "PWQC_APPSETTINGS": "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\appsettings.json",
+        "PWQC_SQL_SERVER": "192.168.22.90",
+        "PWQC_SQL_DATABASE": "QC_Pipeline",
+        "PWQC_SQL_TRUST_CERT": "yes"
+      }
+    }
+  }
+}

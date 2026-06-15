@@ -10,6 +10,10 @@ if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction Si
         Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
     }
 }
+if (-not (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+}
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'QC.Queue.Json.psm1') -Force -ErrorAction SilentlyContinue
 }
@@ -224,8 +228,11 @@ function Get-QCReadinessKey {
         return ('guid:' + $DocumentGuid.Trim().ToLowerInvariant())
     }
     $fk = _QCR-NormalizeFolderKey $FolderPath
-    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$QcPdfName)
-    if ($stem -match '(?i)-qc$') { $stem = $stem.Substring(0, $stem.Length - 3) }
+    $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        Get-PWSheetStemFromDocumentName -DocumentName ([string]$QcPdfName)
+    } else {
+        [System.IO.Path]::GetFileNameWithoutExtension([string]$QcPdfName)
+    }
     return ('folder:' + $fk + '|' + $stem.ToLowerInvariant())
 }
 
@@ -388,7 +395,10 @@ function _QCR-DeriveSourceDocumentName([string]$QcPdfName, [bool]$DeriveFromQcPd
     $base = [System.IO.Path]::GetFileName([string]$QcPdfName)
     if (_QCR-IsNullOrWhiteSpace $base) { return $null }
     if ($DeriveFromQcPdf) {
-        if ($base -match '(?i)^(.+)-qc\.pdf$') { return ($Matches[1] + '.dgn') }
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            $stem = Get-PWSheetStemFromDocumentName -DocumentName $base
+            if (-not (_QCR-IsNullOrWhiteSpace $stem)) { return ($stem + '.dgn') }
+        }
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($base)
         return ($stem + '.dgn')
     }
@@ -673,7 +683,10 @@ function _QCR-DeriveSourceFromStateChange([string]$TriggerDocumentName) {
     $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
     if (_QCR-IsNullOrWhiteSpace $name) { return $null }
     if ($name -match '(?i)\.dgn$') { return $name }
-    if ($name -match '(?i)^(.+)-qc\.pdf$') { return ($Matches[1] + '.dgn') }
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $stem = Get-PWSheetStemFromDocumentName -DocumentName $name
+        if (-not (_QCR-IsNullOrWhiteSpace $stem)) { return ($stem + '.dgn') }
+    }
     if ($name -match '(?i)^(.+)\.pdf$') { return ($Matches[1] + '.dgn') }
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
     if (_QCR-IsNullOrWhiteSpace $stem) { return $null }
@@ -688,7 +701,7 @@ function _QCR-TryGetAssociatedSheetPdfInfo {
 
     $sheetPdfName = $null
     $triggerFile = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
-    if ($triggerFile -match '(?i)\.pdf$' -and $triggerFile -notmatch '(?i)-qc\.pdf$') {
+    if (Test-QCIsSheetPdfDocumentName -DocumentName $triggerFile) {
         $sheetPdfName = $triggerFile
     } elseif (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
         $stem = Get-PWSheetStemFromDocumentName -DocumentName $TriggerDocumentName

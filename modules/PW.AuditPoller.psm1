@@ -3,7 +3,7 @@
 # match against watch roots, and return candidate events for job creation.
 # Extracted from the POC Test-AuditEventIngestion.ps1 for production use.
 
-# Dependencies (Core.Results, Core.Runtime, Core.Database) must be imported by the
+# Dependencies (Core.Results, Core.Runtime, Core.Database, QC.ProcessType) must be imported by the
 # caller before this module. Re-importing with -Force here would clobber their
 # global-scope exports.
 
@@ -693,7 +693,7 @@ function _AuditPoller-GetParentGuidFilterSkipReason {
     if ($name -match '(?i)^status_set_replace_.*\.pdf$') { return 'skipped_status_set_output' }
 
     if ($ext -eq '.pdf') {
-        if ($name -match '(?i)-qc\.pdf$') { return 'skipped_qc_artifact' }
+        if (Test-QCLegacyQcPdfDocumentName -DocumentName $name) { return 'skipped_legacy_qc_artifact' }
         if ($name -match '(?i)_qc\.pdf$') { return 'skipped_qc_artifact' }
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
         if ($stem -and $stem.EndsWith('_QC', [StringComparison]::OrdinalIgnoreCase)) { return 'skipped_qc_artifact' }

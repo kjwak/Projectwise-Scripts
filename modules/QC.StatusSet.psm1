@@ -844,7 +844,7 @@ function _SSS-SelectPairedPdfDocsLegacy([object[]]$AllDocs) {
     foreach ($doc in @($AllDocs)) {
         $name = _SSS-GetDocName $doc
         if (-not $name -or $name -notmatch '\.pdf$') { continue }
-        if ($name -match '-qc\.pdf$') { continue }
+        if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         $base = ($name -replace '\.pdf$', '').ToLowerInvariant()
         if (-not $hasCad[$base]) { continue }
         $pdfDocs += $doc
@@ -882,7 +882,7 @@ function Get-StatusSetLocalFolderState {
     foreach ($p in $pdfs) {
         $name = [string]$p.Name
         if (-not $name) { continue }
-        if ($name -match '(?i)-qc\.pdf$') { continue }
+        if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.manifest\.json$') { continue }
 
@@ -987,7 +987,7 @@ function Get-StatusSetPWFolderState {
     foreach ($doc in @($docs)) {
         $name = _SSS-GetDocName $doc
         if (-not $name -or $name -notmatch '\.pdf$') { continue }
-        if ($name -match '-qc\.pdf$') { continue }
+        if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.pdf$') { continue }
         $base = ($name -replace '\.pdf$','').ToLowerInvariant()
         if (-not $hasCad[$base]) { continue }
@@ -1158,7 +1158,7 @@ function Invoke-StatusSetNativeJob {
         foreach ($f in $allFiles) {
             $n = [string]$f.Name
             if ($n -notmatch '\.pdf$') { continue }
-            if ($n -match '-qc\.pdf$') { continue }
+            if ($n -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
             $base = ($n -replace '\.pdf$','').ToLowerInvariant()
             if (-not $hasCad[$base]) { continue }
             $pdfs += $f.FullName
@@ -1549,7 +1549,7 @@ function _SSS-BuildPWStatusSetState {
     foreach ($d in @($docs)) {
         $name = _SSS-PWGetDocName -Doc $d
         if (-not $name) { continue }
-        if ($name -match '(?i)-qc\.pdf$') { continue }
+        if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.pdf$') { continue }
         if ($name -match '(?i)\.pdf$') { $pdfs += $d; continue }
         if ($name -match '(?i)\.dgn$') { $dgns += $d; continue }
@@ -1657,17 +1657,23 @@ function _SSS-BuildPWStatusSetState {
     $orderKey = (@($pairedSheets | ForEach-Object { ($_.dir + '|' + $_.stem) }) -join "`n")
     $orderedPdfDocs = if ($IncludeOrderedPdfDocuments) { @($sortedRows | ForEach-Object { $_.PdfDoc }) } else { @() }
 
-    # Collect QC PDFs (filtered out from pairing) so the caller can link them
+    # Collect lane PDFs (*-prod/-chk/-rev; filtered out from pairing) so the caller can link them
     $qcPdfDocs = @()
     foreach ($d in @($docs)) {
         $dn = _SSS-PWGetDocName -Doc $d
-        if ($dn -match '(?i)-qc\.pdf$') {
-            $qcPdfDocs += @{
-                name = [string]$dn
-                documentId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
-                documentGuid = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
-                stem = ([System.IO.Path]::GetFileNameWithoutExtension($dn) -replace '(?i)-qc$', '').ToLowerInvariant()
-            }
+        if (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) {
+            if (-not (Test-PWQcPdfLaneSuffix -DocumentName $dn)) { continue }
+        } elseif ($dn -notmatch '(?i)-(prod|chk|rev)\.pdf$') { continue }
+        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            Get-PWSheetStemFromDocumentName -DocumentName $dn
+        } else {
+            ([System.IO.Path]::GetFileNameWithoutExtension($dn) -replace '(?i)-(prod|chk|rev)$', '')
+        }
+        $qcPdfDocs += @{
+            name = [string]$dn
+            documentId = _SSS-PWGetProp -Obj $d -Name 'DocumentID'
+            documentGuid = _SSS-PWGetProp -Obj $d -Name 'DocumentGUID'
+            stem = $stem.ToLowerInvariant()
         }
     }
 

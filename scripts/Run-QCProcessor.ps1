@@ -464,7 +464,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
 
-            # Link -qc.pdf to source sheet in sheet_index (fire-and-forget)
+            # Link lane PDF to source sheet in sheet_index (fire-and-forget)
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
                 try {
                     $srcName = [string]$Job['sourceName']

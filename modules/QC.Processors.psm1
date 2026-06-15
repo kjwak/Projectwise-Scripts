@@ -7,7 +7,7 @@ Import-Module (Join-Path $PSScriptRoot 'QC.Workflow.psm1') -Force -ErrorAction S
 Import-Module (Join-Path $PSScriptRoot 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $PSScriptRoot 'QC.CommentSync.Job.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
@@ -1846,7 +1846,7 @@ function _QCP-ResolveSheetPdfForPrependTrigger {
     param([string]$TriggerDocumentName)
     $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
-    if ($name -match '(?i)-qc\.pdf$') { return $null }
+    if (Test-QCLegacyQcPdfDocumentName -DocumentName $name) { return $null }
     if ($name -match '(?i)\.dgn$') {
         return ([System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf')
     }

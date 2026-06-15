@@ -4,7 +4,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.AuditTriggers.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
 
 function Assert-Eq($a, $b, $msg) {
     if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" }
@@ -14,8 +16,12 @@ function Assert-True($cond, $msg) {
     if (-not $cond) { throw "ASSERT FAILED: $msg" }
 }
 
-Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-qc.pdf') 'qc pdf suffix'
-Assert-True (-not (Test-QCIsQcPdfDocumentName -DocumentName 'sheet.pdf')) 'plain pdf is not qc pdf'
+Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-prod.pdf') 'lane prod pdf'
+Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-chk.pdf') 'lane chk pdf'
+Assert-True (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-rev.pdf') 'lane rev pdf'
+Assert-True (-not (Test-QCIsQcPdfDocumentName -DocumentName 'sheet-qc.pdf')) 'legacy -qc.pdf is not a lane pdf'
+Assert-True (-not (Test-QCIsQcPdfDocumentName -DocumentName 'sheet.pdf')) 'plain pdf is not lane pdf'
+Assert-True (Test-QCLegacyQcPdfDocumentName -DocumentName 'sheet-qc.pdf') 'legacy qc pdf detected'
 
 $cfgNotify = @{
     auditPoller = @{
@@ -25,7 +31,8 @@ $cfgNotify = @{
         }
     }
 }
-Assert-True (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-qc.pdf') 'qc pdf member may notify'
+Assert-True (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-prod.pdf') 'lane pdf member may notify'
+Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-qc.pdf')) 'legacy qc pdf member suppressed'
 Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00.pdf')) 'sheet pdf member suppressed when qcPdfNotificationsOnly'
 
 $cfg = @{
@@ -124,7 +131,7 @@ $cfgAuto = @{
 Assert-True (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUser 42) 'userno match'
 Assert-True (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUsername 'srv_typsa_archivist') 'username match'
 Assert-True (-not (Test-QCIsAutomationPwActor -Config $cfgAuto -ChangedByUser 99 -ChangedByUsername 'human')) 'non-automation'
-Assert-True (-not (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -DocumentName 'sheet-qc.pdf' -ChangedByUser 42)) 'allow sync on qc pdf'
+Assert-True (-not (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -DocumentName 'sheet-prod.pdf' -ChangedByUser 42)) 'allow sync on lane qc pdf'
 Assert-True (Test-QCShouldSuppressAuditSheetStateSync -Config $cfgAuto -DocumentName 'sheet.dgn' -ChangedByUser 42) 'suppress sync echo on dgn'
 
 $cfgAutoOff = @{ auditPoller = @{ workflowTriggers = @{ ignoreStateChangeFromAutomation = $false; automationPwUsernames = @('srv_typsa_archivist') } } }
@@ -159,7 +166,7 @@ Assert-Eq $staleRegression.decision 'skipped' 'regression decision is skipped'
 $fwdMembers = @(
     @{ documentGuid = 'pdf-guid'; documentName = '080J082001ca001.pdf' }
     @{ documentGuid = 'dgn-guid'; documentName = '080J082001ca001.dgn' }
-    @{ documentGuid = 'qc-guid'; documentName = '080J082001ca001-qc.pdf' }
+    @{ documentGuid = 'qc-guid'; documentName = '080J082001ca001-prod.pdf' }
 )
 $fwdStateByGuid = @{
     'pdf-guid' = 'Ready for QC'
@@ -176,7 +183,7 @@ function _PWD-GetSheetIndexStateSnapshot {
     }
 }
 $fwdStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
-    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -DocumentName '080J082001ca001-prod.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
     -LastAuditEventAt '2026-06-09 10:02:09' -CanonicalState 'Redlines Received' `
     -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
 Assert-True (-not $fwdStale.isStale) 'Test 1: QC PDF forward transition is not stale'
@@ -216,7 +223,7 @@ function Get-QCNewerSheetDocumentStateAuditEvent {
     }
 }
 $newerRejectStale = Test-QCDocumentStateAuditEventIsStale -Config $cfgDefault -FolderPath 'documents\test\sheets' `
-    -DocumentName '080J082001ca001-qc.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
+    -DocumentName '080J082001ca001-prod.pdf' -DocumentGuid 'qc-guid' -AuditEventId 40694 `
     -LastAuditEventAt '06/09/2026 17:02:09' -CanonicalState 'Redlines Received' `
     -Members $fwdMembers -StateByGuid $fwdStateByGuid -SheetStem '080J082001ca001'
 Assert-True (-not $newerRejectStale.isStale) 'Test 3: older blocking candidate does not stale-block'

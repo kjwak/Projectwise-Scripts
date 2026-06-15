@@ -7,7 +7,10 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = $env:PWQC_REPO_ROOT
+if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+}
 $modulesRoot = Join-Path $repoRoot 'modules'
 $script:McpContextReady = $false
 
@@ -57,9 +60,10 @@ function ConvertTo-McpHashtable {
 }
 
 function Read-McpMessage {
+    $stdin = [Console]::OpenStandardInput()
     $headers = @{}
     while ($true) {
-        $line = [Console]::In.ReadLine()
+        $line = Read-McpLine $stdin
         if ($null -eq $line) { return $null }
         if ($line -eq '') { break }
         $idx = $line.IndexOf(':')
@@ -71,25 +75,50 @@ function Read-McpMessage {
     }
     if (-not $headers.ContainsKey('content-length')) { return $null }
     $length = [int]$headers['content-length']
-    $buffer = New-Object char[] $length
-    $read = 0
-    while ($read -lt $length) {
-        $n = [Console]::In.Read($buffer, $read, $length - $read)
-        if ($n -le 0) { break }
-        $read += $n
+    $buffer = New-Object byte[] $length
+    $offset = 0
+    while ($offset -lt $length) {
+        $read = $stdin.Read($buffer, $offset, $length - $offset)
+        if ($read -le 0) { break }
+        $offset += $read
     }
-    return (-join $buffer[0..($read - 1)])
+    return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $offset)
+}
+
+function Read-McpLine {
+    param([System.IO.Stream]$Stream)
+    $bytes = New-Object System.Collections.Generic.List[byte]
+    while ($true) {
+        $b = $Stream.ReadByte()
+        if ($b -lt 0) {
+            if ($bytes.Count -eq 0) { return $null }
+            break
+        }
+        if ($b -eq 10) { break }
+        if ($b -ne 13) { $bytes.Add([byte]$b) }
+    }
+    return [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
 }
 
 function Write-McpMessage {
     param([Parameter(Mandatory)]$Payload)
-    $json = $Payload | ConvertTo-Json -Depth 80 -Compress
-    $body = [System.Text.Encoding]::UTF8.GetBytes($json)
+    if ($Payload -is [string]) {
+        $body = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+    } else {
+        $json = $Payload | ConvertTo-Json -Depth 80 -Compress
+        $body = [System.Text.Encoding]::UTF8.GetBytes($json)
+    }
     $header = [System.Text.Encoding]::ASCII.GetBytes("Content-Length: $($body.Length)`r`n`r`n")
     $stdout = [Console]::OpenStandardOutput()
     $stdout.Write($header, 0, $header.Length)
     $stdout.Write($body, 0, $body.Length)
     $stdout.Flush()
+}
+
+function Send-McpJsonResult {
+    param($Id, [Parameter(Mandatory)][string]$ResultJson)
+    $idJson = if ($null -eq $Id) { 'null' } elseif ($Id -is [string]) { '"' + ($Id -replace '"','\"') + '"' } else { [string]$Id }
+    Write-McpMessage -Payload "{`"jsonrpc`":`"2.0`",`"id`":$idJson,`"result`":$ResultJson}"
 }
 
 function New-McpToolSchema {
@@ -169,6 +198,10 @@ $script:ToolDispatch = @{
     get_document_debug_events = { param($a) Get-QCDebugDocumentAutomationEvents @a }
     get_package_debug_events = { param($a) Get-QCDebugPackageAutomationEvents @a }
 }
+
+$script:ToolsListJson = ($script:McpTools | ConvertTo-Json -Depth 20 -Compress)
+$script:EmptyResourcesJson = '{"resources":[]}'
+$script:EmptyPromptsJson = '{"prompts":[]}'
 
 function Convert-McpToolArguments {
     param([hashtable]$Arguments)
@@ -262,14 +295,23 @@ function Handle-McpRequest {
     try {
         switch ($method) {
             'initialize' {
+                $clientVersion = [string]$params.protocolVersion
+                $supported = @('2024-11-05', '2025-03-26')
+                $protocolVersion = if ($supported -contains $clientVersion) { $clientVersion } else { '2024-11-05' }
                 Send-McpResponse -Id $id -Result @{
-                    protocolVersion = '2024-11-05'
+                    protocolVersion = $protocolVersion
                     capabilities = @{ tools = @{} }
                     serverInfo = @{ name = 'pw-qc-debug'; version = '1.0.0' }
                 }
             }
             'tools/list' {
-                Send-McpResponse -Id $id -Result @{ tools = $script:McpTools }
+                Send-McpJsonResult -Id $id -ResultJson "{`"tools`":$script:ToolsListJson}"
+            }
+            'resources/list' {
+                Send-McpJsonResult -Id $id -ResultJson $script:EmptyResourcesJson
+            }
+            'prompts/list' {
+                Send-McpJsonResult -Id $id -ResultJson $script:EmptyPromptsJson
             }
             'tools/call' {
                 $toolName = [string]$params.name

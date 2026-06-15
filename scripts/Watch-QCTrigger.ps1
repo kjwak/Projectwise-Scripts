@@ -303,6 +303,7 @@ $script:WatchModuleLoadOrder = @(
     'QC.Processors.psm1'
     'QC.WatcherOrchestration.psm1'
     'QC.StatusSet.psm1'
+    'QC.ProcessType.psm1'
     'PW.Connection.psm1'
     'PW.Users.psm1'
     'PW.Discovery.psm1'
@@ -319,6 +320,7 @@ $script:WatchModuleRestoreOrder = @(
     'Core.Database.psm1'
     'QC.Notifications.psm1'
     'QC.StatusSet.psm1'
+    'QC.ProcessType.psm1'
     'PW.Connection.psm1'
     'PW.AuditPoller.psm1'
     'PW.Discovery.psm1'
@@ -345,6 +347,8 @@ $script:WatchRequiredCommands = @(
     'Get-QCFinalizingWorkflowStateName'
     'Test-QCWorkflowStateIsQcFinalizing'
     'Test-QCIsStatusSetOutputPdfName'
+    'Test-QCIsSheetPdfDocumentName'
+    'Test-PWQcPdfLaneSuffix'
     'Test-QCStatusSetSourceDocument'
     'Invoke-QCReconcileOutputs'
     'Set-QCFullScanScheduleSlotComplete'
@@ -533,6 +537,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 }
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue
@@ -1471,7 +1476,7 @@ if ($statusSetRules.Count -ge 0) {
                                 # QC_PREPEND: paired sheet PDFs — QC Initiated state and/or QC_Archivist description tag.
                                 $acEnableQcPrepend = $true
                                 try { if ($null -ne $ac.enableQcPrepend) { $acEnableQcPrepend = [bool]$ac.enableQcPrepend } } catch { }
-                                if ($acEnableQcPrepend -and $itemName -match '(?i)\.pdf$' -and $itemName -notmatch '(?i)-qc\.pdf$') {
+                                if ($acEnableQcPrepend -and (Get-Command -Name 'Test-QCIsSheetPdfDocumentName' -ErrorAction SilentlyContinue) -and (Test-QCIsSheetPdfDocumentName -DocumentName $itemName)) {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     if ($qcPrependAuditActions -notcontains $actionName) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_PREPEND).' -Data @{
@@ -1698,7 +1703,7 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                 }
 
-                                # QC_COMMENT_STATUS_SYNC: *-qc.pdf file updates
+                                # QC_COMMENT_STATUS_SYNC: lane QC PDF file updates (*-prod/-chk/-rev.pdf)
                                 $acEnableQcCommentSync = $true
                                 try { if ($null -ne $ac.enableQcCommentSync) { $acEnableQcCommentSync = [bool]$ac.enableQcCommentSync } } catch { }
                                 $commentSyncEnabled = $true
@@ -1709,7 +1714,7 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($config.qcCommentSync -and $config.qcCommentSync.auditActions) {
                                     $auditActionsAllowed = @($config.qcCommentSync.auditActions | ForEach-Object { [string]$_ })
                                 }
-                                if ($commentSyncEnabled -and $acEnableQcCommentSync -and $itemName -match '(?i)-qc\.pdf$' -and ($auditActionsAllowed -contains $actionName)) {
+                                if ($commentSyncEnabled -and $acEnableQcCommentSync -and (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) -and (Test-PWQcPdfLaneSuffix -DocumentName $itemName) -and ($auditActionsAllowed -contains $actionName)) {
                                     try {
                                         $pseudoHash = Get-Sha256TextHex -Text (($itemName) + '|' + ([string]$ac.actTime) + '|0|' + $fp)
                                         $candidate = @{
@@ -2465,7 +2470,7 @@ if ($statusSetRules.Count -ge 0) {
                             } elseif ($wouldDedupe) { $duplicates++ }
                         }
 
-                        # QC_COMMENT_STATUS_SYNC: *-qc.pdf (no QC_Archivist tag required)
+                        # QC_COMMENT_STATUS_SYNC: lane QC PDFs (no QC_Archivist tag required)
                         $commentSyncEnabledFs = $true
                         if ($config.ContainsKey('qcCommentSync') -and $config.qcCommentSync) {
                             try { $commentSyncEnabledFs = [bool]$config.qcCommentSync.enabled } catch { $commentSyncEnabledFs = $true }
@@ -2473,7 +2478,7 @@ if ($statusSetRules.Count -ge 0) {
                         if ($commentSyncEnabledFs -and $enableQcCommentSync) {
                             foreach ($doc in @($docs)) {
                                 $docName = Get-PWDocName -Doc $doc
-                                if (-not $docName -or -not ($docName -match '(?i)-qc\.pdf$')) { continue }
+                                if (-not $docName -or -not (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) -or -not (Test-PWQcPdfLaneSuffix -DocumentName $docName)) { continue }
 
                                 $mod = Get-PWDocLastModifiedUtc -Doc $doc
                                 $sz = Get-PWObjectPropertyValue -Object $doc -Name 'FileSize'
@@ -2518,7 +2523,7 @@ if ($statusSetRules.Count -ge 0) {
                                 $wouldDedupe = [bool]$dupRes.Data.isDuplicate
                                 $enqueueSkippedReason = if ($wouldDedupe) { 'duplicate' } elseif ($isDryRun) { 'dryRun' } else { $null }
 
-                                _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via -qc.pdf).' -Data @{
+                                _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_ACCEPTED' -Message 'PW doc accepted (QC_COMMENT_STATUS_SYNC via lane QC PDF).' -Data @{
                                     jobId = [string]$job['id']
                                     jobType = [string]$job['type']
                                     dedupeKey = [string]$job['dedupeKey']

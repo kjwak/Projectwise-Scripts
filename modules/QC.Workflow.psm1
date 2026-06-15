@@ -298,8 +298,9 @@ function _QCW-ResolveNotificationRoleAttrsForEnqueue {
     if ((_QCW-IsNullOrWhiteSpace $srcName) -and $Document) {
         try { $srcName = [string]$Document.Name } catch { }
     }
-    if (-not (_QCW-IsNullOrWhiteSpace $srcName) -and $srcName -match '(?i)-qc\.pdf$') {
-        $srcName = [string]([System.IO.Path]::GetFileNameWithoutExtension($srcName)) + '.pdf'
+    if (-not (_QCW-IsNullOrWhiteSpace $srcName) -and (Test-QCIsQcPdfDocumentName -DocumentName $srcName)) {
+        $stem = Get-PWSheetStemFromDocumentName -DocumentName $srcName
+        $srcName = $stem + '.pdf'
     }
     $folder = [string]$FolderPath
     if ((_QCW-IsNullOrWhiteSpace $folder) -and $Document) {
@@ -629,18 +630,6 @@ function _QCW-InvokeStateChangeNotification {
                 $derivedName = [string]$Document.Name
                 if ($derivedName -match '(?i)-(prod|chk|rev)\.pdf$') {
                     $notifJob.sourceName = $derivedName
-                } elseif ($derivedName -match '(?i)-qc\.pdf$') {
-                    $laneTypeForName = if ($Context -and $Context.qcProcessType) { [string]$Context.qcProcessType } else { 'production' }
-                    if (Get-Command -Name 'Get-QCLaneQcPdfExpectedName' -ErrorAction SilentlyContinue) {
-                        $stem = Get-PWSheetStemFromDocumentName -DocumentName $derivedName
-                        if (-not (_QCW-IsNullOrWhiteSpace $stem)) {
-                            $expected = Get-QCLaneQcPdfExpectedName -SheetBaseName $stem -ProcessType $laneTypeForName -Config $Config
-                            if ($expected) { $notifJob.sourceName = [string]$expected }
-                        }
-                    }
-                    if (-not $notifJob.sourceName) {
-                        $notifJob.sourceName = [System.IO.Path]::GetFileNameWithoutExtension($derivedName) + '.pdf'
-                    }
                 } elseif (-not (_QCW-IsNullOrWhiteSpace $derivedName)) {
                     $notifJob.sourceName = $derivedName
                 }
@@ -697,7 +686,7 @@ function _QCW-InvokeStateChangeNotification {
                 $qcEnqueueTarget = _QCN-ResolveQcPdfNotificationTarget -Document $Document -Config $Config -Job $notifJob `
                     -DocumentName ([string]$notifJob.sourceName) -DocumentGuid $docGuidForResolve `
                     -DocumentPath ([string]$notifJob.sourcePath)
-                if ($qcEnqueueTarget -and ([string]$qcEnqueueTarget.documentName -match '(?i)-qc\.pdf$')) {
+                if ($qcEnqueueTarget -and (Test-QCIsQcPdfDocumentName -DocumentName ([string]$qcEnqueueTarget.documentName))) {
                     $notifJob.sourceName = [string]$qcEnqueueTarget.documentName
                     if (-not (_QCW-IsNullOrWhiteSpace $qcEnqueueTarget.documentGuid)) {
                         $notifJob.metadata['documentGuid'] = [string]$qcEnqueueTarget.documentGuid

@@ -1,15 +1,12 @@
 {
   "mcpServers": {
     "pw-qc-debug": {
-      "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "command": "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\tools\\pw-qc-mcp\\.venv\\Scripts\\python.exe",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\tools\\pw-qc-mcp\\server.ps1"
+        "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\tools\\pw-qc-mcp\\server.py"
       ],
       "env": {
+        "PWQC_REPO_ROOT": "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC",
         "PWQC_APPSETTINGS": "C:\\Users\\jflint\\OneDrive - TYPSA\\Documentos\\github\\Prepend PDF QC\\appsettings.json",
         "PWQC_SQL_SERVER": "192.168.22.90",
         "PWQC_SQL_DATABASE": "QC_Pipeline",

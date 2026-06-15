@@ -80,11 +80,12 @@ stemmed AS (
     SELECT
         s.*,
         CASE
-            WHEN LOWER(RIGHT(base_stem, 3)) = '-qc' THEN LEFT(base_stem, LEN(base_stem) - 3)
+            WHEN LOWER(RIGHT(base_stem, 5)) = '-prod' THEN LEFT(base_stem, LEN(base_stem) - 5)
+            WHEN LOWER(RIGHT(base_stem, 4)) IN ('-chk', '-rev') THEN LEFT(base_stem, LEN(base_stem) - 4)
             ELSE base_stem
         END AS sheet_stem,
         CASE
-            WHEN LOWER(norm_document_name) LIKE '%-qc.pdf' THEN 'qc_pdf'
+            WHEN LOWER(norm_document_name) LIKE '%-prod.pdf' OR LOWER(norm_document_name) LIKE '%-chk.pdf' OR LOWER(norm_document_name) LIKE '%-rev.pdf' THEN 'qc_pdf'
             WHEN LOWER(norm_document_name) LIKE '%.dgn' THEN 'dgn'
             WHEN LOWER(norm_document_name) LIKE '%.pdf' THEN 'sheet_pdf'
             ELSE 'other'
@@ -130,11 +131,12 @@ stemmed AS (
     SELECT
         s.*,
         CASE
-            WHEN LOWER(RIGHT(base_stem, 3)) = '-qc' THEN LEFT(base_stem, LEN(base_stem) - 3)
+            WHEN LOWER(RIGHT(base_stem, 5)) = '-prod' THEN LEFT(base_stem, LEN(base_stem) - 5)
+            WHEN LOWER(RIGHT(base_stem, 4)) IN ('-chk', '-rev') THEN LEFT(base_stem, LEN(base_stem) - 4)
             ELSE base_stem
         END AS sheet_stem,
         CASE
-            WHEN LOWER(norm_document_name) LIKE '%-qc.pdf' THEN 'qc_pdf'
+            WHEN LOWER(norm_document_name) LIKE '%-prod.pdf' OR LOWER(norm_document_name) LIKE '%-chk.pdf' OR LOWER(norm_document_name) LIKE '%-rev.pdf' THEN 'qc_pdf'
             WHEN LOWER(norm_document_name) LIKE '%.dgn' THEN 'dgn'
             WHEN LOWER(norm_document_name) LIKE '%.pdf' THEN 'sheet_pdf'
             ELSE 'other'

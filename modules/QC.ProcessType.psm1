@@ -350,6 +350,35 @@ function Test-PWQcPdfLaneSuffix {
     return (-not (_QCPT-IsBlank (Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName)))
 }
 
+function Test-QCLegacyQcPdfDocumentName {
+    <#
+    .SYNOPSIS
+    True for deprecated *-qc.pdf filenames (legacy; no longer generated or indexed).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DocumentName
+    )
+    return ([string]$DocumentName -match '(?i)-qc\.pdf$')
+}
+
+function Test-QCIsSheetPdfDocumentName {
+    <#
+    .SYNOPSIS
+    True for primary sheet PDFs (not lane, legacy QC, or status-set artifacts).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DocumentName
+    )
+    $dn = [string]$DocumentName
+    if ($dn -notmatch '(?i)\.pdf$') { return $false }
+    if (Test-PWQcPdfLaneSuffix -DocumentName $dn) { return $false }
+    if (Test-QCLegacyQcPdfDocumentName -DocumentName $dn) { return $false }
+    if ($dn -match '(?i)_statusset\.pdf$') { return $false }
+    return $true
+}
+
 function Get-QCLaneQcPdfExpectedName {
     <#
     .SYNOPSIS
@@ -776,6 +805,8 @@ Export-ModuleMember -Function `
     Test-QCProcessTypeResetsAfterPrepend, `
     Get-PWQcPdfLaneFromDocumentName, `
     Test-PWQcPdfLaneSuffix, `
+    Test-QCLegacyQcPdfDocumentName, `
+    Test-QCIsSheetPdfDocumentName, `
     Get-QCLaneQcPdfExpectedName, `
     Resolve-QCLaneQcPdf, `
     Resolve-QCStampForProcess, `

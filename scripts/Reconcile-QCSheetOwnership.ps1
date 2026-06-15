@@ -6,10 +6,10 @@ Reconciles designer/reviewer/checker emails and workflow state across DGN, sheet
 Reads all rows from sheet_index, groups by folder + sheet stem, then applies:
 
   - Email source of truth: DGN (EM_Designer_Email / EM_Reviewer_Email / EM_Checker_Email)
-    -> sheet PDF and *-qc.pdf are updated to match DGN when they differ.
+    -> sheet PDF and lane QC PDFs (*-prod/-chk/-rev.pdf) are updated to match DGN when they differ.
 
-  - State source of truth: *-qc.pdf workflow state
-    -> DGN and sheet PDF are updated to match QC PDF when they differ.
+  - State source of truth: lane QC PDF workflow state
+    -> DGN and sheet PDF are updated to match the lane QC PDF when they differ.
 
 ProjectWise documents are located by document_guid from the index (and qc_pdf_guid
 when the QC PDF is linked but not indexed as its own row). sheet_index is updated
@@ -44,6 +44,7 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
 
 foreach ($moduleName in @('pwps', 'pwps_dab')) {
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {
@@ -66,13 +67,19 @@ function _RSO-NormalizeFolderPath {
 }
 
 function _RSO-SheetStem([string]$DocumentName) {
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        return ([string](Get-PWSheetStemFromDocumentName -DocumentName $DocumentName)).ToLowerInvariant()
+    }
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
-    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
     return $stem.ToLowerInvariant()
 }
 
 function _RSO-IsQcPdfName([string]$DocumentName) {
-    return [bool]([string]$DocumentName -match '(?i)-qc\.pdf$')
+    if (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) {
+        return [bool](Test-PWQcPdfLaneSuffix -DocumentName $DocumentName)
+    }
+    return [bool]([string]$DocumentName -match '(?i)-(prod|chk|rev)\.pdf$')
 }
 
 function _RSO-GetEmailColumns {
