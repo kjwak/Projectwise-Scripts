@@ -1,0 +1,1598 @@
+# QC.DebugMcp.psm1
+# Read-only diagnostics for QC workflow debugging (MCP / interactive use).
+
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force
+
+$script:QDM_Config = $null
+$script:QDM_ColumnCache = @{}
+$script:QDM_TableExistsCache = @{}
+
+$script:QDM_SheetSearchTables = @(
+    @{ table = 'sheet_index'; columns = @('document_name', 'document_guid', 'folder_path', 'sheet_package_id', 'pw_state_name') }
+    @{ table = 'sheet_packages'; columns = @('sheet_stem', 'folder_path', 'sheet_package_id', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid', 'pw_state_name') }
+    @{ table = 'sheet_documents'; columns = @('document_name', 'document_guid', 'sheet_package_id', 'document_role', 'pw_state_name') }
+    @{ table = 'audit_events'; columns = @('pw_itemname', 'pw_objguid', 'resolved_folder', 'pw_textparam') }
+    @{ table = 'transition_events'; columns = @('document_name', 'document_guid', 'folder_path', 'from_value', 'to_value') }
+    @{ table = 'document_state_history'; columns = @('document_name', 'document_guid', 'folder_path', 'old_value', 'new_value') }
+    @{ table = 'notification_log'; columns = @('document_name', 'document_guid', 'subject', 'folder_path') }
+    @{ table = 'processing_jobs'; columns = @('source_path', 'source_folder', 'job_id', 'dedupe_key') }
+    @{ table = 'qc_workflow_events'; columns = @('document_id', 'payload_json') }
+)
+
+$script:QDM_TimelineSources = @(
+    @{
+        source = 'audit_events'; table = 'audit_events'; time = 'captured_at'; id = 'id'
+        document_name = 'pw_itemname'; document_guid = 'pw_objguid'; sheet_package_id = $null
+        event_type = 'pw_action_name'; state_from = $null; state_to = $null; status = 'processed'; actor = 'pw_userno'
+        detail_cols = @('pw_action', 'pw_acttime', 'resolved_folder', 'candidate_type', 'enqueued_job_id')
+        where_cols = @('pw_itemname', 'pw_objguid', 'resolved_folder')
+    }
+    @{
+        source = 'document_state_history'; table = 'document_state_history'; time = 'captured_at'; id = 'id'
+        document_name = 'document_name'; document_guid = 'document_guid'; sheet_package_id = 'sheet_package_id'
+        event_type = 'event_type'; state_from = 'old_value'; state_to = 'new_value'; status = $null; actor = 'changed_by_username'
+        detail_cols = @('field_name', 'source_audit_id', 'transition_group_id', 'folder_path')
+        where_cols = @('document_name', 'document_guid', 'folder_path')
+    }
+    @{
+        source = 'transition_events'; table = 'transition_events'; time = 'detected_at'; id = 'id'
+        document_name = 'document_name'; document_guid = 'document_guid'; sheet_package_id = 'sheet_package_id'
+        event_type = 'transition_type'; state_from = 'from_value'; state_to = 'to_value'; status = 'notification_sent'; actor = 'changed_by_username'
+        detail_cols = @('job_id', 'job_type', 'trigger_audit_id', 'notification_id', 'folder_path')
+        where_cols = @('document_name', 'document_guid', 'folder_path')
+    }
+    @{
+        source = 'qc_workflow_events'; table = 'qc_workflow_events'; time = 'created_utc'; id = 'event_id'
+        document_name = $null; document_guid = 'document_id'; sheet_package_id = 'sheet_package_id'
+        event_type = 'event_type'; state_from = 'previous_pw_state'; state_to = 'target_pw_state'; status = 'decision_code'; actor = $null
+        detail_cols = @('transition_event_id', 'payload_json', 'processor_version')
+        where_cols = @('document_id', 'payload_json')
+    }
+    @{
+        source = 'notification_log'; table = 'notification_log'; time = 'sent_at'; id = 'id'
+        document_name = 'document_name'; document_guid = 'document_guid'; sheet_package_id = 'sheet_package_id'
+        event_type = 'event_type'; state_from = $null; state_to = $null; status = 'success'; actor = $null
+        detail_cols = @('recipients', 'subject', 'dedupe_key', 'provider', 'error_message', 'transition_id')
+        where_cols = @('document_name', 'document_guid', 'subject', 'folder_path')
+    }
+    @{
+        source = 'processing_jobs'; table = 'processing_jobs'; time = 'created_at'; id = 'id'
+        document_name = 'source_path'; document_guid = $null; sheet_package_id = 'sheet_package_id'
+        event_type = 'job_type'; state_from = $null; state_to = $null; status = 'status'; actor = $null
+        detail_cols = @('job_id', 'error_code', 'error_message', 'dedupe_key', 'trigger_audit_id', 'source_folder')
+        where_cols = @('source_path', 'source_folder', 'job_id', 'dedupe_key')
+    }
+)
+
+function Initialize-QCDebugMcpContext {
+    [CmdletBinding()]
+    param(
+        [string]$AppSettingsPath = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
+        $AppSettingsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'appsettings.json'
+    }
+    if (-not (Test-Path -LiteralPath $AppSettingsPath)) {
+        throw "appsettings not found: $AppSettingsPath"
+    }
+    $script:QDM_Config = Get-QCAppSettingsConfig -Path $AppSettingsPath
+    if (-not (Test-QCDatabaseEnabled -Config $script:QDM_Config)) {
+        throw 'database.enabled is false in appsettings; diagnostics require QC_Pipeline telemetry.'
+    }
+
+    $sqlServer = $env:PWQC_SQL_SERVER
+    $sqlDatabase = $env:PWQC_SQL_DATABASE
+    $sqlTrust = $env:PWQC_SQL_TRUST_CERT
+    if ($sqlServer -or $sqlDatabase) {
+        $conn = [string]$script:QDM_Config.database.connectionString
+        if ($sqlServer) {
+            if ($conn -match '(?i)Server\s*=') {
+                $conn = [regex]::Replace($conn, '(?i)Server\s*=[^;]*', "Server=$sqlServer")
+            } else {
+                $conn = "Server=$sqlServer;$conn"
+            }
+        }
+        if ($sqlDatabase) {
+            if ($conn -match '(?i)Database\s*=') {
+                $conn = [regex]::Replace($conn, '(?i)Database\s*=[^;]*', "Database=$sqlDatabase")
+            } else {
+                $conn = "$conn;Database=$sqlDatabase"
+            }
+        }
+        if ($sqlTrust) {
+            $trustVal = if ($sqlTrust -match '^(?i)(yes|true|1)$') { 'True' } else { 'False' }
+            if ($conn -match '(?i)TrustServerCertificate\s*=') {
+                $conn = [regex]::Replace($conn, '(?i)TrustServerCertificate\s*=[^;]*', "TrustServerCertificate=$trustVal")
+            } else {
+                $conn = "$conn;TrustServerCertificate=$trustVal"
+            }
+        }
+        if (-not $script:QDM_Config.ContainsKey('database')) { $script:QDM_Config['database'] = @{} }
+        $script:QDM_Config.database['connectionString'] = $conn
+    }
+
+    return $script:QDM_Config
+}
+
+function _QDM-Config {
+    if (-not $script:QDM_Config) {
+        throw 'Call Initialize-QCDebugMcpContext before using QC debug tools.'
+    }
+    return $script:QDM_Config
+}
+
+function _QDM-SerializeValue {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value -or $Value -is [DBNull]) { return $null }
+    if ($Value -is [string] -or $Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double]) { return $Value }
+    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) { return $Value.ToString('o') }
+    if ($Value -is [guid]) { return $Value.ToString() }
+    if ($Value -is [decimal]) { return [string]$Value }
+    if ($Value -is [byte[]]) { return [System.Text.Encoding]::UTF8.GetString($Value) }
+    return [string]$Value
+}
+
+function _QDM-RowsFromQuery {
+    param(
+        [Parameter(Mandatory)][string]$Sql,
+        [hashtable]$Parameters = @{}
+    )
+    $cfg = _QDM-Config
+    $res = Invoke-QCDatabaseQuery -Config $cfg -Sql $Sql -Parameters $Parameters
+    if (-not $res.IsSuccess) {
+        throw $res.Message
+    }
+    $table = $res.Data.table
+    if (-not $table -or $table.Rows.Count -eq 0) { return @() }
+    $rows = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($dataRow in @($table.Rows)) {
+        $h = @{}
+        foreach ($col in $table.Columns) {
+            $name = [string]$col.ColumnName
+            $h[$name] = _QDM-SerializeValue -Value $dataRow[$name]
+        }
+        $rows.Add($h)
+    }
+    return @($rows)
+}
+
+function _QDM-BuildWarning {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Table = '',
+        [string]$Column = ''
+    )
+    $w = @{ message = $Message }
+    if ($Table) { $w['table'] = $Table }
+    if ($Column) { $w['column'] = $Column }
+    return $w
+}
+
+function _QDM-ToolResult {
+    param(
+        $Data,
+        [object[]]$Warnings = @(),
+        [string[]]$SourceTables = @(),
+        [string[]]$QueryAssumptions = @()
+    )
+    return @{
+        data = $Data
+        warnings = @($Warnings)
+        source_tables = @($SourceTables)
+        query_assumptions = @($QueryAssumptions)
+    }
+}
+
+function _QDM-SafeTopLimit {
+    param([int]$Limit, [int]$MaxLimit = 500)
+    if ($Limit -lt 1) { return $MaxLimit }
+    return [Math]::Max(1, [Math]::Min($Limit, $MaxLimit))
+}
+
+function _QDM-TestTableExists {
+    param([Parameter(Mandatory)][string]$TableName)
+    $name = $TableName.Trim()
+    if ($script:QDM_TableExistsCache.ContainsKey($name)) { return $script:QDM_TableExistsCache[$name] }
+    $rows = _QDM-RowsFromQuery -Sql @"
+SELECT 1 AS ok
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @tableName
+"@ -Parameters @{ tableName = $name }
+    $exists = ($rows.Count -gt 0)
+    $script:QDM_TableExistsCache[$name] = $exists
+    return $exists
+}
+
+function _QDM-GetColumns {
+    param([Parameter(Mandatory)][string]$TableName)
+    $name = $TableName.Trim()
+    if ($script:QDM_ColumnCache.ContainsKey($name)) { return @($script:QDM_ColumnCache[$name]) }
+    $rows = _QDM-RowsFromQuery -Sql @"
+SELECT COLUMN_NAME
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @tableName
+ORDER BY ORDINAL_POSITION
+"@ -Parameters @{ tableName = $name }
+    $cols = @($rows | ForEach-Object { [string]$_.COLUMN_NAME })
+    $script:QDM_ColumnCache[$name] = $cols
+    return $cols
+}
+
+function _QDM-SelectExistingColumns {
+    param(
+        [Parameter(Mandatory)][string]$TableName,
+        [Parameter(Mandatory)][string[]]$Requested
+    )
+    $existing = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($c in (_QDM-GetColumns -TableName $TableName)) { [void]$existing.Add($c) }
+    return @($Requested | Where-Object { $existing.Contains($_) })
+}
+
+function _QDM-LikePattern {
+    param([Parameter(Mandatory)][string]$Text)
+    return "%$($Text.Trim())%"
+}
+
+function _QDM-BuildLikeWhere {
+    param(
+        [Parameter(Mandatory)][string]$TableName,
+        [Parameter(Mandatory)][string[]]$Columns,
+        [Parameter(Mandatory)][string]$LikeParam
+    )
+    $usable = @(_QDM-SelectExistingColumns -TableName $TableName -Requested $Columns)
+    if ($usable.Count -eq 0) { return $null }
+    $clauses = @($usable | ForEach-Object { "CAST([$_] AS NVARCHAR(MAX)) LIKE @likeParam" })
+    return @{ clause = ($clauses -join ' OR '); params = @{ likeParam = $LikeParam } }
+}
+
+function _QDM-TryParseGuid {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    try {
+        $g = [guid]::Parse($Value.Trim())
+        if ($g -eq [guid]::Empty) { return $null }
+        return $g.ToString()
+    } catch { return $null }
+}
+
+function _QDM-ParseDocumentPath {
+    <#
+    .SYNOPSIS
+    Parses a ProjectWise document path (pw:\\datasource\Documents\...\file.pdf) into telemetry keys.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$DocumentPath)
+
+    $raw = $DocumentPath.Trim()
+    $normRes = Normalize-QCPath -Path $raw
+    if (-not $normRes.IsSuccess) {
+        return @{ error = $normRes.Message; raw_path = $raw }
+    }
+
+    $full = [string]$normRes.Data.path
+    $documentName = [System.IO.Path]::GetFileName($full)
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if ([string]::IsNullOrWhiteSpace($documentName)) {
+        return @{ error = 'Could not extract document file name from path.'; raw_path = $raw }
+    }
+
+    $folderPath = $parent
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        $folderRes = Normalize-QCDocumentsFolderPath -Path $parent
+        if ($folderRes.IsSuccess) { $folderPath = [string]$folderRes.Data.path }
+    }
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($documentName)
+    if ($stem -match '(?i)-qc$') { $stem = $stem -replace '(?i)-qc$', '' }
+
+    return @{
+        raw_path = $raw
+        folder_path = $folderPath
+        document_name = $documentName
+        sheet_stem = $stem.ToLowerInvariant()
+    }
+}
+
+function _QDM-IngestIdentityRows {
+    param(
+        [object[]]$Rows,
+        [System.Collections.Generic.HashSet[string]]$PackageIds,
+        [System.Collections.Generic.HashSet[string]]$DocumentGuids,
+        [System.Collections.Generic.HashSet[string]]$DocumentNames,
+        [System.Collections.Generic.HashSet[string]]$SheetStems
+    )
+    foreach ($row in @($Rows)) {
+        foreach ($g in @('document_guid', 'pw_objguid', 'document_id', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid')) {
+            if ($row[$g]) { [void]$DocumentGuids.Add([string]$row[$g]) }
+        }
+        if ($row.document_name) { [void]$DocumentNames.Add([string]$row.document_name) }
+        if ($row.sheet_package_id) { [void]$PackageIds.Add([string]$row.sheet_package_id) }
+        if ($row.sheet_stem) { [void]$SheetStems.Add([string]$row.sheet_stem) }
+    }
+}
+
+function _QDM-GetLookupBoundParameters {
+    param([hashtable]$Bound = @{})
+    $out = @{}
+    foreach ($key in @('SheetNumber', 'DocumentGuid', 'PackageId', 'SheetName', 'DocumentPath')) {
+        if ($Bound.ContainsKey($key) -and $null -ne $Bound[$key] -and -not [string]::IsNullOrWhiteSpace([string]$Bound[$key])) {
+            $out[$key] = $Bound[$key]
+        }
+    }
+    return $out
+}
+
+function Resolve-QCDebugLookup {
+    <#
+    .SYNOPSIS
+    Resolves sheet package IDs, document GUIDs, and names from sheet number, GUID, package ID, or document path.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupText = ''
+    $lookupType = ''
+    $folderPath = $null
+    $documentName = $null
+    $sheetStem = $null
+    $rawDocumentPath = $null
+    $warnings = @()
+    $packageIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $documentGuids = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $documentNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $sheetStems = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    if (-not [string]::IsNullOrWhiteSpace($SheetName) -and [string]::IsNullOrWhiteSpace($SheetNumber)) {
+        $SheetNumber = $SheetName
+    }
+
+    $parsedPkg = _QDM-TryParseGuid -Value $PackageId
+    $parsedDoc = _QDM-TryParseGuid -Value $DocumentGuid
+
+    if ($parsedPkg) {
+        $lookupType = 'package_id'
+        $lookupText = $parsedPkg
+        [void]$packageIds.Add($parsedPkg)
+        if (_QDM-TestTableExists -TableName 'sheet_packages') {
+            $rows = _QDM-RowsFromQuery -Sql @"
+SELECT sheet_package_id, sheet_stem, folder_path, dgn_guid, sheet_pdf_guid, qc_pdf_guid
+FROM sheet_packages
+WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg
+"@ -Parameters @{ pkg = $parsedPkg }
+            foreach ($row in $rows) {
+                if ($row.sheet_stem) { [void]$sheetStems.Add([string]$row.sheet_stem) }
+                foreach ($g in @('dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid')) {
+                    if ($row[$g]) { [void]$documentGuids.Add([string]$row[$g]) }
+                }
+            }
+        }
+        if (_QDM-TestTableExists -TableName 'sheet_documents') {
+            $rows = _QDM-RowsFromQuery -Sql @"
+SELECT document_guid, document_name, document_role
+FROM sheet_documents
+WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg
+"@ -Parameters @{ pkg = $parsedPkg }
+            foreach ($row in $rows) {
+                if ($row.document_guid) { [void]$documentGuids.Add([string]$row.document_guid) }
+                if ($row.document_name) { [void]$documentNames.Add([string]$row.document_name) }
+            }
+        }
+    }
+    elseif ($parsedDoc) {
+        $lookupType = 'document_guid'
+        $lookupText = $parsedDoc
+        [void]$documentGuids.Add($parsedDoc)
+        $pkg = Get-SheetPackageIdForDocument -Config (_QDM-Config) -DocumentGuid $parsedDoc
+        if ($pkg) { [void]$packageIds.Add($pkg.ToString()) }
+        foreach ($table in @('sheet_index', 'sheet_documents', 'sheet_packages')) {
+            if (-not (_QDM-TestTableExists -TableName $table)) { continue }
+            $cols = _QDM-SelectExistingColumns -TableName $table -Requested @(
+                'document_guid', 'document_name', 'sheet_package_id', 'sheet_stem', 'qc_pdf_guid', 'dgn_guid', 'sheet_pdf_guid'
+            )
+            if ($cols.Count -eq 0) { continue }
+            $whereParts = @()
+            $params = @{ docGuid = $parsedDoc }
+            if ($cols -contains 'document_guid') { $whereParts += 'CAST(document_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'qc_pdf_guid') { $whereParts += 'CAST(qc_pdf_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'dgn_guid') { $whereParts += 'CAST(dgn_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'sheet_pdf_guid') { $whereParts += 'CAST(sheet_pdf_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($whereParts.Count -eq 0) { continue }
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [$table] WHERE $($whereParts -join ' OR ')" -Parameters $params
+            foreach ($row in $rows) {
+                if ($row.document_name) { [void]$documentNames.Add([string]$row.document_name) }
+                if ($row.sheet_package_id) { [void]$packageIds.Add([string]$row.sheet_package_id) }
+                if ($row.sheet_stem) { [void]$sheetStems.Add([string]$row.sheet_stem) }
+                foreach ($g in @('document_guid', 'qc_pdf_guid', 'dgn_guid', 'sheet_pdf_guid')) {
+                    if ($row[$g]) { [void]$documentGuids.Add([string]$row[$g]) }
+                }
+            }
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($DocumentPath)) {
+        $parsed = _QDM-ParseDocumentPath -DocumentPath $DocumentPath
+        if ($parsed.error) {
+            throw "Invalid document_path: $($parsed.error)"
+        }
+        $lookupType = 'document_path'
+        $lookupText = [string]$parsed.raw_path
+        $rawDocumentPath = [string]$parsed.raw_path
+        $folderPath = [string]$parsed.folder_path
+        $documentName = [string]$parsed.document_name
+        $sheetStem = [string]$parsed.sheet_stem
+        [void]$documentNames.Add($documentName)
+        [void]$sheetStems.Add($sheetStem)
+
+        if (_QDM-TestTableExists -TableName 'sheet_index') {
+            $cols = _QDM-SelectExistingColumns -TableName 'sheet_index' -Requested @(
+                'document_guid', 'document_name', 'sheet_package_id', 'sheet_stem', 'folder_path', 'qc_pdf_guid'
+            )
+            if ($cols.Count -gt 0) {
+                $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_index] WHERE folder_path = @folderPath AND document_name = @documentName" -Parameters @{
+                    folderPath = $folderPath; documentName = $documentName
+                }
+                _QDM-IngestIdentityRows -Rows $rows -PackageIds $packageIds -DocumentGuids $documentGuids -DocumentNames $documentNames -SheetStems $sheetStems
+            }
+        }
+
+        if (_QDM-TestTableExists -TableName 'sheet_packages') {
+            $cols = _QDM-SelectExistingColumns -TableName 'sheet_packages' -Requested @(
+                'sheet_package_id', 'sheet_stem', 'folder_path', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid'
+            )
+            if ($cols.Count -gt 0) {
+                $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (20) $select FROM [sheet_packages] WHERE folder_path = @folderPath AND sheet_stem = @sheetStem" -Parameters @{
+                    folderPath = $folderPath; sheetStem = $sheetStem
+                }
+                _QDM-IngestIdentityRows -Rows $rows -PackageIds $packageIds -DocumentGuids $documentGuids -DocumentNames $documentNames -SheetStems $sheetStems
+            }
+        }
+
+        if (_QDM-TestTableExists -TableName 'sheet_documents') {
+            $cols = _QDM-SelectExistingColumns -TableName 'sheet_documents' -Requested @(
+                'document_guid', 'document_name', 'sheet_package_id', 'document_role'
+            )
+            if ($cols.Count -gt 0) {
+                $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+                $clauses = @('document_name = @documentName')
+                $params = @{ documentName = $documentName }
+                if ($packageIds.Count -gt 0) {
+                    $inList = (@($packageIds) | ForEach-Object { "'$_'" }) -join ','
+                    $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+                }
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_documents] WHERE $($clauses -join ' OR ')" -Parameters $params
+                _QDM-IngestIdentityRows -Rows $rows -PackageIds $packageIds -DocumentGuids $documentGuids -DocumentNames $documentNames -SheetStems $sheetStems
+            }
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($SheetNumber)) {
+        $lookupType = 'sheet_number'
+        $lookupText = $SheetNumber.Trim()
+        $like = _QDM-LikePattern -Text $lookupText
+        foreach ($entry in $script:QDM_SheetSearchTables) {
+            $table = $entry.table
+            if (-not (_QDM-TestTableExists -TableName $table)) { continue }
+            $where = _QDM-BuildLikeWhere -TableName $table -Columns $entry.columns -LikeParam $like
+            if (-not $where) { continue }
+            $cols = _QDM-SelectExistingColumns -TableName $table -Requested @(
+                'document_guid', 'document_name', 'sheet_package_id', 'sheet_stem', 'document_role', 'pw_objguid', 'document_id', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid'
+            )
+            if ($cols.Count -eq 0) { continue }
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            try {
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (200) $select FROM [$table] WHERE $($where.clause)" -Parameters $where.params
+            } catch {
+                $warnings += _QDM-BuildWarning -Message "Search failed on $table`: $($_.Exception.Message)" -Table $table
+                continue
+            }
+            foreach ($row in $rows) {
+                foreach ($g in @('document_guid', 'pw_objguid', 'document_id', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid')) {
+                    if ($row[$g]) { [void]$documentGuids.Add([string]$row[$g]) }
+                }
+                if ($row.document_name) { [void]$documentNames.Add([string]$row.document_name) }
+                if ($row.sheet_package_id) { [void]$packageIds.Add([string]$row.sheet_package_id) }
+                if ($row.sheet_stem) { [void]$sheetStems.Add([string]$row.sheet_stem) }
+            }
+        }
+    }
+    else {
+        throw 'Provide sheet_number, document_guid, package_id, or document_path.'
+    }
+
+    if ($packageIds.Count -eq 0 -and $documentGuids.Count -eq 0 -and $documentNames.Count -eq 0) {
+        $warnings += _QDM-BuildWarning -Message 'No matching rows found in telemetry tables.'
+    }
+
+    return @{
+        lookup_type = $lookupType
+        lookup_value = $lookupText
+        folder_path = $folderPath
+        document_name = $documentName
+        sheet_stem = $sheetStem
+        raw_document_path = $rawDocumentPath
+        sheet_package_ids = @($packageIds)
+        document_guids = @($documentGuids)
+        document_names = @($documentNames)
+        sheet_stems = @($sheetStems)
+        warnings = @($warnings)
+    }
+}
+
+function Search-QCDebugSheet {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $likeText = if ($lookup.lookup_type -eq 'document_path' -and $lookup.sheet_stem) { [string]$lookup.sheet_stem } else { [string]$lookup.lookup_value }
+    $like = _QDM-LikePattern -Text $likeText
+    $grouped = @{}
+    $warnings = @()
+    if ($lookup.warnings) { $warnings += @($lookup.warnings) }
+    $sourceTables = [System.Collections.Generic.List[string]]::new()
+
+    if ($lookup.lookup_type -ne 'document_path') {
+    foreach ($entry in $script:QDM_SheetSearchTables) {
+        $table = $entry.table
+        if (-not (_QDM-TestTableExists -TableName $table)) {
+            $warnings += _QDM-BuildWarning -Message "Table dbo.$table is not present; skipped." -Table $table
+            continue
+        }
+        $where = _QDM-BuildLikeWhere -TableName $table -Columns $entry.columns -LikeParam $like
+        if (-not $where) {
+            $warnings += _QDM-BuildWarning -Message "No searchable text columns on dbo.$table; skipped." -Table $table
+            continue
+        }
+        $cols = _QDM-GetColumns -TableName $table
+        $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+        try {
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE $($where.clause) ORDER BY 1 DESC" -Parameters $where.params
+        } catch {
+            $warnings += _QDM-BuildWarning -Message "Query failed: $($_.Exception.Message)" -Table $table
+            continue
+        }
+        if ($rows.Count -gt 0) {
+            $grouped[$table] = $rows
+            [void]$sourceTables.Add($table)
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'v_sheet_package_status') {
+        $vcols = _QDM-GetColumns -TableName 'v_sheet_package_status'
+        $vsearch = @($vcols | Where-Object { $_ -match '(?i)name|stem|package' })
+        $where = _QDM-BuildLikeWhere -TableName 'v_sheet_package_status' -Columns $vsearch -LikeParam $like
+        if ($where) {
+            $select = ($vcols | ForEach-Object { "[$_]" }) -join ', '
+            try {
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [v_sheet_package_status] WHERE $($where.clause)" -Parameters $where.params
+                if ($rows.Count -gt 0) {
+                    $grouped['v_sheet_package_status'] = $rows
+                    [void]$sourceTables.Add('v_sheet_package_status')
+                }
+            } catch {
+                $warnings += _QDM-BuildWarning -Message "View query failed: $($_.Exception.Message)" -Table 'v_sheet_package_status'
+            }
+        }
+    }
+    }
+
+    if ($lookup.lookup_type -eq 'document_path') {
+        foreach ($table in @('sheet_index', 'sheet_packages', 'sheet_documents', 'transition_events', 'document_state_history', 'notification_log')) {
+            if (-not (_QDM-TestTableExists -TableName $table)) { continue }
+            $cols = _QDM-GetColumns -TableName $table
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($cols -contains 'folder_path') {
+                $clauses += 'folder_path = @folderPath'
+                $params['folderPath'] = $lookup.folder_path
+            }
+            if ($table -eq 'sheet_packages' -and ($cols -contains 'sheet_stem')) {
+                $clauses += 'sheet_stem = @sheetStem'
+                $params['sheetStem'] = $lookup.sheet_stem
+            }
+            elseif ($cols -contains 'document_name') {
+                $clauses += 'document_name = @documentName'
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+                $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($clauses.Count -eq 0) { continue }
+            try {
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE $($clauses -join ' AND ')" -Parameters $params
+            } catch {
+                $warnings += _QDM-BuildWarning -Message "Path query failed on $table`: $($_.Exception.Message)" -Table $table
+                continue
+            }
+            if ($rows.Count -gt 0) {
+                $grouped[$table] = $rows
+                [void]$sourceTables.Add($table)
+            }
+        }
+        if (_QDM-TestTableExists -TableName 'audit_events') {
+            $cols = _QDM-GetColumns -TableName 'audit_events'
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            try {
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [audit_events] WHERE resolved_folder = @folderPath AND pw_itemname = @documentName ORDER BY captured_at DESC" -Parameters @{
+                    folderPath = $lookup.folder_path; documentName = $lookup.document_name
+                }
+                if ($rows.Count -gt 0) {
+                    $grouped['audit_events'] = $rows
+                    [void]$sourceTables.Add('audit_events')
+                }
+            } catch {
+                $warnings += _QDM-BuildWarning -Message "Path query failed on audit_events: $($_.Exception.Message)" -Table 'audit_events'
+            }
+        }
+    }
+
+    if ($lookup.lookup_type -eq 'package_id') {
+        foreach ($table in @('sheet_packages', 'sheet_documents', 'sheet_index')) {
+            if (-not (_QDM-TestTableExists -TableName $table)) { continue }
+            if (-not (_QDM-GetColumns -TableName $table | Where-Object { $_ -ieq 'sheet_package_id' })) { continue }
+            $cols = _QDM-GetColumns -TableName $table
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg" -Parameters @{ pkg = $lookup.lookup_value }
+            if ($rows.Count -gt 0 -and -not $grouped.ContainsKey($table)) {
+                $grouped[$table] = $rows
+                [void]$sourceTables.Add($table)
+            }
+        }
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        matches_by_table = $grouped
+        table_count = $grouped.Keys.Count
+    } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
+        "Lookup type: $($lookup.lookup_type).",
+        'Read-only search across known QC telemetry tables.'
+    )
+}
+
+function Get-QCDebugSheetIdentity {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $warnings = @()
+    if ($lookup.warnings) { $warnings += @($lookup.warnings) }
+    $sourceTables = [System.Collections.Generic.List[string]]::new()
+    $candidates = @{
+        sheet_package_ids = [System.Collections.Generic.List[hashtable]]::new()
+        document_guids = [System.Collections.Generic.List[hashtable]]::new()
+        document_names = [System.Collections.Generic.List[hashtable]]::new()
+        sheet_stems = [System.Collections.Generic.List[hashtable]]::new()
+        roles = [System.Collections.Generic.List[hashtable]]::new()
+    }
+
+    function Add-UniqueCandidate {
+        param([string]$Bucket, $Value, [string]$Source, [hashtable]$Extra = @{})
+        if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return }
+        $text = [string]$Value
+        foreach ($item in $candidates[$Bucket]) {
+            if ($item.value -ieq $text) { return }
+        }
+        $entry = @{ value = $text; source = $Source }
+        foreach ($k in $Extra.Keys) { $entry[$k] = $Extra[$k] }
+        $candidates[$Bucket].Add($entry)
+    }
+
+    $like = _QDM-LikePattern -Text $lookup.lookup_value
+    foreach ($table in @('sheet_index', 'sheet_packages', 'sheet_documents')) {
+        if (-not (_QDM-TestTableExists -TableName $table)) {
+            $warnings += _QDM-BuildWarning -Message "Missing table dbo.$table" -Table $table
+            continue
+        }
+        $cols = _QDM-SelectExistingColumns -TableName $table -Requested @(
+            'document_guid', 'document_name', 'sheet_package_id', 'sheet_stem', 'document_role', 'folder_path', 'pw_state_name', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid'
+        )
+        if ($cols.Count -eq 0) { continue }
+        $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+        $whereParts = @()
+        $params = @{}
+        if ($lookup.lookup_type -eq 'package_id') {
+            $whereParts += 'CAST(sheet_package_id AS NVARCHAR(36)) = @pkg'
+            $params['pkg'] = $lookup.lookup_value
+        }
+        elseif ($lookup.lookup_type -eq 'document_guid') {
+            if ($cols -contains 'document_guid') { $whereParts += 'CAST(document_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'dgn_guid') { $whereParts += 'CAST(dgn_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'sheet_pdf_guid') { $whereParts += 'CAST(sheet_pdf_guid AS NVARCHAR(36)) = @docGuid' }
+            if ($cols -contains 'qc_pdf_guid') { $whereParts += 'CAST(qc_pdf_guid AS NVARCHAR(36)) = @docGuid' }
+            $params['docGuid'] = $lookup.lookup_value
+        }
+        elseif ($lookup.lookup_type -eq 'document_path') {
+            if ($cols -contains 'folder_path') {
+                $whereParts += 'folder_path = @folderPath'
+                $params['folderPath'] = $lookup.folder_path
+            }
+            if ($table -eq 'sheet_packages' -and ($cols -contains 'sheet_stem')) {
+                $whereParts += 'sheet_stem = @sheetStem'
+                $params['sheetStem'] = $lookup.sheet_stem
+            }
+            elseif ($cols -contains 'document_name') {
+                $whereParts += 'document_name = @documentName'
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+                $whereParts += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+        }
+        else {
+            $textWhere = _QDM-BuildLikeWhere -TableName $table -Columns @(
+                'document_name', 'sheet_stem', 'folder_path', 'document_guid'
+            ) -LikeParam $like
+            if ($textWhere) {
+                $whereParts += "($($textWhere.clause))"
+                $params = $textWhere.params
+            }
+        }
+        if ($whereParts.Count -eq 0) { continue }
+        $whereJoin = if ($lookup.lookup_type -eq 'document_path') { ' AND ' } else { ' OR ' }
+        $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (200) $select FROM [$table] WHERE $($whereParts -join $whereJoin)" -Parameters $params
+        [void]$sourceTables.Add($table)
+        foreach ($row in $rows) {
+            Add-UniqueCandidate -Bucket 'document_guids' -Value $row.document_guid -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'document_guids' -Value $row.dgn_guid -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'document_guids' -Value $row.sheet_pdf_guid -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'document_guids' -Value $row.qc_pdf_guid -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'document_names' -Value $row.document_name -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'sheet_package_ids' -Value $row.sheet_package_id -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'sheet_stems' -Value $row.sheet_stem -Source $table -Extra $row
+            Add-UniqueCandidate -Bucket 'roles' -Value $row.document_role -Source $table -Extra $row
+        }
+    }
+
+    $pkgValues = @($candidates.sheet_package_ids | ForEach-Object { $_.value.ToLowerInvariant() } | Select-Object -Unique)
+    if ($pkgValues.Count -gt 1) {
+        $warnings += _QDM-BuildWarning -Message 'Multiple distinct sheet_package_id values found; identity may be inconsistent.'
+    }
+    if ($candidates.document_guids.Count -gt 6) {
+        $warnings += _QDM-BuildWarning -Message 'Many document GUID candidates found; sheet may have historical/duplicate rows.'
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        candidates = @{
+            sheet_package_ids = @($candidates.sheet_package_ids)
+            document_guids = @($candidates.document_guids)
+            document_names = @($candidates.document_names)
+            sheet_stems = @($candidates.sheet_stems)
+            roles = @($candidates.roles)
+        }
+    } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
+        'Aggregates identity hints from available package/document tables only.'
+    )
+}
+
+function Get-QCDebugSheetPackageMembers {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $identity = Get-QCDebugSheetIdentity @lookupParams
+    $lookup = $identity.data.lookup
+    $warnings = @()
+    if ($identity.warnings) { $warnings += @($identity.warnings) }
+    $packageIds = @($identity.data.candidates.sheet_package_ids | ForEach-Object { $_.value })
+    $members = @{
+        by_role = @{}
+        sheet_index_rows = @()
+        sheet_packages_rows = @()
+        sheet_documents_rows = @()
+    }
+    $sourceTables = [System.Collections.Generic.List[string]]::new()
+
+    if (_QDM-TestTableExists -TableName 'sheet_packages') {
+        [void]$sourceTables.Add('sheet_packages')
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_packages' -Requested @(
+            'sheet_package_id', 'sheet_stem', 'folder_path', 'pw_state_name', 'dgn_guid', 'dgn_name', 'sheet_pdf_guid', 'sheet_pdf_name', 'qc_pdf_guid', 'qc_pdf_name', 'designer_email', 'reviewer_email', 'checker_email'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                if ($cols -contains 'sheet_stem') {
+                    $clauses += 'sheet_stem LIKE @like'
+                    $params['like'] = _QDM-LikePattern -Text $lookup.lookup_value
+                }
+            }
+            if ($lookup.lookup_type -eq 'document_path') {
+                if ($cols -contains 'folder_path') {
+                    $clauses += 'folder_path = @folderPath'
+                    $params['folderPath'] = $lookup.folder_path
+                }
+                if ($cols -contains 'sheet_stem') {
+                    $clauses += 'sheet_stem = @sheetStem'
+                    $params['sheetStem'] = $lookup.sheet_stem
+                }
+            }
+            if ($packageIds.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = ($packageIds | ForEach-Object { "'$_'" }) -join ','
+                $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($lookup.lookup_type -eq 'package_id') {
+                $clauses += 'CAST(sheet_package_id AS NVARCHAR(36)) = @pkg'
+                $params['pkg'] = $lookup.lookup_value
+            }
+            if ($clauses.Count -gt 0) {
+                $clauseJoin = if ($lookup.lookup_type -eq 'document_path') { ' AND ' } else { ' OR ' }
+                $members.sheet_packages_rows = _QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_packages] WHERE $($clauses -join $clauseJoin)" -Parameters $params
+            }
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'sheet_documents') {
+        [void]$sourceTables.Add('sheet_documents')
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_documents' -Requested @(
+            'document_guid', 'document_name', 'document_role', 'pw_state_name', 'sheet_package_id', 'extension'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                if ($cols -contains 'document_name') {
+                    $clauses += 'document_name LIKE @like'
+                    $params['like'] = _QDM-LikePattern -Text $lookup.lookup_value
+                }
+            }
+            if ($lookup.lookup_type -eq 'document_path' -and ($cols -contains 'document_name')) {
+                $clauses += 'document_name = @documentName'
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($packageIds.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = ($packageIds | ForEach-Object { "'$_'" }) -join ','
+                $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($lookup.lookup_type -eq 'document_guid') {
+                $clauses += 'CAST(document_guid AS NVARCHAR(36)) = @docGuid'
+                $params['docGuid'] = $lookup.lookup_value
+            }
+            if ($clauses.Count -gt 0) {
+                $members.sheet_documents_rows = _QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_documents] WHERE $($clauses -join ' OR ')" -Parameters $params
+                foreach ($row in $members.sheet_documents_rows) {
+                    $role = [string]($row.document_role)
+                    if ([string]::IsNullOrWhiteSpace($role)) { $role = 'unknown' }
+                    $members.by_role[$role] = $row
+                }
+            }
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'sheet_index') {
+        [void]$sourceTables.Add('sheet_index')
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_index' -Requested @(
+            'document_guid', 'document_name', 'extension', 'pw_state_name', 'sheet_package_id', 'folder_path', 'qc_pdf_guid', 'last_updated_at'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                $clauses += '(document_name LIKE @like OR folder_path LIKE @like)'
+                $params['like'] = _QDM-LikePattern -Text $lookup.lookup_value
+            }
+            if ($lookup.lookup_type -eq 'document_path') {
+                $clauses += '(folder_path = @folderPath AND document_name = @documentName)'
+                $params['folderPath'] = $lookup.folder_path
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($lookup.lookup_type -eq 'document_guid') {
+                $clauses += '(CAST(document_guid AS NVARCHAR(36)) = @docGuid OR CAST(qc_pdf_guid AS NVARCHAR(36)) = @docGuid)'
+                $params['docGuid'] = $lookup.lookup_value
+            }
+            if ($packageIds.Count -gt 0) {
+                $inList = ($packageIds | ForEach-Object { "'$_'" }) -join ','
+                $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($clauses.Count -gt 0) {
+                $order = if ($cols -contains 'last_updated_at') { ' ORDER BY last_updated_at DESC' } else { '' }
+                $members.sheet_index_rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_index] WHERE $($clauses -join ' OR ')$order" -Parameters $params
+            }
+        }
+    }
+
+    $pkgRowsLocal = @()
+    if ($members.sheet_packages_rows) { $pkgRowsLocal = @($members.sheet_packages_rows) }
+    $pkg = @{}
+    if ($pkgRowsLocal.Count -gt 0 -and $null -ne $pkgRowsLocal[0]) { $pkg = $pkgRowsLocal[0] }
+    foreach ($roleInfo in @(
+        @{ role = 'dgn'; guid = 'dgn_guid' }
+        @{ role = 'sheet_pdf'; guid = 'sheet_pdf_guid' }
+        @{ role = 'qc_pdf'; guid = 'qc_pdf_guid' }
+    )) {
+        $pkgGuid = [string]($pkg[$roleInfo.guid])
+        $docRow = $members.by_role[$roleInfo.role]
+        $docGuid = if ($docRow) { [string]$docRow.document_guid } else { '' }
+        if ($pkgGuid -and $docGuid -and ($pkgGuid.ToLowerInvariant() -ne $docGuid.ToLowerInvariant())) {
+            $warnings += _QDM-BuildWarning -Message "GUID mismatch for role $($roleInfo.role): sheet_packages.$($roleInfo.guid)=$pkgGuid vs sheet_documents=$docGuid" -Table 'sheet_packages' -Column $roleInfo.guid
+        }
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        members = $members
+    } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
+        'Compares package registry, role table, and sheet_index when present.'
+    )
+}
+
+function _QDM-TimelineRow {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][hashtable]$Row,
+        [Parameter(Mandatory)][hashtable]$Mapping
+    )
+    $details = [System.Collections.Generic.List[string]]::new()
+    foreach ($col in @($Mapping.detail_cols)) {
+        if (-not $col) { continue }
+        $val = $Row[$col]
+        if ($null -ne $val -and -not [string]::IsNullOrWhiteSpace([string]$val)) {
+            $details.Add("$col=$val")
+        }
+    }
+    function Pick([string]$Field) {
+        if ([string]::IsNullOrWhiteSpace($Field)) { return $null }
+        return $Row[$Field]
+    }
+    return @{
+        event_time = Pick $Mapping.time
+        source = $Source
+        source_id = Pick $Mapping.id
+        document_name = Pick $Mapping.document_name
+        document_guid = Pick $Mapping.document_guid
+        sheet_package_id = Pick $Mapping.sheet_package_id
+        event_type = Pick $Mapping.event_type
+        state_from = Pick $Mapping.state_from
+        state_to = Pick $Mapping.state_to
+        status = Pick $Mapping.status
+        actor = Pick $Mapping.actor
+        details = if ($details.Count -gt 0) { ($details -join '; ') } else { $null }
+    }
+}
+
+function Get-QCDebugSheetTimeline {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = '',
+        [int]$Limit = 200
+    )
+
+    $top = _QDM-SafeTopLimit -Limit $Limit -MaxLimit 500
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $warnings = @()
+    if ($lookup.warnings) { $warnings += @($lookup.warnings) }
+    $events = [System.Collections.Generic.List[hashtable]]::new()
+    $sourceTables = [System.Collections.Generic.List[string]]::new()
+    $likeText = if ($lookup.lookup_type -eq 'document_path' -and $lookup.sheet_stem) { [string]$lookup.sheet_stem } else { [string]$lookup.lookup_value }
+    $like = _QDM-LikePattern -Text $likeText
+
+    foreach ($spec in $script:QDM_TimelineSources) {
+        $table = [string]$spec.table
+        if (-not (_QDM-TestTableExists -TableName $table)) {
+            $warnings += _QDM-BuildWarning -Message "Timeline source dbo.$table not present; skipped." -Table $table
+            continue
+        }
+        $timeCol = [string]$spec.time
+        if (-not ((_QDM-GetColumns -TableName $table) -contains $timeCol)) {
+            $warnings += _QDM-BuildWarning -Message "Required time column $timeCol missing on dbo.$table; skipped." -Table $table -Column $timeCol
+            continue
+        }
+        $needed = @()
+        foreach ($field in @('id', 'time', 'document_name', 'document_guid', 'sheet_package_id', 'event_type', 'state_from', 'state_to', 'status', 'actor')) {
+            $col = $spec[$field]
+            if ($col) { $needed += [string]$col }
+        }
+        $needed += @($spec.where_cols)
+        $needed += @($spec.detail_cols)
+        $selectCols = @(_QDM-SelectExistingColumns -TableName $table -Requested $needed | Select-Object -Unique)
+        if ($selectCols.Count -eq 0) {
+            $warnings += _QDM-BuildWarning -Message "No usable columns on dbo.$table; skipped." -Table $table
+            continue
+        }
+        $whereParts = @()
+        $params = @{}
+        if ($lookup.lookup_type -eq 'sheet_number') {
+            $textWhere = _QDM-BuildLikeWhere -TableName $table -Columns @($spec.where_cols) -LikeParam $like
+            if ($textWhere) {
+                $whereParts += "($($textWhere.clause))"
+                $params = $textWhere.params
+            }
+        }
+        elseif ($lookup.lookup_type -eq 'document_path') {
+            $tableCols = _QDM-GetColumns -TableName $table
+            $pathParts = @()
+            if ($tableCols -contains 'folder_path') {
+                $pathParts += 'folder_path = @folderPath'
+                $params['folderPath'] = $lookup.folder_path
+            }
+            if ($table -eq 'audit_events' -and ($tableCols -contains 'resolved_folder')) {
+                $pathParts += 'resolved_folder = @folderPath'
+                $params['folderPath'] = $lookup.folder_path
+            }
+            if ($table -eq 'audit_events' -and ($tableCols -contains 'pw_itemname')) {
+                $pathParts += 'pw_itemname = @documentName'
+                $params['documentName'] = $lookup.document_name
+            }
+            elseif ($tableCols -contains 'document_name') {
+                $pathParts += 'document_name = @documentName'
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($pathParts.Count -gt 0) {
+                $whereParts += '(' + ($pathParts -join ' AND ') + ')'
+            }
+        }
+        $guidCol = [string]$spec.document_guid
+        $tableCols = _QDM-GetColumns -TableName $table
+        if ($lookup.document_guids.Count -gt 0 -and $guidCol -and ($tableCols -contains $guidCol)) {
+            $inList = (@($lookup.document_guids) | ForEach-Object { "'$($_.ToLowerInvariant())'" }) -join ','
+            $whereParts += "LOWER(CAST([$guidCol] AS NVARCHAR(36))) IN ($inList)"
+        }
+        if ($lookup.sheet_package_ids.Count -gt 0 -and ($tableCols -contains 'sheet_package_id')) {
+            $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+            $whereParts += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+        }
+        if ($whereParts.Count -eq 0) {
+            $warnings += _QDM-BuildWarning -Message "No WHERE strategy for dbo.$table; skipped." -Table $table
+            continue
+        }
+        $select = ($selectCols | ForEach-Object { "[$_]" }) -join ', '
+        $order = if ($selectCols -contains $timeCol) { " ORDER BY [$timeCol] DESC" } else { '' }
+        try {
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP ($top) $select FROM [$table] WHERE $($whereParts -join ' OR ')$order" -Parameters $params
+        } catch {
+            $warnings += _QDM-BuildWarning -Message "Timeline query failed on dbo.$table`: $($_.Exception.Message)" -Table $table
+            continue
+        }
+        [void]$sourceTables.Add($table)
+        foreach ($row in $rows) {
+            $events.Add((_QDM-TimelineRow -Source $spec.source -Row $row -Mapping $spec))
+        }
+    }
+
+    $sorted = @($events | Sort-Object { $_.event_time } -Descending)
+    if ($sorted.Count -gt $top) { $sorted = $sorted[0..($top - 1)] }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        events = $sorted
+        event_count = $sorted.Count
+    } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
+        "Returns at most $top events after merge.",
+        'Skipped sources are reported in warnings.'
+    )
+}
+
+function Get-QCDebugNotificationDiagnostics {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = '',
+        [int]$Limit = 100
+    )
+
+    $top = _QDM-SafeTopLimit -Limit $Limit -MaxLimit 200
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $warnings = @()
+    if ($lookup.warnings) { $warnings += @($lookup.warnings) }
+    $sourceTables = [System.Collections.Generic.List[string]]::new()
+    $likeText = if ($lookup.lookup_type -eq 'document_path' -and $lookup.sheet_stem) { [string]$lookup.sheet_stem } else { [string]$lookup.lookup_value }
+    $like = _QDM-LikePattern -Text $likeText
+    $notifications = @()
+    $jobs = @()
+    $transitions = @()
+    $recipients = @()
+
+    if (_QDM-TestTableExists -TableName 'notification_log') {
+        [void]$sourceTables.Add('notification_log')
+        $cols = _QDM-SelectExistingColumns -TableName 'notification_log' -Requested @(
+            'id', 'sent_at', 'event_type', 'document_guid', 'document_name', 'recipients', 'subject', 'success', 'error_message', 'dedupe_key', 'transition_id', 'sheet_package_id', 'folder_path'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                $textWhere = _QDM-BuildLikeWhere -TableName 'notification_log' -Columns @('document_name', 'subject', 'folder_path') -LikeParam $like
+                if ($textWhere) {
+                    $clauses += "($($textWhere.clause))"
+                    $params = $textWhere.params
+                }
+            }
+            elseif ($lookup.lookup_type -eq 'document_path') {
+                if ($cols -contains 'folder_path') {
+                    $clauses += '(folder_path = @folderPath AND document_name = @documentName)'
+                    $params['folderPath'] = $lookup.folder_path
+                    $params['documentName'] = $lookup.document_name
+                }
+            }
+            if ($lookup.document_guids.Count -gt 0 -and ($cols -contains 'document_guid')) {
+                $inList = (@($lookup.document_guids) | ForEach-Object { "'$($_.ToLowerInvariant())'" }) -join ','
+                $clauses += "LOWER(CAST(document_guid AS NVARCHAR(36))) IN ($inList)"
+            }
+            if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+                $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($clauses.Count -gt 0) {
+                $order = if ($cols -contains 'sent_at') { ' ORDER BY sent_at DESC' } else { '' }
+                $notifications = _QDM-RowsFromQuery -Sql "SELECT TOP ($top) $select FROM [notification_log] WHERE $($clauses -join ' OR ')$order" -Parameters $params
+            }
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'processing_jobs') {
+        [void]$sourceTables.Add('processing_jobs')
+        $cols = _QDM-SelectExistingColumns -TableName 'processing_jobs' -Requested @(
+            'id', 'job_id', 'job_type', 'status', 'created_at', 'completed_at', 'source_path', 'dedupe_key', 'error_code', 'error_message', 'sheet_package_id', 'source_folder'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $sheetFilters = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                $textWhere = _QDM-BuildLikeWhere -TableName 'processing_jobs' -Columns @('source_path', 'source_folder', 'dedupe_key', 'job_id') -LikeParam $like
+                if ($textWhere) {
+                    $sheetFilters += "($($textWhere.clause))"
+                    $params = $textWhere.params
+                }
+            }
+            elseif ($lookup.lookup_type -eq 'document_path') {
+                if ($cols -contains 'source_folder') {
+                    $sheetFilters += 'source_folder = @folderPath'
+                    $params['folderPath'] = $lookup.folder_path
+                }
+                if ($cols -contains 'source_path') {
+                    $sheetFilters += 'source_path LIKE @sourcePathLike'
+                    $params['sourcePathLike'] = ('%' + $lookup.document_name)
+                }
+            }
+            if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+                $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+                $sheetFilters += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+            }
+            if ($sheetFilters.Count -gt 0 -and ($cols -contains 'job_type')) {
+                $order = if ($cols -contains 'created_at') { ' ORDER BY created_at DESC' } else { '' }
+                $jobs = _QDM-RowsFromQuery -Sql "SELECT TOP ($top) $select FROM [processing_jobs] WHERE job_type = @jobType AND ($($sheetFilters -join ' OR '))$order" -Parameters (@{ jobType = 'QC_NOTIFICATION' } + $params)
+            }
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'transition_events') {
+        [void]$sourceTables.Add('transition_events')
+        $cols = _QDM-SelectExistingColumns -TableName 'transition_events' -Requested @(
+            'id', 'detected_at', 'document_name', 'document_guid', 'from_value', 'to_value', 'transition_type', 'notification_sent', 'notification_id', 'trigger_audit_id', 'folder_path'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $clauses = @()
+            $params = @{}
+            if ($lookup.lookup_type -eq 'sheet_number') {
+                $textWhere = _QDM-BuildLikeWhere -TableName 'transition_events' -Columns @('document_name', 'folder_path') -LikeParam $like
+                if ($textWhere) {
+                    $clauses += "($($textWhere.clause))"
+                    $params = $textWhere.params
+                }
+            }
+            elseif ($lookup.lookup_type -eq 'document_path' -and ($cols -contains 'folder_path') -and ($cols -contains 'document_name')) {
+                $clauses += '(folder_path = @folderPath AND document_name = @documentName)'
+                $params['folderPath'] = $lookup.folder_path
+                $params['documentName'] = $lookup.document_name
+            }
+            if ($lookup.document_guids.Count -gt 0 -and ($cols -contains 'document_guid')) {
+                $inList = (@($lookup.document_guids) | ForEach-Object { "'$($_.ToLowerInvariant())'" }) -join ','
+                $clauses += "LOWER(CAST(document_guid AS NVARCHAR(36))) IN ($inList)"
+            }
+            if ($clauses.Count -gt 0) {
+                $order = if ($cols -contains 'detected_at') { ' ORDER BY detected_at DESC' } else { '' }
+                $transitions = _QDM-RowsFromQuery -Sql "SELECT TOP ($top) $select FROM [transition_events] WHERE $($clauses -join ' OR ')$order" -Parameters $params
+            }
+        }
+    }
+
+    foreach ($table in @('sheet_index', 'sheet_packages')) {
+        if (-not (_QDM-TestTableExists -TableName $table)) { continue }
+        $cols = _QDM-SelectExistingColumns -TableName $table -Requested @('designer_email', 'reviewer_email', 'checker_email', 'sheet_stem', 'document_name', 'sheet_package_id')
+        if ($cols.Count -eq 0) { continue }
+        $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+        $clauses = @()
+        $params = @{}
+        if ($lookup.lookup_type -eq 'sheet_number') {
+            $textWhere = _QDM-BuildLikeWhere -TableName $table -Columns @('document_name', 'sheet_stem') -LikeParam $like
+            if ($textWhere) {
+                $clauses += "($($textWhere.clause))"
+                $params = $textWhere.params
+            }
+        }
+        elseif ($lookup.lookup_type -eq 'document_path') {
+            if ($table -eq 'sheet_index' -and ($cols -contains 'folder_path') -and ($cols -contains 'document_name')) {
+                $clauses += '(folder_path = @folderPath AND document_name = @documentName)'
+                $params['folderPath'] = $lookup.folder_path
+                $params['documentName'] = $lookup.document_name
+            }
+            elseif ($table -eq 'sheet_packages' -and ($cols -contains 'folder_path') -and ($cols -contains 'sheet_stem')) {
+                $clauses += '(folder_path = @folderPath AND sheet_stem = @sheetStem)'
+                $params['folderPath'] = $lookup.folder_path
+                $params['sheetStem'] = $lookup.sheet_stem
+            }
+        }
+        if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
+            $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+            $clauses += "CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)"
+        }
+        if ($clauses.Count -eq 0) { continue }
+        $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (20) $select FROM [$table] WHERE $($clauses -join ' OR ')" -Parameters $params
+        if ($rows.Count -gt 0) {
+            [void]$sourceTables.Add($table)
+            foreach ($row in $rows) {
+                $recipients += (@{ source = $table } + $row)
+            }
+        }
+    }
+
+    $assessments = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($tr in $transitions) {
+        if ([string]$tr.transition_type -ne 'STATE_CHANGE') { continue }
+        $toState = $tr.to_value
+        $sentFlag = $tr.notification_sent
+        $matching = @($notifications | Where-Object {
+            ($_.transition_id -eq $tr.id) -or ($toState -and ([string]$_.subject -like "*$toState*"))
+        })
+        $matchingJobs = @($jobs | Where-Object { $_.dedupe_key -and ([string]$tr.notification_id -like "*$($_.dedupe_key)*") })
+        $outcome = 'not_queued'
+        if ($matching | Where-Object { $_.success -in @($true, 1, '1', 'True') }) { $outcome = 'sent' }
+        elseif ($matching | Where-Object { $_.success -in @($false, 0, '0', 'False') }) { $outcome = 'logged_but_failed' }
+        elseif ($matchingJobs | Where-Object { [string]$_.status -in @('failed', 'dead') }) { $outcome = 'queued_but_failed' }
+        elseif ($matchingJobs.Count -gt 0) { $outcome = 'queued' }
+        elseif ($sentFlag -in @($true, 1, '1', 'True')) { $outcome = 'transition_marked_sent' }
+        $assessments.Add(@{
+            transition_id = $tr.id
+            to_value = $toState
+            notification_sent_flag = $sentFlag
+            outcome = $outcome
+        })
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        notification_log = $notifications
+        qc_notification_jobs = $jobs
+        transition_rows = $transitions
+        recipient_fields = $recipients
+        transition_assessments = @($assessments)
+    } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
+        'QC_NOTIFICATION jobs filtered by job_type when column exists.',
+        'Outcome is heuristic based on available log/job/transition rows.'
+    )
+}
+
+function Get-QCDebugDataIntegrityReport {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $membersResult = Get-QCDebugSheetPackageMembers @lookupParams
+    $lookup = $membersResult.data.lookup
+    $warnings = @()
+    if ($membersResult.warnings) { $warnings += @($membersResult.warnings) }
+    $members = $membersResult.data.members
+    $issues = [System.Collections.Generic.List[hashtable]]::new()
+    $sourceTables = @()
+    if ($membersResult.source_tables) { $sourceTables += @($membersResult.source_tables) }
+
+    $indexRows = @($members.sheet_index_rows)
+    $pkgRows = @($members.sheet_packages_rows)
+    $docRows = @($members.sheet_documents_rows)
+
+    if ($pkgRows.Count -eq 0) {
+        $issues.Add(@{ code = 'missing_package'; message = 'No sheet_packages row found for lookup.' })
+    }
+    if ($docRows.Count -eq 0) {
+        $issues.Add(@{ code = 'missing_sheet_documents'; message = 'No sheet_documents rows found for lookup.' })
+    }
+
+    $expectedRoles = @('dgn', 'sheet_pdf', 'qc_pdf')
+    $foundRoles = @($docRows | ForEach-Object { [string]$_.document_role } | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
+    foreach ($role in @($expectedRoles | Where-Object { $_ -notin $foundRoles })) {
+        $issues.Add(@{ code = 'missing_role'; message = "sheet_documents missing role $role."; role = $role })
+    }
+
+    $nameToGuids = @{}
+    foreach ($row in $indexRows) {
+        $name = [string]$row.document_name
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $key = $name.ToLowerInvariant()
+        if (-not $nameToGuids.ContainsKey($key)) { $nameToGuids[$key] = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) }
+        if ($row.document_guid) { [void]$nameToGuids[$key].Add([string]$row.document_guid) }
+    }
+    foreach ($entry in $nameToGuids.GetEnumerator()) {
+        if ($entry.Value.Count -gt 1) {
+            $issues.Add(@{
+                code = 'duplicate_active_rows'
+                message = "sheet_index has $($entry.Value.Count) GUIDs for document name $($entry.Key)."
+                document_name = $entry.Key
+                guids = @($entry.Value)
+            })
+            $warnings += _QDM-BuildWarning -Message "Duplicate sheet_index rows for $($entry.Key)" -Table 'sheet_index' -Column 'document_name'
+        }
+    }
+
+    $pkg = if ($pkgRows.Count -gt 0) { $pkgRows[0] } else { @{} }
+    $states = @{}
+    if ($pkg.pw_state_name) { $states['sheet_packages'] = [string]$pkg.pw_state_name }
+    foreach ($row in $docRows) {
+        $role = [string]$row.document_role
+        if ([string]::IsNullOrWhiteSpace($role)) { $role = 'unknown' }
+        if ($row.pw_state_name) { $states["sheet_documents:$role"] = [string]$row.pw_state_name }
+    }
+    $uniqueStates = @($states.Values | Select-Object -Unique)
+    if ($uniqueStates.Count -gt 1) {
+        $issues.Add(@{ code = 'inconsistent_states'; message = 'Package/member states disagree.'; states = $states })
+    }
+
+    foreach ($row in $indexRows) {
+        if (-not $row.sheet_package_id) {
+            $issues.Add(@{
+                code = 'missing_package_link'
+                message = 'sheet_index row missing sheet_package_id.'
+                document_guid = $row.document_guid
+                document_name = $row.document_name
+            })
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'v_sheet_package_status') {
+        $sourceTables += 'v_sheet_package_status'
+        $vcols = _QDM-GetColumns -TableName 'v_sheet_package_status'
+        $viewRows = @()
+        if ($lookup.lookup_type -eq 'package_id') {
+            if ($vcols -contains 'sheet_package_id') {
+                $viewRows = _QDM-RowsFromQuery -Sql "SELECT TOP (20) * FROM [v_sheet_package_status] WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg" -Parameters @{ pkg = $lookup.lookup_value }
+            }
+        }
+        elseif ($lookup.lookup_type -eq 'document_path') {
+            if (($vcols -contains 'folder_path') -and ($vcols -contains 'sheet_stem')) {
+                $viewRows = _QDM-RowsFromQuery -Sql "SELECT TOP (20) * FROM [v_sheet_package_status] WHERE folder_path = @folderPath AND sheet_stem = @sheetStem" -Parameters @{
+                    folderPath = $lookup.folder_path; sheetStem = $lookup.sheet_stem
+                }
+            }
+        }
+        else {
+            $textCols = @($vcols | Where-Object { $_ -match '(?i)name|stem' })
+            $where = _QDM-BuildLikeWhere -TableName 'v_sheet_package_status' -Columns $textCols -LikeParam (_QDM-LikePattern -Text $lookup.lookup_value)
+            if ($where) {
+                $viewRows = _QDM-RowsFromQuery -Sql "SELECT TOP (20) * FROM [v_sheet_package_status] WHERE $($where.clause)" -Parameters $where.params
+            }
+        }
+        if ($viewRows.Count -eq 0 -and $pkgRows.Count -gt 0) {
+            $issues.Add(@{ code = 'view_package_gap'; message = 'sheet_packages row exists but v_sheet_package_status returned no matches.' })
+        }
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        issues = @($issues)
+        issue_count = $issues.Count
+        members_snapshot = @{
+            sheet_packages = $pkgRows
+            sheet_documents = $docRows
+            sheet_index = $indexRows
+        }
+    } -Warnings $warnings -SourceTables @($sourceTables | Select-Object -Unique) -QueryAssumptions @(
+        'Integrity checks use only tables present in the database.'
+    )
+}
+
+function Compare-QCProjectWiseToDatabase {
+    <#
+    .SYNOPSIS
+    Read-only comparison of ProjectWise live document state vs QC_Pipeline telemetry.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $membersResult = Get-QCDebugSheetPackageMembers @lookupParams
+    $lookup = $membersResult.data.lookup
+    $warnings = @()
+    if ($membersResult.warnings) { $warnings += @($membersResult.warnings) }
+    $members = $membersResult.data.members
+    $comparisons = [System.Collections.Generic.List[hashtable]]::new()
+    $missingInPw = [System.Collections.Generic.List[hashtable]]::new()
+    $missingInDb = [System.Collections.Generic.List[hashtable]]::new()
+
+    $dbDocs = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($row in @($members.sheet_documents_rows)) {
+        if ($row.document_guid) {
+            $dbDocs.Add(@{
+                role = $row.document_role
+                document_guid = [string]$row.document_guid
+                document_name = [string]$row.document_name
+                pw_state_name = [string]$row.pw_state_name
+                source = 'sheet_documents'
+            })
+        }
+    }
+    $pkg = if ($members.sheet_packages_rows.Count -gt 0) { $members.sheet_packages_rows[0] } else { @{} }
+    foreach ($pair in @(
+        @{ role = 'dgn'; guid = 'dgn_guid'; name = 'dgn_name'; state = 'pw_state_name' }
+        @{ role = 'sheet_pdf'; guid = 'sheet_pdf_guid'; name = 'sheet_pdf_name'; state = 'pw_state_name' }
+        @{ role = 'qc_pdf'; guid = 'qc_pdf_guid'; name = 'qc_pdf_name'; state = 'pw_state_name' }
+    )) {
+        if ($pkg[$pair.guid]) {
+            $existing = @($dbDocs | Where-Object { $_.document_guid -ieq [string]$pkg[$pair.guid] })
+            if ($existing.Count -eq 0) {
+                $dbDocs.Add(@{
+                    role = $pair.role
+                    document_guid = [string]$pkg[$pair.guid]
+                    document_name = [string]$pkg[$pair.name]
+                    pw_state_name = [string]$pkg[$pair.state]
+                    source = 'sheet_packages'
+                })
+            }
+        }
+    }
+
+    if ($dbDocs.Count -eq 0) {
+        $warnings += _QDM-BuildWarning -Message 'No document GUIDs found in database for comparison.'
+        return _QDM-ToolResult -Data @{
+            lookup = $lookup
+            comparisons = @()
+            missing_in_projectwise = @()
+            missing_in_database = @()
+            database_document_count = 0
+            projectwise_available = $false
+        } -Warnings $warnings -QueryAssumptions @('Database had no resolvable members; ProjectWise was not queried.')
+    }
+
+    $cfg = _QDM-Config
+    $pw = $cfg.projectWise
+    $ds = [string]$pw.datasourceName
+    $credPath = [string]$pw.credentialPath
+    $pwAvailable = $false
+    $pwStateMap = @{}
+    $pwNameMap = @{}
+
+    if ([string]::IsNullOrWhiteSpace($ds) -or [string]::IsNullOrWhiteSpace($credPath)) {
+        $warnings += _QDM-BuildWarning -Message 'projectWise.datasourceName or credentialPath missing; skipping live PW reads.'
+    }
+    elseif (-not (Get-Command -Name 'Invoke-PWAuthenticatedCommand' -ErrorAction SilentlyContinue)) {
+        $warnings += _QDM-BuildWarning -Message 'Invoke-PWAuthenticatedCommand unavailable; run on a host with ProjectWise PowerShell.'
+    }
+    else {
+        $guids = @($dbDocs | ForEach-Object { $_.document_guid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | Select-Object -Unique)
+        $modulesRoot = $PSScriptRoot
+        try {
+            $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -ScriptBlock {
+                Import-Module (Join-Path $using:modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+                $states = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $using:guids
+                $names = @{}
+                $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
+                if ($guidCmd) {
+                    foreach ($doc in @(& $guidCmd -DocumentGUIDs $using:guids -ErrorAction SilentlyContinue)) {
+                        $g = ''
+                        try { $g = [string]$doc.DocumentGUID } catch { }
+                        if ($g) { $names[$g.ToLowerInvariant()] = (Get-PWDocName -Doc $doc) }
+                    }
+                }
+                return @{ states = $states; names = $names }
+            }
+            $pwStateMap = if ($pwResult.states) { $pwResult.states } else { @{} }
+            $pwNameMap = if ($pwResult.names) { $pwResult.names } else { @{} }
+            $pwAvailable = $true
+        } catch {
+            $warnings += _QDM-BuildWarning -Message "ProjectWise read failed: $($_.Exception.Message)"
+            $pwStateMap = @{}
+            $pwNameMap = @{}
+        }
+    }
+
+    foreach ($doc in $dbDocs) {
+        $guid = [string]$doc.document_guid
+        $guidKey = $guid.ToLowerInvariant()
+        $pwState = if ($pwStateMap.ContainsKey($guidKey)) { [string]$pwStateMap[$guidKey] } else { $null }
+        $pwName = if ($pwNameMap.ContainsKey($guidKey)) { [string]$pwNameMap[$guidKey] } else { $null }
+        $dbState = [string]$doc.pw_state_name
+        $mismatch = @{
+            role = $doc.role
+            document_guid = $guid
+            database_name = $doc.document_name
+            projectwise_name = $pwName
+            database_state = $dbState
+            projectwise_state = $pwState
+            name_match = if ($pwName) { ($pwName -ieq $doc.document_name) } else { $null }
+            state_match = if ($pwState) { ($pwState -ieq $dbState) } else { $null }
+            found_in_projectwise = [bool]$pwState
+        }
+        if (-not $pwState -and $pwAvailable) {
+            $missingInPw.Add($mismatch)
+        }
+        $comparisons.Add($mismatch)
+        if ($pwState -and [string]::IsNullOrWhiteSpace($dbState)) {
+            $missingInDb.Add($mismatch)
+        }
+    }
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        comparisons = @($comparisons)
+        missing_in_projectwise = @($missingInPw)
+        missing_in_database = @($missingInDb)
+        database_document_count = $dbDocs.Count
+        projectwise_available = $pwAvailable
+    } -Warnings $warnings -QueryAssumptions @(
+        'Read-only Get-PWDocumentsByGUIDs workflow state lookup.',
+        'No ProjectWise writes or arbitrary cmdlets are executed.'
+    )
+}
+
+Export-ModuleMember -Function @(
+    'Initialize-QCDebugMcpContext'
+    'Resolve-QCDebugLookup'
+    'Search-QCDebugSheet'
+    'Get-QCDebugSheetIdentity'
+    'Get-QCDebugSheetPackageMembers'
+    'Get-QCDebugSheetTimeline'
+    'Get-QCDebugNotificationDiagnostics'
+    'Get-QCDebugDataIntegrityReport'
+    'Compare-QCProjectWiseToDatabase'
+)

@@ -1007,10 +1007,8 @@ function _PWD-SyncReferenceSheetProcessTypeAttributes {
 
     $pwWritesEnabled = Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath
     $processCol = Get-PWQcProcessTypeAttributeName -Config $Config
+    # QC_Process_Type on DGN is user-owned; only the stem sheet PDF may be updated by automation.
     $targetNames = @($sheetStem + '.pdf')
-    if (-not $ControlDocumentOnly) {
-        $targetNames += ($sheetStem + '.dgn')
-    }
     $updates = @()
 
     foreach ($dn in @($targetNames)) {
@@ -1221,6 +1219,48 @@ function _PWD-GetSheetMemberDocRole {
     if ($dn -match '(?i)\.dgn$') { return 'dgn' }
     if ($dn -match '(?i)\.pdf$') { return 'pdf' }
     return 'other'
+}
+
+function _PWD-TestAutomationDgnProtectedDocument {
+    param([string]$DocumentName)
+    return ([string]$DocumentName -match '(?i)\.dgn$')
+}
+
+function _PWD-TestAutomationWritesQcProcessTypeOnAttributes {
+    param(
+        [hashtable]$Attributes,
+        [hashtable]$Config = $null
+    )
+    if (-not $Attributes -or $Attributes.Keys.Count -eq 0) { return $false }
+    $processCol = 'QC_Process_Type'
+    if ($Config -and (Get-Command -Name 'Get-PWQcProcessTypeAttributeName' -ErrorAction SilentlyContinue)) {
+        try { $processCol = Get-PWQcProcessTypeAttributeName -Config $Config } catch { }
+    }
+    foreach ($key in @($Attributes.Keys)) {
+        if ((_PWD-NormalizeSheetIndexValue ([string]$key)) -eq (_PWD-NormalizeSheetIndexValue $processCol)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function _PWD-LogAutomationDgnWriteBlocked {
+    param(
+        [string]$Operation,
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$CallSite = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Level 'Information' -Code 'QC_DGN_AUTOMATION_WRITE_BLOCKED' `
+        -Message 'Automation blocked from writing DGN workflow state or QC_Process_Type.' -Data @{
+        operation = [string]$Operation
+        documentName = [string]$DocumentName
+        documentGuid = [string]$DocumentGuid
+        folderPath = [string]$FolderPath
+        callSite = [string]$CallSite
+    } | Out-Null
 }
 
 function _PWD-WriteDocumentStateLiveVerificationLog {
@@ -1474,16 +1514,16 @@ function Test-PWSheetPdfHasMatchingPair {
 function Get-PWAssociatedSheetSyncDocumentNames {
     <#
     .SYNOPSIS
-    Sibling filenames that participate in normal workflow state sync (DGN, sheet PDF, production QC PDF).
+    Sibling filenames that participate in workflow state sync (sheet PDF and production QC PDF only; DGN excluded).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SheetStem
     )
     if ([string]::IsNullOrWhiteSpace($SheetStem)) { return @() }
+    # DGN workflow state is user-owned; automation never participates in sibling state sync.
     return @(
         ($SheetStem + '.pdf')
-        ($SheetStem + '.dgn')
         ($SheetStem + '-prod.pdf')
     )
 }
@@ -1601,7 +1641,7 @@ function Get-PWAssociatedSheetSyncMembers {
     }
     $sync = @($all | Where-Object {
         $dn = [string]$_.documentName
-        $dn -and $syncNames.ContainsKey($dn.ToLowerInvariant())
+        $dn -and $syncNames.ContainsKey($dn.ToLowerInvariant()) -and -not (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn)
     })
     if (-not (_PWD-TestLegacySiblingStateSyncEnabled -Config $Config)) {
         _PWD-LogLaneStateIndependentTelemetry -AllMembers $all -FolderPath $FolderPath -TriggerSource $TriggerSource `
@@ -1929,6 +1969,22 @@ function _PWD-InvokeSetPwDocumentState {
     $folderPath = [string]$GuardContext.folderPath
     $documentName = [string]$GuardContext.documentName
     $documentGuid = [string]$GuardContext.documentGuid
+    if ($Document -and [string]::IsNullOrWhiteSpace($documentName)) {
+        try { $documentName = [string]$Document.Name } catch { }
+    }
+    if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $documentName) {
+        _PWD-LogAutomationDgnWriteBlocked -Operation 'workflow_state' -DocumentName $documentName `
+            -DocumentGuid $documentGuid -FolderPath $folderPath -CallSite $(if ($GuardContext.callSite) { [string]$GuardContext.callSite } else { '_PWD-InvokeSetPwDocumentState' })
+        return @{
+            applied = $false
+            verified = $false
+            skipped = $true
+            skipReason = 'dgn_automation_write_blocked'
+            documentName = $documentName
+            documentGuid = $documentGuid
+            targetState = $StateName
+        }
+    }
     if ($Document) {
         if ([string]::IsNullOrWhiteSpace($documentName)) {
             try { $documentName = [string]$Document.Name } catch { }
@@ -2624,6 +2680,7 @@ function Sync-PWAssociatedSheetMembersToWorkflowState {
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
+        if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn) { continue }
         if (-not $dg -and -not $member.document) { continue }
 
         $currentState = if ($dg -and $stateByGuid.ContainsKey($dg.ToLowerInvariant())) {
@@ -2798,6 +2855,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
         $dn = [string]$member.documentName
         $doc = $member.document
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn) { continue }
 
         if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
             $memberLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
@@ -3979,6 +4037,7 @@ function Sync-PWAssociatedSheetWorkflowState {
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
+        if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn) { continue }
         if (-not $dg) { continue }
 
         $currentState = if ($stateByGuid.ContainsKey($dg.ToLowerInvariant())) {
@@ -4654,6 +4713,17 @@ function _PWD-InvokeUpdatePWDocumentAttributes {
     $cmd = Get-Command -Name 'Update-PWDocumentAttributes' -ErrorAction SilentlyContinue
     if (-not $cmd) { throw 'Update-PWDocumentAttributes is not available.' }
     if (-not $Attributes -or $Attributes.Keys.Count -eq 0) { return $false }
+
+    $documentName = ''
+    try { $documentName = [string]$Document.Name } catch { }
+    if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $documentName `
+        -and _PWD-TestAutomationWritesQcProcessTypeOnAttributes -Attributes $Attributes -Config $Config) {
+        $documentGuid = ''
+        try { $documentGuid = [string]$Document.DocumentGUID } catch { }
+        _PWD-LogAutomationDgnWriteBlocked -Operation 'qc_process_type' -DocumentName $documentName `
+            -DocumentGuid $documentGuid -CallSite '_PWD-InvokeUpdatePWDocumentAttributes'
+        return $false
+    }
 
     $attrsToWrite = @{}
     $processCol = ''

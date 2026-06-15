@@ -42,7 +42,7 @@ InModuleScope -ModuleName PW.Discovery {
     $script:attrWrites = @()
     Sync-PWAssociatedSheetReviewTypeAttributes -Config $legacyCfg -DocumentGuid '1' -DocumentName 'CA001.pdf' `
         -FolderPath 'Drawings\X' -CanonicalReviewType 'production'
-    Assert-Eq $script:attrWrites.Count 2 'lane QC PDF excluded from legacy process type sync'
+    Assert-Eq $script:attrWrites.Count 1 'lane QC PDF and DGN excluded from legacy process type sync'
     Assert-False ($script:attrWrites[0].ContainsKey('QC_Review_Type')) 'legacy sync writes QC_Process_Type only'
 }
 
@@ -162,5 +162,21 @@ Assert-True (-not $result.Data.sheetStateSync) 'sibling sync must not run after 
 Assert-Eq $script:stateWrites.Count 0 'stem primary write skipped; lane PDF is workflow authority'
 Assert-True $result.Data.skippedPrimaryReferenceWrite 'marks skipped primary reference write'
 Assert-True $ctx.laneIndependentInitialPrepend 'context marks lane-independent prepend'
+
+# DGN is never written by automation (workflow state or QC_Process_Type)
+InModuleScope -ModuleName PW.Discovery {
+    function Write-QCJsonLog { param($Level, $Code, $Message, $Data) }
+    Assert-True (_PWD-TestAutomationDgnProtectedDocument -DocumentName 'CA001.dgn') 'dgn extension is protected'
+    Assert-False (_PWD-TestAutomationDgnProtectedDocument -DocumentName 'CA001.pdf') 'stem pdf is not protected'
+    $blocked = _PWD-InvokeSetPwDocumentState -Document $null -StateName 'Initiate Origination' -GuardContext @{
+        documentName = 'CA001.dgn'
+        folderPath = 'Drawings\X'
+        callSite = 'test'
+    }
+    Assert-True $blocked.skipped 'dgn state write is skipped'
+    Assert-Eq $blocked.skipReason 'dgn_automation_write_blocked' 'dgn state skip reason'
+    $names = Get-PWAssociatedSheetSyncDocumentNames -SheetStem 'CA001'
+    Assert-False ($names -contains 'CA001.dgn') 'sync document names exclude dgn'
+}
 
 Write-Host 'test_qc_post_initial_prepend_states: OK' -ForegroundColor Green

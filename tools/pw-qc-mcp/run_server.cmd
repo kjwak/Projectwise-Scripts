@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-".\.venv\Scripts\python.exe" ".\server.py"
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0server.ps1"

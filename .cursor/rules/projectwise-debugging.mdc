@@ -1,0 +1,12 @@
+---
+description: ProjectWise QC workflow debugging
+alwaysApply: true
+---
+
+When investigating ProjectWise workflow behavior, QC automation, notifications, state transitions, audit events, package status, or workflow drift:
+
+1. Use available ProjectWise/QC MCP tools before inspecting code.
+2. Gather evidence from MCP tools.
+3. Identify where the workflow chain breaks.
+4. Only then inspect source code.
+5. Do not propose fixes without supporting MCP evidence.
