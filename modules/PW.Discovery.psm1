@@ -3479,6 +3479,45 @@ function _PWD-TestShouldBlockStaleRestartOverwrite {
     return $true
 }
 
+function _PWD-EnsureAuditWorkflowExports {
+    <#
+    .SYNOPSIS
+    Ensures QC.AuditTriggers exports survive nested Import-Module -Force in the watcher session.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $required = @(
+        'Get-QCAuditWorkflowTriggerSettings'
+        'Invoke-QCAuditWorkflowStateChangeTriggers'
+        'Invoke-QCSheetGroupWorkflowTransition'
+        'Test-QCDocumentStateAuditEventIsStale'
+        'Test-QCIsQcPdfDocumentName'
+    )
+    $restoreOrder = @(
+        'QC.ProcessType.psm1'
+        'Core.Database.psm1'
+        'QC.AuditTriggers.psm1'
+        'QC.Notifications.psm1'
+        'PW.Discovery.psm1'
+    )
+
+    for ($pass = 0; $pass -lt 3; $pass++) {
+        $missing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+        if ($missing.Count -eq 0) { return $true }
+        foreach ($modFile in $restoreOrder) {
+            $modPath = Join-Path $PSScriptRoot $modFile
+            if (Test-Path -LiteralPath $modPath) {
+                Import-Module $modPath -Force -WarningAction SilentlyContinue | Out-Null
+            }
+        }
+        if (Get-Command -Name 'Ensure-PWDiscoveryModuleLoaded' -ErrorAction SilentlyContinue) {
+            [void](Ensure-PWDiscoveryModuleLoaded)
+        }
+    }
+    return (@($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) }).Count -eq 0)
+}
+
 function _PWD-ResolveSheetPackageNotificationDocumentGuid {
     param([array]$Members)
 
@@ -3495,6 +3534,230 @@ function _PWD-ResolveSheetPackageNotificationDocumentGuid {
     }
     if (@($Members).Count -gt 0) { return [string]$Members[0].documentGuid }
     return ''
+}
+
+function _PWD-InvokeLaneQcPdfDocumentStateWorkflow {
+    <#
+    .SYNOPSIS
+    Records lane QC PDF workflow telemetry and notifications without sheet-group sibling sync.
+    .DESCRIPTION
+    rev/prod/chk PDFs are independent process lanes. Stem PDF and DGN are excluded from this path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [string]$WatchRoot = '',
+        [Parameter(Mandatory)][string]$CanonicalState,
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = '',
+        [bool]$ActorIsAutomation = $false
+    )
+
+    [void](_PWD-EnsureAuditWorkflowExports)
+
+    $members = @(@{
+        documentGuid = $DocumentGuid
+        documentName = $DocumentName
+        document     = $null
+    })
+
+    $guids = @()
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $guids = @([string]$DocumentGuid)
+    }
+
+    $stateByGuid = @{}
+    if ($guids.Count -gt 0) {
+        try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids } catch { }
+    }
+
+    $triggerGuidKey = ([string]$DocumentGuid).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($triggerGuidKey) -and $stateByGuid.ContainsKey($triggerGuidKey)) {
+        $batchLiveState = [string]$stateByGuid[$triggerGuidKey]
+        if (-not [string]::IsNullOrWhiteSpace($batchLiveState)) {
+            $normalizedBatch = _PWD-NormalizeSheetIndexValue $batchLiveState
+            $normalizedCanonical = _PWD-NormalizeSheetIndexValue $CanonicalState
+            if ([string]::IsNullOrWhiteSpace($CanonicalState) -or ($normalizedBatch -ne $normalizedCanonical)) {
+                $CanonicalState = $batchLiveState
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($CanonicalState)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_LANE_STATE_NO_SOURCE' `
+                -Message 'Lane QC PDF DOCUMENT_STATE skipped: live PW state unavailable after batch read.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+            } | Out-Null
+        }
+        return
+    }
+
+    $previousStateByGuid = @{}
+    $prevIndex = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
+    $previousStateByGuid[$triggerGuidKey] = [string]$prevIndex
+
+    _PWD-WriteDocumentStateLiveVerificationLog -AuditEventId $AuditEventId `
+        -SourceDocumentGuid $DocumentGuid -SourceDocumentName $DocumentName -FolderPath $FolderPath `
+        -CanonicalState $CanonicalState -CanonicalStateSource 'liveProjectWise' `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+        -Members $members -StateByGuid $stateByGuid -Config $Config
+
+    $sheetStemForPrepend = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $sheetStemForPrepend = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+
+    if (Get-Command -Name 'Test-QCDocumentStateAuditEventIsStale' -ErrorAction SilentlyContinue) {
+        $staleDecision = Test-QCDocumentStateAuditEventIsStale -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -AuditEventId $AuditEventId `
+            -LastAuditEventAt $LastAuditEventAt -CanonicalState $CanonicalState `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -Members $members -StateByGuid $stateByGuid -SheetStem $sheetStemForPrepend
+        if ($staleDecision -and [bool]$staleDecision.isStale) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                $staleLog = @{
+                    decision = 'skipped'
+                    sync = 'skipped'
+                    notify = 'skipped'
+                    canonicalState = $CanonicalState
+                    canonicalStateSource = 'liveProjectWise'
+                    laneIndependent = $true
+                }
+                foreach ($k in @($staleDecision.Keys)) { $staleLog[$k] = $staleDecision[$k] }
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_SKIPPED_STALE_EVENT' `
+                    -Message 'Skipped lane QC PDF DOCUMENT_STATE workflow for superseded audit event.' -Data $staleLog | Out-Null
+            }
+            return
+        }
+    }
+
+    if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
+        try {
+            $notifPath = Join-Path $PSScriptRoot 'QC.Notifications.psm1'
+            Import-Module $notifPath -ErrorAction SilentlyContinue
+            if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
+                Import-Module $notifPath -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    if (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue) {
+        $gate = Invoke-QCWorkflowStateEmailAttributeGate -Config $Config -FolderPath $FolderPath `
+            -DocumentName $DocumentName -DocumentGuid $DocumentGuid -TargetStateName $CanonicalState `
+            -Members $members -StateByGuid $stateByGuid -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername -DryRun:$DryRun
+        if ($gate -and $gate.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_LANE_STATE_SYNC_BLOCKED' `
+                    -Message 'Lane QC PDF state workflow stopped: required email attributes missing.' -Data @{
+                    triggerDocumentGuid = $DocumentGuid
+                    triggerDocumentName = $DocumentName
+                    folderPath          = $FolderPath
+                    canonicalState      = $CanonicalState
+                    missingFields       = @($gate.missingFields)
+                } | Out-Null
+            }
+            if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+                Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $DocumentGuid `
+                    -TriggerDocumentName $DocumentName -FolderPath $FolderPath -SourceState $prevIndex `
+                    -TargetState $CanonicalState -TransitionSource 'user_audit' -Members $members `
+                    -StateByGuid $stateByGuid -PreviousStateByGuid $previousStateByGuid `
+                    -AuditEventId $AuditEventId -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+                    -LastAuditEventAt $LastAuditEventAt -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
+                    -LaneIndependentMode | Out-Null
+            }
+            return
+        }
+    }
+
+    if (Get-Command -Name '_PWD-InvokeStaleSheetIndexAuditStateTriggers' -ErrorAction SilentlyContinue) {
+        _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
+            -FolderPath $FolderPath -CanonicalState $CanonicalState -DryRun:$DryRun `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId | Out-Null
+    }
+
+    $dbEnabled = $false
+    if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
+        $dbEnabled = Test-QCDatabaseEnabled -Config $Config
+    }
+
+    $currentState = if ($stateByGuid.ContainsKey($triggerGuidKey)) {
+        [string]$stateByGuid[$triggerGuidKey]
+    } else {
+        ''
+    }
+    if ([string]::IsNullOrWhiteSpace($currentState)) {
+        try {
+            $currentState = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+        } catch { }
+    }
+
+    $stateUpdates = @()
+    if ((_PWD-NormalizeSheetIndexValue $currentState) -eq (_PWD-NormalizeSheetIndexValue $CanonicalState)) {
+        if ($dbEnabled -and (-not $DryRun)) {
+            try {
+                [void](Update-QCSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid -PwStateName $CanonicalState)
+                if ($LastAuditEventAt) {
+                    Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index SET last_audit_event_at = @lastAudit, last_updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid; lastAudit = $LastAuditEventAt } | Out-Null
+                }
+                if (Get-Command -Name 'Update-SheetPackageQcPdfLaneState' -ErrorAction SilentlyContinue) {
+                    $laneType = $null
+                    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                        $laneType = Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName
+                    }
+                    if ($laneType) {
+                        [void](Update-SheetPackageQcPdfLaneState -Config $Config -DocumentGuid $DocumentGuid `
+                            -CurrentPwState $CanonicalState -PreviousPwState ([string]$prevIndex) -QcProcessType $laneType)
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
+        Invoke-QCSheetGroupWorkflowTransition -Config $Config -TriggerDocumentGuid $DocumentGuid `
+            -TriggerDocumentName $DocumentName -FolderPath $FolderPath -SourceState $prevIndex `
+            -TargetState $CanonicalState -TransitionSource 'user_audit' -Members $members `
+            -StateByGuid $stateByGuid -PreviousStateByGuid $previousStateByGuid `
+            -AuditEventId $AuditEventId -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -LastAuditEventAt $LastAuditEventAt -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' `
+            -LaneIndependentMode | Out-Null
+    } elseif (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
+        Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -PreviousState $prevIndex -CurrentState $CanonicalState `
+            -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
+            -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
+            -PreviousStateSource 'sheet_index' -CurrentStateSource 'liveProjectWise' `
+            -StaleCheckMembers $members -StaleCheckStateByGuid $stateByGuid -StaleCheckCanonicalState $CanonicalState | Out-Null
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_LANE_STATE_INDEPENDENT' `
+            -Message 'Lane workflow state recorded from DOCUMENT_STATE audit event without sibling sync.' -Data @{
+            triggerDocumentGuid = $DocumentGuid
+            triggerDocumentName = $DocumentName
+            folderPath          = $FolderPath
+            canonicalState      = $CanonicalState
+            previousLaneState   = $prevIndex
+            memberCount         = 1
+            updates             = @($stateUpdates)
+            dryRun              = [bool]$DryRun
+            actorIsAutomation   = [bool]$ActorIsAutomation
+        } | Out-Null
+    }
 }
 
 function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
@@ -3574,8 +3837,13 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
                 changedByUsername = $ChangedByUsername
             } | Out-Null
         }
-        $suppressNotify = $DeferNotification.IsPresent
-        if (-not $suppressNotify) {
+        $laneOnlyMember = (@($Members).Count -eq 1) -and (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) `
+            -and (Test-QCIsQcPdfDocumentName -DocumentName $dn)
+        $suppressNotify = $false
+        if ($DeferNotification.IsPresent -and -not $laneOnlyMember) {
+            $suppressNotify = $true
+        }
+        if (-not $suppressNotify -and -not $laneOnlyMember) {
             $suppressNotify = ((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid))
         }
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
@@ -4058,6 +4326,14 @@ function Sync-PWAssociatedSheetWorkflowState {
         } catch { }
     }
 
+    if (_PWD-TestTriggerIsLaneQcPdf -DocumentName $DocumentName) {
+        _PWD-InvokeLaneQcPdfDocumentStateWorkflow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+            -FolderPath $FolderPath -WatchRoot $WatchRoot -CanonicalState $canonicalState -DryRun:$DryRun `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
+            -AuditEventId $AuditEventId -ActorIsAutomation $actorIsAutomation
+        return
+    }
+
     if (([string]$DocumentName -match '(?i)\.dgn$') -and (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
             Add-QCRenditionJobForReadyForQcStateChange -Config $Config `
@@ -4077,6 +4353,11 @@ function Sync-PWAssociatedSheetWorkflowState {
                 } | Out-Null
             }
         }
+        return
+    }
+
+    if (([string]$DocumentName -match '(?i)\.dgn$')) {
+        return
     }
 
     $allMembers = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `

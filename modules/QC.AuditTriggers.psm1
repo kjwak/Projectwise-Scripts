@@ -845,6 +845,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
         [string]$LastAuditEventAt = '',
         [bool]$DryRun = $false,
         [switch]$SuppressNotification,
+        [switch]$LaneIndependentMode,
         [hashtable]$Context = $null,
         [string]$AuditActionName = 'DOCUMENT_STATE'
     )
@@ -940,6 +941,11 @@ function Invoke-QCSheetGroupWorkflowTransition {
         }
     }
 
+    $laneIndependentMode = $LaneIndependentMode.IsPresent
+    if (-not $laneIndependentMode -and (Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName) -and (@($Members).Count -le 1)) {
+        $laneIndependentMode = $true
+    }
+
     if (-not $StateByGuid) { $StateByGuid = @{} }
     if (-not $PreviousStateByGuid) { $PreviousStateByGuid = @{} }
 
@@ -975,7 +981,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
 
     $memberResults = [System.Collections.Generic.List[object]]::new()
     $allMembersForNotify = @($Members)
-    if (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue) {
+    if (-not $laneIndependentMode -and (Get-Command -Name 'Get-PWAssociatedSheetMembers' -ErrorAction SilentlyContinue)) {
         try {
             $loaded = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
                 -DocumentName $TriggerDocumentName -DocumentGuid $TriggerDocumentGuid)
@@ -990,7 +996,13 @@ function Invoke-QCSheetGroupWorkflowTransition {
     $notifyGuid = if ($notifyMember) { [string]$notifyMember.documentGuid } else { '' }
     $notifyName = if ($notifyMember) { [string]$notifyMember.documentName } else { '' }
     $packagePreviousState = ''
-    if ($notifyGuid) {
+    if ($laneIndependentMode -and -not [string]::IsNullOrWhiteSpace($TriggerDocumentGuid)) {
+        $triggerKey = ([string]$TriggerDocumentGuid).Trim().ToLowerInvariant()
+        if ($PreviousStateByGuid.ContainsKey($triggerKey)) {
+            $packagePreviousState = _QCAT-NormalizeValue ([string]$PreviousStateByGuid[$triggerKey])
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($packagePreviousState) -and $notifyGuid) {
         $notifyKey = $notifyGuid.ToLowerInvariant()
         if ($PreviousStateByGuid.ContainsKey($notifyKey)) {
             $packagePreviousState = _QCAT-NormalizeValue ([string]$PreviousStateByGuid[$notifyKey])
@@ -1006,15 +1018,17 @@ function Invoke-QCSheetGroupWorkflowTransition {
         $role = _QCAT-ResolveMemberFileRole -DocumentName ([string]$member.documentName)
         if ($expectedRoles -contains $role) { $resolvedRoles[$role] = $member }
     }
-    foreach ($role in @($expectedRoles)) {
-        if (-not $resolvedRoles.ContainsKey($role)) {
-            [void]$memberResults.Add(@{
-                role = $role
-                skipped = $true
-                skipReason = 'sibling_missing'
-                documentGuid = ''
-                documentName = ''
-            })
+    if (-not $laneIndependentMode) {
+        foreach ($role in @($expectedRoles)) {
+            if (-not $resolvedRoles.ContainsKey($role)) {
+                [void]$memberResults.Add(@{
+                    role = $role
+                    skipped = $true
+                    skipReason = 'sibling_missing'
+                    documentGuid = ''
+                    documentName = ''
+                })
+            }
         }
     }
 
@@ -1241,7 +1255,11 @@ function Invoke-QCSheetGroupWorkflowTransition {
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Level 'Information' -Code 'SHEET_GROUP_TRANSITION_COMPLETE' `
-            -Message 'Sheet-group workflow transition telemetry completed.' -Data @{
+            -Message $(if ($laneIndependentMode) {
+                'Lane-independent workflow transition telemetry completed.'
+            } else {
+                'Sheet-group workflow transition telemetry completed.'
+            }) -Data @{
             triggerDocumentGuid = $TriggerDocumentGuid
             triggerDocumentName = $TriggerDocumentName
             triggerFileType = $triggerRole
@@ -1254,6 +1272,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
             transitionSource = $TransitionSource
             auditEventId = $AuditEventId
             jobId = $JobId
+            laneIndependentMode = [bool]$laneIndependentMode
             notificationEvaluated = $notificationEvaluated
             notificationSent = $notificationSent
             notificationResultCode = $notificationResultCode
@@ -2212,8 +2231,11 @@ function Test-QCDocumentStateAuditEventIsStale {
         } catch { }
     }
 
-    $regression = _QCAT-TestSheetPdfWouldRegressFromCanonical -Config $Config -Members $Members -StateByGuid $StateByGuid `
-        -CanonicalState $CanonicalState -LastAuditEventAt $LastAuditEventAt -TriggerDocumentName $DocumentName
+    $regression = $null
+    if (-not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
+        $regression = _QCAT-TestSheetPdfWouldRegressFromCanonical -Config $Config -Members $Members -StateByGuid $StateByGuid `
+            -CanonicalState $CanonicalState -LastAuditEventAt $LastAuditEventAt -TriggerDocumentName $DocumentName
+    }
     if ($regression) {
         $decision.isStale = $true
         $decision.reason = 'regressive_pdf_state'
