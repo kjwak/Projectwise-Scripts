@@ -628,6 +628,15 @@ function Resolve-QCNotificationQcPdfUrl {
         return [string]$Event.qcPdfUrl.Trim()
     }
 
+    $trustedLaneGuid = _QCN-ResolveTrustedLaneDocumentGuid -Event $Event
+    if (-not (_QCN-IsBlank $trustedLaneGuid)) {
+        $trustedUrl = _QCN-BuildPwDocumentLinkUrl -DocumentGuid $trustedLaneGuid -Settings $Settings -Config $Config
+        if (-not (_QCN-IsBlank $trustedUrl)) {
+            $Event['linkResolutionSource'] = 'trusted_lane_metadata_guid'
+            return $trustedUrl.Trim()
+        }
+    }
+
     $attrs = @{}
     if ($Settings -and $Settings.attributes) {
         $a = _QCN-ToHashtable $Settings.attributes
@@ -695,26 +704,8 @@ function Resolve-QCNotificationQcPdfUrl {
         if (-not (_QCN-IsBlank $expanded)) { return $expanded.Trim() }
     }
 
-    $baseUrl = if ($emailCfg.pwLinkBaseUrl) { [string]$emailCfg.pwLinkBaseUrl } else { '' }
-    if (-not (_QCN-IsBlank $baseUrl) -and -not (_QCN-IsBlank $docGuid)) {
-        $datasourceName = ''
-        if ($Config -and $Config.projectWise) {
-            $pw = _QCN-ToHashtable $Config.projectWise
-            if ($pw) {
-                if ($pw.datasourceName) { $datasourceName = [string]$pw.datasourceName }
-                elseif ($pw.datasource) { $datasourceName = [string]$pw.datasource }
-            }
-        }
-        if (_QCN-IsBlank $datasourceName -and (Get-Command -Name 'Get-PWCurrentDatasource' -ErrorAction SilentlyContinue)) {
-            try { $datasourceName = [string](Get-PWCurrentDatasource) } catch { }
-        }
-        if (-not (_QCN-IsBlank $datasourceName)) {
-            $dsParam = _QCN-GetEncodedPwDatasource -DatasourceName $datasourceName
-            $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
-            $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
-            return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $docGuid, $dsParam, $app)
-        }
-    }
+    $builtUrl = _QCN-BuildPwDocumentLinkUrl -DocumentGuid $docGuid -Settings $Settings -Config $Config
+    if (-not (_QCN-IsBlank $builtUrl)) { return $builtUrl }
 
     return ''
 }
@@ -1060,35 +1051,143 @@ function _QCN-TryResolveQcPdfGuidFromPwSearch {
 
     if (_QCN-IsBlank $FolderPath) { return '' }
     if (_QCN-IsBlank $QcPdfName) { return '' }
-    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
-    foreach ($searchFolder in @(_QCN-GetPwSearchFolderCandidates -FolderPath $FolderPath)) {
-        if (_QCN-IsBlank $searchFolder) { continue }
-        try {
-            $docs = @(Get-PWDocumentsBySearch -FolderPath $searchFolder -DocumentName $QcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
-            if ($docs.Count -le 0) { continue }
-            $bestGuid = ''
-            $bestTicks = [long]::MinValue
-            foreach ($doc in $docs) {
-                $g = [string](_QCN-GetProp -Object $doc -Names @('DocumentGUID', 'DocumentGuid', 'GUID'))
-                if (_QCN-IsBlank $g) { continue }
-                $ticks = [long]::MinValue
-                foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
-                    $raw = _QCN-GetProp -Object $doc -Names @($n)
-                    if (_QCN-IsBlank $raw) { continue }
-                    try {
-                        $dt = [datetime]$raw
-                        if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
-                    } catch { }
-                }
-                if ((_QCN-IsBlank $bestGuid) -or ($ticks -gt $bestTicks)) {
-                    $bestGuid = $g.Trim()
-                    $bestTicks = $ticks
-                }
+
+    $nameCandidates = [System.Collections.Generic.List[string]]::new()
+    $seenNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    function _AddPwSearchName([string]$Candidate) {
+        if (_QCN-IsBlank $Candidate) { return }
+        $trimmed = $Candidate.Trim()
+        if ($seenNames.Add($trimmed)) { [void]$nameCandidates.Add($trimmed) }
+    }
+    _AddPwSearchName $QcPdfName
+    if ($QcPdfName -match '(?i)^(.+)-(prod|chk|rev)\.pdf$') {
+        $stemPart = [string]$Matches[1]
+        $suffixPart = [string]$Matches[2].ToLowerInvariant()
+        _AddPwSearchName ($stemPart + '-' + $suffixPart + '.pdf')
+    }
+
+    $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
+    if ($searchCmd) {
+        foreach ($searchFolder in @(_QCN-GetPwSearchFolderCandidates -FolderPath $FolderPath)) {
+            if (_QCN-IsBlank $searchFolder) { continue }
+            foreach ($searchName in @($nameCandidates)) {
+                try {
+                    $docs = @(Get-PWDocumentsBySearch -FolderPath $searchFolder -DocumentName $searchName -JustThisFolder -ErrorAction SilentlyContinue)
+                    if ($docs.Count -le 0) { continue }
+                    $bestGuid = ''
+                    $bestTicks = [long]::MinValue
+                    foreach ($doc in $docs) {
+                        $g = [string](_QCN-GetProp -Object $doc -Names @('DocumentGUID', 'DocumentGuid', 'GUID'))
+                        if (_QCN-IsBlank $g) { continue }
+                        $ticks = [long]::MinValue
+                        foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
+                            $raw = _QCN-GetProp -Object $doc -Names @($n)
+                            if (_QCN-IsBlank $raw) { continue }
+                            try {
+                                $dt = [datetime]$raw
+                                if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
+                            } catch { }
+                        }
+                        if ((_QCN-IsBlank $bestGuid) -or ($ticks -gt $bestTicks)) {
+                            $bestGuid = $g.Trim()
+                            $bestTicks = $ticks
+                        }
+                    }
+                    if (-not (_QCN-IsBlank $bestGuid)) { return $bestGuid }
+                } catch { }
             }
-            if (-not (_QCN-IsBlank $bestGuid)) { return $bestGuid }
-        } catch { }
+        }
+    }
+
+    if (Get-Command -Name 'Get-PWDocumentsInFolder' -ErrorAction SilentlyContinue) {
+        foreach ($searchFolder in @(_QCN-GetPwSearchFolderCandidates -FolderPath $FolderPath)) {
+            if (_QCN-IsBlank $searchFolder) { continue }
+            try {
+                $all = @(Get-PWDocumentsInFolder -FolderPath $searchFolder -ErrorAction SilentlyContinue)
+                $bestGuid = ''
+                $bestTicks = [long]::MinValue
+                foreach ($doc in $all) {
+                    $actualName = [string](_QCN-GetProp -Object $doc -Names @('Name', 'DocumentName', 'FileName'))
+                    if (_QCN-IsBlank $actualName) { continue }
+                    $nameMatch = $false
+                    foreach ($searchName in @($nameCandidates)) {
+                        if ($actualName.Equals($searchName, [StringComparison]::OrdinalIgnoreCase)) {
+                            $nameMatch = $true
+                            break
+                        }
+                    }
+                    if (-not $nameMatch) { continue }
+                    $g = [string](_QCN-GetProp -Object $doc -Names @('DocumentGUID', 'DocumentGuid', 'GUID'))
+                    if (_QCN-IsBlank $g) { continue }
+                    $ticks = [long]::MinValue
+                    foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
+                        $raw = _QCN-GetProp -Object $doc -Names @($n)
+                        if (_QCN-IsBlank $raw) { continue }
+                        try {
+                            $dt = [datetime]$raw
+                            if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
+                        } catch { }
+                    }
+                    if ((_QCN-IsBlank $bestGuid) -or ($ticks -gt $bestTicks)) {
+                        $bestGuid = $g.Trim()
+                        $bestTicks = $ticks
+                    }
+                }
+                if (-not (_QCN-IsBlank $bestGuid)) { return $bestGuid }
+            } catch { }
+        }
     }
     return ''
+}
+
+function _QCN-ResolveTrustedLaneDocumentGuid {
+    param(
+        [hashtable]$Event = $null,
+        [hashtable]$Job = $null
+    )
+
+    foreach ($source in @($Event, $(if ($Job -and $Job.metadata) { _QCN-ToHashtable $Job.metadata } else { $null }))) {
+        if (-not $source) { continue }
+        foreach ($key in @('notificationLaneDocumentGuid', 'laneQcPdfDocumentGuid')) {
+            if ($source.ContainsKey($key) -and -not (_QCN-IsBlank $source[$key])) {
+                return [string]$source[$key].Trim()
+            }
+        }
+    }
+    return ''
+}
+
+function _QCN-BuildPwDocumentLinkUrl {
+    param(
+        [string]$DocumentGuid,
+        [hashtable]$Settings,
+        [hashtable]$Config = $null
+    )
+
+    if (_QCN-IsBlank $DocumentGuid) { return '' }
+    $emailCfg = @{}
+    if ($Settings -and $Settings.email) {
+        $e = _QCN-ToHashtable $Settings.email
+        if ($e) { $emailCfg = $e }
+    }
+    $baseUrl = if ($emailCfg.pwLinkBaseUrl) { [string]$emailCfg.pwLinkBaseUrl } else { '' }
+    if (_QCN-IsBlank $baseUrl) { return '' }
+    $datasourceName = ''
+    if ($Config -and $Config.projectWise) {
+        $pw = _QCN-ToHashtable $Config.projectWise
+        if ($pw) {
+            if ($pw.datasourceName) { $datasourceName = [string]$pw.datasourceName }
+            elseif ($pw.datasource) { $datasourceName = [string]$pw.datasource }
+        }
+    }
+    if (_QCN-IsBlank $datasourceName -and (Get-Command -Name 'Get-PWCurrentDatasource' -ErrorAction SilentlyContinue)) {
+        try { $datasourceName = [string](Get-PWCurrentDatasource) } catch { }
+    }
+    if (_QCN-IsBlank $datasourceName) { return '' }
+    $dsParam = _QCN-GetEncodedPwDatasource -DatasourceName $datasourceName
+    $app = if ($emailCfg.pwLinkApp) { [string]$emailCfg.pwLinkApp } else { 'pwe' }
+    $sep = if ($baseUrl.Contains('?')) { '&' } else { '?' }
+    return ('{0}{1}objectId={2}&objectType=doc&datasource={3}&app={4}' -f $baseUrl.TrimEnd('/'), $sep, $DocumentGuid.Trim(), $dsParam, $app)
 }
 
 function _QCN-NormalizeQcPdfDocumentName {
@@ -1549,6 +1648,18 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
     $candidateNames = _QCN-GetQcPdfLookupCandidateNames -PrimaryName $qcName -SheetStem $stem `
         -ProcessType $processType -Config $Config -Event $Event
 
+    $trustedLaneGuid = _QCN-ResolveTrustedLaneDocumentGuid -Event $Event
+    if (-not (_QCN-IsBlank $trustedLaneGuid)) {
+        foreach ($candidate in @($candidateNames)) {
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $trustedLaneGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $trustedLaneGuid; resolutionSource = 'trusted_lane_metadata_guid' }
+            }
+        }
+        if ($qcName -match '(?i)-(prod|chk|rev)\.pdf$') {
+            return @{ documentGuid = $trustedLaneGuid; resolutionSource = 'trusted_lane_metadata_guid' }
+        }
+    }
+
     $packageGuid = ''
     if (-not (_QCN-IsBlank $SheetPackageId)) {
         $packageGuid = _QCN-LookupQcPdfGuidBySheetPackageId -Config $Config -SheetPackageId $SheetPackageId `
@@ -1557,6 +1668,7 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
             if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $packageGuid -ExpectedName $qcName) {
                 return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_qc_pdfs' }
             }
+            return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_qc_pdfs' }
         }
     }
 
@@ -1569,6 +1681,7 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
             if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $laneGuid -ExpectedName $candidate) {
                 return @{ documentGuid = $laneGuid; resolutionSource = 'sheet_package_qc_pdfs' }
             }
+            return @{ documentGuid = $laneGuid; resolutionSource = 'sheet_package_qc_pdfs' }
         }
 
         $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
@@ -1577,6 +1690,7 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
             if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $pkgGuid -ExpectedName $candidate) {
                 return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages_lane_alias' }
             }
+            return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages_lane_alias' }
         }
 
         if (-not (_QCN-IsBlank $FolderPath)) {
@@ -1602,6 +1716,7 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
             if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $pkgDocGuid -ExpectedName $candidate) {
                 return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
             }
+            return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
         }
     }
 
@@ -1771,6 +1886,25 @@ function _QCN-ResolveQcPdfNotificationTarget {
         $folderPath = [string](_QCN-GetJobValue -Job $Job -Keys @('sourceFolder', 'folderPath', 'incomingFolderPath'))
     }
     if (_QCN-IsBlank $folderPath) { $folderPath = [string](_QCN-GetProp -Object $Document -Names @('FolderPath', 'folderPath')) }
+
+    $trustedLaneGuid = _QCN-ResolveTrustedLaneDocumentGuid -Job $Job
+    if (-not (_QCN-IsBlank $trustedLaneGuid)) {
+        $trustedLaneName = $DocumentName
+        if ($Job -and $Job.metadata) {
+            $mdTrusted = _QCN-ToHashtable $Job.metadata
+            if ($mdTrusted -and $mdTrusted.expectedLanePdfName) { $trustedLaneName = [string]$mdTrusted.expectedLanePdfName }
+            elseif ($mdTrusted -and $mdTrusted.notificationLaneDocumentName) { $trustedLaneName = [string]$mdTrusted.notificationLaneDocumentName }
+        }
+        if (-not (_QCN-IsBlank $trustedLaneName)) {
+            $out.documentName = $trustedLaneName
+            $out.documentGuid = $trustedLaneGuid
+            if (-not (_QCN-IsBlank $folderPath)) {
+                $out.documentPath = $folderPath.TrimEnd('\') + '\' + $trustedLaneName
+            }
+            $out.resolutionSource = 'trusted_lane_metadata_guid'
+            return $out
+        }
+    }
 
     $qcProcessType = ''
     if ($Job) {
@@ -4134,6 +4268,11 @@ function Invoke-QCNotificationForStateChange {
     if ($Job -and ($Job.metadata -is [hashtable])) {
         $jobMdForEvent = _QCN-ToHashtable $Job.metadata
         if ($jobMdForEvent) {
+            foreach ($laneKey in @('notificationLaneDocumentGuid', 'laneQcPdfDocumentGuid', 'expectedLanePdfName', 'notificationLaneDocumentName')) {
+                if ($jobMdForEvent.ContainsKey($laneKey) -and -not (_QCN-IsBlank $jobMdForEvent[$laneKey])) {
+                    $event[$laneKey] = [string]$jobMdForEvent[$laneKey]
+                }
+            }
             if ($jobMdForEvent.ContainsKey('transitionSource') -and -not (_QCN-IsBlank $jobMdForEvent.transitionSource)) {
                 $event['transitionSource'] = [string]$jobMdForEvent.transitionSource
             } elseif ($jobMdForEvent.ContainsKey('notificationStateSource') -and -not (_QCN-IsBlank $jobMdForEvent.notificationStateSource)) {

@@ -2466,9 +2466,16 @@ function Invoke-QCNotificationProcessor {
     if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) { $meta = $Job.metadata }
     $prev = if ($meta.ContainsKey('previousState')) { [string]$meta.previousState } else { '' }
     $curr = if ($meta.ContainsKey('currentState')) { [string]$meta.currentState } else { '' }
+    $resolvedDocumentGuid = ''
+    foreach ($guidKey in @('notificationLaneDocumentGuid', 'laneQcPdfDocumentGuid', 'documentGuid')) {
+        if ($meta.ContainsKey($guidKey) -and -not (_QCP-IsNullOrWhiteSpace $meta[$guidKey])) {
+            $resolvedDocumentGuid = [string]$meta[$guidKey]
+            break
+        }
+    }
     $doc = $null
-    if ($meta.ContainsKey('documentGuid') -and $meta.documentGuid) {
-        $doc = @{ DocumentGUID = [string]$meta.documentGuid; Name = if ($Job.sourceName) { [string]$Job.sourceName } else { '' } }
+    if (-not (_QCP-IsNullOrWhiteSpace $resolvedDocumentGuid)) {
+        $doc = @{ DocumentGUID = $resolvedDocumentGuid; Name = if ($Job.sourceName) { [string]$Job.sourceName } else { '' } }
     }
     if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue) {
         Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint 'notification_send' | Out-Null
@@ -2498,8 +2505,8 @@ function Invoke-QCNotificationProcessor {
         ChangedByUser = $changedByUser
         ChangedByUsername = $changedByUsername
     }
-    if ($meta.ContainsKey('documentGuid') -and $meta.documentGuid) {
-        $notifyParams['DocumentGuid'] = [string]$meta.documentGuid
+    if (-not (_QCP-IsNullOrWhiteSpace $resolvedDocumentGuid)) {
+        $notifyParams['DocumentGuid'] = $resolvedDocumentGuid
     }
     if (-not (_QCP-IsNullOrWhiteSpace $Job.sourceName)) {
         $notifyParams['DocumentName'] = [string]$Job.sourceName

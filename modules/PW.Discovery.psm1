@@ -2229,16 +2229,46 @@ function _PWD-ResolvePwDocumentInFolder {
     if (-not $searchCmd -or [string]::IsNullOrWhiteSpace($DocumentName)) { return $null }
     $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
     if ([string]::IsNullOrWhiteSpace($apiPath)) { $apiPath = $FolderPath }
-    try {
-        $params = @{
-            FolderPath     = $apiPath
-            JustThisFolder = $true
-            DocumentName   = $DocumentName
-            ErrorAction    = 'Stop'
-        }
-        if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
-        return (& $searchCmd @params | Select-Object -First 1)
-    } catch { return $null }
+    $nameCandidates = [System.Collections.Generic.List[string]]::new()
+    $seenNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    function Add-NameCandidate([string]$Candidate) {
+        if ([string]::IsNullOrWhiteSpace($Candidate)) { return }
+        $trimmed = $Candidate.Trim()
+        if ($seenNames.Add($trimmed)) { [void]$nameCandidates.Add($trimmed) }
+    }
+    Add-NameCandidate $DocumentName
+    if ($DocumentName -match '(?i)^(.+)-(prod|chk|rev)\.pdf$') {
+        Add-NameCandidate ([string]$Matches[1] + '-' + [string]$Matches[2].ToLowerInvariant() + '.pdf')
+    }
+    foreach ($searchName in @($nameCandidates)) {
+        try {
+            $params = @{
+                FolderPath     = $apiPath
+                JustThisFolder = $true
+                DocumentName   = $searchName
+                ErrorAction    = 'Stop'
+            }
+            if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+            $found = (& $searchCmd @params | Select-Object -First 1)
+            if ($found) { return $found }
+        } catch { }
+    }
+    if (Get-Command -Name 'Get-PWDocumentsInFolder' -ErrorAction SilentlyContinue) {
+        try {
+            $all = @(Get-PWDocumentsInFolder -FolderPath $apiPath -ErrorAction SilentlyContinue)
+            foreach ($doc in $all) {
+                $actualName = ''
+                try { $actualName = [string]$doc.Name } catch { }
+                if ([string]::IsNullOrWhiteSpace($actualName)) { continue }
+                foreach ($searchName in @($nameCandidates)) {
+                    if ($actualName.Equals($searchName, [StringComparison]::OrdinalIgnoreCase)) {
+                        return $doc
+                    }
+                }
+            }
+        } catch { }
+    }
+    return $null
 }
 
 function Get-PWAssociatedSheetMembers {

@@ -21,6 +21,8 @@ $folder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
 $apiFolder = 'caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
 $qcName = '080J082001ab001-qc.pdf'
 $chkName = '0818000063ea501-chk.pdf'
+$lowerChkName = '080j082001ab001-chk.pdf'
+$mixedChkGuid = 'bc4b38fa-6333-442d-9b63-e63bfd2cafe6'
 $config = @{ database = @{ enabled = $true; connectionString = 'x' } }
 
 InModuleScope -ModuleName QC.Notifications {
@@ -30,8 +32,11 @@ InModuleScope -ModuleName QC.Notifications {
     function Get-PWDocumentsBySearch {
         param([string]$FolderPath, [string]$DocumentName, [switch]$JustThisFolder)
         $script:pwSearchFolders += $FolderPath
-        if ($FolderPath -eq $apiFolder -and $DocumentName -eq $chkName) {
-            return @([pscustomobject]@{ DocumentGUID = $chkGuid; Name = $DocumentName })
+        if ($FolderPath -eq $apiFolder) {
+            if ($DocumentName -ieq $lowerChkName) { return @() }
+            if ($DocumentName -eq $chkName) {
+                return @([pscustomobject]@{ DocumentGUID = $chkGuid; Name = $DocumentName })
+            }
         }
         if ($FolderPath -eq $folder) { return @() }
         return @([pscustomobject]@{ DocumentGUID = $staleGuid; Name = $DocumentName })
@@ -94,6 +99,21 @@ InModuleScope -ModuleName QC.Notifications {
     Assert-Eq $chkResolved.documentGuid $chkGuid 'check lane PDF should resolve via PW search when DB index is empty'
     Assert-Eq $chkResolved.resolutionSource 'pw_search' 'check lane should use pw_search before stale index'
     Assert-True ($script:pwSearchFolders -contains $apiFolder) 'PW search should use cmdlet folder path without Documents prefix'
+
+    function Get-PWDocumentsInFolder {
+        param([string]$FolderPath)
+        if ($FolderPath -eq $apiFolder) {
+            return @([pscustomobject]@{ DocumentGUID = $mixedChkGuid; Name = '080J082001ab001-chk.pdf' })
+        }
+        return @()
+    }
+    $caseResolved = _QCN-TryResolveQcPdfGuidFromPwSearch -Config $config -FolderPath $folder -QcPdfName $lowerChkName
+    Assert-Eq $caseResolved $mixedChkGuid 'PW folder scan should resolve lane PDF with case-insensitive name match'
+
+    $trustedUrl = _QCN-BuildPwDocumentLinkUrl -DocumentGuid $chkGuid -Settings @{
+        email = @{ pwLinkBaseUrl = 'https://example.test/pwlink/'; pwLinkApp = 'pwe' }
+    } -Config @{ projectWise = @{ datasourceName = 'typsa-us-pw.bentley.com:typsa-us-pw-03' } }
+    Assert-True ($trustedUrl -match 'objectId=' + [regex]::Escape($chkGuid)) 'trusted lane GUID should build pwlink URL'
 
     $laneTarget = _QCN-ResolveQcPdfNotificationTarget -Document $null -Config $config -Job $null `
         -DocumentName $chkName -DocumentGuid $staleGuid `

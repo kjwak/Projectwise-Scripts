@@ -1969,6 +1969,11 @@ function Set-PWQCWorkflowState {
             $lanePdfName = ''
             $splitData = _QCW-ToHashtable $data.lanePostPrependSplit
             if ($splitData -and $splitData.ContainsKey('lanePdfName')) { $lanePdfName = [string]$splitData.lanePdfName }
+            $preservedLaneGuid = ''
+            if ($Context -and $Context.ContainsKey('notificationLaneDocumentGuid') -and -not (_QCW-IsNullOrWhiteSpace $Context.notificationLaneDocumentGuid)) {
+                $preservedLaneGuid = [string]$Context.notificationLaneDocumentGuid
+            }
+            $laneDoc = $null
             if (-not (_QCW-IsNullOrWhiteSpace $lanePdfName) -and (Get-Command -Name '_PWD-ResolvePwDocumentInFolder' -ErrorAction SilentlyContinue)) {
                 try {
                     $laneDoc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $folderPath -DocumentName $lanePdfName -DocumentGuid ''
@@ -1978,6 +1983,10 @@ function Set-PWQCWorkflowState {
                         try { $notifyDocumentGuid = [string]$laneDoc.DocumentGUID } catch { }
                     }
                 } catch { }
+            }
+            if ((-not $laneDoc) -and (-not (_QCW-IsNullOrWhiteSpace $preservedLaneGuid))) {
+                $notifyDocumentGuid = $preservedLaneGuid
+                if (-not (_QCW-IsNullOrWhiteSpace $lanePdfName)) { $notifyDocumentName = $lanePdfName }
             }
             if ($Context) {
                 $Context['expectedLanePdfName'] = $lanePdfName
