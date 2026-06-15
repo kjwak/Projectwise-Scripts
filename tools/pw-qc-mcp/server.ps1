@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesRoot = Join-Path $repoRoot 'modules'
 Import-Module (Join-Path $modulesRoot 'QC.DebugMcp.psm1') -Force
+Import-Module (Join-Path $modulesRoot 'Core.Telemetry.psm1') -Force -ErrorAction SilentlyContinue
 
 $appSettings = $env:PWQC_APPSETTINGS
 if ([string]::IsNullOrWhiteSpace($appSettings)) {
@@ -87,7 +88,33 @@ $script:McpTools = @(
     (New-McpToolSchema -Name 'get_sheet_debug_timeline' -Description 'Build a combined timeline from available QC telemetry tables.' -ExtraProperties @{ limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 } }),
     (New-McpToolSchema -Name 'get_notification_diagnostics' -Description 'Diagnose notification queue/log outcomes for a sheet.' -ExtraProperties @{ limit = @{ type = 'integer'; description = 'Max rows per source (default 100).'; default = 100 } }),
     (New-McpToolSchema -Name 'get_data_integrity_report' -Description 'Compare package/document identity and flag stale or inconsistent rows.'),
-    (New-McpToolSchema -Name 'compare_projectwise_to_database' -Description 'Read-only comparison of live ProjectWise workflow state vs QC_Pipeline telemetry.')
+    (New-McpToolSchema -Name 'compare_projectwise_to_database' -Description 'Read-only comparison of live ProjectWise workflow state vs QC_Pipeline telemetry.'),
+    (New-McpToolSchema -Name 'get_recent_errors' -Description 'Recent warning/error automation events from automation_events (DB-first).' -ExtraProperties @{
+        limit = @{ type = 'integer'; description = 'Max events (default 100).'; default = 100 }
+        hours = @{ type = 'integer'; description = 'Lookback hours (default 168).'; default = 168 }
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback instead of database.'; default = $false }
+    } -Required @()),
+    (New-McpToolSchema -Name 'get_process_health' -Description 'Per-process automation health summary from automation_events.' -ExtraProperties @{
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback.'; default = $false }
+    } -Required @()),
+    (New-McpToolSchema -Name 'get_audit_scan_history' -Description 'Watcher audit scan events from automation_events.' -ExtraProperties @{
+        limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 }
+        hours = @{ type = 'integer'; description = 'Lookback hours (default 72).'; default = 72 }
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback.'; default = $false }
+    } -Required @()),
+    (New-McpToolSchema -Name 'get_job_timeline' -Description 'Automation event timeline for a processing job.' -ExtraProperties @{
+        job_id = @{ type = 'string'; description = 'processing_jobs.job_id (optional if lookup provided).' }
+        limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 }
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback.'; default = $false }
+    }),
+    (New-McpToolSchema -Name 'get_document_debug_events' -Description 'Automation events for a document GUID.' -ExtraProperties @{
+        limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 }
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback.'; default = $false }
+    }),
+    (New-McpToolSchema -Name 'get_package_debug_events' -Description 'Automation events for a sheet package.' -ExtraProperties @{
+        limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 }
+        force_jsonl_fallback = @{ type = 'boolean'; description = 'Force JSONL log fallback.'; default = $false }
+    })
 )
 
 $script:ToolDispatch = @{
@@ -98,20 +125,54 @@ $script:ToolDispatch = @{
     get_notification_diagnostics = { param($a) Get-QCDebugNotificationDiagnostics @a }
     get_data_integrity_report = { param($a) Get-QCDebugDataIntegrityReport @a }
     compare_projectwise_to_database = { param($a) Compare-QCProjectWiseToDatabase @a }
+    get_recent_errors = { param($a) Get-QCDebugRecentErrors @a }
+    get_process_health = { param($a) Get-QCDebugProcessHealth @a }
+    get_audit_scan_history = { param($a) Get-QCDebugAuditScanHistory @a }
+    get_job_timeline = { param($a) Get-QCDebugJobTimeline @a }
+    get_document_debug_events = { param($a) Get-QCDebugDocumentAutomationEvents @a }
+    get_package_debug_events = { param($a) Get-QCDebugPackageAutomationEvents @a }
+}
+
+function Convert-McpToolArguments {
+    param([hashtable]$Arguments)
+    $map = @{
+        sheet_number = 'SheetNumber'
+        document_guid = 'DocumentGuid'
+        package_id = 'PackageId'
+        document_path = 'DocumentPath'
+        sheet_name = 'SheetName'
+        job_id = 'JobId'
+        limit = 'Limit'
+        hours = 'Hours'
+        force_jsonl_fallback = 'ForceJsonlFallback'
+    }
+    $out = @{}
+    foreach ($k in $Arguments.Keys) {
+        $target = if ($map.ContainsKey($k)) { $map[$k] } else { $k }
+        $out[$target] = $Arguments[$k]
+    }
+    return $out
 }
 
 function Get-LookupArguments {
-    param([hashtable]$Arguments)
+    param(
+        [hashtable]$Arguments,
+        [switch]$RequireLookup
+    )
     $args = @{}
-    foreach ($key in @('sheet_number', 'document_guid', 'package_id', 'document_path', 'sheet_name', 'limit')) {
+    foreach ($key in @('sheet_number', 'document_guid', 'package_id', 'document_path', 'sheet_name', 'limit', 'hours', 'job_id', 'force_jsonl_fallback')) {
         if ($Arguments.ContainsKey($key) -and $null -ne $Arguments[$key] -and -not [string]::IsNullOrWhiteSpace([string]$Arguments[$key])) {
             $args[$key] = $Arguments[$key]
         }
     }
-    if ($args.Keys.Count -eq 0 -or (-not ($args.ContainsKey('sheet_number') -or $args.ContainsKey('document_guid') -or $args.ContainsKey('package_id') -or $args.ContainsKey('document_path') -or $args.ContainsKey('sheet_name')))) {
-        throw 'Provide one of: sheet_number, document_guid, package_id, document_path, or sheet_name.'
+    if ($Arguments.ContainsKey('force_jsonl_fallback')) {
+        $args['force_jsonl_fallback'] = [bool]$Arguments['force_jsonl_fallback']
+    }
+    if ($RequireLookup -and ($args.Keys.Count -eq 0 -or -not ($args.ContainsKey('sheet_number') -or $args.ContainsKey('document_guid') -or $args.ContainsKey('package_id') -or $args.ContainsKey('document_path') -or $args.ContainsKey('sheet_name') -or $args.ContainsKey('job_id')))) {
+        throw 'Provide one of: sheet_number, document_guid, package_id, document_path, sheet_name, or job_id.'
     }
     if ($args.ContainsKey('limit')) { $args['limit'] = [int]$args['limit'] }
+    if ($args.ContainsKey('hours')) { $args['hours'] = [int]$args['hours'] }
     return $args
 }
 
@@ -123,8 +184,18 @@ function Invoke-McpTool {
     if (-not $script:ToolDispatch.ContainsKey($Name)) {
         throw "Unknown tool: $Name"
     }
-    $bound = Get-LookupArguments -Arguments $Arguments
-    return & $script:ToolDispatch[$Name] $bound
+    $noLookupTools = @('get_recent_errors', 'get_process_health', 'get_audit_scan_history')
+    if ($noLookupTools -contains $Name) {
+        $bound = Get-LookupArguments -Arguments $Arguments
+    } elseif ($Name -eq 'get_job_timeline') {
+        $bound = Get-LookupArguments -Arguments $Arguments
+        if (-not $bound.ContainsKey('job_id') -and -not ($bound.ContainsKey('sheet_number') -or $bound.ContainsKey('document_guid') -or $bound.ContainsKey('package_id') -or $bound.ContainsKey('document_path') -or $bound.ContainsKey('sheet_name'))) {
+            throw 'get_job_timeline requires job_id or a sheet/document/package lookup.'
+        }
+    } else {
+        $bound = Get-LookupArguments -Arguments $Arguments -RequireLookup
+    }
+    return & $script:ToolDispatch[$Name] (Convert-McpToolArguments -Arguments $bound)
 }
 
 function Send-McpResponse {

@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.19.0'
+    $targetVersion = '1.20.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot20Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema through package-aware reporting views")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema with automation_events and MCP debug views")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -1873,6 +1873,117 @@ SELECT
     sp.qc_rev_pdf_guid
 FROM sheet_packages sp
 LEFT JOIN v_sheet_package_qc_pdf_matrix m ON m.sheet_package_id = sp.sheet_package_id;
+'@
+}
+
+function _QDB-GetSchemaV1dot20Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NULL
+CREATE TABLE automation_events (
+    id                BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    ts                DATETIMEOFFSET(3) NOT NULL,
+    process_name      NVARCHAR(128) NOT NULL,
+    run_id            NVARCHAR(64) NULL,
+    level             NVARCHAR(32) NOT NULL,
+    code              NVARCHAR(128) NOT NULL,
+    message           NVARCHAR(2000) NULL,
+    job_id            NVARCHAR(256) NULL,
+    document_guid     NVARCHAR(36) NULL,
+    sheet_package_id  NVARCHAR(36) NULL,
+    audit_event_id    BIGINT NULL,
+    folder_path       NVARCHAR(1000) NULL,
+    data_json         NVARCHAR(MAX) NOT NULL,
+    dedupe_key        NVARCHAR(128) NULL,
+    created_at        DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_automation_events_created DEFAULT SYSDATETIMEOFFSET()
+);
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_ts')
+    CREATE INDEX IX_automation_events_ts ON automation_events (ts DESC);
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_code')
+    CREATE INDEX IX_automation_events_code ON automation_events (code);
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_process_name')
+    CREATE INDEX IX_automation_events_process_name ON automation_events (process_name);
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_job_id')
+    CREATE INDEX IX_automation_events_job_id ON automation_events (job_id) WHERE job_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_document_guid')
+    CREATE INDEX IX_automation_events_document_guid ON automation_events (document_guid) WHERE document_guid IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_sheet_package_id')
+    CREATE INDEX IX_automation_events_sheet_package_id ON automation_events (sheet_package_id) WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_audit_event_id')
+    CREATE INDEX IX_automation_events_audit_event_id ON automation_events (audit_event_id) WHERE audit_event_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_automation_events_level')
+    CREATE INDEX IX_automation_events_level ON automation_events (level);
+GO
+IF OBJECT_ID('dbo.automation_events', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_automation_events_dedupe')
+    CREATE UNIQUE INDEX UX_automation_events_dedupe ON automation_events (dedupe_key) WHERE dedupe_key IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_mcp_automation_events_recent', 'V') IS NOT NULL DROP VIEW v_mcp_automation_events_recent;
+GO
+CREATE VIEW v_mcp_automation_events_recent AS
+SELECT TOP (100000) *
+FROM automation_events
+WHERE ts >= DATEADD(day, -14, SYSDATETIMEOFFSET())
+ORDER BY ts DESC;
+GO
+IF OBJECT_ID('dbo.v_mcp_process_health', 'V') IS NOT NULL DROP VIEW v_mcp_process_health;
+GO
+CREATE VIEW v_mcp_process_health AS
+SELECT
+    process_name,
+    MAX(ts) AS last_event_at,
+    SUM(CASE WHEN level IN ('Error', 'error') THEN 1 ELSE 0 END) AS error_count_24h,
+    SUM(CASE WHEN level IN ('Warning', 'warning') THEN 1 ELSE 0 END) AS warning_count_24h,
+    SUM(CASE WHEN code = 'WORKER_NO_JOB' THEN 1 ELSE 0 END) AS no_job_count_24h,
+    COUNT(*) AS event_count_24h
+FROM automation_events
+WHERE ts >= DATEADD(hour, -24, SYSDATETIMEOFFSET())
+GROUP BY process_name;
+GO
+IF OBJECT_ID('dbo.v_mcp_job_timeline', 'V') IS NOT NULL DROP VIEW v_mcp_job_timeline;
+GO
+CREATE VIEW v_mcp_job_timeline AS
+SELECT id, ts, process_name, run_id, level, code, message, job_id, document_guid, sheet_package_id, folder_path, data_json
+FROM automation_events
+WHERE job_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_mcp_document_debug_events', 'V') IS NOT NULL DROP VIEW v_mcp_document_debug_events;
+GO
+CREATE VIEW v_mcp_document_debug_events AS
+SELECT id, ts, process_name, run_id, level, code, message, job_id, document_guid, sheet_package_id, folder_path, data_json
+FROM automation_events
+WHERE document_guid IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_mcp_package_debug_events', 'V') IS NOT NULL DROP VIEW v_mcp_package_debug_events;
+GO
+CREATE VIEW v_mcp_package_debug_events AS
+SELECT id, ts, process_name, run_id, level, code, message, job_id, document_guid, sheet_package_id, folder_path, data_json
+FROM automation_events
+WHERE sheet_package_id IS NOT NULL;
+GO
+IF OBJECT_ID('dbo.v_mcp_audit_scan_history', 'V') IS NOT NULL DROP VIEW v_mcp_audit_scan_history;
+GO
+CREATE VIEW v_mcp_audit_scan_history AS
+SELECT id, ts, process_name, run_id, level, code, message, job_id, document_guid, sheet_package_id, audit_event_id, folder_path, data_json
+FROM automation_events
+WHERE code LIKE 'WATCH_AUDIT_%'
+   OR code LIKE 'AUDIT_EVENTS_%'
+   OR code LIKE 'AUDIT_%';
+GO
+IF OBJECT_ID('dbo.v_mcp_recent_errors', 'V') IS NOT NULL DROP VIEW v_mcp_recent_errors;
+GO
+CREATE VIEW v_mcp_recent_errors AS
+SELECT id, ts, process_name, run_id, level, code, message, job_id, document_guid, sheet_package_id, folder_path, data_json
+FROM automation_events
+WHERE level IN ('Error', 'error', 'Warning', 'warning')
+  AND ts >= DATEADD(day, -7, SYSDATETIMEOFFSET());
 '@
 }
 

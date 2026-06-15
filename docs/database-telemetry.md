@@ -279,6 +279,67 @@ Preview by default; pass `-ConfirmDeletes` to apply.
 
 ---
 
+## Automation Events (schema 1.20.0)
+
+`automation_events` is the **primary diagnostic source** for worker/watcher logging and MCP debugging. Structured JSONL files (`Run-QCProcessor_*.jsonl`, `Watch-QCTrigger_*.jsonl`) remain as a short-retention emergency backup only.
+
+### Write path
+
+All `Write-QCJsonLog` calls route through `Write-QCAutomationEvent` (`modules/Core.Telemetry.psm1`):
+
+1. JSONL file line is written first (crash-recovery backup when `QC_JSON_LOG_DIR` is set).
+2. Filtered events are inserted into `automation_events` (never throws; failures are returned as `QCResult`).
+
+Call `Set-QCAutomationTelemetryContext` once at process start (`Run-QCProcessor`, `Watch-QCTrigger`) to bind `process_name`, `run_id`, and JSONL retention settings.
+
+### Configuration (`telemetry.automationEvents`)
+
+```json
+"telemetry": {
+  "automationEvents": {
+    "enabled": true,
+    "jsonLogRetentionDays": 7,
+    "jsonLogMaxFileSizeMb": 50,
+    "excludeCodes": ["WATCH_TICK_START", "WATCH_TICK_SLEEP", "WORKER_NO_JOB"]
+  }
+}
+```
+
+### Persisted vs filtered event codes
+
+| Rule | Behavior |
+|------|----------|
+| All `Warning` / `Error` | Always persisted |
+| `WATCH_TICK_START`, `WATCH_TICK_SLEEP`, `WORKER_NO_JOB` | Excluded at Information level |
+| `WORKER_STAGE` | Excluded when message/stage matches queue-polling noise; kept when `job_id`, `document_guid`, or `sheet_package_id` is present |
+| Everything else | Persisted |
+
+Full original payload is stored in `data_json`; common fields are indexed (`job_id`, `document_guid`, `sheet_package_id`, `audit_event_id`, `folder_path`).
+
+### MCP debug views
+
+| View | Purpose |
+|------|---------|
+| `v_mcp_automation_events_recent` | Last 14 days of events |
+| `v_mcp_process_health` | Per-process 24h error/warning counts |
+| `v_mcp_job_timeline` | Events with `job_id` |
+| `v_mcp_document_debug_events` | Events with `document_guid` |
+| `v_mcp_package_debug_events` | Events with `sheet_package_id` |
+| `v_mcp_audit_scan_history` | `WATCH_AUDIT_*` / `AUDIT_*` codes |
+| `v_mcp_recent_errors` | Warning/error events (7 days) |
+
+MCP tools (`get_recent_errors`, `get_process_health`, `get_audit_scan_history`, `get_job_timeline`, `get_document_debug_events`, `get_package_debug_events`) query these views first. JSONL fallback is used only when `automation_events` is unavailable or `force_jsonl_fallback` is set.
+
+### Historical backfill
+
+```powershell
+.\scripts\Import-QCJsonlLogsToAutomationEvents.ps1 -LogDirectory C:\path\to\queue\_logs
+```
+
+Re-runs are idempotent via `dedupe_key` (SHA-256 of ts/process/code/message/job/run).
+
+---
+
 ## Future: Queue Migration
 
 The database is positioned for a phased migration where it could eventually replace the JSON queue for job management. This is planned for after the telemetry layer has proven stable. The current priority is building confidence in SQL Server reliability before moving execution-critical functionality to it.

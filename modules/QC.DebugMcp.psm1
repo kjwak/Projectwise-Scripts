@@ -5,6 +5,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Paths.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Telemetry.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force
 
@@ -1585,6 +1586,383 @@ function Compare-QCProjectWiseToDatabase {
     )
 }
 
+function _QDM-AutomationEventsAvailable {
+    return (_QDM-TestTableExists -TableName 'automation_events')
+}
+
+function _QDM-GetJsonLogDirectories {
+    $dirs = [System.Collections.Generic.List[string]]::new()
+    if ($env:QC_JSON_LOG_DIR -and -not [string]::IsNullOrWhiteSpace($env:QC_JSON_LOG_DIR)) {
+        $dirs.Add([string]$env:QC_JSON_LOG_DIR)
+    }
+    try {
+        $cfg = _QDM-Config
+        $settings = Get-QCAutomationTelemetrySettings -Config $cfg -ErrorAction SilentlyContinue
+        if ($settings -and $settings.jsonLogDir -and -not [string]::IsNullOrWhiteSpace($settings.jsonLogDir)) {
+            $dirs.Add([string]$settings.jsonLogDir)
+        }
+    } catch { }
+    return @($dirs | Select-Object -Unique)
+}
+
+function _QDM-ParseJsonlEventLine {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+    try {
+        $obj = $Line | ConvertFrom-Json
+        $data = @{}
+        if ($obj.data) {
+            $h = ConvertTo-HashtableDeep -Value $obj.data -ErrorAction SilentlyContinue
+            if ($h -is [hashtable]) { $data = $h }
+        }
+        return @{
+            ts = [string]$obj.ts
+            level = [string]$obj.level
+            code = [string]$obj.code
+            message = [string]$obj.message
+            data = $data
+            data_json = $Line
+        }
+    } catch { return $null }
+}
+
+function _QDM-ReadJsonlAutomationEvents {
+    param(
+        [string[]]$FilePatterns = @('Run-QCProcessor_*.jsonl', 'Watch-QCTrigger_*.jsonl', '*_*.jsonl'),
+        [int]$MaxLines = 500,
+        [hashtable]$Filter = @{},
+        [switch]$ErrorsOnly
+    )
+    $events = [System.Collections.Generic.List[hashtable]]::new()
+    $dirs = _QDM-GetJsonLogDirectories
+    if ($dirs.Count -eq 0) { return @() }
+
+    foreach ($dir in $dirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $files = @()
+        foreach ($pat in $FilePatterns) {
+            $files += @(Get-ChildItem -LiteralPath $dir -Filter $pat -File -ErrorAction SilentlyContinue)
+        }
+        $files = @($files | Sort-Object LastWriteTime -Descending | Select-Object -Unique FullName)
+        foreach ($f in $files) {
+            try {
+                $lines = @(Get-Content -LiteralPath $f.FullName -Tail $MaxLines -ErrorAction SilentlyContinue)
+                foreach ($line in $lines) {
+                    $evt = _QDM-ParseJsonlEventLine -Line $line
+                    if (-not $evt) { continue }
+                    if ($ErrorsOnly -and $evt.level -notmatch '^(?i)(warning|error)$') { continue }
+                    if ($Filter.ContainsKey('code') -and $Filter.code -and $evt.code -ne $Filter.code) { continue }
+                    if ($Filter.ContainsKey('job_id') -and $Filter.job_id) {
+                        $jid = if ($evt.data.jobId) { [string]$evt.data.jobId } elseif ($evt.data.job_id) { [string]$evt.data.job_id } else { '' }
+                        if ($jid -ne [string]$Filter.job_id) { continue }
+                    }
+                    if ($Filter.ContainsKey('document_guid') -and $Filter.document_guid) {
+                        $dg = if ($evt.data.documentGuid) { [string]$evt.data.documentGuid } elseif ($evt.data.document_guid) { [string]$evt.data.document_guid } else { '' }
+                        if ($dg -ne [string]$Filter.document_guid) { continue }
+                    }
+                    if ($Filter.ContainsKey('sheet_package_id') -and $Filter.sheet_package_id) {
+                        $pkg = if ($evt.data.sheetPackageId) { [string]$evt.data.sheetPackageId } elseif ($evt.data.sheet_package_id) { [string]$evt.data.sheet_package_id } else { '' }
+                        if ($pkg -ne [string]$Filter.sheet_package_id) { continue }
+                    }
+                    $evt['source_file'] = $f.Name
+                    $events.Add($evt)
+                    if ($events.Count -ge $MaxLines) { return @($events) }
+                }
+            } catch { }
+        }
+    }
+    return @($events)
+}
+
+function _QDM-QueryAutomationView {
+    param(
+        [Parameter(Mandatory)][string]$ViewName,
+        [string]$WhereSql = '',
+        [hashtable]$Parameters = @{},
+        [int]$Limit = 200,
+        [string]$OrderBy = 'ts DESC'
+    )
+    if (-not (_QDM-AutomationEventsAvailable)) {
+        return @{ rows = @(); available = $false }
+    }
+    $lim = _QDM-SafeTopLimit -Limit $Limit
+    $sql = "SELECT TOP ($lim) * FROM $ViewName"
+    if ($WhereSql) { $sql += " WHERE $WhereSql" }
+    if ($OrderBy) { $sql += " ORDER BY $OrderBy" }
+    $rows = _QDM-RowsFromQuery -Sql $sql -Parameters $Parameters
+    return @{ rows = @($rows); available = $true; view = $ViewName }
+}
+
+function Get-QCDebugRecentErrors {
+    [CmdletBinding()]
+    param(
+        [int]$Limit = 100,
+        [int]$Hours = 168,
+        [switch]$ForceJsonlFallback
+    )
+    $warnings = @()
+    $sourceTables = @()
+    $fallback = $false
+    $rows = @()
+
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $sourceTables += 'v_mcp_recent_errors'
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_recent_errors' -Limit $Limit -WhereSql 'ts >= DATEADD(hour, -@hours, SYSDATETIMEOFFSET())' -Parameters @{ hours = $Hours }
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Reading JSONL log files (automation_events unavailable or fallback requested).')
+        $rows = @(_QDM-ReadJsonlAutomationEvents -MaxLines $Limit -ErrorsOnly)
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        hours = $Hours
+        event_count = $rows.Count
+        events = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'Primary source is automation_events via v_mcp_recent_errors.',
+        'JSONL fallback scans QC_JSON_LOG_DIR / telemetry.automationEvents.jsonLogDir only when requested or DB unavailable.'
+    )
+}
+
+function Get-QCDebugProcessHealth {
+    [CmdletBinding()]
+    param(
+        [switch]$ForceJsonlFallback
+    )
+    $warnings = @()
+    $sourceTables = @()
+    $fallback = $false
+    $rows = @()
+
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $sourceTables += 'v_mcp_process_health'
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_process_health' -Limit 50 -OrderBy 'last_event_at DESC'
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Process health derived from JSONL tail (limited accuracy).')
+        $events = @(_QDM-ReadJsonlAutomationEvents -MaxLines 2000)
+        $groups = $events | Group-Object { if ($_.data.process_name) { $_.data.process_name } else { 'unknown' } }
+        $rows = @($groups | ForEach-Object {
+            @{
+                process_name = $_.Name
+                last_event_at = ($_.Group | Sort-Object { [string]$_.ts } -Descending | Select-Object -First 1).ts
+                error_count_24h = @($_.Group | Where-Object { $_.level -match '^(?i)error$' }).Count
+                warning_count_24h = @($_.Group | Where-Object { $_.level -match '^(?i)warning$' }).Count
+                event_count_24h = $_.Count
+            }
+        })
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        processes = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'v_mcp_process_health aggregates automation_events over the last 24 hours per process_name.'
+    )
+}
+
+function Get-QCDebugAuditScanHistory {
+    [CmdletBinding()]
+    param(
+        [int]$Limit = 200,
+        [int]$Hours = 72,
+        [switch]$ForceJsonlFallback
+    )
+    $warnings = @()
+    $sourceTables = @()
+    $fallback = $false
+    $rows = @()
+
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $sourceTables += 'v_mcp_audit_scan_history'
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_audit_scan_history' -Limit $Limit `
+            -WhereSql 'ts >= DATEADD(hour, -@hours, SYSDATETIMEOFFSET())' -Parameters @{ hours = $Hours }
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Audit scan history read from JSONL fallback.')
+        $all = @(_QDM-ReadJsonlAutomationEvents -MaxLines ($Limit * 3))
+        $rows = @($all | Where-Object {
+            $_.code -like 'WATCH_AUDIT_*' -or $_.code -like 'AUDIT_EVENTS_*' -or $_.code -like 'AUDIT_*'
+        } | Select-Object -First $Limit)
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        hours = $Hours
+        event_count = $rows.Count
+        events = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'Audit scan codes: WATCH_AUDIT_*, AUDIT_EVENTS_*, AUDIT_*.'
+    )
+}
+
+function Get-QCDebugJobTimeline {
+    [CmdletBinding()]
+    param(
+        [string]$JobId = '',
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$DocumentPath = '',
+        [int]$Limit = 200,
+        [switch]$ForceJsonlFallback
+    )
+    $warnings = @()
+    $sourceTables = @('processing_jobs')
+    $fallback = $false
+    $resolvedJobId = $JobId
+
+    if (-not $resolvedJobId) {
+        $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+        if ($lookupParams.Keys.Count -gt 0) {
+            $lookup = Resolve-QCDebugLookup @lookupParams
+            if (_QDM-TestTableExists -TableName 'processing_jobs') {
+                $filters = @()
+                $params = @{}
+                if ($lookup.sheet_package_ids.Count -gt 0) {
+                    $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
+                    $filters += "sheet_package_id IN ($inList)"
+                }
+                if ($lookup.document_guids.Count -gt 0) {
+                    $inList = (@($lookup.document_guids) | ForEach-Object { "'$($_.ToLowerInvariant())'" }) -join ','
+                    $filters += "LOWER(source_path) LIKE '%' + LOWER(@docGuid) + '%'"
+                    $params['docGuid'] = [string]$lookup.document_guids[0]
+                }
+                if ($filters.Count -gt 0) {
+                    $jobRows = _QDM-RowsFromQuery -Sql "SELECT TOP (1) job_id FROM processing_jobs WHERE $($filters -join ' OR ') ORDER BY created_at DESC" -Parameters $params
+                    if ($jobRows.Count -gt 0) { $resolvedJobId = [string]$jobRows[0].job_id }
+                }
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedJobId)) {
+        throw 'Provide job_id or a resolvable sheet/document/package lookup.'
+    }
+
+    $rows = @()
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $sourceTables += 'v_mcp_job_timeline'
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_job_timeline' -Limit $Limit `
+            -WhereSql 'job_id = @jobId' -Parameters @{ jobId = $resolvedJobId }
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Job timeline read from JSONL fallback.')
+        $rows = @(_QDM-ReadJsonlAutomationEvents -MaxLines ($Limit * 2) -Filter @{ job_id = $resolvedJobId })
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        job_id = $resolvedJobId
+        event_count = $rows.Count
+        events = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'Automation events filtered by job_id; processing_jobs may supplement via get_sheet_debug_timeline.'
+    )
+}
+
+function Get-QCDebugDocumentAutomationEvents {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$DocumentPath = '',
+        [int]$Limit = 200,
+        [switch]$ForceJsonlFallback
+    )
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    if ($lookupParams.Keys.Count -eq 0) {
+        throw 'Provide one of: sheet_number, document_guid, package_id, document_path.'
+    }
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $docGuid = $DocumentGuid
+    if ([string]::IsNullOrWhiteSpace($docGuid) -and $lookup.document_guids.Count -gt 0) {
+        $docGuid = [string]$lookup.document_guids[0]
+    }
+    if ([string]::IsNullOrWhiteSpace($docGuid)) {
+        throw 'Could not resolve document_guid from lookup.'
+    }
+
+    $warnings = @()
+    $sourceTables = @('v_mcp_document_debug_events')
+    $fallback = $false
+    $rows = @()
+
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_document_debug_events' -Limit $Limit `
+            -WhereSql 'document_guid = @documentGuid' -Parameters @{ documentGuid = $docGuid }
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Document events read from JSONL fallback.')
+        $rows = @(_QDM-ReadJsonlAutomationEvents -MaxLines ($Limit * 2) -Filter @{ document_guid = $docGuid })
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        document_guid = $docGuid
+        lookup = $lookup
+        event_count = $rows.Count
+        events = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'Automation events with indexed document_guid column.'
+    )
+}
+
+function Get-QCDebugPackageAutomationEvents {
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$DocumentPath = '',
+        [int]$Limit = 200,
+        [switch]$ForceJsonlFallback
+    )
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    if ($lookupParams.Keys.Count -eq 0) {
+        throw 'Provide one of: sheet_number, document_guid, package_id, document_path.'
+    }
+    $lookup = Resolve-QCDebugLookup @lookupParams
+    $pkgId = $PackageId
+    if ([string]::IsNullOrWhiteSpace($pkgId) -and $lookup.sheet_package_ids.Count -gt 0) {
+        $pkgId = [string]$lookup.sheet_package_ids[0]
+    }
+    if ([string]::IsNullOrWhiteSpace($pkgId)) {
+        throw 'Could not resolve sheet_package_id from lookup.'
+    }
+
+    $warnings = @()
+    $sourceTables = @('v_mcp_package_debug_events')
+    $fallback = $false
+    $rows = @()
+
+    if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
+        $q = _QDM-QueryAutomationView -ViewName 'v_mcp_package_debug_events' -Limit $Limit `
+            -WhereSql 'sheet_package_id = @packageId' -Parameters @{ packageId = $pkgId }
+        $rows = @($q.rows)
+    } else {
+        $fallback = $true
+        $warnings += (_QDM-BuildWarning -Message 'Package events read from JSONL fallback.')
+        $rows = @(_QDM-ReadJsonlAutomationEvents -MaxLines ($Limit * 2) -Filter @{ sheet_package_id = $pkgId })
+    }
+
+    return _QDM-ToolResult -Data @{
+        fallback_mode = $fallback
+        sheet_package_id = $pkgId
+        lookup = $lookup
+        event_count = $rows.Count
+        events = $rows
+    } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
+        'Automation events with indexed sheet_package_id column.'
+    )
+}
+
 Export-ModuleMember -Function @(
     'Initialize-QCDebugMcpContext'
     'Resolve-QCDebugLookup'
@@ -1595,4 +1973,10 @@ Export-ModuleMember -Function @(
     'Get-QCDebugNotificationDiagnostics'
     'Get-QCDebugDataIntegrityReport'
     'Compare-QCProjectWiseToDatabase'
+    'Get-QCDebugRecentErrors'
+    'Get-QCDebugProcessHealth'
+    'Get-QCDebugAuditScanHistory'
+    'Get-QCDebugJobTimeline'
+    'Get-QCDebugDocumentAutomationEvents'
+    'Get-QCDebugPackageAutomationEvents'
 )

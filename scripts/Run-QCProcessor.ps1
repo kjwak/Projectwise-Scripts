@@ -47,12 +47,15 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -Erro
 Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force
 
 $script:WorkerLabel = $WorkerLabel
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
+
+$telemetryRunId = Set-QCAutomationTelemetryContext -Config $config -ProcessName 'Run-QCProcessor'
 
 if (-not $config.ContainsKey('dryRun')) { $config['dryRun'] = $false }
 if ($DryRun.IsPresent) { $config['dryRun'] = $true }
@@ -89,6 +92,7 @@ if (Test-QCDatabaseEnabled -Config $config) {
 }
 
 Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_START' -Message 'Worker run started.' -Data @{
+    runId = $telemetryRunId
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
     dryRunAllowStateChange = $dryRunAllowStateChange

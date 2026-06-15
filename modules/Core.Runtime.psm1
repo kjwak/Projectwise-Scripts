@@ -155,6 +155,77 @@ $script:_QCJsonLogWriter = $null
 $script:_QCJsonLogWriterHour = $null
 $script:_QCJsonLogWriterPath = $null
 $script:_QCJsonLogFileLock = [object]::new()
+$script:_QCJsonLogConfig = $null
+$script:_QCJsonLogRetentionDays = 7
+$script:_QCJsonLogMaxFileMb = 50
+$script:_QCJsonLogRetentionLastHour = ''
+
+function Set-QCJsonLogRetentionSettings {
+    <#
+    .SYNOPSIS
+    Configures rolling JSONL retention (emergency backup logs). Called from Set-QCAutomationTelemetryContext.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$RetentionDays = 7,
+        [int]$MaxFileSizeMb = 50,
+        [hashtable]$Config = $null
+    )
+    if ($Config) { $script:_QCJsonLogConfig = $Config }
+    $script:_QCJsonLogRetentionDays = [Math]::Max(1, $RetentionDays)
+    $script:_QCJsonLogMaxFileMb = [Math]::Max(1, $MaxFileSizeMb)
+}
+
+function Invoke-QCJsonLogRetention {
+    <#
+    .SYNOPSIS
+    Deletes aged hourly JSONL files and trims oversized current files (emergency backup retention).
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$RetentionDays = 0,
+        [int]$MaxFileSizeMb = 0
+    )
+
+    $dir = $env:QC_JSON_LOG_DIR
+    if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir)) { return }
+
+    $hour = Get-QCLogHourStamp
+    if ($script:_QCJsonLogRetentionLastHour -eq $hour) { return }
+    $script:_QCJsonLogRetentionLastHour = $hour
+
+    if ($RetentionDays -le 0) { $RetentionDays = $script:_QCJsonLogRetentionDays }
+    if ($MaxFileSizeMb -le 0) { $MaxFileSizeMb = $script:_QCJsonLogMaxFileMb }
+    $cutoff = (Get-QCWallClockNow).AddDays(-1 * $RetentionDays)
+    $maxBytes = [long]$MaxFileSizeMb * 1MB
+    $tag = if ($env:QC_JSON_LOG_TAG) { [string]$env:QC_JSON_LOG_TAG } else { 'qc' }
+
+    try {
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter "${tag}_*.jsonl" -File -ErrorAction SilentlyContinue)
+        foreach ($f in $files) {
+            try {
+                if ($f.LastWriteTime -lt $cutoff) {
+                    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+                    continue
+                }
+                if ($maxBytes -gt 0 -and $f.Length -gt $maxBytes) {
+                    $keepPath = $f.FullName + '.tail'
+                    $tailBytes = [Math]::Min($maxBytes, $f.Length)
+                    $fs = [System.IO.File]::OpenRead($f.FullName)
+                    try {
+                        $fs.Seek(-$tailBytes, [System.IO.SeekOrigin]::End) | Out-Null
+                        $buf = New-Object byte[] $tailBytes
+                        $read = $fs.Read($buf, 0, $tailBytes)
+                        [System.IO.File]::WriteAllBytes($keepPath, $buf[0..($read - 1)])
+                        Move-Item -LiteralPath $keepPath -Destination $f.FullName -Force
+                    } finally {
+                        $fs.Dispose()
+                    }
+                }
+            } catch { }
+        }
+    } catch { }
+}
 
 function Close-QCJsonLogWriter {
     if ($script:_QCJsonLogWriter) {
@@ -182,6 +253,7 @@ function Write-QCJsonLogFileLine {
     try {
         if ($script:_QCJsonLogWriterHour -ne $hour) {
             Close-QCJsonLogWriter
+            Invoke-QCJsonLogRetention | Out-Null
             $parent = Split-Path -Parent $path
             if (-not (Test-Path -LiteralPath $parent)) {
                 New-Item -ItemType Directory -Path $parent -Force | Out-Null
@@ -491,15 +563,28 @@ function Write-QCJsonLog {
     }
     if ($IncludeWorkerPid.IsPresent -and -not $Data.ContainsKey('workerPid')) { $Data['workerPid'] = $PID }
 
+    $ts = Get-QCTimestamp
     $payload = @{
-        ts      = Get-QCTimestamp
+        ts      = $ts
         level   = $Level
         code    = $Code
         message = $Message
         data    = $Data
     } | ConvertTo-Json -Depth 20 -Compress
 
-    $fileSink = [bool](Write-QCJsonLogFileLine -Line $payload)
+    $fileSink = $false
+    try {
+        $fileSink = [bool](Write-QCJsonLogFileLine -Line $payload)
+    } catch { }
+
+    try {
+        $telemetryCmd = Get-Command -Name 'Write-QCAutomationEvent' -ErrorAction SilentlyContinue
+        if ($telemetryCmd) {
+            $cfg = if ($script:_QCJsonLogConfig) { $script:_QCJsonLogConfig } else { @{} }
+            & $telemetryCmd -Level $Level -Code $Code -Message $Message -Data $Data -Timestamp $ts -Config $cfg | Out-Null
+        }
+    } catch { }
+
     if ($fileSink) { return }
 
     if ($Flush.IsPresent) {

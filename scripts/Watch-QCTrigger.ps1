@@ -535,6 +535,7 @@ Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue
 _Watch-RestoreFoundationModules
 if (-not (_Watch-EnsureAllModuleExports)) {
     $missingAtStart = @(_Watch-GetMissingRequiredCommands)
@@ -544,6 +545,11 @@ if (-not (_Watch-EnsureAllModuleExports)) {
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
+
+$telemetryRunId = ''
+if (Get-Command -Name 'Set-QCAutomationTelemetryContext' -ErrorAction SilentlyContinue) {
+    $telemetryRunId = Set-QCAutomationTelemetryContext -Config $config -ProcessName 'Watch-QCTrigger'
+}
 
 if (Test-QCDatabaseEnabled -Config $config) {
     try {
@@ -590,6 +596,7 @@ $hasPwWatchList = ($config.ContainsKey('projectWise') -and $config.projectWise -
 if ($watchFolders.Count -eq 0 -and -not $hasPwWatchList) { throw "watchFolders is empty and projectWise.watchList not configured." }
 
 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Watch run started.' -Data @{
+    runId = $telemetryRunId
     appSettingsPath = $AppSettingsPath
     dryRun = $isDryRun
     watchFolderCount = $watchFolders.Count
