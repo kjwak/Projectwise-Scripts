@@ -1400,6 +1400,17 @@ function _QCN-TestPwDocumentGuidMatchesName {
     return $false
 }
 
+function _QCN-AcceptGuidForQcPdfLink {
+    param(
+        [string]$DocumentGuid,
+        [string]$ExpectedName
+    )
+
+    if (_QCN-IsBlank $DocumentGuid) { return $false }
+    if (_QCN-IsBlank $ExpectedName) { return $true }
+    return [bool](_QCN-TestPwDocumentGuidMatchesName -DocumentGuid $DocumentGuid -ExpectedName $ExpectedName)
+}
+
 function _QCN-ExtractPwLinkDocumentGuid {
     param([string]$Url = '')
 
@@ -1508,7 +1519,9 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         $packageGuid = _QCN-LookupQcPdfGuidBySheetPackageId -Config $Config -SheetPackageId $SheetPackageId `
             -ProcessType $processType -Event $Event
         if (-not (_QCN-IsBlank $packageGuid)) {
-            return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_qc_pdfs' }
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $packageGuid -ExpectedName $qcName) {
+                return @{ documentGuid = $packageGuid; resolutionSource = 'sheet_package_qc_pdfs' }
+            }
         }
     }
 
@@ -1518,24 +1531,32 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
         $laneGuid = _QCN-LookupLaneQcPdfGuidFromPackageQcPdfs -Config $Config -FolderPath $FolderPath `
             -QcPdfName $candidate -ProcessType $processType
         if (-not (_QCN-IsBlank $laneGuid)) {
-            return @{ documentGuid = $laneGuid; resolutionSource = 'sheet_package_qc_pdfs' }
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $laneGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $laneGuid; resolutionSource = 'sheet_package_qc_pdfs' }
+            }
         }
 
         $pkgGuid = _QCN-LookupQcPdfGuidFromSheetPackages -Config $Config -FolderPath $FolderPath `
             -QcPdfName $candidate -SheetStem $stem -ProcessType $processType -Event $Event
         if (-not (_QCN-IsBlank $pkgGuid)) {
-            return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages_lane_alias' }
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $pkgGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $pkgGuid; resolutionSource = 'sheet_packages_lane_alias' }
+            }
         }
 
         $idxGuid = _QCN-LookupQcPdfGuidInSheetIndex -Config $Config -FolderPath $FolderPath -QcPdfName $candidate
         if (-not (_QCN-IsBlank $idxGuid)) {
-            return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $idxGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $idxGuid; resolutionSource = 'sheet_index' }
+            }
         }
 
         $pkgDocGuid = _QCN-LookupQcPdfGuidFromSheetDocuments -Config $Config -FolderPath $FolderPath `
             -QcPdfName $candidate -SheetStem $stem
         if (-not (_QCN-IsBlank $pkgDocGuid)) {
-            return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $pkgDocGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $pkgDocGuid; resolutionSource = 'sheet_documents' }
+            }
         }
 
         if (-not (_QCN-IsBlank $FolderPath)) {
@@ -1555,7 +1576,11 @@ function _QCN-ResolveLiveQcPdfDocumentGuidResult {
     $linkedGuid = _QCN-ResolveQcPdfGuidFromSheetIndex -Config $Config -FolderPath $FolderPath `
         -SourceDocumentName $srcPdf -DocumentGuid $HintGuid
     if (-not (_QCN-IsBlank $linkedGuid)) {
-        return @{ documentGuid = $linkedGuid; resolutionSource = 'sheet_index_qc_pdf_guid' }
+        foreach ($candidate in @($candidateNames)) {
+            if (_QCN-AcceptGuidForQcPdfLink -DocumentGuid $linkedGuid -ExpectedName $candidate) {
+                return @{ documentGuid = $linkedGuid; resolutionSource = 'sheet_index_qc_pdf_guid' }
+            }
+        }
     }
 
     foreach ($candidate in @($candidateNames)) {

@@ -855,7 +855,7 @@ function Get-QCDebugSheetPackageMembers {
             }
             if ($clauses.Count -gt 0) {
                 $clauseJoin = if ($lookup.lookup_type -eq 'document_path') { ' AND ' } else { ' OR ' }
-                $members.sheet_packages_rows = _QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_packages] WHERE $($clauses -join $clauseJoin)" -Parameters $params
+                $members.sheet_packages_rows = [object[]]@(_QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_packages] WHERE $($clauses -join $clauseJoin)" -Parameters $params)
             }
         }
     }
@@ -888,7 +888,7 @@ function Get-QCDebugSheetPackageMembers {
                 $params['docGuid'] = $lookup.lookup_value
             }
             if ($clauses.Count -gt 0) {
-                $members.sheet_documents_rows = _QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_documents] WHERE $($clauses -join ' OR ')" -Parameters $params
+                $members.sheet_documents_rows = [object[]]@(_QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_documents] WHERE $($clauses -join ' OR ')" -Parameters $params)
                 foreach ($row in $members.sheet_documents_rows) {
                     $role = [string]($row.document_role)
                     if ([string]::IsNullOrWhiteSpace($role)) { $role = 'unknown' }
@@ -926,7 +926,7 @@ function Get-QCDebugSheetPackageMembers {
             }
             if ($clauses.Count -gt 0) {
                 $order = if ($cols -contains 'last_updated_at') { ' ORDER BY last_updated_at DESC' } else { '' }
-                $members.sheet_index_rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_index] WHERE $($clauses -join ' OR ')$order" -Parameters $params
+                $members.sheet_index_rows = [object[]]@(_QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_index] WHERE $($clauses -join ' OR ')$order" -Parameters $params)
             }
         }
     }
@@ -1473,7 +1473,10 @@ function Compare-QCProjectWiseToDatabase {
             })
         }
     }
-    $pkg = if ($members.sheet_packages_rows.Count -gt 0) { $members.sheet_packages_rows[0] } else { @{} }
+    $pkgRowsLocal = @()
+    if ($members.sheet_packages_rows) { $pkgRowsLocal = @($members.sheet_packages_rows) }
+    $pkg = @{}
+    if ($pkgRowsLocal.Count -gt 0 -and $null -ne $pkgRowsLocal[0]) { $pkg = $pkgRowsLocal[0] }
     foreach ($pair in @(
         @{ role = 'dgn'; guid = 'dgn_guid'; name = 'dgn_name'; state = 'pw_state_name' }
         @{ role = 'sheet_pdf'; guid = 'sheet_pdf_guid'; name = 'sheet_pdf_name'; state = 'pw_state_name' }
@@ -1524,12 +1527,12 @@ function Compare-QCProjectWiseToDatabase {
         $modulesRoot = $PSScriptRoot
         try {
             $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-                Import-Module (Join-Path $using:modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
-                $states = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $using:guids
+                Import-Module (Join-Path $modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+                $states = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
                 $names = @{}
                 $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue
                 if ($guidCmd) {
-                    foreach ($doc in @(& $guidCmd -DocumentGUIDs $using:guids -ErrorAction SilentlyContinue)) {
+                    foreach ($doc in @(& $guidCmd -DocumentGUIDs $guids -ErrorAction SilentlyContinue)) {
                         $g = ''
                         try { $g = [string]$doc.DocumentGUID } catch { }
                         if ($g) { $names[$g.ToLowerInvariant()] = (Get-PWDocName -Doc $doc) }

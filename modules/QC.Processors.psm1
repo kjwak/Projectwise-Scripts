@@ -162,15 +162,28 @@ WHERE folder_path = @folderPath
   AND qc_process_type IS NOT NULL
   AND LTRIM(RTRIM(qc_process_type)) <> ''
   AND (LOWER(document_name) = LOWER(@pdfName) OR LOWER(document_name) = LOWER(@dgnName))
-ORDER BY CASE WHEN LOWER(document_name) = LOWER(@dgnName) THEN 0 ELSE 1 END
+ORDER BY CASE WHEN LOWER(document_name) = LOWER(@pdfName) THEN 0 WHEN LOWER(document_name) = LOWER(@dgnName) THEN 1 ELSE 2 END
 "@ -Parameters @{ folderPath = $fp; pdfName = $pdfName; dgnName = $dgnName }
             if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
                 $raw = if ($res.Data.table.Rows[0].qc_process_type -is [DBNull]) { '' } else { [string]$res.Data.table.Rows[0].qc_process_type }
-                if (-not (_QCP-IsNullOrWhiteSpace $raw)) { return $raw.Trim() }
+                if (-not (_QCP-IsNullOrWhiteSpace $raw)) {
+                    $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType $raw
+                    if ($norm) { return [string]$norm }
+                    return $raw.Trim()
+                }
             }
         } catch { }
     }
     return ''
+}
+
+function _QCP-NormalizePrependProcessTypeValue {
+    param([string]$RawProcessType)
+    if (_QCP-IsNullOrWhiteSpace $RawProcessType) { return $null }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        return Normalize-QCProcessType -ProcessType ([string]$RawProcessType) -AllowNullOnEmpty
+    }
+    return $null
 }
 
 function _QCP-ResolveProcessTypeFromJob {
@@ -245,13 +258,10 @@ function _QCP-TryResolvePrependLaneContext {
     $resolutionSource = ''
 
     $rawProcess = _QCP-GetJobMetadataValue -Job $Job -Keys @('qcProcessType', 'processType', 'qc_process_type')
-    $rawReview = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType', 'qc_review_type')
-    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-        $norm = Normalize-QCProcessType -ProcessType ([string]$rawProcess) -ReviewType ([string]$rawReview) -AllowNullOnEmpty
-        if ($norm) {
-            $processType = $norm
-            $resolutionSource = 'job_metadata'
-        }
+    $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$rawProcess)
+    if ($norm) {
+        $processType = $norm
+        $resolutionSource = 'job_metadata'
     }
 
     if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $docName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
@@ -265,35 +275,35 @@ function _QCP-TryResolvePrependLaneContext {
     if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
         if (_QCP-IsStemSheetDocumentName ([string]$docName)) {
             $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
-            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-                $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
-                if ($norm) {
-                    $processType = $norm
-                    $resolutionSource = 'sheet_index'
-                }
+            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
+                $processType = [string]$idxProcess
+                $resolutionSource = 'sheet_index'
             }
         }
-        if (-not $processType -and (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
+        if (-not $processType -and (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue)) {
+            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
+            if ($pw.found) {
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) {
+                    $processType = $norm
+                    $resolutionSource = 'projectwise_attributes'
+                }
+            }
+        } elseif (-not $processType -and (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
             if ($pw.found) {
-                $pwProcess = if ($pw.qcProcessType) { [string]$pw.qcProcessType } else { '' }
-                if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
-                    $norm = Normalize-QCProcessType -ProcessType $pwProcess -ReviewType ([string]$pw.qcReviewType) -AllowNullOnEmpty
-                    if ($norm) {
-                        $processType = $norm
-                        $resolutionSource = 'projectwise_attributes'
-                    }
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) {
+                    $processType = $norm
+                    $resolutionSource = 'projectwise_attributes'
                 }
             }
         }
         if (-not $processType -and -not (_QCP-IsStemSheetDocumentName ([string]$docName))) {
             $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
-            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-                $norm = Normalize-QCProcessType -ProcessType ([string]$idxProcess) -AllowNullOnEmpty
-                if ($norm) {
-                    $processType = $norm
-                    $resolutionSource = 'sheet_index'
-                }
+            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
+                $processType = [string]$idxProcess
+                $resolutionSource = 'sheet_index'
             }
         }
     }
@@ -1913,12 +1923,61 @@ function _QCP-NormalizePrependFolderPath {
     return $path.TrimEnd('\', '/').ToLowerInvariant()
 }
 
+function _QCP-GetJobMetadataProcessType {
+    param([object]$Job)
+    if ($null -eq $Job) { return '' }
+    $raw = ''
+    try {
+        if ($Job.metadata -and $Job.metadata.qcProcessType) { $raw = [string]$Job.metadata.qcProcessType }
+    } catch { }
+    if (_QCP-IsNullOrWhiteSpace $raw) { return '' }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $raw -AllowNullOnEmpty
+        if ($norm) { return [string]$norm }
+    }
+    return $raw.Trim().ToLowerInvariant()
+}
+
+function _QCP-ResolveIntendedPrependProcessType {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$SheetPdfName,
+        [string]$SheetPdfGuid = ''
+    )
+    if (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue) {
+        try {
+            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SheetPdfName -Config $Config
+            if ($pw -and [bool]$pw.found) {
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) { return [string]$norm }
+            }
+        } catch { }
+    } elseif (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+        try {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SheetPdfName -Config $Config
+            if ($pw -and [bool]$pw.found) {
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) { return [string]$norm }
+            }
+        } catch { }
+    }
+    if (Get-Command -Name '_QCP-ResolveProcessTypeFromSheetIndex' -ErrorAction SilentlyContinue) {
+        try {
+            $idx = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath $FolderPath -SourceDocumentName $SheetPdfName
+            if (-not (_QCP-IsNullOrWhiteSpace $idx)) { return [string]$idx }
+        } catch { }
+    }
+    return ''
+}
+
 function _QCP-JobMatchesPrependSheet {
     param(
         [object]$Job,
         [string]$NormFolder,
         [string]$NormSheetPdfName,
-        [string]$PrependTrigger = ''
+        [string]$PrependTrigger = '',
+        [string]$NormQcProcessType = ''
     )
     if ($null -eq $Job) { return $false }
     $jobType = ''
@@ -1948,7 +2007,13 @@ function _QCP-JobMatchesPrependSheet {
         elseif ($Job.sourcePath) { $jobName = [System.IO.Path]::GetFileName([string]$Job.sourcePath) }
     } catch { }
     $jobName = ([string]$jobName).ToLowerInvariant()
-    return ($jobName.Length -gt 0 -and $jobName -eq $NormSheetPdfName)
+    if ($jobName.Length -eq 0 -or $jobName -ne $NormSheetPdfName) { return $false }
+
+    $laneFilter = ([string]$NormQcProcessType).Trim().ToLowerInvariant()
+    if ($laneFilter.Length -eq 0) { return $true }
+    $jobLane = _QCP-GetJobMetadataProcessType -Job $Job
+    if ($jobLane.Length -eq 0) { return $false }
+    return ($jobLane -eq $laneFilter)
 }
 
 function Test-QCPrependEnqueueBlockedForSheet {
@@ -1956,8 +2021,8 @@ function Test-QCPrependEnqueueBlockedForSheet {
     .SYNOPSIS
     Returns whether a QC_PREPEND for the same sheet PDF should not be enqueued.
     .DESCRIPTION
-    Blocks when another initialQcPdf prepend is pending or running for the same folder + sheet PDF,
-    or when one succeeded very recently (covers fallback enqueue racing a just-finished audit job).
+    Blocks when another initialQcPdf prepend is pending or running for the same folder + sheet PDF + lane,
+    or when one succeeded very recently for the same lane (covers fallback enqueue racing a just-finished audit job).
   #>
     [CmdletBinding()]
     param(
@@ -1965,6 +2030,7 @@ function Test-QCPrependEnqueueBlockedForSheet {
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$SheetPdfName,
         [string]$PrependTrigger = 'initialQcPdf',
+        [string]$QcProcessType = '',
         [int]$SucceededWithinMinutes = 20
     )
 
@@ -1973,6 +2039,12 @@ function Test-QCPrependEnqueueBlockedForSheet {
     $normFolder = _QCP-NormalizePrependFolderPath -FolderPath $FolderPath
     $normName = ([System.IO.Path]::GetFileName([string]$SheetPdfName)).ToLowerInvariant()
     if ($normFolder.Length -eq 0 -or $normName.Length -eq 0) { return @{ blocked = $false } }
+
+    $normLane = ''
+    if (-not (_QCP-IsNullOrWhiteSpace $QcProcessType) -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+        $normLane = Normalize-QCProcessType -ProcessType ([string]$QcProcessType) -AllowNullOnEmpty
+    }
+    if (_QCP-IsNullOrWhiteSpace $normLane) { $normLane = '' } else { $normLane = [string]$normLane }
 
     $root = _QCP-GetQueueRootFromConfig -Config $Config
     $states = @('pending', 'running', 'succeeded')
@@ -1986,7 +2058,8 @@ function Test-QCPrependEnqueueBlockedForSheet {
         foreach ($f in $files) {
             $job = $null
             try { $job = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
-            if (-not (_QCP-JobMatchesPrependSheet -Job $job -NormFolder $normFolder -NormSheetPdfName $normName -PrependTrigger $PrependTrigger)) {
+            if (-not (_QCP-JobMatchesPrependSheet -Job $job -NormFolder $normFolder -NormSheetPdfName $normName `
+                    -PrependTrigger $PrependTrigger -NormQcProcessType $normLane)) {
                 continue
             }
             $dedupeKey = ''
@@ -2109,14 +2182,17 @@ function Add-QCPrependJobForQcInitiatedStateChange {
             -LastAuditEventAt $LastAuditEventAt -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid
     }
 
+    $intendedProcessType = _QCP-ResolveIntendedPrependProcessType -Config $Config -FolderPath $FolderPath `
+        -SheetPdfName $sheetPdf -SheetPdfGuid $TriggerDocumentGuid
+
     $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-        -SheetPdfName $sheetPdf -PrependTrigger 'initialQcPdf'
+        -SheetPdfName $sheetPdf -PrependTrigger 'initialQcPdf' -QcProcessType $intendedProcessType
     if ($sheetBlock -and [bool]$sheetBlock.blocked) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
-                -Message 'QC_PREPEND skipped: another prepend for this sheet is pending, running, or recently succeeded.' -Data @{
-                folderPath = $FolderPath; sheetPdf = $sheetPdf; reason = [string]$sheetBlock.reason
-                matches = @($sheetBlock.matches); stateTransitionKey = $stateTransitionKey
+                -Message 'QC_PREPEND skipped: another prepend for this sheet lane is pending, running, or recently succeeded.' -Data @{
+                folderPath = $FolderPath; sheetPdf = $sheetPdf; qcProcessType = $intendedProcessType
+                reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches); stateTransitionKey = $stateTransitionKey
             } | Out-Null
         }
         return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `

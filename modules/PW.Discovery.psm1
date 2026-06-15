@@ -3493,14 +3493,20 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
                 } catch { }
             }
             if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
+                $intendedLane = ''
+                if (Get-Command -Name '_QCP-ResolveIntendedPrependProcessType' -ErrorAction SilentlyContinue) {
+                    $intendedLane = _QCP-ResolveIntendedPrependProcessType -Config $Config -FolderPath $FolderPath `
+                        -SheetPdfName $sheetPdfName -SheetPdfGuid $sheetPdfGuid
+                }
                 $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-                    -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf'
+                    -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf' -QcProcessType $intendedLane
                 if ($sheetBlock -and [bool]$sheetBlock.blocked) {
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
-                            -Message 'QC_PREPEND skipped after sheet sync: prepend already pending, running, or recently succeeded for this sheet.' -Data @{
+                            -Message 'QC_PREPEND skipped after sheet sync: prepend already pending, running, or recently succeeded for this sheet lane.' -Data @{
                             folderPath = $FolderPath; sheetPdf = $sheetPdfName; sheetStem = $sheetStem
-                            reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches); canonicalState = $canonical
+                            qcProcessType = $intendedLane; reason = [string]$sheetBlock.reason
+                            matches = @($sheetBlock.matches); canonicalState = $canonical
                         } | Out-Null
                     }
                     return
@@ -4400,14 +4406,20 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
         } catch { }
     }
     if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
+        $intendedLane = ''
+        if (Get-Command -Name '_QCP-ResolveIntendedPrependProcessType' -ErrorAction SilentlyContinue) {
+            $intendedLane = _QCP-ResolveIntendedPrependProcessType -Config $Config -FolderPath $FolderPath `
+                -SheetPdfName $sheetPdfName -SheetPdfGuid $sheetGuid
+        }
         $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-            -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf'
+            -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf' -QcProcessType $intendedLane
         if ($sheetBlock -and [bool]$sheetBlock.blocked) {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_QC_INITIATED_FALLBACK_SKIPPED' `
-                    -Message 'QC Initiated sheet-PDF fallback skipped: prepend already pending, running, or recently succeeded.' -Data @{
+                    -Message 'QC Initiated sheet-PDF fallback skipped: prepend already pending, running, or recently succeeded for this sheet lane.' -Data @{
                     triggerDocumentGuid = $DocumentGuid; triggerDocumentName = $DocumentName; folderPath = $FolderPath
-                    sheetPdfName = $sheetPdfName; reason = [string]$sheetBlock.reason; matches = @($sheetBlock.matches)
+                    sheetPdfName = $sheetPdfName; qcProcessType = $intendedLane; reason = [string]$sheetBlock.reason
+                    matches = @($sheetBlock.matches)
                 } | Out-Null
             }
             return
@@ -5248,6 +5260,71 @@ function _PWD-PickSheetRoleFieldValue {
         return [string]$PdfFields[$Name]
     }
     return ''
+}
+
+function _PWD-PickSheetProcessIntentFieldValue {
+    param(
+        [hashtable]$DgnFields,
+        [hashtable]$PdfFields,
+        [string]$Name
+    )
+
+    if ($PdfFields -and $PdfFields.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$PdfFields[$Name])) {
+        return [string]$PdfFields[$Name]
+    }
+    if ($DgnFields -and $DgnFields.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$DgnFields[$Name])) {
+        return [string]$DgnFields[$Name]
+    }
+    return ''
+}
+
+function Get-PWQcPrependProcessIntentFromSourcePdf {
+    <#
+    .SYNOPSIS
+    Resolves QC_Process_Type for prepend lane selection from the stem sheet PDF first, then the paired DGN.
+    .DESCRIPTION
+    QC_Review_Type is deprecated and is not read. Role emails still prefer the DGN
+    (see Get-PWQcPrependRoleFieldsFromSourcePdf). For lane selection, the control sheet PDF
+    QC_Process_Type reflects the user's Initiate Origination intent and wins over stale DGN values.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$SourceDocumentName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $cols = @(Get-PWSheetIndexSyncColumnNames -Config $Config)
+    $folderCandidates = _PWD-GetSheetRoleFolderCandidates -FolderPath $FolderPath
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
+    if ([string]::IsNullOrWhiteSpace($stem)) {
+        return @{ found = $false; error = 'Invalid source document name'; qcProcessType = '' }
+    }
+
+    $dgnName = if ([string]$SourceDocumentName -match '(?i)\.dgn$') { [string]$SourceDocumentName } else { $stem + '.dgn' }
+    $pdfName = if ([string]$SourceDocumentName -match '(?i)\.pdf$' -and [string]$SourceDocumentName -notmatch '(?i)-(prod|chk|rev|qc)\.pdf$') {
+        [string]$SourceDocumentName
+    } else {
+        $stem + '.pdf'
+    }
+
+    $dgnRead = _PWD-TryReadSheetRoleFieldsFromDocument -FolderCandidates $folderCandidates -DocumentName $dgnName -Columns $cols -Config $Config
+    $pdfRead = $null
+    if ($pdfName -ne $dgnName) {
+        $pdfRead = _PWD-TryReadSheetRoleFieldsFromDocument -FolderCandidates $folderCandidates -DocumentName $pdfName -Columns $cols -Config $Config
+    }
+    if (-not $dgnRead.found -and (-not $pdfRead -or -not $pdfRead.found)) {
+        $err = if ($dgnRead.error) { [string]$dgnRead.error } elseif ($pdfRead -and $pdfRead.error) { [string]$pdfRead.error } else { 'Document not found' }
+        return @{ found = $false; error = $err; qcProcessType = '' }
+    }
+
+    $dgnFields = if ($dgnRead.found) { $dgnRead.fields } else { $null }
+    $pdfFields = if ($pdfRead -and $pdfRead.found) { $pdfRead.fields } else { $null }
+    return @{
+        found         = $true
+        error         = ''
+        qcProcessType = _PWD-PickSheetProcessIntentFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcProcessType'
+    }
 }
 
 function Get-PWQcPrependRoleFieldsFromSourcePdf {

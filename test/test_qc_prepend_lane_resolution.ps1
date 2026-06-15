@@ -16,6 +16,11 @@ InModuleScope -ModuleName QC.Processors {
         param($FolderPath, $SourceDocumentName, $Config)
         return @{ found = $false; qcProcessType = ''; qcReviewType = '' }
     }
+    function Get-PWQcPrependProcessIntentFromSourcePdf {
+        param($FolderPath, $SourceDocumentName, $Config)
+        if ($script:mockProcessIntent) { return $script:mockProcessIntent }
+        return @{ found = $false; qcProcessType = ''; qcReviewType = '' }
+    }
     function Get-PWQcPdfLaneFromDocumentName {
         param([string]$DocumentName)
         if ($DocumentName -match '(?i)-chk\.pdf$') { return 'check' }
@@ -54,6 +59,22 @@ InModuleScope -ModuleName QC.Processors {
     $fail = _QCP-TryResolvePrependLaneContext -Job $missing -Config $cfg
     Assert-True (-not $fail.IsSuccess) 'missing process type fails'
     Assert-Eq $fail.Code 'QC_PROCESS_TYPE_UNKNOWN' 'unknown process type code'
+
+    $script:mockProcessIntent = @{
+        found = $true
+        qcProcessType = 'Review'
+    }
+    $reviewIntentJob = @{
+        id = 'j-review-intent'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        sourceName = '0818000063ea501.pdf'
+        metadata = @{}
+    }
+    $reviewLane = _QCP-TryResolvePrependLaneContext -Job $reviewIntentJob -Config $cfg
+    Assert-True $reviewLane.IsSuccess 'PDF QC_Process_Type review resolves over stale DGN production'
+    Assert-Eq $reviewLane.Data.qcProcessType 'review' 'review lane from QC_Process_Type'
+    Assert-Eq $reviewLane.Data.expectedLanePdfName '0818000063ea501-rev.pdf' 'expected *-rev.pdf from QC_Process_Type'
+    $script:mockProcessIntent = $null
 
     foreach ($pair in @(
             @{ type = 'check'; suffix = 'chk'; name = '080J082001ab001-chk.pdf' },

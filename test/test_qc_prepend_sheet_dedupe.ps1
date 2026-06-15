@@ -10,6 +10,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/QC.ProcessType.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
 
 function New-TempQueueRoot {
@@ -28,9 +29,15 @@ function Write-PrependQueueJob {
         [string]$FolderPath,
         [string]$SheetPdfName,
         [string]$DedupeKey = 'dq_test',
+        [string]$QcProcessType = '',
         [string]$UpdatedAtUtc = ''
     )
     if (-not $UpdatedAtUtc) { $UpdatedAtUtc = (Get-Date).ToUniversalTime().ToString('o') }
+    $metadata = @{
+        prependTrigger = 'initialQcPdf'
+        stateTransitionKey = 'audit:999'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($QcProcessType)) { $metadata['qcProcessType'] = $QcProcessType }
     $job = @{
         id = $JobId
         type = 'QC_PREPEND'
@@ -39,10 +46,7 @@ function Write-PrependQueueJob {
         sourceFolder = $FolderPath
         sourceName = $SheetPdfName
         sourcePath = (Join-Path $FolderPath $SheetPdfName)
-        metadata = @{
-            prependTrigger = 'initialQcPdf'
-            stateTransitionKey = 'audit:999'
-        }
+        metadata = $metadata
         updatedAtUtc = $UpdatedAtUtc
     }
     $path = Join-Path (Join-Path $QueueRoot $State) ($JobId + '.json')
@@ -78,6 +82,17 @@ try {
         -FolderPath $folder -SheetPdfName $sheetPdf -UpdatedAtUtc $old
     $stale = Test-QCPrependEnqueueBlockedForSheet -Config $config -FolderPath $folder -SheetPdfName $sheetPdf
     Assert-True (-not $stale.blocked) 'Old succeeded job should not block'
+
+    Remove-Item -LiteralPath (Join-Path $queueRoot 'succeeded\qc_qcprepend_old1.json') -Force
+    $recentProd = (Get-Date).ToUniversalTime().AddMinutes(-2).ToString('o')
+    Write-PrependQueueJob -QueueRoot $queueRoot -State 'succeeded' -JobId 'qc_qcprepend_prod1' `
+        -FolderPath $folder -SheetPdfName $sheetPdf -QcProcessType 'production' -UpdatedAtUtc $recentProd
+    $prodBlocked = Test-QCPrependEnqueueBlockedForSheet -Config $config -FolderPath $folder -SheetPdfName $sheetPdf `
+        -QcProcessType 'production'
+    Assert-True $prodBlocked.blocked 'Recent production succeeded job should block production lane'
+    $checkOpen = Test-QCPrependEnqueueBlockedForSheet -Config $config -FolderPath $folder -SheetPdfName $sheetPdf `
+        -QcProcessType 'check'
+    Assert-True (-not $checkOpen.blocked) 'Check lane should not be blocked by recent production succeeded job'
 
     Write-Host 'test_qc_prepend_sheet_dedupe.ps1: all assertions passed.'
 }
