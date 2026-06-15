@@ -798,6 +798,33 @@ function _QCP-AppendWorkflowWriteback([object]$Result, [hashtable]$Job, [hashtab
     $Job.metadata['qcProcessType'] = $processType
     $Job.metadata['expectedLanePdfName'] = [string]$laneCtx.expectedLanePdfName
     $Job.metadata['pdfSuffix'] = [string]$laneCtx.pdfSuffix
+    $folderPath = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
+    $sourceDocumentGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid', 'documentGuid', 'sourceDocumentGuid')
+    $lanePdfName = [string]$laneCtx.expectedLanePdfName
+    if (-not (_QCP-IsNullOrWhiteSpace $lanePdfName) -and -not (_QCP-IsNullOrWhiteSpace $folderPath) `
+            -and (Get-Command -Name 'Sync-QCLaneQcPdfGuidFromProjectWise' -ErrorAction SilentlyContinue)) {
+        try {
+            $reg = Sync-QCLaneQcPdfGuidFromProjectWise -Config $Config -FolderPath $folderPath -QcPdfName $lanePdfName `
+                -QcProcessType $processType -SourceDocumentGuid $sourceDocumentGuid -Required
+            if ($reg.IsSuccess -and $reg.Data -and $reg.Data.documentGuid) {
+                $liveLaneGuid = [string]$reg.Data.documentGuid
+                $ctx['notificationLaneDocumentGuid'] = $liveLaneGuid
+                $ctx['laneQcPdfDocumentGuid'] = $liveLaneGuid
+                $Job.metadata['notificationLaneDocumentGuid'] = $liveLaneGuid
+                $Job.metadata['laneQcPdfDocumentGuid'] = $liveLaneGuid
+            }
+        } catch {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Warning' -Code 'QC_LANE_PDF_GUID_REGISTER_FAILED' `
+                    -Message 'Failed to register live lane QC PDF GUID before workflow writeback.' -Data @{
+                    folderPath = $folderPath
+                    qcPdfName = $lanePdfName
+                    qcProcessType = $processType
+                    error = [string]$_.Exception.Message
+                } | Out-Null
+            }
+        }
+    }
     if (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue) {
         $ctx['skipSiblingStateSync'] = -not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType $processType -Config $Config)
     } else {

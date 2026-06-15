@@ -4239,6 +4239,221 @@ WHERE folder_path = @folderPath
     }
 }
 
+function _QDB-GetPwSearchFolderCandidates {
+    param([string]$FolderPath)
+
+    $candidates = New-Object System.Collections.ArrayList
+    function Add-Candidate([string]$Candidate) {
+        if ([string]::IsNullOrWhiteSpace($Candidate)) { return }
+        $trimmed = $Candidate.Trim().TrimEnd('\')
+        if ($candidates -notcontains $trimmed) { [void]$candidates.Add($trimmed) }
+    }
+
+    Add-Candidate $FolderPath
+    if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
+        Add-Candidate (ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath)
+    }
+    if (Get-Command -Name 'ConvertTo-PWCanonicalDocumentsFolderPath' -ErrorAction SilentlyContinue) {
+        Add-Candidate (ConvertTo-PWCanonicalDocumentsFolderPath -FolderPathProperty $FolderPath)
+    }
+    if (Get-Command -Name '_PWD-GetSheetRoleFolderCandidates' -ErrorAction SilentlyContinue) {
+        foreach ($fp in @(_PWD-GetSheetRoleFolderCandidates -FolderPath $FolderPath)) {
+            Add-Candidate $fp
+            if (Get-Command -Name 'ConvertTo-PWCmdletFolderPath' -ErrorAction SilentlyContinue) {
+                Add-Candidate (ConvertTo-PWCmdletFolderPath -InternalFolderPath $fp)
+            }
+        }
+    }
+    return @($candidates.ToArray())
+}
+
+function _QDB-SearchPwLaneQcPdfGuid {
+    param(
+        [string]$FolderPath,
+        [string]$QcPdfName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FolderPath) -or [string]::IsNullOrWhiteSpace($QcPdfName)) { return '' }
+    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
+
+    $bestGuid = ''
+    $bestTicks = [long]::MinValue
+    foreach ($searchFolder in @(_QDB-GetPwSearchFolderCandidates -FolderPath $FolderPath)) {
+        if ([string]::IsNullOrWhiteSpace($searchFolder)) { continue }
+        try {
+            $docs = @(Get-PWDocumentsBySearch -FolderPath $searchFolder -DocumentName $QcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
+            foreach ($doc in $docs) {
+                $g = ''
+                try { $g = [string]$doc.DocumentGUID } catch { }
+                if ([string]::IsNullOrWhiteSpace($g)) { continue }
+                $ticks = [long]::MinValue
+                foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
+                    $raw = $null
+                    try { if ($doc.PSObject.Properties[$n]) { $raw = $doc.$n } } catch { }
+                    if ($null -eq $raw) { continue }
+                    try {
+                        $dt = [datetime]$raw
+                        if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
+                    } catch { }
+                }
+                if ([string]::IsNullOrWhiteSpace($bestGuid) -or $ticks -gt $bestTicks) {
+                    $bestGuid = $g.Trim()
+                    $bestTicks = $ticks
+                }
+            }
+        } catch { }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($bestGuid)) { return $bestGuid }
+
+    if (Get-Command -Name 'Get-PWDocumentsInFolder' -ErrorAction SilentlyContinue) {
+        foreach ($searchFolder in @(_QDB-GetPwSearchFolderCandidates -FolderPath $FolderPath)) {
+            if ([string]::IsNullOrWhiteSpace($searchFolder)) { continue }
+            try {
+                $all = @(Get-PWDocumentsInFolder -FolderPath $searchFolder)
+                foreach ($doc in $all) {
+                    $name = ''
+                    try { $name = [string]$doc.Name } catch { }
+                    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+                    if ($name -ne $QcPdfName -and $name.ToLowerInvariant() -ne $QcPdfName.ToLowerInvariant()) { continue }
+                    $g = ''
+                    try { $g = [string]$doc.DocumentGUID } catch { }
+                    if (-not [string]::IsNullOrWhiteSpace($g)) { return $g.Trim() }
+                }
+            } catch { }
+        }
+    }
+    return ''
+}
+
+function Sync-QCLaneQcPdfGuidFromProjectWise {
+    <#
+    .SYNOPSIS
+    After lane PDF upload/prepend, resolves the live ProjectWise GUID and registers it in telemetry tables.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$QcPdfName,
+        [string]$QcProcessType = '',
+        [string]$SourceDocumentGuid = '',
+        [string]$CurrentPwState = '',
+        [switch]$Required
+    )
+
+    if (-not (_QDB-IsEnabled -Config $Config)) {
+        return New-QCSuccessResult -Code 'QC_LANE_GUID_SYNC_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false }
+    }
+
+    $qcName = ([string]$QcPdfName).Trim()
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+    if ([string]::IsNullOrWhiteSpace($qcName) -or [string]::IsNullOrWhiteSpace($folder)) {
+        return New-QCFailureResult -Code 'QC_LANE_GUID_SYNC_INVALID_INPUT' -Message 'Folder path and QC PDF name are required.' -Data @{}
+    }
+
+    $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($processType)) {
+        $processType = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $qcName
+    }
+    if ($processType -notin @('production', 'check', 'review')) {
+        return New-QCFailureResult -Code 'QC_LANE_GUID_SYNC_INVALID_TYPE' -Message 'qc_process_type must be production, check, or review.' -Data @{ qcPdfName = $qcName }
+    }
+
+    $liveGuid = _QDB-SearchPwLaneQcPdfGuid -FolderPath $folder -QcPdfName $qcName
+    if ([string]::IsNullOrWhiteSpace($liveGuid)) {
+        if ($Required) {
+            return New-QCFailureResult -Code 'QC_LANE_GUID_SYNC_PW_NOT_FOUND' -Message 'Live lane QC PDF GUID could not be resolved from ProjectWise.' -Data @{
+                folderPath = $folder; qcPdfName = $qcName; qcProcessType = $processType
+            }
+        }
+        return New-QCSuccessResult -Code 'QC_LANE_GUID_SYNC_PW_NOT_FOUND' -Message 'Lane QC PDF not found in ProjectWise yet.' -Data @{
+            written = $false; folderPath = $folder; qcPdfName = $qcName; qcProcessType = $processType
+        }
+    }
+
+    $packageId = $null
+    if (-not [string]::IsNullOrWhiteSpace($SourceDocumentGuid)) {
+        $packageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $SourceDocumentGuid
+    }
+    if (-not $packageId) {
+        $resolved = Resolve-SheetPackageFromDocument -DocumentName $qcName -FolderPath $folder -DocumentGuid $liveGuid
+        if ($resolved -and $resolved.sheetPackageId) {
+            try { $packageId = [guid]$resolved.sheetPackageId } catch { }
+        }
+    }
+    if (-not $packageId) {
+        $pkgRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 sheet_package_id
+FROM sheet_packages
+WHERE folder_path = @folderPath
+ORDER BY last_updated_at DESC
+"@ -Parameters @{ folderPath = $folder }
+        if ($pkgRes.IsSuccess -and $pkgRes.Data.table -and $pkgRes.Data.table.Rows.Count -gt 0) {
+            try { $packageId = [guid]$pkgRes.Data.table.Rows[0].sheet_package_id } catch { }
+        }
+    }
+    if (-not $packageId) {
+        return New-QCFailureResult -Code 'QC_LANE_GUID_SYNC_NO_PACKAGE' -Message 'Sheet package could not be resolved for lane QC PDF registration.' -Data @{
+            folderPath = $folder; qcPdfName = $qcName; documentGuid = $liveGuid
+        }
+    }
+
+    $upsert = Upsert-SheetPackageQcPdf -Config $Config -SheetPackageId $packageId -QcProcessType $processType `
+        -DocumentGuid $liveGuid -DocumentName $qcName -FolderPath $folder -CurrentPwState $CurrentPwState -Required
+    if (-not $upsert.IsSuccess) { return $upsert }
+
+    $colGuid = switch ($processType) {
+        'check' { 'qc_chk_pdf_guid' }
+        'review' { 'qc_rev_pdf_guid' }
+        default { 'qc_pdf_guid' }
+    }
+    $colName = switch ($processType) {
+        'check' { 'qc_chk_pdf_name' }
+        'review' { 'qc_rev_pdf_name' }
+        default { 'qc_pdf_name' }
+    }
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $liveGuid
+    if ($parsedGuid) {
+        [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_packages
+SET $colGuid = @docGuid, $colName = @docName, last_updated_at = SYSDATETIMEOFFSET()
+WHERE sheet_package_id = @sheetPackageId
+"@ -Parameters @{
+            docGuid = $parsedGuid
+            docName = $qcName
+            sheetPackageId = $packageId
+        })
+        [void](Write-SheetDocument -Config $Config -SheetPackageId $packageId `
+            -DocumentGuid $liveGuid -DocumentName $qcName -DocumentRole 'qc_pdf')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SourceDocumentGuid)) {
+        [void](Update-QCSheetQcPdf -Config $Config -SourceDocumentGuid $SourceDocumentGuid `
+            -QcPdfGuid $liveGuid -QcPdfName $qcName -QcProcessType $processType)
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_PDF_GUID_REGISTERED' `
+            -Message 'Registered live lane QC PDF GUID from ProjectWise after prepend.' -Data @{
+            folderPath = $folder
+            qcPdfName = $qcName
+            qcProcessType = $processType
+            documentGuid = $liveGuid
+            sheetPackageId = $packageId.ToString()
+            sourceDocumentGuid = $SourceDocumentGuid
+        } | Out-Null
+    }
+
+    return New-QCSuccessResult -Code 'QC_LANE_PDF_GUID_REGISTERED' -Message 'Live lane QC PDF GUID registered.' -Data @{
+        written = $true
+        documentGuid = $liveGuid
+        documentName = $qcName
+        qcProcessType = $processType
+        sheetPackageId = $packageId.ToString()
+        folderPath = $folder
+    }
+}
+
 function Resolve-QCSheetQcPdfGuid {
     <#
     .SYNOPSIS
@@ -4257,6 +4472,10 @@ function Resolve-QCSheetQcPdfGuid {
     $qcName = [string]$QcPdfName
     if ([string]::IsNullOrWhiteSpace($folder) -or [string]::IsNullOrWhiteSpace($qcName)) { return '' }
     $lane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $qcName
+
+    $pwGuid = _QDB-SearchPwLaneQcPdfGuid -FolderPath $folder -QcPdfName $qcName
+    if (-not [string]::IsNullOrWhiteSpace($pwGuid)) { return $pwGuid.Trim() }
+
     try {
         if ($lane) {
             $laneRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
@@ -4323,34 +4542,6 @@ ORDER BY last_updated_at DESC
             if (-not [string]::IsNullOrWhiteSpace($g3)) { return $g3.Trim() }
         }
     } catch { }
-    if (-not (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue)) { return '' }
-    try {
-        $docs = @(Get-PWDocumentsBySearch -FolderPath $folder -DocumentName $qcName -JustThisFolder -ErrorAction SilentlyContinue)
-        if ($docs.Count -le 0) { return '' }
-        $best = $null
-        $bestTicks = [long]::MinValue
-        foreach ($doc in $docs) {
-            $dg = ''
-            try { $dg = [string]$doc.DocumentGUID } catch { }
-            if ([string]::IsNullOrWhiteSpace($dg)) { continue }
-            $ticks = [long]::MinValue
-            foreach ($n in @('FileUpdatedDate', 'FileUpdateDate', 'DocumentUpdateDate', 'VersionModifiedDate')) {
-                $raw = $null
-                try { if ($doc.PSObject.Properties[$n]) { $raw = $doc.$n } } catch { }
-                if ($null -eq $raw) { continue }
-                try {
-                    $dt = [datetime]$raw
-                    if ($dt.Ticks -gt $ticks) { $ticks = $dt.Ticks }
-                } catch { }
-            }
-            if ($null -eq $best -or $ticks -gt $bestTicks) {
-                $best = $dg
-                $bestTicks = $ticks
-            }
-        }
-        if ($null -ne $best) { return [string]$best.Trim() }
-        if ($docs[0].DocumentGUID) { return [string]$docs[0].DocumentGUID }
-    } catch { }
     return ''
 }
 
@@ -4365,7 +4556,8 @@ function Update-QCSheetQcPdf {
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$SourceDocumentGuid,
         [string]$QcPdfGuid,
-        [string]$QcPdfName
+        [string]$QcPdfName,
+        [string]$QcProcessType = ''
     )
     if (-not (_QDB-IsEnabled -Config $Config)) { return New-QCSuccessResult -Code 'SHEET_INDEX_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false } }
     try {
@@ -4407,19 +4599,40 @@ WHERE document_guid = @sourceDocGuid
             if ($packageId -and -not [string]::IsNullOrWhiteSpace($QcPdfGuid) -and -not [string]::IsNullOrWhiteSpace($QcPdfName)) {
                 $qcParsed = _QDB-TryParseDocumentGuid -DocumentGuid $QcPdfGuid
                 if ($qcParsed) {
+                    $lane = ([string]$QcProcessType).Trim().ToLowerInvariant()
+                    if ([string]::IsNullOrWhiteSpace($lane)) {
+                        $lane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $QcPdfName
+                    }
+                    $colGuid = switch ($lane) {
+                        'check' { 'qc_chk_pdf_guid' }
+                        'review' { 'qc_rev_pdf_guid' }
+                        default { 'qc_pdf_guid' }
+                    }
+                    $colName = switch ($lane) {
+                        'check' { 'qc_chk_pdf_name' }
+                        'review' { 'qc_rev_pdf_name' }
+                        default { 'qc_pdf_name' }
+                    }
                     [void](Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE sheet_packages
-SET qc_pdf_guid = @qcPdfGuid,
-    qc_pdf_name = @qcPdfName,
+SET qc_pdf_guid = CASE WHEN @lane = 'production' THEN @qcPdfGuid ELSE qc_pdf_guid END,
+    qc_pdf_name = CASE WHEN @lane = 'production' THEN @qcPdfName ELSE qc_pdf_name END,
+    $colGuid = @qcPdfGuid,
+    $colName = @qcPdfName,
     last_updated_at = SYSDATETIMEOFFSET()
 WHERE sheet_package_id = @sheetPackageId
 "@ -Parameters @{
                         qcPdfGuid = $qcParsed
                         qcPdfName = $QcPdfName
                         sheetPackageId = $packageId
+                        lane = if ($lane) { $lane } else { 'production' }
                     })
                     [void](Write-SheetDocument -Config $Config -SheetPackageId $packageId `
                         -DocumentGuid $QcPdfGuid -DocumentName $QcPdfName -DocumentRole 'qc_pdf')
+                    if ($lane -and (Get-Command -Name 'Upsert-SheetPackageQcPdf' -ErrorAction SilentlyContinue)) {
+                        [void](Upsert-SheetPackageQcPdf -Config $Config -SheetPackageId $packageId -QcProcessType $lane `
+                            -DocumentGuid $QcPdfGuid -DocumentName $QcPdfName -FolderPath '' -Required)
+                    }
                 }
             }
         } catch { }
@@ -5753,4 +5966,4 @@ WHERE sheet_package_id = @sheetPackageId
     return @($results)
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Upsert-SheetPackageQcPdf, Update-SheetPackageQcPdfLaneState, Sync-SheetPackageLaneQcPdfsFromMembers, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Upsert-SheetPackageQcPdf, Update-SheetPackageQcPdfLaneState, Sync-SheetPackageLaneQcPdfsFromMembers, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Sync-QCLaneQcPdfGuidFromProjectWise, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

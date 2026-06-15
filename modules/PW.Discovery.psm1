@@ -2619,7 +2619,24 @@ function Sync-PWPostInitialPrependLaneStates {
         $laneProcessType = @{ planned = $true }
     }
 
-    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid '' -TargetState $laneTarget -IsLaneAuthority:$true
+    $laneGuid = ''
+    if (Get-Command -Name 'Sync-QCLaneQcPdfGuidFromProjectWise' -ErrorAction SilentlyContinue) {
+        try {
+            $reg = Sync-QCLaneQcPdfGuidFromProjectWise -Config $Config -FolderPath $FolderPath -QcPdfName $lanePdfName `
+                -QcProcessType $laneType -SourceDocumentGuid $DocumentGuid -CurrentPwState $laneTarget
+            if ($reg.IsSuccess -and $reg.Data -and $reg.Data.documentGuid) {
+                $laneGuid = [string]$reg.Data.documentGuid
+            }
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($laneGuid)) {
+        $laneDoc = _PWD-ResolvePwDocumentInFolder -DocByGuid @{} -FolderPath $FolderPath -DocumentName $lanePdfName -DocumentGuid ''
+        if ($laneDoc) {
+            try { $laneGuid = [string]$laneDoc.DocumentGUID } catch { }
+        }
+    }
+
+    _PWD-ApplyPostPrependState -TargetName $lanePdfName -TargetGuid $laneGuid -TargetState $laneTarget -IsLaneAuthority:$true
 
     if ($writeStemPdfReferenceState) {
         $stemGuid = ''

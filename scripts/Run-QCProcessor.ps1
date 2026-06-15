@@ -464,7 +464,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             }
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SUCCEEDED' -Message 'Job succeeded.' -Data $logData
 
-            # Link lane PDF to source sheet in sheet_index (fire-and-forget)
+            # Register live lane PDF GUID in telemetry after successful prepend.
             if ($jobType -eq 'QC_PREPEND' -and $resultData -is [hashtable] -and $resultData.ContainsKey('qcOutputPdf')) {
                 try {
                     $srcName = [string]$Job['sourceName']
@@ -472,26 +472,28 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
                     $qcPdfName = [System.IO.Path]::GetFileName([string]$resultData.qcOutputPdf)
                     if ($srcName -and $srcFolder -and $qcPdfName) {
                         $srcGuid = ''
+                        $qcProcessType = ''
                         if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable]) {
                             $md = $Job.metadata
                             foreach ($gk in @('triggerDocumentGuid', 'documentGuid')) {
                                 if ($md.ContainsKey($gk) -and $md[$gk]) { $srcGuid = [string]$md[$gk]; break }
                             }
+                            if ($md.ContainsKey('qcProcessType') -and $md.qcProcessType) { $qcProcessType = [string]$md.qcProcessType }
+                            if ($md.ContainsKey('expectedLanePdfName') -and $md.expectedLanePdfName) {
+                                $qcPdfName = [string]$md.expectedLanePdfName
+                            }
                         }
-                        $qcPdfGuid = ''
-                        if (Get-Command -Name 'Resolve-QCSheetQcPdfGuid' -ErrorAction SilentlyContinue) {
-                            $qcPdfGuid = [string](Resolve-QCSheetQcPdfGuid -Config $Config -FolderPath $srcFolder `
-                                -QcPdfName $qcPdfName -SourceDocumentGuid $srcGuid)
-                        } elseif (Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue) {
-                            try {
-                                $qcDocs = @(Get-PWDocumentsBySearch -FolderPath $srcFolder -DocumentName $qcPdfName -JustThisFolder -ErrorAction SilentlyContinue)
-                                if ($qcDocs.Count -gt 0 -and $qcDocs[0].DocumentGUID) {
-                                    $qcPdfGuid = [string]$qcDocs[0].DocumentGUID
-                                }
-                            } catch { }
-                        }
-                        if (Get-Command -Name 'Update-QCSheetQcPdf' -ErrorAction SilentlyContinue -and $srcGuid) {
-                            Update-QCSheetQcPdf -Config $Config -SourceDocumentGuid $srcGuid -QcPdfGuid $qcPdfGuid -QcPdfName $qcPdfName | Out-Null
+                        if (Get-Command -Name 'Sync-QCLaneQcPdfGuidFromProjectWise' -ErrorAction SilentlyContinue) {
+                            Sync-QCLaneQcPdfGuidFromProjectWise -Config $Config -FolderPath $srcFolder -QcPdfName $qcPdfName `
+                                -QcProcessType $qcProcessType -SourceDocumentGuid $srcGuid | Out-Null
+                        } elseif (Get-Command -Name 'Update-QCSheetQcPdf' -ErrorAction SilentlyContinue -and $srcGuid) {
+                            $qcPdfGuid = ''
+                            if (Get-Command -Name 'Resolve-QCSheetQcPdfGuid' -ErrorAction SilentlyContinue) {
+                                $qcPdfGuid = [string](Resolve-QCSheetQcPdfGuid -Config $Config -FolderPath $srcFolder `
+                                    -QcPdfName $qcPdfName -SourceDocumentGuid $srcGuid)
+                            }
+                            Update-QCSheetQcPdf -Config $Config -SourceDocumentGuid $srcGuid -QcPdfGuid $qcPdfGuid `
+                                -QcPdfName $qcPdfName -QcProcessType $qcProcessType | Out-Null
                         } else {
                             Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
 UPDATE sheet_index SET qc_pdf_name = @qcPdfName, last_updated_at = SYSDATETIMEOFFSET()
