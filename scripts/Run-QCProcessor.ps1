@@ -48,6 +48,15 @@ Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force -ErrorAct
 Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force
+if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+}
+if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+}
+if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+    throw "Core.Database.psm1 did not load (Test-QCDatabaseEnabled missing). Repo root: $repoRoot"
+}
 
 $script:WorkerLabel = $WorkerLabel
 

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "pw-qc-debug": {
-      "command": "pwsh",
+      "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       "args": [
         "-NoProfile",
         "-ExecutionPolicy",

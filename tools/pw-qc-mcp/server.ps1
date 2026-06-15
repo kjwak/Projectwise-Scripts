@@ -2,23 +2,58 @@
 # Communicates via MCP stdio transport (Content-Length framed JSON-RPC 2.0).
 
 $ErrorActionPreference = 'Stop'
+$WarningPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesRoot = Join-Path $repoRoot 'modules'
-Import-Module (Join-Path $modulesRoot 'QC.DebugMcp.psm1') -Force
-Import-Module (Join-Path $modulesRoot 'Core.Telemetry.psm1') -Force -ErrorAction SilentlyContinue
+$script:McpContextReady = $false
 
-$appSettings = $env:PWQC_APPSETTINGS
-if ([string]::IsNullOrWhiteSpace($appSettings)) {
-    $appSettings = Join-Path $repoRoot 'appsettings.json'
+function Initialize-McpRuntime {
+    if ($script:McpContextReady) { return }
+    Import-Module (Join-Path $modulesRoot 'QC.DebugMcp.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+    Import-Module (Join-Path $modulesRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+    Import-Module (Join-Path $modulesRoot 'Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+    $appSettings = $env:PWQC_APPSETTINGS
+    if ([string]::IsNullOrWhiteSpace($appSettings)) {
+        $appSettings = Join-Path $repoRoot 'appsettings.json'
+    }
+    Initialize-QCDebugMcpContext -AppSettingsPath $appSettings | Out-Null
+    $script:McpContextReady = $true
 }
-Initialize-QCDebugMcpContext -AppSettingsPath $appSettings | Out-Null
 
 function Write-McpLog {
-    param([Parameter(Mandatory)][string]$Message)
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [switch]$IsError
+    )
+    if (-not $IsError) { return }
     [Console]::Error.WriteLine($Message)
+}
+
+function ConvertTo-McpHashtable {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $h = @{}
+        foreach ($key in $Value.Keys) { $h[$key] = ConvertTo-McpHashtable $Value[$key] }
+        return $h
+    }
+    if ($Value -is [string] -or $Value -is [System.ValueType] -or $Value -is [decimal]) { return $Value }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $arr = @()
+        foreach ($item in $Value) { $arr += ,(ConvertTo-McpHashtable $item) }
+        return $arr
+    }
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = ConvertTo-McpHashtable $p.Value }
+        return $h
+    }
+    return $Value
 }
 
 function Read-McpMessage {
@@ -49,10 +84,12 @@ function Read-McpMessage {
 function Write-McpMessage {
     param([Parameter(Mandatory)]$Payload)
     $json = $Payload | ConvertTo-Json -Depth 80 -Compress
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    [Console]::Out.Write("Content-Length: $($bytes.Length)`r`n`r`n")
-    [Console]::Out.Write($json)
-    [Console]::Out.Flush()
+    $body = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $header = [System.Text.Encoding]::ASCII.GetBytes("Content-Length: $($body.Length)`r`n`r`n")
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($header, 0, $header.Length)
+    $stdout.Write($body, 0, $body.Length)
+    $stdout.Flush()
 }
 
 function New-McpToolSchema {
@@ -181,6 +218,7 @@ function Invoke-McpTool {
         [Parameter(Mandatory)][string]$Name,
         [hashtable]$Arguments = @{}
     )
+    Initialize-McpRuntime
     if (-not $script:ToolDispatch.ContainsKey($Name)) {
         throw "Unknown tool: $Name"
     }
@@ -214,8 +252,12 @@ function Handle-McpRequest {
 
     $method = [string]$Request.method
     $id = $Request.id
+    if ($null -eq $id -and $method -like 'notifications/*') { return }
+
     $params = @{}
-    if ($Request.params) { $params = [hashtable]$Request.params }
+    if ($Request.ContainsKey('params') -and $Request.params) {
+        $params = ConvertTo-McpHashtable $Request.params
+    }
 
     try {
         switch ($method) {
@@ -232,7 +274,9 @@ function Handle-McpRequest {
             'tools/call' {
                 $toolName = [string]$params.name
                 $toolArgs = @{}
-                if ($params.arguments) { $toolArgs = [hashtable]$params.arguments }
+                if ($params.ContainsKey('arguments') -and $params.arguments) {
+                    $toolArgs = ConvertTo-McpHashtable $params.arguments
+                }
                 $data = Invoke-McpTool -Name $toolName -Arguments $toolArgs
                 $json = $data | ConvertTo-Json -Depth 80 -Compress
                 Send-McpResponse -Id $id -Result @{
@@ -266,22 +310,20 @@ function Handle-McpRequest {
                 message = $_.Exception.Message
             }
         }
-        Write-McpLog "Request error ($method): $($_.Exception.Message)"
+        Write-McpLog -IsError "Request error ($method): $($_.Exception.Message)"
     }
 }
-
-Write-McpLog "pw-qc-debug MCP server started (appsettings: $appSettings)"
 
 while ($true) {
     $raw = Read-McpMessage
     if ($null -eq $raw) { break }
     if ([string]::IsNullOrWhiteSpace($raw)) { continue }
     try {
-        $request = $raw | ConvertFrom-Json -AsHashtable
+        $request = ConvertTo-McpHashtable ($raw | ConvertFrom-Json)
     } catch {
-        Write-McpLog "Invalid JSON: $($_.Exception.Message)"
+        Write-McpLog -IsError "Invalid JSON: $($_.Exception.Message)"
         continue
     }
-    if (-not $request.method) { continue }
+    if (-not $request.ContainsKey('method') -or -not $request.method) { continue }
     Handle-McpRequest -Request $request
 }
