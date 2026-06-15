@@ -29,9 +29,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+. (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot
 
 if ($DryRun.IsPresent -and $ConfirmDeletes.IsPresent) {
     throw 'Use -DryRun (preview only) OR -ConfirmDeletes (apply changes), not both.'
