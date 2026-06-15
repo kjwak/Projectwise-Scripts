@@ -118,6 +118,14 @@ InModuleScope -ModuleName PW.Discovery {
 $discoveryText = Get-Content (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Raw
 Assert-True ($discoveryText -match '_PWD-InvokeStaleSheetIndexAuditStateTriggers[\s\S]{0,400}-DeferNotification') `
     'Sync-PWAssociatedSheetWorkflowState wires stale index trigger before member loop'
+Assert-True ($discoveryText -match 'WATCH_AUDIT_STATE_SYNC_CANONICAL_RECONCILED') `
+    'Sync reconciles canonical state from batch live PW read before stale evaluation'
+Assert-False ($discoveryText -match 'sourcePwStateSource = ''sheet_index''') `
+    'canonical state must not fall back to stale sheet_index before batch PW read'
+
+$watchText = Get-Content (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1') -Raw
+Assert-True ($watchText -match '-AuditTargetStateName\s+\$acLivePwState') `
+    'Watch passes pre-read live PW state into Sync-PWAssociatedSheetWorkflowState'
 
 InModuleScope -ModuleName PW.Discovery {
     $script:stateWrites = @()

@@ -1265,6 +1265,7 @@ if ($statusSetRules.Count -ge 0) {
                                                 -DryRun:$isDryRun `
                                                 -ChangedByUser $acUserno `
                                                 -ChangedByUsername $acUsername `
+                                                -AuditTargetStateName $acLivePwState `
                                                 -AuditRawItemDesc $acItemDesc `
                                                 -AuditRawTextParam $acTextParam
                                         }

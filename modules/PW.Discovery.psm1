@@ -3963,13 +3963,8 @@ function Sync-PWAssociatedSheetWorkflowState {
         $sourcePwState = $auditTargetState
         $sourcePwStateSource = 'auditTargetHint'
     }
-    if ([string]::IsNullOrWhiteSpace($sourcePwState) -and (Get-Command -Name '_PWD-GetSheetIndexPwStateName' -ErrorAction SilentlyContinue)) {
-        $indexFallback = _PWD-GetSheetIndexPwStateName -Config $Config -DocumentGuid $DocumentGuid
-        if (-not [string]::IsNullOrWhiteSpace($indexFallback)) {
-            $sourcePwState = $indexFallback
-            $sourcePwStateSource = 'sheet_index'
-        }
-    }
+    # Do not seed canonical state from sheet_index here: stale index rows poison lane-PDF
+    # notifications when the single-doc PW read fails. Audit hints and batch GUID reads reconcile later.
     if ([string]::IsNullOrWhiteSpace($sourcePwState)) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_SYNC_NO_SOURCE_STATE' `
@@ -4184,6 +4179,33 @@ function Sync-PWAssociatedSheetWorkflowState {
                     folderPath = $FolderPath
                     error = [string]$_.Exception.Message
                 } | Out-Null
+            }
+        }
+    }
+
+    $triggerGuidKey = ([string]$DocumentGuid).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($triggerGuidKey) -and $stateByGuid.ContainsKey($triggerGuidKey)) {
+        $batchLiveState = [string]$stateByGuid[$triggerGuidKey]
+        if (-not [string]::IsNullOrWhiteSpace($batchLiveState)) {
+            $normalizedBatch = _PWD-NormalizeSheetIndexValue $batchLiveState
+            $normalizedCanonical = _PWD-NormalizeSheetIndexValue $canonicalState
+            if ($normalizedBatch -ne $normalizedCanonical) {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_CANONICAL_RECONCILED' `
+                        -Message 'Reconciled DOCUMENT_STATE canonical state from batch live ProjectWise read.' -Data @{
+                        auditEventId = $AuditEventId
+                        documentGuid = $DocumentGuid
+                        documentName = $DocumentName
+                        folderPath = $FolderPath
+                        previousCanonicalState = $canonicalState
+                        previousCanonicalStateSource = $sourcePwStateSource
+                        reconciledCanonicalState = $batchLiveState
+                        reconciledCanonicalStateSource = 'liveProjectWiseBatch'
+                    } | Out-Null
+                }
+                $canonicalState = $batchLiveState
+                $sourcePwState = $batchLiveState
+                $sourcePwStateSource = 'liveProjectWiseBatch'
             }
         }
     }
