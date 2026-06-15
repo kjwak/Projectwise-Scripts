@@ -785,6 +785,19 @@ function Invoke-QCSheetGroupWorkflowTransition {
         }
     }
 
+    if ((Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName) -and `
+            (Get-Command -Name '_PWD-GetLaneIndependentAuditMembers' -ErrorAction SilentlyContinue)) {
+        $Members = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $Members `
+            -TriggerDocumentGuid $TriggerDocumentGuid -TriggerDocumentName $TriggerDocumentName)
+        if (@($Members).Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($TriggerDocumentGuid)) {
+            $Members = @(@{
+                documentGuid = $TriggerDocumentGuid
+                documentName = $TriggerDocumentName
+                document = $null
+            })
+        }
+    }
+
     if (-not $StateByGuid) { $StateByGuid = @{} }
     if (-not $PreviousStateByGuid) { $PreviousStateByGuid = @{} }
 

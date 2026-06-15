@@ -3,23 +3,37 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 Import-Module (Join-Path $repoRoot 'modules/Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/PW.Discovery.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules/QC.Notifications.psm1') -Force
 
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
+function Assert-True($Condition, $Message) {
+    if (-not $Condition) { throw "ASSERT FAILED: $Message" }
+}
+
 $liveGuid = '0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b'
 $staleGuid = '35b253e0-a6b7-44ec-a248-09e97d454d58'
+$chkGuid = 'fcbe7d2c-1111-2222-3333-444455556666'
 $folder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+$apiFolder = 'caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
 $qcName = '080J082001ab001-qc.pdf'
+$chkName = '0818000063ea501-chk.pdf'
 $config = @{ database = @{ enabled = $true; connectionString = 'x' } }
 
 InModuleScope -ModuleName QC.Notifications {
     function Test-QCDatabaseEnabled { param([hashtable]$Config) return $true }
 
+    $script:pwSearchFolders = @()
     function Get-PWDocumentsBySearch {
         param([string]$FolderPath, [string]$DocumentName, [switch]$JustThisFolder)
+        $script:pwSearchFolders += $FolderPath
+        if ($FolderPath -eq $apiFolder -and $DocumentName -eq $chkName) {
+            return @([pscustomobject]@{ DocumentGUID = $chkGuid; Name = $DocumentName })
+        }
+        if ($FolderPath -eq $folder) { return @() }
         return @([pscustomobject]@{ DocumentGUID = $staleGuid; Name = $DocumentName })
     }
     function Get-PWDocumentsByGUIDs {
@@ -28,6 +42,9 @@ InModuleScope -ModuleName QC.Notifications {
         if ($g -eq $liveGuid) {
             return @([pscustomobject]@{ Name = $qcName; DocumentGUID = $liveGuid })
         }
+        if ($g -eq $chkGuid) {
+            return @([pscustomobject]@{ Name = $chkName; DocumentGUID = $chkGuid })
+        }
         return @()
     }
 
@@ -35,16 +52,22 @@ InModuleScope -ModuleName QC.Notifications {
         param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
 
         if ($Sql -match 'sheet_package_qc_pdfs') {
-            $table = New-Object System.Data.DataTable
-            [void]$table.Columns.Add('document_guid', [string])
-            [void]$table.Rows.Add($liveGuid)
-            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+            if ($Parameters -and $Parameters.qcPdfName -eq '080J082001ab001-prod.pdf') {
+                $table = New-Object System.Data.DataTable
+                [void]$table.Columns.Add('document_guid', [string])
+                [void]$table.Rows.Add($liveGuid)
+                return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+            }
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $null }
         }
         if ($Sql -match 'FROM sheet_packages' -and $Sql -match 'qc_pdf_guid') {
-            $table = New-Object System.Data.DataTable
-            [void]$table.Columns.Add('lane_guid', [string])
-            [void]$table.Rows.Add($liveGuid)
-            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+            if ($Parameters -and $Parameters.qcPdfName -eq '080J082001ab001-prod.pdf') {
+                $table = New-Object System.Data.DataTable
+                [void]$table.Columns.Add('lane_guid', [string])
+                [void]$table.Rows.Add($liveGuid)
+                return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+            }
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $null }
         }
         if ($Sql -match 'sheet_documents') {
             $table = New-Object System.Data.DataTable
@@ -53,10 +76,7 @@ InModuleScope -ModuleName QC.Notifications {
             return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
         }
         if ($Sql -match 'FROM sheet_index' -and $Sql -match 'document_guid') {
-            $table = New-Object System.Data.DataTable
-            [void]$table.Columns.Add('document_guid', [string])
-            [void]$table.Rows.Add($staleGuid)
-            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $null }
         }
         return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $null }
     }
@@ -66,6 +86,20 @@ InModuleScope -ModuleName QC.Notifications {
         -Event @{ qcProcessType = 'production' }
     Assert-Eq $resolved.documentGuid $liveGuid 'lane QC PDF GUID should win over stale sheet_documents, PW search, hint, and sheet_index'
     Assert-Eq $resolved.resolutionSource 'sheet_package_qc_pdfs' 'resolution source should identify lane table'
+
+    $script:pwSearchFolders = @()
+    $chkResolved = _QCN-ResolveLiveQcPdfDocumentGuidResult -Config $config -FolderPath $folder `
+        -QcPdfName $chkName -SheetStem '0818000063ea501' -HintGuid $staleGuid `
+        -Event @{ qcProcessType = 'check' }
+    Assert-Eq $chkResolved.documentGuid $chkGuid 'check lane PDF should resolve via PW search when DB index is empty'
+    Assert-Eq $chkResolved.resolutionSource 'pw_search' 'check lane should use pw_search before stale index'
+    Assert-True ($script:pwSearchFolders -contains $apiFolder) 'PW search should use cmdlet folder path without Documents prefix'
+
+    $laneTarget = _QCN-ResolveQcPdfNotificationTarget -Document $null -Config $config -Job $null `
+        -DocumentName $chkName -DocumentGuid $staleGuid `
+        -DocumentPath ($folder + '\' + $chkName)
+    Assert-Eq $laneTarget.documentGuid $chkGuid 'lane PDF notification target should replace stem GUID via PW search'
+    Assert-Eq $laneTarget.resolutionSource 'lane_pdf_pw_search' 'lane PDF target should identify pw_search resolution'
 
     $url = 'https://example.test/pwlink?objectId=0f9c6ba8-a5e1-40ed-b2a3-2b906cb4f38b&objectType=doc&datasource=x&app=pwe'
     Assert-Eq (_QCN-ExtractPwLinkDocumentGuid -Url $url) $liveGuid 'pwlink objectId should be extracted from URL'

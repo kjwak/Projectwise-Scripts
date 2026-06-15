@@ -47,6 +47,67 @@ $laneOnly = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $allMembers `
 Assert-Eq $laneOnly.Count 1 'only trigger member returned'
 Assert-Eq ([string]$laneOnly[0].documentName) 'sheet-chk.pdf' 'trigger is check lane PDF'
 
+Assert-True (_PWD-TestAutomationStemPdfStateWriteBlocked -DocumentName 'sheet.pdf' -TargetState 'Redlines Received') `
+    'stem PDF blocks lane workflow states'
+Assert-False (_PWD-TestAutomationStemPdfStateWriteBlocked -DocumentName 'sheet.pdf' -TargetState 'In Development' -WriteScope 'stem') `
+    'post-prepend stem writeback allowed'
+Assert-False (_PWD-TestAutomationStemPdfStateWriteBlocked -DocumentName 'sheet-chk.pdf' -TargetState 'Redlines Received') `
+    'lane PDF is not stem-protected'
+
+InModuleScope -ModuleName PW.Discovery {
+    function Get-PWAssociatedSheetMembers {
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid)
+        return @(
+            @{ documentGuid = '22222222-2222-2222-2222-222222222222'; documentName = 'sheet-chk.pdf' }
+            @{ documentGuid = '33333333-3333-3333-3333-333333333333'; documentName = 'sheet.pdf' }
+        )
+    }
+    function _PWD-TestLegacySiblingStateSyncEnabled { param($Config) return $true }
+    function _PWD-LogLaneStateIndependentTelemetry { param($AllMembers, $FolderPath, $TriggerSource, $TriggerDocumentName, $TriggerDocumentGuid) }
+
+    $syncMembers = @(Get-PWAssociatedSheetSyncMembers -Config @{} -FolderPath 'Documents\X' `
+        -DocumentName 'sheet-chk.pdf' -DocumentGuid '22222222-2222-2222-2222-222222222222')
+    Assert-Eq $syncMembers.Count 0 'lane trigger never participates in legacy sibling sync'
+}
+
+InModuleScope -ModuleName PW.Discovery {
+    $script:stateWrites = @()
+    function Get-PWDocumentWorkflowStateName { param($FolderPath, $DocumentName, $DocumentGuid) return 'In Development' }
+    function _PWD-GetSheetIndexPwStateName { param($Config, $DocumentGuid) return 'In Development' }
+    function _PWD-GetSheetIndexStateSnapshot { param($Config, $DocumentGuid) return @{ pwStateName = 'In Development'; lastAuditEventAt = $null } }
+    function _PWD-TestShouldBlockStaleRestartOverwrite { return $false }
+    function Test-QCDatabaseEnabled { return $false }
+    function _PWD-WriteDocumentStateLiveVerificationLog { }
+    function Test-QCDocumentStateAuditEventIsStale { return @{ isStale = $false } }
+    function Invoke-QCWorkflowStateEmailAttributeGate { return @{ blocked = $false } }
+    function _PWD-InvokeSetPwDocumentState {
+        param($Document, $StateName, $GuardContext)
+        $script:stateWrites += [pscustomobject]@{
+            documentName = [string]$GuardContext.documentName
+            stateName = [string]$StateName
+        }
+        return @{ applied = $true; verified = $true; readBackState = $StateName }
+    }
+    function Get-PWAssociatedSheetMembers {
+        return @(
+            @{ documentGuid = '22222222-2222-2222-2222-222222222222'; documentName = 'sheet-chk.pdf'; document = $null }
+            @{ documentGuid = '33333333-3333-3333-3333-333333333333'; documentName = 'sheet.pdf'; document = $null }
+        )
+    }
+    function _PWD-TestLegacySiblingStateSyncEnabled { return $false }
+    function _PWD-LogLaneStateIndependentTelemetry { }
+    function Get-PWDocumentWorkflowStateMapByGuid { return @{} }
+    function Invoke-QCSheetGroupWorkflowTransition { param($Config, $TriggerDocumentGuid, $TriggerDocumentName, $FolderPath, $SourceState, $TargetState, $TransitionSource, $Members, $StateByGuid, $PreviousStateByGuid, $AuditEventId, $ChangedByUser, $ChangedByUsername, $LastAuditEventAt, $DryRun, $AuditActionName) return @{ members = @() } }
+    function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState { }
+    function Test-QCWorkflowStateIsQcInitiated { return $false }
+
+    $script:stateWrites = @()
+    Sync-PWAssociatedSheetWorkflowState -Config @{} -DocumentGuid '22222222-2222-2222-2222-222222222222' `
+        -DocumentName 'sheet-chk.pdf' -FolderPath 'Documents\X' -LastAuditEventAt '2026-06-15 11:14:21'
+    $stemWrites = @($script:stateWrites | Where-Object { $_.documentName -eq 'sheet.pdf' })
+    Assert-Eq $stemWrites.Count 0 'chk DOCUMENT_STATE must not write stem PDF state'
+}
+
 # Resolve-SheetPackageFromDocument: lane PDFs are qc_pdf role with shared stem
 InModuleScope -ModuleName Core.Database {
     $prod = Resolve-SheetPackageFromDocument -DocumentName 'CA001-prod.pdf' -FolderPath 'Documents\X'

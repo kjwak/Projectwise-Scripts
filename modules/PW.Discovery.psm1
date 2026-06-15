@@ -1226,6 +1226,80 @@ function _PWD-TestAutomationDgnProtectedDocument {
     return ([string]$DocumentName -match '(?i)\.dgn$')
 }
 
+function _PWD-TestTriggerIsLaneQcPdf {
+    param([string]$DocumentName)
+    if (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) {
+        return [bool](Test-PWQcPdfLaneSuffix -DocumentName $DocumentName)
+    }
+    return ([string]$DocumentName -match '(?i)-(prod|chk|rev)\.pdf$')
+}
+
+function _PWD-TestAutomationStemPdfAllowedTargetState {
+    param(
+        [hashtable]$Config = $null,
+        [string]$TargetState = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($TargetState)) { return $false }
+    $allowed = @()
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        foreach ($key in @('production', 'qcInitiated')) {
+            try {
+                $name = [string](Get-QCWorkflowStateName -Settings $(if ($Config) { Get-QCWorkflowSettings -Config $Config } else { $null }) -StateKey $key)
+                if (-not [string]::IsNullOrWhiteSpace($name)) { $allowed += $name }
+            } catch { }
+        }
+    }
+    if ($allowed.Count -eq 0) {
+        $allowed = @('In Development', 'Initiate Origination')
+    }
+    foreach ($candidate in @($allowed)) {
+        if ((_PWD-NormalizeSheetIndexValue $TargetState) -eq (_PWD-NormalizeSheetIndexValue $candidate)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function _PWD-TestAutomationStemPdfStateWriteBlocked {
+    <#
+    Stem PDF automation may only write In Development (post-prepend) or Initiate Origination intake paths.
+    Lane QC states must never be copied onto the stem sheet PDF.
+    #>
+    param(
+        [string]$DocumentName = '',
+        [string]$TargetState = '',
+        [string]$WriteScope = 'workflow',
+        [hashtable]$Config = $null
+    )
+    if (-not (Get-Command -Name 'Test-QCIsSheetPdfDocumentName' -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-QCIsSheetPdfDocumentName -DocumentName $DocumentName)) { return $false }
+    if ($WriteScope -eq 'stem') { return $false }
+    return -not (_PWD-TestAutomationStemPdfAllowedTargetState -Config $Config -TargetState $TargetState)
+}
+
+function _PWD-LogAutomationStemPdfWriteBlocked {
+    param(
+        [string]$Operation = '',
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$CallSite = '',
+        [string]$TargetState = '',
+        [string]$TriggerDocumentName = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Level 'Information' -Code 'QC_STEM_PDF_AUTOMATION_WRITE_BLOCKED' `
+        -Message 'Automation blocked from copying lane workflow state onto stem sheet PDF.' -Data @{
+        operation = [string]$Operation
+        documentName = [string]$DocumentName
+        documentGuid = [string]$DocumentGuid
+        folderPath = [string]$FolderPath
+        callSite = [string]$CallSite
+        targetState = [string]$TargetState
+        triggerDocumentName = [string]$TriggerDocumentName
+    } | Out-Null
+}
+
 function _PWD-TestAutomationWritesQcProcessTypeOnAttributes {
     param(
         [hashtable]$Attributes,
@@ -1634,6 +1708,11 @@ function Get-PWAssociatedSheetSyncMembers {
     )
     $all = @(Get-PWAssociatedSheetMembers -Config $Config -FolderPath $FolderPath `
         -DocumentName $DocumentName -DocumentGuid $DocumentGuid)
+    if (_PWD-TestTriggerIsLaneQcPdf -DocumentName $DocumentName) {
+        _PWD-LogLaneStateIndependentTelemetry -AllMembers $all -FolderPath $FolderPath -TriggerSource $TriggerSource `
+            -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
+        return @()
+    }
     $syncNames = @{}
     $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
     foreach ($n in @(Get-PWAssociatedSheetSyncDocumentNames -SheetStem $stem)) {
@@ -1969,9 +2048,19 @@ function _PWD-InvokeSetPwDocumentState {
     $folderPath = [string]$GuardContext.folderPath
     $documentName = [string]$GuardContext.documentName
     $documentGuid = [string]$GuardContext.documentGuid
-    if ($Document -and [string]::IsNullOrWhiteSpace($documentName)) {
-        try { $documentName = [string]$Document.Name } catch { }
+    if ($Document) {
+        if ([string]::IsNullOrWhiteSpace($documentName)) {
+            try { $documentName = [string]$Document.Name } catch { }
+        }
+        if ([string]::IsNullOrWhiteSpace($documentGuid)) {
+            try { $documentGuid = [string]$Document.DocumentGUID } catch { }
+        }
+        if ([string]::IsNullOrWhiteSpace($folderPath)) {
+            try { $folderPath = [string]$Document.FolderPath } catch { }
+        }
     }
+    $writeScope = if ($GuardContext.writeScope) { [string]$GuardContext.writeScope } else { 'workflow' }
+
     if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $documentName) {
         _PWD-LogAutomationDgnWriteBlocked -Operation 'workflow_state' -DocumentName $documentName `
             -DocumentGuid $documentGuid -FolderPath $folderPath -CallSite $(if ($GuardContext.callSite) { [string]$GuardContext.callSite } else { '_PWD-InvokeSetPwDocumentState' })
@@ -1985,19 +2074,23 @@ function _PWD-InvokeSetPwDocumentState {
             targetState = $StateName
         }
     }
-    if ($Document) {
-        if ([string]::IsNullOrWhiteSpace($documentName)) {
-            try { $documentName = [string]$Document.Name } catch { }
-        }
-        if ([string]::IsNullOrWhiteSpace($documentGuid)) {
-            try { $documentGuid = [string]$Document.DocumentGUID } catch { }
-        }
-        if ([string]::IsNullOrWhiteSpace($folderPath)) {
-            try { $folderPath = [string]$Document.FolderPath } catch { }
+    if (_PWD-TestAutomationStemPdfStateWriteBlocked -DocumentName $documentName -TargetState $StateName `
+            -WriteScope $writeScope -Config $cfg) {
+        $triggerName = if ($GuardContext.triggerDocumentName) { [string]$GuardContext.triggerDocumentName } else { '' }
+        _PWD-LogAutomationStemPdfWriteBlocked -Operation 'workflow_state' -DocumentName $documentName `
+            -DocumentGuid $documentGuid -FolderPath $folderPath `
+            -CallSite $(if ($GuardContext.callSite) { [string]$GuardContext.callSite } else { '_PWD-InvokeSetPwDocumentState' }) `
+            -TargetState $StateName -TriggerDocumentName $triggerName
+        return @{
+            applied = $false
+            verified = $false
+            skipped = $true
+            skipReason = 'stem_pdf_lane_state_write_blocked'
+            documentName = $documentName
+            documentGuid = $documentGuid
+            targetState = $StateName
         }
     }
-
-    $writeScope = if ($GuardContext.writeScope) { [string]$GuardContext.writeScope } else { 'workflow' }
     $useVerified = $true
     if (Get-Command -Name 'Test-QCWorkflowStateWritebackUseVerified' -ErrorAction SilentlyContinue) {
         try { $useVerified = Test-QCWorkflowStateWritebackUseVerified -Config $cfg } catch { }
@@ -4022,11 +4115,19 @@ function Sync-PWAssociatedSheetWorkflowState {
     if (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) {
         $dbEnabled = Test-QCDatabaseEnabled -Config $Config
     }
+    $triggerIsLanePdf = _PWD-TestTriggerIsLaneQcPdf -DocumentName $DocumentName
 
     foreach ($member in $members) {
         $dg = [string]$member.documentGuid
         $dn = [string]$member.documentName
         if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn) { continue }
+        if ($triggerIsLanePdf -and (Get-Command -Name 'Test-QCIsSheetPdfDocumentName' -ErrorAction SilentlyContinue) `
+                -and (Test-QCIsSheetPdfDocumentName -DocumentName $dn)) {
+            _PWD-LogAutomationStemPdfWriteBlocked -Operation 'audit_state_sync' -DocumentName $dn -DocumentGuid $dg `
+                -FolderPath $FolderPath -CallSite 'Sync-PWAssociatedSheetWorkflowState' `
+                -TargetState $canonicalState -TriggerDocumentName $DocumentName
+            continue
+        }
         if (-not $dg) { continue }
 
         $currentState = if ($stateByGuid.ContainsKey($dg.ToLowerInvariant())) {
@@ -4143,6 +4244,7 @@ WHERE document_guid = @docGuid
                     livePwState = [string]$currentState
                     changedByUsername = $ChangedByUsername
                     writeScope = 'workflow'
+                    triggerDocumentName = $DocumentName
                 }
                 $change.applied = [bool]$writeResult.applied
                 $change.verified = [bool]$writeResult.verified
