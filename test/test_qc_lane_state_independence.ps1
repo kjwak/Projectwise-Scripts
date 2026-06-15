@@ -38,7 +38,7 @@ InModuleScope -ModuleName PW.Discovery {
 # Lane-independent audit members: only trigger document
 $allMembers = @(
     @{ documentGuid = '11111111-1111-1111-1111-111111111111'; documentName = 'sheet-prod.pdf' }
-    @{ documentGuid = '22222222-2222-2222-2222-222222222222'; documentName = 'sheet-chk.pdf' }
+    @{ documentGuid = $staleGuid; documentName = 'sheet-chk.pdf' }
     @{ documentGuid = '33333333-3333-3333-3333-333333333333'; documentName = 'sheet.pdf' }
     @{ documentGuid = '44444444-4444-4444-4444-444444444444'; documentName = 'sheet.dgn' }
 )
@@ -46,6 +46,13 @@ $laneOnly = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $allMembers `
     -TriggerDocumentGuid '22222222-2222-2222-2222-222222222222' -TriggerDocumentName 'sheet-chk.pdf')
 Assert-Eq $laneOnly.Count 1 'only trigger member returned'
 Assert-Eq ([string]$laneOnly[0].documentName) 'sheet-chk.pdf' 'trigger is check lane PDF'
+
+$staleGuid = '00913b00-94c6-4c23-b6a3-7b379b527141'
+$liveGuid = 'c93781c5-4540-4916-a97e-5a07a7f70433'
+$laneFromStaleIndex = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $allMembers `
+    -TriggerDocumentGuid $liveGuid -TriggerDocumentName 'sheet-chk.pdf')
+Assert-Eq $laneFromStaleIndex.Count 1 'lane match by name when index GUID is stale'
+Assert-Eq ([string]$laneFromStaleIndex[0].documentGuid) $liveGuid 'audit trigger GUID overrides stale sheet_index member'
 
 Assert-True (_PWD-TestAutomationStemPdfStateWriteBlocked -DocumentName 'sheet.pdf' -TargetState 'Redlines Received') `
     'stem PDF blocks lane workflow states'
@@ -71,6 +78,48 @@ InModuleScope -ModuleName PW.Discovery {
 }
 
 InModuleScope -ModuleName PW.Discovery {
+    $script:staleAuditCalls = 0
+    function Get-QCAuditWorkflowTriggerSettings {
+        return @{
+            enabled = $true
+            recordStateHistory = $true
+            recordTransitions = $true
+            notifyOnStateChange = $true
+        }
+    }
+    function Invoke-QCAuditWorkflowStateChangeTriggers {
+        param(
+            [hashtable]$Config,
+            [string]$DocumentGuid,
+            [string]$DocumentName,
+            [string]$FolderPath,
+            [string]$PreviousState,
+            [string]$CurrentState,
+            [object]$Document = $null,
+            [bool]$DryRun = $false,
+            [string]$AuditActionName = 'DOCUMENT_STATE',
+            [switch]$SuppressNotification
+        )
+        $script:staleAuditCalls++
+        if (-not $SuppressNotification) { throw 'stale index trigger must defer notification when sheet-group notify follows' }
+    }
+    function _PWD-ResolveSheetPackageNotificationDocumentGuid { param([array]$Members) return 'c93781c5-4540-4916-a97e-5a07a7f70433' }
+    function _PWD-GetSheetIndexPwStateName { param($Config, $DocumentGuid) return 'Originated' }
+
+    $liveGuid = 'c93781c5-4540-4916-a97e-5a07a7f70433'
+    $script:staleAuditCalls = 0
+    _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config @{} `
+        -Members @(@{ documentGuid = $liveGuid; documentName = 'sheet-chk.pdf'; document = $null }) `
+        -StateByGuid @{ $liveGuid.ToLowerInvariant() = 'Redlines Received' } `
+        -FolderPath 'documents\x' -CanonicalState 'Redlines Received' -DeferNotification
+    Assert-Eq $script:staleAuditCalls 1 'stale index trigger records telemetry when PW moved before sheet_index'
+}
+
+$discoveryText = Get-Content (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Raw
+Assert-True ($discoveryText -match '_PWD-InvokeStaleSheetIndexAuditStateTriggers[\s\S]{0,400}-DeferNotification') `
+    'Sync-PWAssociatedSheetWorkflowState wires stale index trigger before member loop'
+
+InModuleScope -ModuleName PW.Discovery {
     $script:stateWrites = @()
     function Get-PWDocumentWorkflowStateName { param($FolderPath, $DocumentName, $DocumentGuid) return 'In Development' }
     function _PWD-GetSheetIndexPwStateName { param($Config, $DocumentGuid) return 'In Development' }
@@ -80,6 +129,7 @@ InModuleScope -ModuleName PW.Discovery {
     function _PWD-WriteDocumentStateLiveVerificationLog { }
     function Test-QCDocumentStateAuditEventIsStale { return @{ isStale = $false } }
     function Invoke-QCWorkflowStateEmailAttributeGate { return @{ blocked = $false } }
+    function Test-QCShouldSuppressAuditSheetStateSync { return $false }
     function _PWD-InvokeSetPwDocumentState {
         param($Document, $StateName, $GuardContext)
         $script:stateWrites += [pscustomobject]@{

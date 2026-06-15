@@ -55,4 +55,22 @@ InModuleScope -ModuleName Core.Database {
     Assert-Eq $resolved $liveGuid 'Resolve-QCSheetQcPdfGuid should prefer live PW search over stale DB'
 }
 
+# _PWD-SyncSheetPackageLaneQcPdfs reconciles lane GUID columns via live PW before member upsert.
+InModuleScope -ModuleName PW.Discovery {
+    $script:laneGuidSyncCalls = @()
+    function Sync-QCLaneQcPdfGuidFromProjectWise {
+        param($Config, $FolderPath, $QcPdfName, $QcProcessType, $CurrentPwState)
+        $script:laneGuidSyncCalls += [pscustomobject]@{ name = $QcPdfName; type = $QcProcessType }
+        return @{ IsSuccess = $true; Data = @{ written = $true } }
+    }
+    function Sync-SheetPackageLaneQcPdfsFromMembers { param($Config, $FolderPath, $SheetStem, $Members) return @() }
+
+    $script:laneGuidSyncCalls = @()
+    _PWD-SyncSheetPackageLaneQcPdfs -Config @{} -FolderPath 'documents\x' -SheetStem '080J082001ca001' `
+        -Members @(@{ documentGuid = '00913b00-94c6-4c23-b6a3-7b379b527141'; documentName = '080J082001ca001-chk.pdf' })
+    Assert-Eq $script:laneGuidSyncCalls.Count 3 'reconciles production, check, and review lane GUIDs from PW'
+    $chkCall = @($script:laneGuidSyncCalls | Where-Object { $_.type -eq 'check' } | Select-Object -First 1)
+    Assert-Eq $chkCall.name '080J082001ca001-chk.pdf' 'check lane reconciliation uses expected filename'
+}
+
 Write-Host 'OK: lane PDF GUID sync tests passed.' -ForegroundColor Green

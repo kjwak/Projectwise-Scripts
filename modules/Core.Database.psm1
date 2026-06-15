@@ -5966,4 +5966,204 @@ WHERE sheet_package_id = @sheetPackageId
     return @($results)
 }
 
-Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Upsert-SheetPackageQcPdf, Update-SheetPackageQcPdfLaneState, Sync-SheetPackageLaneQcPdfsFromMembers, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Sync-QCLaneQcPdfGuidFromProjectWise, Update-QCSheetQcPdf, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat
+function Remove-QCLaneQcPdfRegistryRecords {
+    <#
+    .SYNOPSIS
+    Purges registry/index rows for a deleted lane QC PDF (*-prod/-chk/-rev.pdf) and records a QC workflow event.
+    .DESCRIPTION
+    Called on DOCUMENT_DELETE audit events. Deactivates sheet_package_qc_pdfs, removes sheet_index and
+    sheet_documents rows for the deleted GUID, and clears lane columns on sheet_packages when they still
+    point at the deleted GUID. Does not touch transition_events, qc_workflow_events history from prior
+    transitions, document_state_history, notification_log, or processing_jobs (except the new delete event).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [string]$FolderPath = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [string]$LastAuditEventAt = '',
+        [switch]$DryRun
+    )
+
+    $docName = ([string]$DocumentName).Trim()
+    $lane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $docName
+    if (-not $lane) {
+        return New-QCSuccessResult -Code 'LANE_PDF_DELETE_SKIPPED' -Message 'Not a lane QC PDF filename; registry cleanup skipped.' -Data @{
+            skipped = $true; reason = 'not_lane_pdf'; documentName = $docName
+        }
+    }
+
+    $parsedGuid = _QDB-TryParseDocumentGuid -DocumentGuid $DocumentGuid
+    if (-not $parsedGuid) {
+        return New-QCFailureResult -Code 'LANE_PDF_DELETE_GUID_INVALID' -Message 'document_guid is not a valid GUID.' -Data @{ documentGuid = $DocumentGuid }
+    }
+    $guidStr = $parsedGuid.ToString()
+    $folder = _QDB-NormalizeTelemetryPath -Path $FolderPath
+
+    $packageId = $null
+    try { $packageId = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $guidStr } catch { }
+    if (-not $packageId -and $folder) {
+        try {
+            $resolved = Resolve-SheetPackageFromDocument -DocumentGuid $guidStr -DocumentName $docName -FolderPath $folder
+            if ($resolved.isSheetPackageMember) {
+                $packageId = Resolve-SheetPackageIdForSheetGroup -Config $Config -FolderPath $folder `
+                    -SheetStem $resolved.sheetStem -DocumentGuid $guidStr -DocumentName $docName
+            }
+        } catch { }
+    }
+
+    $prevState = ''
+    if (_QDB-IsEnabled -Config $Config) {
+        try {
+            $stRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT TOP 1 COALESCE(q.current_pw_state, q.pw_state_name, q.previous_pw_state) AS last_state
+FROM (
+    SELECT current_pw_state, previous_pw_state, CAST(NULL AS NVARCHAR(100)) AS pw_state_name
+    FROM sheet_package_qc_pdfs WHERE document_guid = @docGuid
+    UNION ALL
+    SELECT CAST(NULL AS NVARCHAR(100)), CAST(NULL AS NVARCHAR(100)), pw_state_name
+    FROM sheet_index WHERE document_guid = @docGuid
+) q
+WHERE COALESCE(q.current_pw_state, q.pw_state_name, q.previous_pw_state) IS NOT NULL
+"@ -Parameters @{ docGuid = $parsedGuid }
+            if ($stRes.IsSuccess -and $stRes.Data.table -and $stRes.Data.table.Rows.Count -gt 0) {
+                $cell = $stRes.Data.table.Rows[0].last_state
+                if ($cell -isnot [DBNull] -and -not [string]::IsNullOrWhiteSpace([string]$cell)) {
+                    $prevState = [string]$cell
+                }
+            }
+        } catch { }
+    }
+
+    $counts = @{
+        sheetPackageQcPdfsDeactivated = 0
+        sheetIndexDeleted             = 0
+        sheetIndexQcLinksCleared      = 0
+        sheetPackagesLaneCleared      = 0
+        sheetDocumentsDeleted         = 0
+    }
+    $writesAllowed = (Test-QCDatabaseWritesAllowed -Config $Config) -and -not $DryRun
+
+    if ($writesAllowed) {
+        $deactRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_package_qc_pdfs
+SET is_active = 0, updated_at = SYSDATETIMEOFFSET()
+WHERE document_guid = @docGuid AND is_active = 1
+"@ -Parameters @{ docGuid = $parsedGuid }
+        if (-not $deactRes.IsSuccess) {
+            return New-QCErrorResult -Code 'LANE_PDF_DELETE_DEACTIVATE_FAILED' -Message $deactRes.Message -Data @{
+                documentGuid = $guidStr; qcProcessType = $lane
+            }
+        }
+        if ($deactRes.Data.rowsAffected) { $counts.sheetPackageQcPdfsDeactivated = [int]$deactRes.Data.rowsAffected }
+
+        $idxDelRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+DELETE FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $parsedGuid }
+        if (-not $idxDelRes.IsSuccess) {
+            return New-QCErrorResult -Code 'LANE_PDF_DELETE_INDEX_FAILED' -Message $idxDelRes.Message -Data @{ documentGuid = $guidStr }
+        }
+        if ($idxDelRes.Data.rowsAffected) { $counts.sheetIndexDeleted = [int]$idxDelRes.Data.rowsAffected }
+
+        $idxLinkRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_index
+SET qc_pdf_guid = NULL, qc_pdf_name = NULL, last_updated_at = SYSDATETIMEOFFSET()
+WHERE qc_pdf_guid = @guidStr
+"@ -Parameters @{ guidStr = $guidStr }
+        if (-not $idxLinkRes.IsSuccess) {
+            return New-QCErrorResult -Code 'LANE_PDF_DELETE_INDEX_LINK_FAILED' -Message $idxLinkRes.Message -Data @{ documentGuid = $guidStr }
+        }
+        if ($idxLinkRes.Data.rowsAffected) { $counts.sheetIndexQcLinksCleared = [int]$idxLinkRes.Data.rowsAffected }
+
+        $pkgClrRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+UPDATE sheet_packages SET
+    qc_pdf_guid = CASE WHEN qc_pdf_guid = @docGuid THEN NULL ELSE qc_pdf_guid END,
+    qc_pdf_name = CASE WHEN qc_pdf_guid = @docGuid THEN NULL ELSE qc_pdf_name END,
+    qc_chk_pdf_guid = CASE WHEN qc_chk_pdf_guid = @docGuid THEN NULL ELSE qc_chk_pdf_guid END,
+    qc_chk_pdf_name = CASE WHEN qc_chk_pdf_guid = @docGuid THEN NULL ELSE qc_chk_pdf_name END,
+    qc_rev_pdf_guid = CASE WHEN qc_rev_pdf_guid = @docGuid THEN NULL ELSE qc_rev_pdf_guid END,
+    qc_rev_pdf_name = CASE WHEN qc_rev_pdf_guid = @docGuid THEN NULL ELSE qc_rev_pdf_name END,
+    last_updated_at = SYSDATETIMEOFFSET()
+WHERE qc_pdf_guid = @docGuid OR qc_chk_pdf_guid = @docGuid OR qc_rev_pdf_guid = @docGuid
+"@ -Parameters @{ docGuid = $parsedGuid }
+        if (-not $pkgClrRes.IsSuccess) {
+            return New-QCErrorResult -Code 'LANE_PDF_DELETE_PACKAGE_FAILED' -Message $pkgClrRes.Message -Data @{ documentGuid = $guidStr }
+        }
+        if ($pkgClrRes.Data.rowsAffected) { $counts.sheetPackagesLaneCleared = [int]$pkgClrRes.Data.rowsAffected }
+
+        $sdDelRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql @"
+DELETE FROM sheet_documents WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $parsedGuid }
+        if (-not $sdDelRes.IsSuccess) {
+            return New-QCErrorResult -Code 'LANE_PDF_DELETE_SHEET_DOC_FAILED' -Message $sdDelRes.Message -Data @{ documentGuid = $guidStr }
+        }
+        if ($sdDelRes.Data.rowsAffected) { $counts.sheetDocumentsDeleted = [int]$sdDelRes.Data.rowsAffected }
+    }
+
+    $jobId = ''
+    if ($null -ne $AuditEventId -and $AuditEventId -gt 0) {
+        $jobId = 'qc_lane_delete_{0}' -f $AuditEventId
+    }
+
+    $payloadObj = @{
+        auditAction     = 'DOCUMENT_DELETE'
+        documentName    = $docName
+        folderPath      = $folder
+        qcProcessType   = $lane
+        auditEventId    = $AuditEventId
+        lastAuditEventAt = $LastAuditEventAt
+        registryCleanup = $counts
+        dryRun          = [bool]$DryRun
+        writesApplied   = [bool]$writesAllowed
+    }
+    $payloadJson = ''
+    try { $payloadJson = ($payloadObj | ConvertTo-Json -Compress) } catch { }
+
+    $wfParams = @{
+        Config       = $Config
+        DocumentId   = $guidStr
+        JobId        = $jobId
+        EventType    = 'DOCUMENT_DELETE'
+        PreviousPwState = $prevState
+        TargetPwState   = ''
+        DecisionCode    = 'QC_LANE_PDF_REGISTRY_PURGED'
+        QcReviewType    = $lane
+        PayloadJson     = $payloadJson
+    }
+    if ($null -ne $packageId) { $wfParams['SheetPackageId'] = $packageId }
+    if ($DryRun -or -not $writesAllowed) { $wfParams['PlannedOnly'] = $true }
+
+    $wfRes = $null
+    if (Get-Command -Name 'Write-QCWorkflowEventRow' -ErrorAction SilentlyContinue) {
+        $wfRes = Write-QCWorkflowEventRow @wfParams
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level 'Information' -Code 'QC_LANE_PDF_DELETED' `
+            -Message 'Lane QC PDF DOCUMENT_DELETE processed; registry purged and QC workflow event recorded.' -Data @{
+            documentGuid   = $guidStr
+            documentName   = $docName
+            folderPath     = $folder
+            qcProcessType  = $lane
+            auditEventId   = $AuditEventId
+            sheetPackageId = if ($packageId) { $packageId.ToString() } else { '' }
+            registryCleanup = $counts
+            workflowEventWritten = if ($wfRes) { [bool]$wfRes.IsSuccess } else { $false }
+            dryRun         = [bool]$DryRun
+        } | Out-Null
+    }
+
+    return New-QCSuccessResult -Code 'LANE_PDF_DELETE_PROCESSED' -Message 'Lane QC PDF delete registry cleanup completed.' -Data @{
+        written         = [bool]$writesAllowed
+        documentGuid    = $guidStr
+        documentName    = $docName
+        qcProcessType   = $lane
+        sheetPackageId  = if ($packageId) { $packageId.ToString() } else { '' }
+        registryCleanup = $counts
+        workflowEvent   = if ($wfRes) { $wfRes.Code } else { '' }
+    }
+}
+
+Export-ModuleMember -Function Test-QCDatabaseEnabled, Test-QCDatabaseWritesAllowed, Test-QCSheetIndexFolderPath, Get-QCDatabaseConnection, Invoke-QCDatabaseQuery, Invoke-QCDatabaseNonQuery, Invoke-QCDatabaseScalar, Invoke-QCDatabaseBatch, New-QCDatabaseSession, Invoke-QCDatabaseNonQueryWithConnection, Invoke-QCDatabaseScalarWithConnection, Initialize-QCDatabaseSchema, Get-QCProcessingJobType, New-QCStateChangeJobId, Write-QCStateChangeJobTelemetry, Write-QCAuditEventRows, Write-QCJobTelemetry, Write-QCPollRunTelemetry, Write-QCDocumentStateHistoryRow, Write-QCWorkflowEventRow, Write-QCTransitionEvent, Ensure-QCTransitionEvent, Test-QCTransitionEventNotificationSent, Update-QCTransitionEventNotification, Get-QCTransitionEventActor, Get-QCAuditEventActor, Write-QCNotificationTelemetry, Resolve-SheetPackageFromDocument, Get-SheetPackageIdForDocument, Resolve-SheetPackageIdForSheetGroup, Resolve-QCCycleCompletionSheetPackageId, Ensure-SheetPackage, Write-SheetDocument, Upsert-SheetPackageQcPdf, Update-SheetPackageQcPdfLaneState, Sync-SheetPackageLaneQcPdfsFromMembers, Build-SheetPackageBackfillPlan, Write-QCSheetIndex, Write-QCSheetIndexBatch, Update-QCSheetIndexPwStateName, Get-QCSheetIndexCycle, Update-QCSheetIndexCycle, Resolve-QCSheetQcPdfGuid, Sync-QCLaneQcPdfGuidFromProjectWise, Update-QCSheetQcPdf, Remove-QCLaneQcPdfRegistryRecords, Get-QCReviewTypeBucket, Ensure-QCCycleCompletion, Update-QCSheetCycleCompletionSummary, Get-QCPWUnresolvedUserNumbers, Get-QCPWUserIdentity, Write-QCPWUserDirectory, Get-QCDocumentFolderCache, Get-QCNewerSheetDocumentStateAuditEvent, Get-QCUnprocessedAuditEvents, Update-QCAuditEventsResolvedFolders, Mark-QCAuditEventsProcessed, Upsert-QCDocumentActivityFolder, Get-QCWatcherStateValue, Set-QCWatcherStateValue, Get-QCAuditWatermarkUtc, Set-QCAuditWatermarkUtc, Get-QCPwDocumentCacheBatch, Set-QCPwDocumentCacheEntry, Get-QCPwFolderGuidCache, Get-QCPwFolderCacheBatch, Set-QCPwFolderCacheEntry, Update-QCProcessingJobCheckpoint, Update-QCProcessingJobHeartbeat

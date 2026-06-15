@@ -1180,9 +1180,10 @@ if ($statusSetRules.Count -ge 0) {
                                 if ($ac.objGuid) {
                                     $acAction = [string]$ac.actionName
                                     $isDocumentState = $acAction -eq 'DOCUMENT_STATE'
+                                    $isDocumentDelete = $acAction -eq 'DOCUMENT_DELETE'
                                     $syncAttributes = $acAction -eq 'DOCUMENT_ATTR'
-                                    if ($isDocumentState -or $syncAttributes) {
-                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state event on watchlist document.' -Data @{
+                                    if ($isDocumentState -or $syncAttributes -or $isDocumentDelete) {
+                                        _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_OWNERSHIP_EVENT' -Message 'Audit attr/state/delete event on watchlist document.' -Data @{
                                             actionName     = $acAction
                                             documentName   = $itemName
                                             folderPath     = $fp
@@ -1266,6 +1267,50 @@ if ($statusSetRules.Count -ge 0) {
                                                 -ChangedByUsername $acUsername `
                                                 -AuditRawItemDesc $acItemDesc `
                                                 -AuditRawTextParam $acTextParam
+                                        }
+                                    } elseif ($isDocumentDelete) {
+                                        $isLaneQcPdf = $false
+                                        if (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue) {
+                                            $isLaneQcPdf = [bool](Test-PWQcPdfLaneSuffix -DocumentName $itemName)
+                                        } elseif ($itemName -match '(?i)-(prod|chk|rev)\.pdf$') {
+                                            $isLaneQcPdf = $true
+                                        }
+                                        if ($isLaneQcPdf) {
+                                            $deleteInSheetsFolder = [bool]$ac.isSheetsFolder
+                                            if (-not $deleteInSheetsFolder -and (Get-Command -Name 'Test-QCSheetIndexFolderPath' -ErrorAction SilentlyContinue)) {
+                                                try { $deleteInSheetsFolder = [bool](Test-QCSheetIndexFolderPath -FolderPath $fp) } catch { }
+                                            }
+                                        }
+                                        if ($isLaneQcPdf -and $deleteInSheetsFolder) {
+                                            if (-not (_Watch-EnsureAllModuleExports)) {
+                                                throw 'Required module exports unavailable before DOCUMENT_DELETE lane registry cleanup.'
+                                            }
+                                            if ([string]::IsNullOrWhiteSpace($itemName)) {
+                                                throw ('Document name could not be resolved for DOCUMENT_DELETE (documentGuid=' + [string]$ac.objGuid + ').')
+                                            }
+                                            $acAuditIdDelete = $null
+                                            try {
+                                                if ($null -ne $ac.auditEventId) { $acAuditIdDelete = [long]$ac.auditEventId }
+                                            } catch { $acAuditIdDelete = $null }
+                                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_DOCUMENT_DELETE' `
+                                                -Message 'DOCUMENT_DELETE on lane QC PDF; purging registry rows and recording QC workflow event.' -Data @{
+                                                auditEventId = $acAuditIdDelete
+                                                documentGuid = [string]$ac.objGuid
+                                                documentName = $itemName
+                                                folderPath   = $fp
+                                                actionName   = $acAction
+                                                actTime      = [string]$ac.actTime
+                                            }
+                                            $delRes = Remove-QCLaneQcPdfRegistryRecords -Config $config `
+                                                -DocumentGuid ([string]$ac.objGuid) `
+                                                -DocumentName $itemName `
+                                                -FolderPath $fp `
+                                                -AuditEventId $acAuditIdDelete `
+                                                -LastAuditEventAt ([string]$ac.actTime) `
+                                                -DryRun:$isDryRun
+                                            if (-not $delRes.IsSuccess) {
+                                                throw ('DOCUMENT_DELETE lane registry cleanup failed: ' + [string]$delRes.Message)
+                                            }
                                         }
                                     } elseif ($syncAttributes -or [bool]$ac.isSheetsFolder) {
                                         if (-not (_Watch-EnsureAllModuleExports)) {

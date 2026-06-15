@@ -1684,6 +1684,37 @@ function _PWD-SyncSheetPackageLaneQcPdfs {
             Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force -ErrorAction SilentlyContinue
         } catch { }
     }
+    if ([string]::IsNullOrWhiteSpace($SheetStem)) {
+        if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+            foreach ($m in @($Members)) {
+                $dn = [string]$m.documentName
+                if (-not [string]::IsNullOrWhiteSpace($dn)) {
+                    $SheetStem = Get-PWSheetStemFromDocumentName -DocumentName $dn
+                    if (-not [string]::IsNullOrWhiteSpace($SheetStem)) { break }
+                }
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($SheetStem) `
+            -and (Get-Command -Name 'Sync-QCLaneQcPdfGuidFromProjectWise' -ErrorAction SilentlyContinue)) {
+        $laneSuffixMap = @{ production = '-prod.pdf'; check = '-chk.pdf'; review = '-rev.pdf' }
+        foreach ($lane in @('production', 'check', 'review')) {
+            $laneName = $SheetStem + $laneSuffixMap[$lane]
+            $pwState = ''
+            $laneMember = @($Members | Where-Object {
+                $n = [string]$_.documentName
+                $n -and ($n.ToLowerInvariant() -eq $laneName.ToLowerInvariant())
+            } | Select-Object -First 1)
+            if ($laneMember -and $laneMember.documentGuid -and $StateByGuid) {
+                $lk = ([string]$laneMember.documentGuid).ToLowerInvariant()
+                if ($StateByGuid.ContainsKey($lk)) { $pwState = [string]$StateByGuid[$lk] }
+            }
+            try {
+                Sync-QCLaneQcPdfGuidFromProjectWise -Config $Config -FolderPath $FolderPath `
+                    -QcPdfName $laneName -QcProcessType $lane -CurrentPwState $pwState | Out-Null
+            } catch { }
+        }
+    }
     if (Get-Command -Name 'Sync-SheetPackageLaneQcPdfsFromMembers' -ErrorAction SilentlyContinue) {
         try {
             Sync-SheetPackageLaneQcPdfsFromMembers -Config $Config -FolderPath $FolderPath -SheetStem $SheetStem `
@@ -1750,7 +1781,16 @@ function _PWD-GetLaneIndependentAuditMembers {
         $dedupeKey = if ($dg) { $dg } else { $dn.ToLowerInvariant() }
         if ($seen.ContainsKey($dedupeKey)) { continue }
         $seen[$dedupeKey] = $true
-        $match.Add($m) | Out-Null
+        $entry = $m
+        if ($triggerGuidKey -and $dn -and ($dn.ToLowerInvariant() -eq $triggerKey) -and $dg -ne $triggerGuidKey) {
+            $entry = @{
+                documentGuid = [string]$TriggerDocumentGuid
+                documentName = $dn
+            }
+            if ($null -ne $m.document) { $entry['document'] = $m.document }
+            if ($m.sourceType) { $entry['sourceType'] = [string]$m.sourceType }
+        }
+        $match.Add($entry) | Out-Null
     }
     return @($match)
 }
@@ -2308,6 +2348,7 @@ WHERE folder_path = @folderPath
     OR LOWER(document_name) = LOWER(@chkName)
     OR LOWER(document_name) = LOWER(@revName)
   )
+ORDER BY last_updated_at DESC
 "@ -Parameters @{
                     folderPath = $FolderPath
                     pdfName    = $expectedNames[0]
@@ -2364,6 +2405,20 @@ WHERE folder_path = @folderPath
     foreach ($entry in $members.Values) {
         $dn = [string]$entry.documentName
         $dg = [string]$entry.documentGuid
+        if ($dn -match '(?i)-(prod|chk|rev)\.pdf$') {
+            if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+                if ($dn.Equals($DocumentName, [StringComparison]::OrdinalIgnoreCase)) {
+                    $dg = [string]$DocumentGuid
+                }
+            }
+            if (Get-Command -Name 'Resolve-QCSheetQcPdfGuid' -ErrorAction SilentlyContinue) {
+                try {
+                    $liveLaneGuid = Resolve-QCSheetQcPdfGuid -Config $Config -FolderPath $FolderPath `
+                        -QcPdfName $dn -SourceDocumentGuid $DocumentGuid
+                    if (-not [string]::IsNullOrWhiteSpace($liveLaneGuid)) { $dg = $liveLaneGuid.Trim() }
+                } catch { }
+            }
+        }
         $doc = _PWD-ResolvePwDocumentInFolder -DocByGuid $docByGuid -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg
         if (-not $doc) { continue }
         try {
@@ -3463,7 +3518,8 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         [Nullable[int]]$ChangedByUser = $null,
         [string]$ChangedByUsername = '',
         [string]$LastAuditEventAt = '',
-        [Nullable[long]]$AuditEventId = $null
+        [Nullable[long]]$AuditEventId = $null,
+        [switch]$DeferNotification
     )
 
     if (-not (Get-Command -Name 'Get-QCAuditWorkflowTriggerSettings' -ErrorAction SilentlyContinue)) { return }
@@ -3510,13 +3566,17 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
                 changedByUsername = $ChangedByUsername
             } | Out-Null
         }
+        $suppressNotify = $DeferNotification.IsPresent
+        if (-not $suppressNotify) {
+            $suppressNotify = ((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid))
+        }
         Invoke-QCAuditWorkflowStateChangeTriggers -Config $Config -DocumentGuid $dg -DocumentName $dn `
             -FolderPath $FolderPath -PreviousState $prevDb -CurrentState $CanonicalState -Document $member.document `
             -DryRun:$DryRun -AuditActionName 'DOCUMENT_STATE' -ChangedByUser $ChangedByUser `
             -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId `
             -PreviousStateSource 'sheet_index' -CurrentStateSource 'liveProjectWise' `
             -StaleCheckMembers $Members -StaleCheckStateByGuid $StateByGuid -StaleCheckCanonicalState $CanonicalState `
-            -SuppressNotification:((-not [string]::IsNullOrWhiteSpace($packageNotifyGuid)) -and ($dg -ne $packageNotifyGuid)) | Out-Null
+            -SuppressNotification:$suppressNotify | Out-Null
     }
 }
 
@@ -4155,6 +4215,13 @@ function Sync-PWAssociatedSheetWorkflowState {
             }
             return
         }
+    }
+
+    if (Get-Command -Name '_PWD-InvokeStaleSheetIndexAuditStateTriggers' -ErrorAction SilentlyContinue) {
+        _PWD-InvokeStaleSheetIndexAuditStateTriggers -Config $Config -Members $members -StateByGuid $stateByGuid `
+            -FolderPath $FolderPath -CanonicalState $canonicalState -DryRun:$DryRun `
+            -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername `
+            -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId -DeferNotification | Out-Null
     }
 
     $stateUpdates = @()
