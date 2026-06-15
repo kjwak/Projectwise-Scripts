@@ -12,9 +12,9 @@ function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
 function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
-Assert-False (Test-QCResetProcessTypeAfterLanePrepend -Config @{}) 'ResetProcessTypeAfterLanePrepend defaults false'
-Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane does not reset by default'
-Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'check' -Config @{}) 'check lane does not reset by default'
+Assert-True (Test-QCResetProcessTypeAfterLanePrepend -Config @{}) 'ResetProcessTypeAfterLanePrepend defaults true'
+Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane resets to Production after prepend by default'
+Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'check' -Config @{}) 'check lane resets to Production after prepend by default'
 
 InModuleScope -ModuleName PW.Discovery {
     function Write-QCJsonLog { param($Level, $Code, $Message, $Data) $script:jsonLogs += ,@{ Code = $Code; Data = $Data } }
@@ -61,7 +61,7 @@ InModuleScope -ModuleName PW.Discovery {
         Assert-Eq $split.lanePdfName $expectedPdf "$lane prepend targets expected lane PDF"
         Assert-Eq $split.stemPdfName $stemPdf "$lane prepend resolves stem PDF name"
         Assert-True $split.writeStemPdfReferenceState "$lane prepend writes stem PDF reference state"
-        Assert-False $script:processResetCalled "$lane prepend does not reset source/DGN process type by default"
+        Assert-True ($null -ne $split.processTypeReset) "$lane prepend attempts stem qc_process_type reset"
         $uniqueTargets = @($script:stateTargets | Select-Object -Unique)
         Assert-Eq $uniqueTargets.Count 2 "$lane prepend writes lane PDF and stem PDF states only"
         Assert-Eq $uniqueTargets[0] $expectedPdf "$lane prepend targets expected lane PDF"

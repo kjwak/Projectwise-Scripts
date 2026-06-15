@@ -11,9 +11,9 @@ function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
 function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
-Assert-False (Test-QCResetProcessTypeAfterLanePrepend -Config @{}) 'ResetProcessTypeAfterLanePrepend defaults false'
-Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'production' -Config @{}) 'production lane default ResetToProductionAfterPrepend is false'
-Assert-False (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane does not reset by default'
+Assert-True (Test-QCResetProcessTypeAfterLanePrepend -Config @{}) 'ResetProcessTypeAfterLanePrepend defaults true'
+Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'production' -Config @{}) 'production lane resets to Production after prepend by default'
+Assert-True (Test-QCProcessTypeResetsAfterPrepend -ProcessType 'review' -Config @{}) 'review lane resets to Production after prepend by default'
 
 # Lane QC PDFs are never modified by associated review/process type sync (legacy path only)
 InModuleScope -ModuleName PW.Discovery {
@@ -65,7 +65,10 @@ InModuleScope -ModuleName PW.Discovery {
     function Update-QCSheetIndexPwStateName { param($Config, $DocumentGuid, $PwStateName) return $true }
     function Get-PWQcPdfLaneFromDocumentName { param($DocumentName) if ($DocumentName -match '(?i)-rev\.pdf$') { return 'review' } return $null }
     function Update-SheetPackageQcPdfLaneState { param($Config, $DocumentGuid, $CurrentPwState, $QcProcessType) return $true }
-    function Test-QCResetProcessTypeAfterLanePrepend { param($Config) return $false }
+    function _PWD-SyncReferenceSheetProcessTypeAttributes {
+        param($Config, $DocumentGuid, $DocumentName, $FolderPath, $CanonicalProcessType, $WatchRoot, $LastAuditEventAt, $DryRun, $ControlDocumentOnly)
+        return @{ reset = $true; toProcessType = $CanonicalProcessType; documentName = $DocumentName }
+    }
     function Get-QCWorkflowSettings { param($Config) return @{ expectedWorkflowName = 'TYPSA QC' } }
     function Test-QCWorkflowStateWritebackUseForce { param($Config) return $true }
     function Set-PWDocumentWorkflowStateVerified {
@@ -92,7 +95,7 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $split.referenceState 'In Development' 'reference target preserved'
     Assert-True $split.writeStemPdfReferenceState 'prepend writes stem PDF back to reference state'
     Assert-Eq $split.stemPdfName 'CA001.pdf' 'stem PDF name resolved'
-    Assert-Eq $split.processTypeReset.reason 'reset_disabled' 'process type reset skipped by default'
+    Assert-True ($null -ne $split.processTypeReset) 'post-prepend process type reset attempted'
     Assert-True $split.laneProcessTypeEnsure.ensured 'sets lane qc_process_type when unset'
     Assert-Eq $split.laneProcessTypeEnsure.toValue 'Review' 'lane qc_process_type matches triggering review lane'
 

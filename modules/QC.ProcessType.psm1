@@ -35,23 +35,23 @@ function _QCPT-DefaultProcessTypeSettings {
         DefaultProcessType = 'production'
         EnableLegacySiblingStateSync = $false
         EnableLegacyReviewTypeAttributeSync = $false
-        ResetProcessTypeAfterLanePrepend = $false
+        ResetProcessTypeAfterLanePrepend = $true
         ProcessTypes = @{
             production = @{
                 PdfSuffix = 'prod'
-                ResetToProductionAfterPrepend = $false
+                ResetToProductionAfterPrepend = $true
                 SyncWithSiblingSheets = $false
                 DefaultStamp = 'Production'
             }
             check = @{
                 PdfSuffix = 'chk'
-                ResetToProductionAfterPrepend = $false
+                ResetToProductionAfterPrepend = $true
                 SyncWithSiblingSheets = $false
                 DefaultStamp = 'Check'
             }
             review = @{
                 PdfSuffix = 'rev'
-                ResetToProductionAfterPrepend = $false
+                ResetToProductionAfterPrepend = $true
                 SyncWithSiblingSheets = $false
                 DefaultStamp = 'Review'
             }

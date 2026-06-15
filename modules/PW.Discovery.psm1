@@ -2503,21 +2503,8 @@ function Sync-PWPostInitialPrependLaneStates {
     }
 
     if (-not $DryRun) {
-        $shouldResetProcessType = $false
-        if (Get-Command -Name 'Test-QCResetProcessTypeAfterLanePrepend' -ErrorAction SilentlyContinue) {
-            $shouldResetProcessType = Test-QCResetProcessTypeAfterLanePrepend -Config $Config
-        }
-        if (-not $shouldResetProcessType) {
-            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Information' -Code 'QC_PROCESS_TYPE_RESET_SKIPPED' `
-                    -Message 'Process type reset after lane prepend is disabled.' -Data @{
-                    folderPath = $FolderPath
-                    qcProcessType = $laneType
-                    lanePdfName = $lanePdfName
-                } | Out-Null
-            }
-            $processTypeReset = @{ skipped = $true; reason = 'reset_disabled' }
-        } elseif (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
+        $processTypeReset = @{ skipped = $true; reason = 'sync_unavailable' }
+        if (Get-Command -Name '_PWD-SyncReferenceSheetProcessTypeAttributes' -ErrorAction SilentlyContinue) {
             $resetGuid = if ($DocumentGuid) { [string]$DocumentGuid } else { '' }
             $resetName = if ($DocumentName -match '(?i)\.pdf$' -and $DocumentName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
                 [string]$DocumentName
@@ -2531,8 +2518,6 @@ function Sync-PWPostInitialPrependLaneStates {
             } catch {
                 $processTypeReset = @{ skipped = $true; error = [string]$_.Exception.Message }
             }
-        } else {
-            $processTypeReset = @{ skipped = $true; reason = 'sync_unavailable' }
         }
         $laneProcessType = _PWD-EnsureLaneQcPdfProcessTypeAttribute -Config $Config -FolderPath $FolderPath `
             -LanePdfName $lanePdfName -QcProcessType $laneType -DryRun:$DryRun
@@ -3425,8 +3410,8 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     .DESCRIPTION
     QC Initiated uses the canonical synced workflow state (first prepend often runs before *-qc.pdf exists).
     QC Finalizing prefers *-qc.pdf workflow state when that file exists. Dedupe uses the audit event id when
-    available (see Get-QCPrependStateTransitionDedupeKey). Sync-PWAssociatedSheetWorkflowState only calls this
-    when at least one sibling state was applied (echo audits with empty updates are skipped).
+    available (see Get-QCPrependStateTransitionDedupeKey). Initiate Origination intake always enqueues prepend
+    even when lane-independent sync applies no PW state writes; QC Finalizing still requires applied sibling updates.
     #>
     [CmdletBinding()]
     param(
@@ -4312,15 +4297,10 @@ WHERE document_guid = @docGuid
 
     $appliedStateUpdates = @($stateUpdates | Where-Object { $_ -and $_.applied -eq $true })
     if ($appliedStateUpdates.Count -eq 0) {
-        $allowPrependForRestartEcho = $false
-        if ($qcInitiated -and (Get-Command -Name 'Test-QCWorkflowStateIsRestartIntakeTransition' -ErrorAction SilentlyContinue)) {
-            $allowPrependForRestartEcho = Test-QCWorkflowStateIsRestartIntakeTransition -Config $Config `
-                -PreviousState $previousSheetState -CurrentState $canonicalState
-        }
-        if ($allowPrependForRestartEcho) {
+        if ($qcInitiated) {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_RESTART_NO_STATE_CHANGES' `
-                    -Message 'QC_PREPEND evaluation allowed for QC Initiated restart even though sibling states were already aligned.' -Data @{
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_INTAKE_WITHOUT_SIBLING_SYNC' `
+                    -Message 'QC_PREPEND allowed for Initiate Origination even though lane-independent sync applied no PW state writes.' -Data @{
                     triggerDocumentGuid = $DocumentGuid
                     triggerDocumentName = $DocumentName
                     folderPath          = $FolderPath
@@ -4328,13 +4308,13 @@ WHERE document_guid = @docGuid
                     canonicalState      = $canonicalState
                     memberCount         = $members.Count
                     auditEventId        = $AuditEventId
-                    reason              = 'qc_initiated_restart_intake'
+                    reason              = 'qc_initiated_intake'
                 } | Out-Null
             }
         } else {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
-                    -Message 'QC_PREPEND skipped (QC Initiated or QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
+                    -Message 'QC_PREPEND skipped (QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
                     triggerDocumentGuid = $DocumentGuid
                     triggerDocumentName = $DocumentName
                     folderPath          = $FolderPath
