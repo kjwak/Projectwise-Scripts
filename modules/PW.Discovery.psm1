@@ -3549,6 +3549,14 @@ function _PWD-InvokeStaleSheetIndexAuditStateTriggers {
         } else {
             $pwCurrent = _PWD-GetWorkflowStateFromDocumentRow -DocRow $member.document
         }
+        if ([string]::IsNullOrWhiteSpace($pwCurrent) -and (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) {
+            try {
+                $pwCurrent = [string](Get-PWDocumentWorkflowStateName -FolderPath $FolderPath -DocumentName $dn -DocumentGuid $dg)
+            } catch { }
+        }
+        if ([string]::IsNullOrWhiteSpace($pwCurrent) -and -not [string]::IsNullOrWhiteSpace($canonical)) {
+            $pwCurrent = $CanonicalState
+        }
         if ((_PWD-NormalizeSheetIndexValue $pwCurrent) -ne $canonical) { continue }
 
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
