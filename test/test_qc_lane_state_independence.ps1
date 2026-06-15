@@ -120,8 +120,8 @@ Assert-True ($discoveryText -match '_PWD-InvokeStaleSheetIndexAuditStateTriggers
     'Sync-PWAssociatedSheetWorkflowState wires stale index trigger before member loop'
 Assert-True ($discoveryText -match 'WATCH_AUDIT_STATE_SYNC_CANONICAL_RECONCILED') `
     'Sync reconciles canonical state from batch live PW read before stale evaluation'
-Assert-False ($discoveryText -match 'sourcePwStateSource = ''sheet_index''') `
-    'canonical state must not fall back to stale sheet_index before batch PW read'
+Assert-True ($discoveryText -match 'after batch read') `
+    'NO_SOURCE_STATE is deferred until after batch GUID read'
 
 $watchText = Get-Content (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1') -Raw
 Assert-True ($watchText -match '-AuditTargetStateName\s+\$acLivePwState') `

@@ -3964,22 +3964,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         $sourcePwStateSource = 'auditTargetHint'
     }
     # Do not seed canonical state from sheet_index here: stale index rows poison lane-PDF
-    # notifications when the single-doc PW read fails. Audit hints and batch GUID reads reconcile later.
-    if ([string]::IsNullOrWhiteSpace($sourcePwState)) {
-        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_SYNC_NO_SOURCE_STATE' `
-                -Message 'DOCUMENT_STATE sync skipped: live PW state, audit hint, and sheet_index were all unavailable.' -Data @{
-                auditEventId = $AuditEventId
-                documentGuid = $DocumentGuid
-                documentName = $DocumentName
-                folderPath = $FolderPath
-                auditTargetStateHint = $auditTargetState
-            } | Out-Null
-        }
-        return
-    }
-    # DOCUMENT_STATE audit rows are sparse: the parsed audit state is only a diagnostic hint.
-    # Live ProjectWise state remains authoritative for sibling sync and workflow actions.
+    # notifications when the single-doc PW read fails. Batch GUID reads reconcile below.
     $canonicalState = $sourcePwState
     $actorIsAutomation = $false
     if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
@@ -4189,7 +4174,7 @@ function Sync-PWAssociatedSheetWorkflowState {
         if (-not [string]::IsNullOrWhiteSpace($batchLiveState)) {
             $normalizedBatch = _PWD-NormalizeSheetIndexValue $batchLiveState
             $normalizedCanonical = _PWD-NormalizeSheetIndexValue $canonicalState
-            if ($normalizedBatch -ne $normalizedCanonical) {
+            if ([string]::IsNullOrWhiteSpace($canonicalState) -or ($normalizedBatch -ne $normalizedCanonical)) {
                 if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                     Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATE_SYNC_CANONICAL_RECONCILED' `
                         -Message 'Reconciled DOCUMENT_STATE canonical state from batch live ProjectWise read.' -Data @{
@@ -4208,6 +4193,21 @@ function Sync-PWAssociatedSheetWorkflowState {
                 $sourcePwStateSource = 'liveProjectWiseBatch'
             }
         }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($canonicalState)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_STATE_SYNC_NO_SOURCE_STATE' `
+                -Message 'DOCUMENT_STATE sync skipped: live PW state and audit hint unavailable after batch read.' -Data @{
+                auditEventId = $AuditEventId
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                auditTargetStateHint = $auditTargetState
+                auditTargetStateName = $AuditTargetStateName
+            } | Out-Null
+        }
+        return
     }
 
     if (Get-Command -Name 'Test-QCDocumentStateAuditEventIsStale' -ErrorAction SilentlyContinue) {
