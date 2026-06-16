@@ -146,6 +146,41 @@ function _QCNG-InvokeGraphRequest {
     return Invoke-RestMethod @params
 }
 
+function _QCNG-TestGraphMailboxWriteDenied {
+    param([object]$ErrorRecord)
+
+    if ($null -eq $ErrorRecord) { return $false }
+    $detail = [string]$ErrorRecord.Exception.Message
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $detail += ' ' + [string]$ErrorRecord.ErrorDetails.Message
+    }
+    if ($detail -match '(?i)(403|503|forbidden|erroraccessdenied|mailboxnotenabledforrestapi)') { return $true }
+    return $false
+}
+
+function _QCNG-InvokeGraphSendMailFromMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SenderMailbox,
+        [Parameter(Mandatory)][string]$AccessToken,
+        [Parameter(Mandatory)][hashtable]$Message,
+        [string]$ThreadWarning = 'sendmail_no_message_id'
+    )
+
+    $sendMailBody = @{
+        message = $Message
+        saveToSentItems = $true
+    }
+    Invoke-QCNotificationGraphSendMail -SenderMailbox $SenderMailbox -AccessToken $AccessToken -SendMailBody $sendMailBody
+    return @{
+        graphMessageId = ''
+        graphImmutableMessageId = ''
+        graphConversationId = ''
+        internetMessageId = ''
+        threadWarning = $ThreadWarning
+    }
+}
+
 function _QCNG-ExtractGraphMessageMetadata([object]$Message) {
     if ($null -eq $Message) { return @{} }
     $id = ''
@@ -546,6 +581,8 @@ function Send-QCNotificationGraph {
     $parentId = if ($Payload.parentGraphMessageId) { [string]$Payload.parentGraphMessageId } else { '' }
     $attemptSendMode = $sendMode
     $parentInvalid = $false
+    $threadKey = if ($Payload.threadKey) { [string]$Payload.threadKey } else { '' }
+    $needsThreadMessageId = -not (_QCNG-IsBlank $threadKey) -and ($attemptSendMode -in @('root', 'replacement_root'))
 
     try {
         $token = Get-QCNotificationGraphAccessToken -GraphSettings $GraphSettings
@@ -567,12 +604,33 @@ function Send-QCNotificationGraph {
             if ($usesHtml -and $graphMessage -and $graphMessage.attachments) {
                 $attachments = $graphMessage.attachments
             }
-            $meta = Invoke-QCNotificationGraphCreateReplyAndSend -SenderMailbox $senderMailbox -AccessToken $token `
-                -ParentMessageId $parentId -Subject ([string]$Payload.subject) -BodyContent $bodyContent `
-                -BodyContentType $bodyType -ToRecipients @($Payload.to) -CcRecipients @($Payload.cc) -Attachments $attachments
+            try {
+                $meta = Invoke-QCNotificationGraphCreateReplyAndSend -SenderMailbox $senderMailbox -AccessToken $token `
+                    -ParentMessageId $parentId -Subject ([string]$Payload.subject) -BodyContent $bodyContent `
+                    -BodyContentType $bodyType -ToRecipients @($Payload.to) -CcRecipients @($Payload.cc) -Attachments $attachments
+            } catch {
+                if ($usesHtml -and $graphMessage -and (_QCNG-TestGraphMailboxWriteDenied $_)) {
+                    $meta = _QCNG-InvokeGraphSendMailFromMessage -SenderMailbox $senderMailbox -AccessToken $token `
+                        -Message $graphMessage -ThreadWarning 'create_reply_denied_fallback_sendmail'
+                    $attemptSendMode = 'replacement_root'
+                    $baseData['threadRecoveryReason'] = 'create_reply_denied_fallback_sendmail'
+                } else { throw }
+            }
         }
         elseif ($usesHtml -and $graphMessage) {
-            $meta = Invoke-QCNotificationGraphCreateAndSendMessage -SenderMailbox $senderMailbox -AccessToken $token -Message $graphMessage
+            if ($needsThreadMessageId) {
+                try {
+                    $meta = Invoke-QCNotificationGraphCreateAndSendMessage -SenderMailbox $senderMailbox -AccessToken $token -Message $graphMessage
+                } catch {
+                    if (_QCNG-TestGraphMailboxWriteDenied $_) {
+                        $meta = _QCNG-InvokeGraphSendMailFromMessage -SenderMailbox $senderMailbox -AccessToken $token `
+                            -Message $graphMessage -ThreadWarning 'create_message_denied_fallback_sendmail'
+                    } else { throw }
+                }
+            } else {
+                $meta = _QCNG-InvokeGraphSendMailFromMessage -SenderMailbox $senderMailbox -AccessToken $token `
+                    -Message $graphMessage -ThreadWarning 'html_sendmail_no_message_id'
+            }
             if ($attemptSendMode -eq 'unthreaded') { $attemptSendMode = 'root' }
             if ($parentInvalid) { $attemptSendMode = 'replacement_root' }
             elseif ($sendMode -eq 'root' -or $sendMode -eq 'replacement_root') { $attemptSendMode = $sendMode }

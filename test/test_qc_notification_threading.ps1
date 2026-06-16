@@ -276,6 +276,7 @@ Set-QCNotificationGraphTestHttpHandler -Handler {
         return $msg
     }
     if ($Method -eq 'POST' -and $Uri -match '/createReply$') { throw 'ErrorItemNotFound' }
+    if ($Method -eq 'POST' -and $Uri -match '/sendMail$') { return @{} }
     if ($Method -eq 'POST' -and $Uri -match '/send$') { return @{} }
     if ($Method -eq 'PATCH') { return @{} }
     throw "Unexpected: $Method $Uri"
@@ -294,6 +295,80 @@ $replPayload = @{
 $gRepl = Send-QCNotificationGraph -GraphSettings $graphSettings -Payload $replPayload
 Assert-True $gRepl.IsSuccess 'Replacement root should succeed'
 Assert-Eq $gRepl.Data.sendMode 'replacement_root' 'Should recover with replacement_root'
+Clear-QCNotificationGraphTestHttpHandler
+
+# 12. HTML unthreaded uses sendMail (Mail.Send only)
+$global:QCTestGraphState = @{
+    sendMailCalls = 0
+    createMessageCalls = 0
+}
+Set-QCNotificationGraphTestHttpHandler -Handler {
+    param($Method, $Uri, $Headers, $Body)
+    if ($Uri -match 'oauth2/v2.0/token') { return @{ access_token = 'test-token' } }
+    if ($Method -eq 'POST' -and $Uri -match '/sendMail$') {
+        $global:QCTestGraphState.sendMailCalls++
+        return @{}
+    }
+    if ($Method -eq 'POST' -and $Uri -match '/messages$') {
+        $global:QCTestGraphState.createMessageCalls++
+        throw 'The remote server returned an error: (403) Forbidden.'
+    }
+    throw "Unexpected Graph mock request: $Method $Uri"
+}
+$htmlPayload = @{
+    eventType = 'EMAIL_TEMPLATE_TEST'
+    documentName = 'sheet.pdf'
+    subject = 'HTML sendMail'
+    body = 'plain'
+    htmlBody = '<p>HTML body</p>'
+    logoPath = 'email/typsalogo.png.webp'
+    to = @('html-test@company.com')
+    cc = @()
+    threadSendMode = 'unthreaded'
+    threadKey = ''
+}
+$gHtml = Send-QCNotificationGraph -GraphSettings $graphSettings -Payload $htmlPayload
+Assert-True $gHtml.IsSuccess "HTML unthreaded send should succeed ($($gHtml.Message))"
+Assert-Eq $global:QCTestGraphState.sendMailCalls 1 'Unthreaded HTML should use sendMail'
+Assert-Eq $global:QCTestGraphState.createMessageCalls 0 'Unthreaded HTML should not create draft messages'
+Assert-Eq $gHtml.Data.threadWarning 'html_sendmail_no_message_id' 'Unthreaded HTML should note missing thread id'
+Clear-QCNotificationGraphTestHttpHandler
+
+# 13. Threaded root falls back to sendMail when create message is denied
+$global:QCTestGraphState = @{
+    sendMailCalls = 0
+    createMessageCalls = 0
+}
+Set-QCNotificationGraphTestHttpHandler -Handler {
+    param($Method, $Uri, $Headers, $Body)
+    if ($Uri -match 'oauth2/v2.0/token') { return @{ access_token = 'test-token' } }
+    if ($Method -eq 'POST' -and $Uri -match '/sendMail$') {
+        $global:QCTestGraphState.sendMailCalls++
+        return @{}
+    }
+    if ($Method -eq 'POST' -and $Uri -match '/messages$') {
+        $global:QCTestGraphState.createMessageCalls++
+        throw 'The remote server returned an error: (403) Forbidden.'
+    }
+    throw "Unexpected Graph mock request: $Method $Uri"
+}
+$fallbackPayload = @{
+    eventType = 'QC_RECEIVED'
+    documentName = 'sheet.pdf'
+    subject = 'Fallback root'
+    body = 'Body'
+    htmlBody = '<p>Body</p>'
+    to = @('fallback@company.com')
+    cc = @()
+    threadSendMode = 'root'
+    threadKey = 'graph-pkg|Production QC'
+    parentGraphMessageId = ''
+}
+$gFallback = Send-QCNotificationGraph -GraphSettings $graphSettings -Payload $fallbackPayload
+Assert-True $gFallback.IsSuccess "Threaded root should fall back to sendMail ($($gFallback.Message))"
+Assert-Eq $global:QCTestGraphState.sendMailCalls 1 'Denied create should fall back to sendMail'
+Assert-Eq $global:QCTestGraphState.createMessageCalls 1 'Threaded root should attempt create first'
+Assert-Eq $gFallback.Data.threadWarning 'create_message_denied_fallback_sendmail' 'Fallback warning should be set'
 Clear-QCNotificationGraphTestHttpHandler
 
 Write-Host 'test_qc_notification_threading.ps1: PASS' -ForegroundColor Green

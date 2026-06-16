@@ -111,7 +111,7 @@ Copy-Item .\appsettings.secrets.json.example .\appsettings.secrets.json
 
 `Read-QCAppSettings` merges `appsettings.secrets.json` after `appsettings.json` and `appsettings.local.json`.
 
-The app registration needs **application** permission `Mail.Send` with admin consent.
+The app registration needs **application** permission `Mail.Send` with admin consent. HTML notifications and conversation threading prefer `Mail.ReadWrite` (create draft / reply APIs). When only `Mail.Send` is granted, the provider automatically falls back to `sendMail` (emails still deliver; thread message IDs may be unavailable).
 
 In `appsettings.json`, set `"provider": "MicrosoftGraph"` and `"dryRun": false` for live sends (use `"dryRun": true` only while validating payloads).
 
