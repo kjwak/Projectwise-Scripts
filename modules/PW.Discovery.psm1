@@ -6099,7 +6099,7 @@ function Get-PWQcPrependRoleFieldsFromSourcePdf {
     $designerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'designerEmail'
     $reviewerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'reviewerEmail'
     $checkerEmail = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'checkerEmail'
-    $qcProcessType = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcProcessType'
+    $qcProcessType = _PWD-PickSheetProcessIntentFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcProcessType'
     $qcReviewType = _PWD-PickSheetRoleFieldValue -DgnFields $dgnFields -PdfFields $pdfFields -Name 'qcReviewType'
     if ([string]::IsNullOrWhiteSpace($qcReviewType) -and (Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath)) {
         $qcReviewType = Get-PWQcDefaultReviewType -Config $Config

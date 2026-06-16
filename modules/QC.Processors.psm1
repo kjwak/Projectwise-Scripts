@@ -108,10 +108,13 @@ function _QCP-GetReviewStampRoleFieldsFromJob {
                 $roles.designerEmail = [string]$pw.designerEmail
                 $roles.reviewerEmail = [string]$pw.reviewerEmail
                 $roles.checkerEmail = [string]$pw.checkerEmail
-                $roles.qcReviewType = [string]$pw.qcReviewType
-                if (-not (_QCP-IsNullOrWhiteSpace $pw.qcProcessType)) {
-                    $roles.qcProcessType = [string]$pw.qcProcessType
-                }
+            }
+        }
+        if (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue) {
+            $intent = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath $FolderPath `
+                -SourceDocumentName $SourceDocumentName -Config $Config
+            if ($intent.found -and -not (_QCP-IsNullOrWhiteSpace $intent.qcProcessType)) {
+                $roles.qcProcessType = [string]$intent.qcProcessType
             }
         }
     }
@@ -439,12 +442,28 @@ function _QCP-TryApplyReviewStampFromJob {
     )
 
 
-    if (-not (Get-Command -Name 'Invoke-QCReviewStampForReviewType' -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command -Name 'Invoke-QCReviewStamp' -ErrorAction SilentlyContinue)) {
         return @{ applied = $false; reason = 'QC.ReviewStamp module not loaded' }
     }
 
     $roles = _QCP-GetReviewStampRoleFieldsFromJob -Job $Job -Config $Config -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName
     $processType = _QCP-ResolveProcessTypeFromJob -Job $Job -Config $Config
+    if (_QCP-IsNullOrWhiteSpace $processType) {
+        $src = _QCP-ResolvePrependProcessTypeFromSourceAttributes -Config $Config `
+            -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName
+        if ($src.processType) { $processType = [string]$src.processType }
+    }
+    if (_QCP-IsNullOrWhiteSpace $processType -and -not (_QCP-IsNullOrWhiteSpace $roles.qcProcessType)) {
+        $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$roles.qcProcessType)
+        if ($norm) { $processType = [string]$norm }
+    }
+    if (_QCP-IsNullOrWhiteSpace $processType) {
+        return @{
+            applied = $false
+            skipped = $true
+            reason = 'qc_process_type not resolved from job lane or stem sheet PDF (QC_Review_Type is not used for stamps)'
+        }
+    }
     $roles.qcProcessType = $processType
 
     if (_QCP-IsNullOrWhiteSpace $OverlayExe) {
@@ -492,9 +511,22 @@ function _QCP-TryApplyReviewStampFromJob {
         if ($processType -in @('check', 'review') -and -not $stampResolved.IsSuccess) {
             return @{ applied = $false; skipped = $false; reason = [string]$stampResolved.Message; qcProcessType = $processType }
         }
+        if (-not $stampResolved.IsSuccess) {
+            return @{
+                applied = $false
+                skipped = $true
+                reason = [string]$stampResolved.Message
+                qcProcessType = $processType
+            }
+        }
     }
 
-    return Invoke-QCReviewStampForReviewType -PdfPath $PdfPath -Config $Config -RoleFields $roles -OverlayExe $OverlayExe
+    return @{
+        applied = $false
+        skipped = $true
+        reason = 'Resolve-QCStampForProcess not available'
+        qcProcessType = $processType
+    }
 }
 
 function _QCP-TryApplyPeerReviewStampFromJob {

@@ -636,53 +636,30 @@ function Invoke-QcReviewStampIfNeeded {
   $cfg = Get-PrependQcConfig
   $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
 
-  # Lane prepend: resolve stamp from QCProcess.StampProfiles by qc_process_type (check/review/production).
-  if (-not [string]::IsNullOrWhiteSpace($processType) `
-      -and (Get-Command -Name 'Resolve-QCStampForProcess' -ErrorAction SilentlyContinue)) {
-    $result = Invoke-PrependQcStampByProcessType -MergedPdfPath $MergedPdfPath -FolderPath $FolderPath `
-      -SourceDocumentName $SourceDocumentName -ProcessType $processType -Config $cfg
-    if ($result.skipped) {
-      if ($result.reason) { Write-Log "Review stamp skipped: $($result.reason)" }
-      return
+  if ([string]::IsNullOrWhiteSpace($processType) `
+      -and (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue)) {
+    $intent = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath $FolderPath `
+      -SourceDocumentName $SourceDocumentName -Config $cfg
+    if ($intent.found -and -not [string]::IsNullOrWhiteSpace([string]$intent.qcProcessType)) {
+      $processType = ([string]$intent.qcProcessType).Trim().ToLowerInvariant()
+      Write-Log "Review stamp qc_process_type from stem sheet PDF: $processType"
+    } elseif (-not $intent.found -and $intent.error) {
+      Write-Log "Review stamp: could not read stem sheet PDF QC_Process_Type ($($intent.error))." -Severity WARNING
     }
-    if (-not $result.applied) {
-      $detail = if ($result.stdout) { $result.stdout } else { $result.reason }
-      if ($detail) {
-        foreach ($line in @([string]$detail -split "`n")) {
-          $s = $line.TrimEnd("`r")
-          if ($s.Trim()) { Write-Log $s }
-        }
-      }
-      Write-Log "Review stamp failed: $($result.reason)" -Severity ERROR
-      if ($processType -in @('check', 'review')) {
-        throw "Review stamp failed: $($result.reason)"
-      }
-      return
-    }
-    Write-Log "Review stamp applied for qc_process_type=$processType (profile=$($result.stampProfile))."
+  }
+
+  if ([string]::IsNullOrWhiteSpace($processType)) {
+    Write-Log 'Review stamp skipped: qc_process_type not set on stem sheet PDF (QC_Review_Type is not used for stamps).' -Severity WARNING
     return
   }
 
-  if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
-    Write-Log 'Review stamp skipped: Get-PWQcPrependRoleFieldsFromSourcePdf not available.' -Severity WARNING
+  if (-not (Get-Command -Name 'Resolve-QCStampForProcess' -ErrorAction SilentlyContinue)) {
+    Write-Log 'Review stamp skipped: Resolve-QCStampForProcess not available.' -Severity WARNING
     return
   }
-  $pwRoles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $cfg
-  if (-not $pwRoles.found) {
-    Write-Log "Review stamp skipped: could not read source PDF attributes ($($pwRoles.error))." -Severity WARNING
-    return
-  }
-  $roles = @{
-    designerEmail = [string]$pwRoles.designerEmail
-    reviewerEmail = [string]$pwRoles.reviewerEmail
-    checkerEmail  = [string]$pwRoles.checkerEmail
-    qcReviewType  = [string]$pwRoles.qcReviewType
-  }
 
-  $logBlock = { param($m) Write-Log $m }
-  $result = Invoke-QCReviewStampForReviewType -PdfPath $MergedPdfPath -Config $cfg -RoleFields $roles `
-    -OverlayExe $QcOverlayExe -Log $logBlock
-
+  $result = Invoke-PrependQcStampByProcessType -MergedPdfPath $MergedPdfPath -FolderPath $FolderPath `
+    -SourceDocumentName $SourceDocumentName -ProcessType $processType -Config $cfg
   if ($result.skipped) {
     if ($result.reason) { Write-Log "Review stamp skipped: $($result.reason)" }
     return
@@ -696,8 +673,12 @@ function Invoke-QcReviewStampIfNeeded {
       }
     }
     Write-Log "Review stamp failed: $($result.reason)" -Severity ERROR
-    throw "Review stamp failed: $($result.reason)"
+    if ($processType -in @('check', 'review')) {
+      throw "Review stamp failed: $($result.reason)"
+    }
+    return
   }
+  Write-Log "Review stamp applied for qc_process_type=$processType (profile=$($result.stampProfile))."
 }
 
 #Write-Log "Connecting via IMS..."
