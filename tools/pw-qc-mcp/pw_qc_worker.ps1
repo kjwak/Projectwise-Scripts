@@ -61,6 +61,7 @@ $script:ToolDispatch = @{
     get_sheet_debug_timeline          = { param($a) Get-QCDebugSheetTimeline @a }
     get_notification_diagnostics      = { param($a) Get-QCDebugNotificationDiagnostics @a }
     get_data_integrity_report         = { param($a) Get-QCDebugDataIntegrityReport @a }
+    get_qc_process_type_diagnostics   = { param($a) Get-QCDebugQcProcessTypeDiagnostics @a }
     compare_projectwise_to_database   = { param($a) Compare-QCProjectWiseToDatabase @a }
     get_recent_errors                 = { param($a) Get-QCDebugRecentErrors @a }
     get_process_health                = { param($a) Get-QCDebugProcessHealth @a }

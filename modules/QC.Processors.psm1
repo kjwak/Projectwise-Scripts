@@ -245,12 +245,17 @@ function _QCP-TryResolvePrependLaneContext {
     )
 
     $folder = _QCP-GetJobMetadataValue -Job $Job -Keys @('folderPath', 'sourceFolder', 'incomingFolderPath')
-    $docName = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName', 'triggerDocumentName')
-    if (_QCP-IsNullOrWhiteSpace $docName) {
-        $docName = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
+    $sheetPdfRaw = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'incomingDocName', 'sourceDocumentName')
+    $sheetPdfName = _QCP-NormalizeJobDocumentFileName -DocumentName ([string]$sheetPdfRaw)
+    if (_QCP-IsNullOrWhiteSpace $sheetPdfName) {
+        $sheetPdfFallback = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
+        $sheetPdfName = _QCP-NormalizeJobDocumentFileName -DocumentName $sheetPdfFallback
     }
-    if (-not (_QCP-IsNullOrWhiteSpace $docName) -and $docName -match '\\') {
-        $docName = [System.IO.Path]::GetFileName([string]$docName)
+    $laneTriggerRaw = _QCP-GetJobMetadataOnlyValue -Job $Job -Keys @('triggerDocumentName')
+    $laneTriggerName = _QCP-NormalizeJobDocumentFileName -DocumentName ([string]$laneTriggerRaw)
+    if (_QCP-IsNullOrWhiteSpace $laneTriggerName) {
+        $laneTriggerFallback = if ($Job.sourceName) { [string]$Job.sourceName } else { '' }
+        $laneTriggerName = _QCP-NormalizeJobDocumentFileName -DocumentName $laneTriggerFallback
     }
     $sourceDocumentGuid = _QCP-GetJobMetadataValue -Job $Job -Keys @('triggerDocumentGuid', 'documentGuid', 'sourceDocumentGuid')
 
@@ -264,24 +269,29 @@ function _QCP-TryResolvePrependLaneContext {
         $resolutionSource = 'job_metadata'
     }
 
-    if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $docName) -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
-        $laneFromTrigger = Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$docName)
-        if ($laneFromTrigger) {
-            $processType = $laneFromTrigger
-            $resolutionSource = 'document_name_lane'
+    if (-not $processType -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+        foreach ($laneName in @($laneTriggerName, $sheetPdfName)) {
+            if (_QCP-IsNullOrWhiteSpace $laneName) { continue }
+            $laneFromName = Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$laneName)
+            if ($laneFromName) {
+                $processType = $laneFromName
+                $resolutionSource = 'document_name_lane'
+                break
+            }
         }
     }
 
-    if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
-        if (_QCP-IsStemSheetDocumentName ([string]$docName)) {
-            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
+    $attributeLookupName = if (-not (_QCP-IsNullOrWhiteSpace $sheetPdfName)) { [string]$sheetPdfName } else { [string]$laneTriggerName }
+    if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $attributeLookupName)) {
+        if (_QCP-IsStemSheetDocumentName ([string]$attributeLookupName)) {
+            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName)
             if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
                 $processType = [string]$idxProcess
                 $resolutionSource = 'sheet_index'
             }
         }
         if (-not $processType -and (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue)) {
-            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
+            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName) -Config $Config
             if ($pw.found) {
                 $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
                 if ($norm) {
@@ -290,7 +300,7 @@ function _QCP-TryResolvePrependLaneContext {
                 }
             }
         } elseif (-not $processType -and (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
-            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName) -Config $Config
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName) -Config $Config
             if ($pw.found) {
                 $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
                 if ($norm) {
@@ -299,8 +309,8 @@ function _QCP-TryResolvePrependLaneContext {
                 }
             }
         }
-        if (-not $processType -and -not (_QCP-IsStemSheetDocumentName ([string]$docName))) {
-            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$docName)
+        if (-not $processType -and -not (_QCP-IsStemSheetDocumentName ([string]$attributeLookupName))) {
+            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName)
             if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
                 $processType = [string]$idxProcess
                 $resolutionSource = 'sheet_index'
@@ -313,7 +323,8 @@ function _QCP-TryResolvePrependLaneContext {
             -Message 'QC_PREPEND could not resolve qc_process_type; refusing to default to production.' -Data @{
             jobId = if ($Job.id) { [string]$Job.id } else { '' }
             folderPath = [string]$folder
-            triggerDocumentName = [string]$docName
+            triggerDocumentName = [string]$laneTriggerName
+            sheetPdfName = [string]$sheetPdfName
             sourceDocumentGuid = [string]$sourceDocumentGuid
             metadataQcProcessType = [string]$rawProcess
         }
@@ -328,13 +339,15 @@ function _QCP-TryResolvePrependLaneContext {
             -Message 'QC_PREPEND could not resolve lane PDF suffix for process type.' -Data @{
             jobId = if ($Job.id) { [string]$Job.id } else { '' }
             qcProcessType = $processType
-            triggerDocumentName = [string]$docName
+            triggerDocumentName = [string]$laneTriggerName
+            sheetPdfName = [string]$sheetPdfName
         }
     }
 
-    $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension([string]$docName)
+    $stemSourceName = if (-not (_QCP-IsNullOrWhiteSpace $sheetPdfName)) { [string]$sheetPdfName } else { [string]$laneTriggerName }
+    $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension([string]$stemSourceName)
     if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-        $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName ([string]$docName)
+        $resolvedStem = Get-PWSheetStemFromDocumentName -DocumentName ([string]$stemSourceName)
         if (-not (_QCP-IsNullOrWhiteSpace $resolvedStem)) { $sheetStem = [string]$resolvedStem }
     }
     $expectedLanePdfName = $null
@@ -350,7 +363,8 @@ function _QCP-TryResolvePrependLaneContext {
         pdfSuffix = [string]$laneSuffix
         expectedLanePdfName = [string]$expectedLanePdfName
         sheetStem = [string]$sheetStem
-        triggerDocumentName = [string]$docName
+        triggerDocumentName = [string]$laneTriggerName
+        sheetPdfName = [string]$sheetPdfName
         sourceDocumentGuid = [string]$sourceDocumentGuid
         resolutionSource = $resolutionSource
         folderPath = [string]$folder
@@ -488,6 +502,10 @@ function _QCP-GetJobMetadataValue([hashtable]$Job, [string[]]$Keys) {
     foreach ($k in $Keys) {
         if ($Job.ContainsKey($k) -and $null -ne $Job[$k]) { return $Job[$k] }
     }
+    return _QCP-GetJobMetadataOnlyValue -Job $Job -Keys $Keys
+}
+
+function _QCP-GetJobMetadataOnlyValue([hashtable]$Job, [string[]]$Keys) {
     try {
         if ($Job.ContainsKey('metadata') -and $Job.metadata) {
             $md = _QCP-ToHashtable $Job.metadata
@@ -507,6 +525,13 @@ function _QCP-GetJobMetadataValue([hashtable]$Job, [string[]]$Keys) {
         }
     } catch { }
     return $null
+}
+
+function _QCP-NormalizeJobDocumentFileName([string]$DocumentName) {
+    if (_QCP-IsNullOrWhiteSpace $DocumentName) { return '' }
+    $name = [string]$DocumentName
+    if ($name -match '\\') { $name = [System.IO.Path]::GetFileName($name) }
+    return $name
 }
 
 function _QCP-ResolvePrependTrigger([hashtable]$Job) {
@@ -2420,6 +2445,10 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     if ($null -ne $ChangedByUser) { $md['changedByUser'] = $ChangedByUser }
     if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
+    $laneEnqueue = _QCP-TryResolvePrependLaneContext -Job $job -Config $Config
+    if ($laneEnqueue.IsSuccess) {
+        $md = _QCP-EnsureJobMetadataHashtable -Job $job
+    }
 
     if ($DryRun) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {

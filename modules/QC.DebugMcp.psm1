@@ -8,6 +8,7 @@ Import-Module (Join-Path $PSScriptRoot 'Core.Database.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Core.Telemetry.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'PW.Connection.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 $script:QDM_Config = $null
 $script:QDM_ColumnCache = @{}
@@ -901,7 +902,7 @@ function Get-QCDebugSheetPackageMembers {
     if (_QDM-TestTableExists -TableName 'sheet_index') {
         [void]$sourceTables.Add('sheet_index')
         $cols = _QDM-SelectExistingColumns -TableName 'sheet_index' -Requested @(
-            'document_guid', 'document_name', 'extension', 'pw_state_name', 'sheet_package_id', 'folder_path', 'qc_pdf_guid', 'last_updated_at'
+            'document_guid', 'document_name', 'extension', 'pw_state_name', 'sheet_package_id', 'folder_path', 'qc_pdf_guid', 'qc_process_type', 'qc_review_type', 'last_updated_at'
         )
         if ($cols.Count -gt 0) {
             $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
@@ -948,11 +949,343 @@ function Get-QCDebugSheetPackageMembers {
         }
     }
 
+    $packageIdsForLanes = @($packageIds)
+    if ($pkg.sheet_package_id) { $packageIdsForLanes += [string]$pkg.sheet_package_id }
+    $packageIdsForLanes = @($packageIdsForLanes | Select-Object -Unique)
+    $members['sheet_package_qc_pdf_rows'] = @(_QDM-LoadSheetPackageQcPdfRows -PackageIds $packageIdsForLanes)
+    $members['qc_process_type'] = _QDM-BuildQcProcessTypeDiagnostics -Lookup $lookup -Members $members -ProjectWiseAvailable $false
+
     return _QDM-ToolResult -Data @{
         lookup = $lookup
         members = $members
     } -Warnings $warnings -SourceTables @($sourceTables) -QueryAssumptions @(
         'Compares package registry, role table, and sheet_index when present.'
+    )
+}
+
+function _QDM-NormalizeQcProcessTypeValue {
+    param([string]$RawProcessType)
+    if ([string]::IsNullOrWhiteSpace($RawProcessType)) { return $null }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        return Normalize-QCProcessType -ProcessType ([string]$RawProcessType) -AllowNullOnEmpty
+    }
+    $text = ([string]$RawProcessType).Trim().ToLowerInvariant()
+    switch ($text) {
+        'prod' { return 'production' }
+        'chk' { return 'check' }
+        'rev' { return 'review' }
+        default { return $text }
+    }
+}
+
+function _QDM-InferQcProcessTypeFromDocumentName {
+    param([string]$DocumentName)
+    if ([string]::IsNullOrWhiteSpace($DocumentName)) { return $null }
+    if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+        return Get-PWQcPdfLaneFromDocumentName -DocumentName ([string]$DocumentName)
+    }
+    $name = [System.IO.Path]::GetFileName([string]$DocumentName)
+    if ($name -match '(?i)-prod\.pdf$') { return 'production' }
+    if ($name -match '(?i)-chk\.pdf$') { return 'check' }
+    if ($name -match '(?i)-rev\.pdf$') { return 'review' }
+    return $null
+}
+
+function _QDM-ResolveMemberFolderPath {
+    param(
+        [hashtable]$Lookup,
+        [hashtable]$PkgRow,
+        [array]$IndexRows
+    )
+    if ($Lookup -and $Lookup.folder_path -and -not [string]::IsNullOrWhiteSpace([string]$Lookup.folder_path)) {
+        return [string]$Lookup.folder_path
+    }
+    if ($PkgRow -and $PkgRow.folder_path -and -not [string]::IsNullOrWhiteSpace([string]$PkgRow.folder_path)) {
+        return [string]$PkgRow.folder_path
+    }
+    foreach ($row in @($IndexRows)) {
+        if ($row.folder_path -and -not [string]::IsNullOrWhiteSpace([string]$row.folder_path)) {
+            return [string]$row.folder_path
+        }
+    }
+    return ''
+}
+
+function _QDM-LoadSheetPackageQcPdfRows {
+    param([string[]]$PackageIds)
+    if ($PackageIds.Count -eq 0) { return @() }
+    if (-not (_QDM-TestTableExists -TableName 'sheet_package_qc_pdfs')) { return @() }
+    $cols = _QDM-SelectExistingColumns -TableName 'sheet_package_qc_pdfs' -Requested @(
+        'sheet_package_id', 'qc_process_type', 'document_guid', 'document_name', 'is_active', 'created_at', 'updated_at'
+    )
+    if ($cols.Count -eq 0) { return @() }
+    $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+    $inList = (@($PackageIds | Where-Object { $_ }) | ForEach-Object { "'$_'" }) -join ','
+    if ([string]::IsNullOrWhiteSpace($inList)) { return @() }
+    return [object[]]@(_QDM-RowsFromQuery -Sql "SELECT $select FROM [sheet_package_qc_pdfs] WHERE CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList) ORDER BY qc_process_type" -Parameters @{})
+}
+
+function _QDM-ReadProjectWiseProcessTypesForDocuments {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [array]$Documents,
+        [System.Collections.Generic.List[object]]$Warnings = $null
+    )
+    $processTypeMap = @{}
+    if ($Documents.Count -eq 0) { return $processTypeMap }
+    $pw = $Config.projectWise
+    $ds = [string]$pw.datasourceName
+    $credPath = [string]$pw.credentialPath
+    if ([string]::IsNullOrWhiteSpace($ds) -or [string]::IsNullOrWhiteSpace($credPath)) {
+        if ($Warnings) { $Warnings.Add((_QDM-BuildWarning -Message 'projectWise.datasourceName or credentialPath missing; skipping live QC_Process_Type reads.')) }
+        return $processTypeMap
+    }
+    if (-not (Get-Command -Name 'Invoke-PWAuthenticatedCommand' -ErrorAction SilentlyContinue)) {
+        if ($Warnings) { $Warnings.Add((_QDM-BuildWarning -Message 'Invoke-PWAuthenticatedCommand unavailable; skipping live QC_Process_Type reads.')) }
+        return $processTypeMap
+    }
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) {
+        if ($Warnings) { $Warnings.Add((_QDM-BuildWarning -Message 'Folder path unknown; skipping live QC_Process_Type reads.')) }
+        return $processTypeMap
+    }
+
+    $docInputs = @($Documents | ForEach-Object {
+        @{
+            guid = [string]$_.document_guid
+            name = [string]$_.document_name
+        }
+    } | Where-Object { $_.guid -and $_.name })
+    if ($docInputs.Count -eq 0) { return $processTypeMap }
+
+    $modulesRoot = $PSScriptRoot
+    $cfgLocal = $Config
+    $folderLocal = $FolderPath
+    try {
+        $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
+            Import-Module (Join-Path $modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+            $processTypes = @{}
+            foreach ($doc in $docInputs) {
+                $guid = [string]$doc.guid
+                $name = [string]$doc.name
+                if ([string]::IsNullOrWhiteSpace($guid) -or [string]::IsNullOrWhiteSpace($name)) { continue }
+                $raw = ''
+                if (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue) {
+                    $read = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath $folderLocal -SourceDocumentName $name -Config $cfgLocal
+                    if ($read.found -and $read.qcProcessType) { $raw = [string]$read.qcProcessType }
+                } elseif (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+                    $read = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folderLocal -SourceDocumentName $name -Config $cfgLocal
+                    if ($read.found -and $read.qcProcessType) { $raw = [string]$read.qcProcessType }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                    $processTypes[$guid.ToLowerInvariant()] = $raw
+                }
+            }
+            return $processTypes
+        }
+        if ($pwResult -is [hashtable]) {
+            foreach ($k in $pwResult.Keys) { $processTypeMap[[string]$k] = [string]$pwResult[$k] }
+        }
+    } catch {
+        if ($Warnings) { $Warnings.Add((_QDM-BuildWarning -Message "ProjectWise QC_Process_Type read failed: $($_.Exception.Message)")) }
+    }
+    return $processTypeMap
+}
+
+function _QDM-BuildQcProcessTypeDiagnostics {
+    param(
+        [hashtable]$Lookup,
+        [hashtable]$Members,
+        [hashtable]$PwProcessTypeByGuid = @{},
+        [bool]$ProjectWiseAvailable = $false
+    )
+
+    $indexRows = @($Members.sheet_index_rows)
+    $docRows = @($Members.sheet_documents_rows)
+    $pkgRows = @($Members.sheet_packages_rows)
+    $pkg = if ($pkgRows.Count -gt 0) { $pkgRows[0] } else { @{} }
+    $folderPath = _QDM-ResolveMemberFolderPath -Lookup $Lookup -PkgRow $pkg -IndexRows $indexRows
+
+    $packageIds = @($docRows | ForEach-Object { [string]$_.sheet_package_id } | Where-Object { $_ })
+    if ($pkg.sheet_package_id) { $packageIds += [string]$pkg.sheet_package_id }
+    $packageIds = @($packageIds | Select-Object -Unique)
+    $laneRegistryRows = @(_QDM-LoadSheetPackageQcPdfRows -PackageIds $packageIds)
+
+    $indexByGuid = @{}
+    $indexByName = @{}
+    foreach ($row in $indexRows) {
+        $norm = _QDM-NormalizeQcProcessTypeValue -RawProcessType ([string]$row.qc_process_type)
+        if ($row.document_guid) { $indexByGuid[[string]$row.document_guid.ToLowerInvariant()] = $norm }
+        if ($row.document_name) { $indexByName[[string]$row.document_name.ToLowerInvariant()] = $norm }
+    }
+
+    $laneByGuid = @{}
+    foreach ($row in $laneRegistryRows) {
+        $norm = _QDM-NormalizeQcProcessTypeValue -RawProcessType ([string]$row.qc_process_type)
+        if ($row.document_guid) { $laneByGuid[[string]$row.document_guid.ToLowerInvariant()] = $norm }
+    }
+
+    $documents = [System.Collections.Generic.List[hashtable]]::new()
+    $seenGuids = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($row in $docRows) {
+        if (-not $row.document_guid) { continue }
+        $guid = [string]$row.document_guid
+        if ($seenGuids.Contains($guid)) { continue }
+        [void]$seenGuids.Add($guid)
+        $documents.Add(@{
+            document_guid = $guid
+            document_name = [string]$row.document_name
+            document_role = [string]$row.document_role
+            source = 'sheet_documents'
+        })
+    }
+    foreach ($row in $indexRows) {
+        if (-not $row.document_guid) { continue }
+        $guid = [string]$row.document_guid
+        if ($seenGuids.Contains($guid)) { continue }
+        [void]$seenGuids.Add($guid)
+        $documents.Add(@{
+            document_guid = $guid
+            document_name = [string]$row.document_name
+            document_role = ''
+            source = 'sheet_index'
+        })
+    }
+
+    $checks = [System.Collections.Generic.List[hashtable]]::new()
+    $rows = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($doc in $documents) {
+        $guidKey = [string]$doc.document_guid.ToLowerInvariant()
+        $nameKey = if ($doc.document_name) { [string]$doc.document_name.ToLowerInvariant() } else { '' }
+        $filenameInferred = _QDM-InferQcProcessTypeFromDocumentName -DocumentName ([string]$doc.document_name)
+        $dbIndex = if ($indexByGuid.ContainsKey($guidKey)) { $indexByGuid[$guidKey] } elseif ($nameKey -and $indexByName.ContainsKey($nameKey)) { $indexByName[$nameKey] } else { $null }
+        $dbLane = if ($laneByGuid.ContainsKey($guidKey)) { $laneByGuid[$guidKey] } else { $null }
+        $pwRaw = if ($PwProcessTypeByGuid.ContainsKey($guidKey)) { [string]$PwProcessTypeByGuid[$guidKey] } else { '' }
+        $pwNorm = _QDM-NormalizeQcProcessTypeValue -RawProcessType $pwRaw
+        $isLanePdf = $null -ne $filenameInferred
+
+        $rows.Add(@{
+            document_guid = [string]$doc.document_guid
+            document_name = [string]$doc.document_name
+            document_role = [string]$doc.document_role
+            source = [string]$doc.source
+            is_lane_pdf = $isLanePdf
+            filename_inferred_process_type = $filenameInferred
+            database_sheet_index_process_type = $dbIndex
+            database_lane_registry_process_type = $dbLane
+            projectwise_process_type = if ($pwRaw) { $pwRaw } else { $null }
+            projectwise_process_type_normalized = $pwNorm
+        })
+
+        if ($isLanePdf) {
+            if ($dbLane -and $dbLane -ne $filenameInferred) {
+                $checks.Add(@{
+                    code = 'lane_registry_vs_filename'
+                    passed = $false
+                    document_guid = [string]$doc.document_guid
+                    document_name = [string]$doc.document_name
+                    message = "sheet_package_qc_pdfs has '$dbLane' but filename implies '$filenameInferred'."
+                    expected = $filenameInferred
+                    actual = $dbLane
+                })
+            }
+            if ($ProjectWiseAvailable -and $pwNorm -and $pwNorm -ne $filenameInferred) {
+                $checks.Add(@{
+                    code = 'projectwise_vs_lane_filename'
+                    passed = $false
+                    document_guid = [string]$doc.document_guid
+                    document_name = [string]$doc.document_name
+                    message = "ProjectWise QC_Process_Type '$pwRaw' disagrees with lane filename suffix ('$filenameInferred')."
+                    expected = $filenameInferred
+                    actual = $pwNorm
+                })
+            }
+        } else {
+            if ($dbIndex -and $pwNorm -and $dbIndex -ne $pwNorm) {
+                $checks.Add(@{
+                    code = 'sheet_index_vs_projectwise_process_type'
+                    passed = $false
+                    document_guid = [string]$doc.document_guid
+                    document_name = [string]$doc.document_name
+                    message = "sheet_index qc_process_type '$dbIndex' differs from ProjectWise '$pwRaw'."
+                    expected = $pwNorm
+                    actual = $dbIndex
+                })
+            }
+        }
+    }
+
+    foreach ($laneRow in $laneRegistryRows) {
+        $proc = _QDM-NormalizeQcProcessTypeValue -RawProcessType ([string]$laneRow.qc_process_type)
+        $docName = [string]$laneRow.document_name
+        $suffixExpected = switch ($proc) {
+            'production' { 'prod' }
+            'check' { 'chk' }
+            'review' { 'rev' }
+            default { $null }
+        }
+        if ($suffixExpected -and $docName -and ($docName -notmatch "(?i)-$suffixExpected\.pdf$")) {
+            $checks.Add(@{
+                code = 'lane_registry_name_suffix_mismatch'
+                passed = $false
+                document_guid = [string]$laneRow.document_guid
+                document_name = $docName
+                message = "Lane registry qc_process_type '$proc' expects *-$suffixExpected.pdf but document_name is '$docName'."
+                expected = "*-$suffixExpected.pdf"
+                actual = $docName
+            })
+        }
+    }
+
+    $failed = @($checks | Where-Object { -not $_.passed })
+    return @{
+        folder_path = $folderPath
+        documents = @($rows)
+        lane_registry = @($laneRegistryRows)
+        checks = @($checks)
+        checks_passed = [Math]::Max(0, $checks.Count - $failed.Count)
+        checks_failed = $failed.Count
+        projectwise_available = [bool]$ProjectWiseAvailable
+        resolution_policy = 'Lane PDFs (*-prod/*-chk/*-rev): canonical process type comes from the filename suffix. Stem/DGN: compare sheet_index.qc_process_type with live ProjectWise QC_Process_Type.'
+    }
+}
+
+function Get-QCDebugQcProcessTypeDiagnostics {
+    <#
+    .SYNOPSIS
+    Compare qc_process_type across lane filenames, sheet_index, lane registry, and ProjectWise.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$SheetNumber = '',
+        [string]$DocumentGuid = '',
+        [string]$PackageId = '',
+        [string]$SheetName = '',
+        [string]$DocumentPath = ''
+    )
+
+    $lookupParams = _QDM-GetLookupBoundParameters -Bound $PSBoundParameters
+    $membersResult = Get-QCDebugSheetPackageMembers @lookupParams
+    $lookup = $membersResult.data.lookup
+    $members = $membersResult.data.members
+    $warnings = [System.Collections.Generic.List[object]]::new()
+    if ($membersResult.warnings) { foreach ($w in @($membersResult.warnings)) { $warnings.Add($w) } }
+
+    $cfg = _QDM-Config
+    $pkgRowsLocal = @($members.sheet_packages_rows)
+    $pkgRow = if ($pkgRowsLocal.Count -gt 0) { $pkgRowsLocal[0] } else { @{} }
+    $folderPath = _QDM-ResolveMemberFolderPath -Lookup $lookup -PkgRow $pkgRow -IndexRows @($members.sheet_index_rows)
+    $docInputs = @($members.sheet_documents_rows | ForEach-Object {
+        @{ document_guid = [string]$_.document_guid; document_name = [string]$_.document_name }
+    } | Where-Object { $_.document_guid -and $_.document_name })
+    $pwProcessTypes = _QDM-ReadProjectWiseProcessTypesForDocuments -Config $cfg -FolderPath $folderPath -Documents $docInputs -Warnings $warnings
+
+    return _QDM-ToolResult -Data @{
+        lookup = $lookup
+        qc_process_type = (_QDM-BuildQcProcessTypeDiagnostics -Lookup $lookup -Members $members -PwProcessTypeByGuid $pwProcessTypes -ProjectWiseAvailable ($pwProcessTypes.Count -gt 0))
+    } -Warnings @($warnings) -SourceTables @('sheet_index', 'sheet_documents', 'sheet_package_qc_pdfs') -QueryAssumptions @(
+        'Lane PDF process type is validated against *-prod/*-chk/*-rev filename suffixes.',
+        'Stem/DGN process type compares sheet_index with live ProjectWise QC_Process_Type when PW is reachable.'
     )
 }
 
@@ -1423,10 +1756,25 @@ function Get-QCDebugDataIntegrityReport {
         }
     }
 
+    $qcProcessType = if ($members.qc_process_type) { $members.qc_process_type } else {
+        _QDM-BuildQcProcessTypeDiagnostics -Lookup $lookup -Members $members -ProjectWiseAvailable $false
+    }
+    foreach ($check in @($qcProcessType.checks | Where-Object { -not $_.passed })) {
+        $issues.Add(@{
+            code = [string]$check.code
+            message = [string]$check.message
+            document_guid = $check.document_guid
+            document_name = $check.document_name
+            expected = $check.expected
+            actual = $check.actual
+        })
+    }
+
     return _QDM-ToolResult -Data @{
         lookup = $lookup
         issues = @($issues)
         issue_count = $issues.Count
+        qc_process_type = $qcProcessType
         members_snapshot = @{
             sheet_packages = $pkgRows
             sheet_documents = $docRows
@@ -1550,12 +1898,35 @@ function Compare-QCProjectWiseToDatabase {
         }
     }
 
+    $warningList = [System.Collections.Generic.List[object]]::new()
+    foreach ($w in @($warnings)) { $warningList.Add($w) }
+    $folderPath = _QDM-ResolveMemberFolderPath -Lookup $lookup -PkgRow $pkg -IndexRows @($members.sheet_index_rows)
+    $pwProcessTypeMap = _QDM-ReadProjectWiseProcessTypesForDocuments -Config $cfg -FolderPath $folderPath -Documents @($dbDocs) -Warnings $warningList
+    $warnings = @($warningList)
+    $qcProcessType = _QDM-BuildQcProcessTypeDiagnostics -Lookup $lookup -Members $members -PwProcessTypeByGuid $pwProcessTypeMap -ProjectWiseAvailable ($pwProcessTypeMap.Count -gt 0)
+    $qcByGuid = @{}
+    foreach ($row in @($qcProcessType.documents)) {
+        if ($row.document_guid) { $qcByGuid[[string]$row.document_guid.ToLowerInvariant()] = $row }
+    }
+
     foreach ($doc in $dbDocs) {
         $guid = [string]$doc.document_guid
         $guidKey = $guid.ToLowerInvariant()
         $pwState = if ($pwStateMap.ContainsKey($guidKey)) { [string]$pwStateMap[$guidKey] } else { $null }
         $pwName = if ($pwNameMap.ContainsKey($guidKey)) { [string]$pwNameMap[$guidKey] } else { $null }
         $dbState = [string]$doc.pw_state_name
+        $qcRow = if ($qcByGuid.ContainsKey($guidKey)) { $qcByGuid[$guidKey] } else { @{} }
+        $pwProcessRaw = if ($qcRow.projectwise_process_type) { [string]$qcRow.projectwise_process_type } else { $null }
+        $pwProcessNorm = if ($qcRow.projectwise_process_type_normalized) { [string]$qcRow.projectwise_process_type_normalized } else { $null }
+        $filenameInferred = if ($qcRow.filename_inferred_process_type) { [string]$qcRow.filename_inferred_process_type } else { $null }
+        $dbProcessNorm = if ($qcRow.database_sheet_index_process_type) { [string]$qcRow.database_sheet_index_process_type } else { $null }
+        $laneRegistryProcess = if ($qcRow.database_lane_registry_process_type) { [string]$qcRow.database_lane_registry_process_type } else { $null }
+        $processMatch = $null
+        if ($filenameInferred) {
+            $processMatch = ($laneRegistryProcess -eq $filenameInferred) -and ((-not $pwProcessNorm) -or ($pwProcessNorm -eq $filenameInferred))
+        } elseif ($dbProcessNorm -and $pwProcessNorm) {
+            $processMatch = ($dbProcessNorm -eq $pwProcessNorm)
+        }
         $mismatch = @{
             role = $doc.role
             document_guid = $guid
@@ -1563,6 +1934,12 @@ function Compare-QCProjectWiseToDatabase {
             projectwise_name = $pwName
             database_state = $dbState
             projectwise_state = $pwState
+            database_qc_process_type = $dbProcessNorm
+            database_lane_registry_process_type = $laneRegistryProcess
+            projectwise_qc_process_type = $pwProcessRaw
+            projectwise_qc_process_type_normalized = $pwProcessNorm
+            filename_inferred_process_type = $filenameInferred
+            qc_process_type_match = $processMatch
             name_match = if ($pwName) { ($pwName -ieq $doc.document_name) } else { $null }
             state_match = if ($pwState) { ($pwState -ieq $dbState) } else { $null }
             found_in_projectwise = [bool]$pwState
@@ -1583,8 +1960,11 @@ function Compare-QCProjectWiseToDatabase {
         missing_in_database = @($missingInDb)
         database_document_count = $dbDocs.Count
         projectwise_available = $pwAvailable
+        qc_process_type = $qcProcessType
     } -Warnings $warnings -QueryAssumptions @(
         'Read-only Get-PWDocumentsByGUIDs workflow state lookup.',
+        'Lane PDF qc_process_type is validated against *-prod/*-chk/*-rev filename suffixes.',
+        'Stem/DGN qc_process_type compares sheet_index with live ProjectWise QC_Process_Type.',
         'No ProjectWise writes or arbitrary cmdlets are executed.'
     )
 }
@@ -1975,6 +2355,7 @@ Export-ModuleMember -Function @(
     'Get-QCDebugSheetTimeline'
     'Get-QCDebugNotificationDiagnostics'
     'Get-QCDebugDataIntegrityReport'
+    'Get-QCDebugQcProcessTypeDiagnostics'
     'Compare-QCProjectWiseToDatabase'
     'Get-QCDebugRecentErrors'
     'Get-QCDebugProcessHealth'

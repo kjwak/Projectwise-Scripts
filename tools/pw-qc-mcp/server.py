@@ -215,6 +215,21 @@ def get_data_integrity_report(
 
 
 @mcp.tool()
+def get_qc_process_type_diagnostics(
+    sheet_number: str = "",
+    document_guid: str = "",
+    package_id: str = "",
+    document_path: str = "",
+    sheet_name: str = "",
+) -> dict[str, Any]:
+    """Compare qc_process_type across lane filenames, sheet_index, lane registry, and ProjectWise."""
+    return invoke_ps("get_qc_process_type_diagnostics", _tool_args(
+        sheet_number=sheet_number, document_guid=document_guid, package_id=package_id,
+        document_path=document_path, sheet_name=sheet_name,
+    ))
+
+
+@mcp.tool()
 def warm_projectwise_session() -> dict[str, Any]:
     """Pre-connect ProjectWise in the MCP worker. Call before compare_projectwise_to_database to reduce timeout risk."""
     return invoke_ps("warm_projectwise_session", {})

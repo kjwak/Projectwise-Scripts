@@ -154,6 +154,7 @@ $script:McpTools = @(
     (New-McpToolSchema -Name 'get_sheet_debug_timeline' -Description 'Build a combined timeline from available QC telemetry tables.' -ExtraProperties @{ limit = @{ type = 'integer'; description = 'Max events (default 200).'; default = 200 } }),
     (New-McpToolSchema -Name 'get_notification_diagnostics' -Description 'Diagnose notification queue/log outcomes for a sheet.' -ExtraProperties @{ limit = @{ type = 'integer'; description = 'Max rows per source (default 100).'; default = 100 } }),
     (New-McpToolSchema -Name 'get_data_integrity_report' -Description 'Compare package/document identity and flag stale or inconsistent rows.'),
+    (New-McpToolSchema -Name 'get_qc_process_type_diagnostics' -Description 'Compare qc_process_type across lane filenames (*-prod/*-chk/*-rev), sheet_index, lane registry, and ProjectWise.'),
     (New-McpToolSchema -Name 'compare_projectwise_to_database' -Description 'Read-only comparison of live ProjectWise workflow state vs QC_Pipeline telemetry.'),
     (New-McpToolSchema -Name 'get_recent_errors' -Description 'Recent warning/error automation events from automation_events (DB-first).' -ExtraProperties @{
         limit = @{ type = 'integer'; description = 'Max events (default 100).'; default = 100 }
@@ -190,6 +191,7 @@ $script:ToolDispatch = @{
     get_sheet_debug_timeline = { param($a) Get-QCDebugSheetTimeline @a }
     get_notification_diagnostics = { param($a) Get-QCDebugNotificationDiagnostics @a }
     get_data_integrity_report = { param($a) Get-QCDebugDataIntegrityReport @a }
+    get_qc_process_type_diagnostics = { param($a) Get-QCDebugQcProcessTypeDiagnostics @a }
     compare_projectwise_to_database = { param($a) Compare-QCProjectWiseToDatabase @a }
     get_recent_errors = { param($a) Get-QCDebugRecentErrors @a }
     get_process_health = { param($a) Get-QCDebugProcessHealth @a }

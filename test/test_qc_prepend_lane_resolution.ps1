@@ -60,6 +60,21 @@ InModuleScope -ModuleName QC.Processors {
     Assert-True (-not $fail.IsSuccess) 'missing process type fails'
     Assert-Eq $fail.Code 'QC_PROCESS_TYPE_UNKNOWN' 'unknown process type code'
 
+    $finalPrependJob = @{
+        id = 'j-final-rev-trigger'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        sourceName = '080J082001ab001.pdf'
+        metadata = @{
+            triggerDocumentName = '080J082001ab001-rev.pdf'
+            triggerDocumentGuid = '7362ac50-bf4c-4dfb-b4c5-4d4aac912ba4'
+        }
+    }
+    $finalLane = _QCP-TryResolvePrependLaneContext -Job $finalPrependJob -Config $cfg
+    Assert-True $finalLane.IsSuccess 'final prepend resolves lane from metadata trigger *-rev.pdf'
+    Assert-Eq $finalLane.Data.qcProcessType 'review' 'lane trigger *-rev.pdf => review'
+    Assert-Eq $finalLane.Data.expectedLanePdfName '080J082001ab001-rev.pdf' 'expected lane pdf from trigger suffix'
+    Assert-Eq $finalLane.Data.resolutionSource 'document_name_lane' 'lane suffix wins over stem sourceName'
+
     $script:mockProcessIntent = @{
         found = $true
         qcProcessType = 'Review'
