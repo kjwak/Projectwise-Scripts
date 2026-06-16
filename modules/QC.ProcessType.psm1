@@ -545,6 +545,10 @@ function Resolve-QCLaneQcPdf {
 function _QCPT-NormalizeRootPath([string]$Path) {
     if (_QCPT-IsBlank $Path) { return '' }
     $p = ([string]$Path).Trim().Replace('\', '/').TrimEnd('/')
+    # PW folder paths vary: "Documents/Caltrans/..." vs "Caltrans/..." after legacy prepend strips the prefix.
+    while ($p -match '^(?i)documents/') {
+        $p = $p -replace '^(?i)documents/', ''
+    }
     return $p.ToLowerInvariant()
 }
 

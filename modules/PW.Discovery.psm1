@@ -5954,12 +5954,31 @@ function _PWD-TryReadSheetRoleFieldsFromDocument {
     return @{ found = $true; error = ''; fields = $fields; resolvedFolder = $resolvedFolder }
 }
 
+function _PWD-NormalizeQcReviewTypeRoleValue([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $v = ([string]$Value).Trim()
+    # Civil/PW sometimes stores unset QC_Review_Type as literal "0"; treat as missing.
+    if ($v -eq '0') { return '' }
+    return $v
+}
+
 function _PWD-PickSheetRoleFieldValue {
     param(
         [hashtable]$DgnFields,
         [hashtable]$PdfFields,
         [string]$Name
     )
+
+    if ($Name -eq 'qcReviewType') {
+        $dgnRt = if ($DgnFields -and $DgnFields.ContainsKey($Name)) {
+            _PWD-NormalizeQcReviewTypeRoleValue ([string]$DgnFields[$Name])
+        } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($dgnRt)) { return $dgnRt }
+        if ($PdfFields -and $PdfFields.ContainsKey($Name)) {
+            return _PWD-NormalizeQcReviewTypeRoleValue ([string]$PdfFields[$Name])
+        }
+        return ''
+    }
 
     if ($DgnFields -and $DgnFields.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$DgnFields[$Name])) {
         return [string]$DgnFields[$Name]

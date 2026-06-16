@@ -69,4 +69,31 @@ $missing = Resolve-QCStampForProcess -Config @{
 } -ProcessType 'check'
 Assert-True (-not $missing.IsSuccess) 'missing stamp profile fails'
 
+$i15Config = @{
+    QCProcess = @{
+        ProcessTypes = @{
+            check = @{ PdfSuffix = 'chk'; DefaultStamp = 'Check' }
+        }
+        StampProfiles = @{
+            Default = @{ check = 'Check' }
+            I15_ELPSE = @{ check = 'I15_DR'; review = 'I15_DR' }
+        }
+        StampAssets = @{
+            Check = 'stamps/IC_Stamp.pdf'
+            I15_DR = 'stamps/I-15_DR_Stamp.pdf'
+        }
+        RootOverrides = @(
+            @{ Name = 'I15_ELPSE'; RootPath = 'Documents/Caltrans/CAFWY2200-I-15_ELPSE'; StampProfile = 'I15_ELPSE' }
+        )
+    }
+}
+$i15WithPrefix = Resolve-QCStampForProcess -Config $i15Config -ProcessType 'check' `
+    -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
+$i15NoPrefix = Resolve-QCStampForProcess -Config $i15Config -ProcessType 'check' `
+    -FolderPath 'Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
+Assert-Eq $i15WithPrefix.resolvedStampProfile 'I15_ELPSE' 'I15 override with Documents prefix'
+Assert-Eq $i15WithPrefix.resolvedStampName 'I15_DR' 'I15 check stamp asset'
+Assert-Eq $i15NoPrefix.resolvedStampProfile 'I15_ELPSE' 'I15 override without Documents prefix'
+Assert-Eq $i15NoPrefix.resolvedStampName 'I15_DR' 'I15 check stamp asset without prefix'
+
 Write-Host 'test_qc_stamp_resolver.ps1: OK'
