@@ -1782,10 +1782,14 @@ function Set-PWQCWorkflowState {
     $data.stateName = $StateName
     if ($laneIndependentInitialPrepend) {
         $laneTargetState = Format-QCWorkflowStateName -StateName $laneTargetState -Settings $Settings
-        $referenceState = Format-QCWorkflowStateName -StateName $referenceState -Settings $Settings
+        if (-not (_QCW-IsNullOrWhiteSpace $referenceState)) {
+            $referenceState = Format-QCWorkflowStateName -StateName $referenceState -Settings $Settings
+        }
         if ($Context) {
             $Context['laneTargetState'] = $laneTargetState
-            $Context['referenceState'] = $referenceState
+            if (-not (_QCW-IsNullOrWhiteSpace $referenceState)) {
+                $Context['referenceState'] = $referenceState
+            }
         }
     }
     $transitionTargetName = if ($laneIndependentInitialPrepend) { $laneTargetState } else { $StateName }
@@ -1986,7 +1990,7 @@ function Set-PWQCWorkflowState {
                     -PreviousState $previousForTelemetry -CurrentState $StateName -JobType 'QC_PREPEND' | Out-Null
             }
         }
-        $laneStateVerified = $true
+        $laneStateVerified = -not [bool]$laneIndependentInitialPrepend
         $lanePreviousState = ''
         if ($laneIndependentInitialPrepend -and $data.lanePostPrependSplit) {
             $splitData = _QCW-ToHashtable $data.lanePostPrependSplit

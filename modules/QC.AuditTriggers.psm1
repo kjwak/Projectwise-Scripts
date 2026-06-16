@@ -1086,10 +1086,22 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 if ($memberLane -and $activeLane -and ($memberLane -ieq $activeLane)) {
                     $finalState = $laneTarget
                 } elseif ($dn -match '(?i)\.dgn$' -or ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
-                    $finalState = $refState
+                    $writeStemRef = $true
+                    if ($Context.ContainsKey('writeStemPdfReferenceState')) {
+                        try { $writeStemRef = [bool]$Context.writeStemPdfReferenceState } catch { $writeStemRef = $true }
+                    }
+                    if ($writeStemRef -and -not [string]::IsNullOrWhiteSpace($refState)) {
+                        $finalState = $refState
+                    } else {
+                        # Finalizing prepend: stem/DGN state is unchanged; do not emit empty target states.
+                        $finalState = _QCAT-NormalizeValue $prevState
+                        if ([string]::IsNullOrWhiteSpace($finalState)) {
+                            $finalState = _QCAT-NormalizeValue $target
+                        }
+                    }
                 }
             }
-            if (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+            if (-not [string]::IsNullOrWhiteSpace($finalState) -and (Get-Command -Name 'Format-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
                 $fmtCfg = if ($Context -and $Context.config) { $Context.config } elseif ($Config) { $Config } else { $null }
                 try { $finalState = Format-QCWorkflowStateName -StateName $finalState -Config $fmtCfg } catch { }
             }

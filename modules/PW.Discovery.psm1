@@ -2560,7 +2560,9 @@ function Sync-PWPostInitialPrependLaneStates {
         [AllowEmptyString()]
         [string]$QcProcessType,
         [Parameter(Mandatory)][string]$LaneTargetState,
-        [Parameter(Mandatory)][string]$ReferenceState,
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$ReferenceState,
         [string]$ExpectedLanePdfName = '',
         [bool]$WriteStemPdfReferenceState = $true,
         [bool]$DryRun = $false

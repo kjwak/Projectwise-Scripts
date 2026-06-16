@@ -166,6 +166,48 @@ Assert-Eq $script:stateWrites.Count 0 'stem primary write skipped; lane PDF is w
 Assert-True $result.Data.skippedPrimaryReferenceWrite 'marks skipped primary reference write'
 Assert-True $ctx.laneIndependentInitialPrepend 'context marks lane-independent prepend'
 
+# finalQcComplete: lane split without stem reference state must not throw on empty referenceState
+$finalCfg = @{
+    qcWorkflow = @{
+        enabled = $true
+        strictMode = $false
+        dryRunWriteback = $false
+        mode = 'StateAndAttributes'
+        autoSetState = $true
+        expectedWorkflowName = 'TYPSA QC'
+        states = @{
+            production = 'In Development'
+            qcFinalizing = 'Initiate Verification'
+            readyForQc = 'Ready for Verification'
+        }
+        stateAfterPrependByTrigger = @{ finalQcComplete = 'Ready for Verification' }
+    }
+}
+$finalSettings = Get-QCWorkflowSettings -Config $finalCfg
+$finalDoc = [pscustomobject]@{
+    WorkflowName = 'TYPSA QC'
+    StateName = 'Initiate Verification'
+    DocumentGUID = 'stem-guid'
+    Name = '080J082001ab001.pdf'
+    FolderPath = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
+}
+$finalCtx = @{
+    config = $finalCfg
+    prependTrigger = 'finalQcComplete'
+    qcProcessType = 'review'
+    expectedLanePdfName = '080J082001ab001-rev.pdf'
+    job = @{ id = 'j-final'; sourceFolder = $finalDoc.FolderPath; sourceName = '080J082001ab001.pdf' }
+    document = $finalDoc
+}
+$finalResult = Set-PWQCWorkflowState -Settings $finalSettings -Context $finalCtx -StateName 'Ready for Verification' -DryRun:$false
+Assert-True $finalResult.IsSuccess 'finalQcComplete state write should succeed without empty referenceState throw'
+Assert-False ($finalResult.Data.lanePostPrependSplitError) 'finalQcComplete lane split should not fail on empty referenceState'
+Assert-True ($null -ne $finalResult.Data.lanePostPrependSplit) 'finalQcComplete lane split should run'
+Assert-True $finalCtx.laneIndependentInitialPrepend 'finalQcComplete marks lane-independent prepend'
+Assert-Eq $finalCtx.laneTargetState 'Ready for Verification' 'finalQcComplete lane target is post-prepend state'
+Assert-False $finalCtx.writeStemPdfReferenceState 'finalQcComplete does not write stem reference state'
+Assert-False ($finalCtx.ContainsKey('referenceState') -and -not [string]::IsNullOrWhiteSpace($finalCtx.referenceState)) 'finalQcComplete leaves referenceState unset'
+
 # DGN is never written by automation (workflow state or QC_Process_Type)
 InModuleScope -ModuleName PW.Discovery {
     function Write-QCJsonLog { param($Level, $Code, $Message, $Data) }
