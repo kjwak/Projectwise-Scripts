@@ -8,12 +8,22 @@ Import-Module (Join-Path $PSScriptRoot 'QC.NotificationTemplates.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationMock.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $PSScriptRoot 'QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.NotificationThreads.psm1') -Force -Global -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 }
 Import-Module (Join-Path $PSScriptRoot 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
+
+# Test-friendly stubs: allow unit tests to run without importing Core.Database.
+if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
+    function Test-QCDatabaseEnabled {
+        [CmdletBinding()]
+        param([Parameter(Mandatory)][hashtable]$Config)
+        return $false
+    }
+}
 
 function _QCN-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -3496,8 +3506,27 @@ function Send-QCNotification {
     $provider = ([string]$settings.provider).Trim()
     if (_QCN-IsBlank $provider) { $provider = 'Mock' }
 
+    $threadPlan = $null
+    if (Get-Command -Name 'Invoke-QCNotificationThreadedSend' -ErrorAction SilentlyContinue) {
+        $threadPlan = Invoke-QCNotificationThreadedSend -Event $Event -Config $Config -Settings $settings `
+            -Payload $payload -Provider $provider -DryRun:([bool]$settings.dryRun)
+    }
+
     _QCN-WriteNotificationLifecycleLog -Code 'QC_NOTIFICATION_SEND_ATTEMPT' -Level 'Information' `
         -Message 'Sending QC workflow notification.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
+    if ($threadPlan -and $threadPlan.threadKey) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'QC_NOTIFICATION_THREAD_DISPATCH' `
+                -Message 'Threaded notification dispatch.' -Data @{
+                sheetPackageId = $threadPlan.sheetPackageId
+                reviewType = $threadPlan.reviewType
+                sendMode = $threadPlan.sendMode
+                parentGraphMessageId = $threadPlan.parentMessageId
+                workflowEvent = $threadPlan.workflowEvent
+                threadKey = $threadPlan.threadKey
+            } | Out-Null
+        }
+    }
 
     $sendResult = $null
     switch ($provider.ToLowerInvariant()) {
@@ -3535,6 +3564,7 @@ function Send-QCNotification {
             -Message 'QC workflow notification sent.' -Event $Event -Config $Config -To @($To) -Cc @($Cc) -Subject $Subject
     }
 
+    $notificationLogId = $null
     if (Get-Command -Name Write-QCNotificationTelemetry -ErrorAction SilentlyContinue) {
         $telemetryFolder = [string]$Event.folderPath
         if (_QCN-IsBlank $telemetryFolder) { $telemetryFolder = [string]$Event.documentPath }
@@ -3546,13 +3576,27 @@ function Send-QCNotification {
         if ($Event.ContainsKey('transitionId') -and $null -ne $Event.transitionId) {
             try { $transitionForTelemetry = [int]$Event.transitionId } catch { $transitionForTelemetry = $null }
         }
-        [void](Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
+        $sheetPkgForTelemetry = $null
+        if ($threadPlan -and -not (_QCN-IsBlank $threadPlan.sheetPackageId)) {
+            try { $sheetPkgForTelemetry = [guid]$threadPlan.sheetPackageId } catch { $sheetPkgForTelemetry = $null }
+        }
+        $telemetryRes = Write-QCNotificationTelemetry -Config $Config -EventType ([string]$Event.eventType) `
             -DocumentGuid ([string]$Event.documentGuid) -DocumentName ([string]$Event.documentName) `
             -FolderPath $telemetryFolder `
             -Recipients ((@($To) + @($Cc)) -join ';') -Subject $Subject `
             -DedupeKey $dedupeForTelemetry -Provider ([string]$provider) -Success $sendResult.IsSuccess `
             -ErrorMessage $(if (-not $sendResult.IsSuccess) { [string]$sendResult.Message } else { $null }) `
-            -TransitionId $transitionForTelemetry)
+            -TransitionId $transitionForTelemetry -SheetPackageId $sheetPkgForTelemetry
+        if ($telemetryRes -and $telemetryRes.Data -and $telemetryRes.Data.notificationLogId) {
+            try { $notificationLogId = [int]$telemetryRes.Data.notificationLogId } catch { }
+        }
+    }
+
+    if ($sendResult.IsSuccess -and $threadPlan -and (Get-Command -Name 'Complete-QCNotificationThreadedSend' -ErrorAction SilentlyContinue)) {
+        $parentInvalid = $false
+        if ($result.parentInvalid -eq $true) { $parentInvalid = $true }
+        Complete-QCNotificationThreadedSend -Config $Config -ThreadPlan $threadPlan -SendResultData $result `
+            -NotificationLogId $notificationLogId -WorkflowEvent $threadPlan.workflowEvent -ParentInvalid:$parentInvalid
     }
 
     if ($sendResult.IsSuccess) { return New-QCSuccessResult -Code $code -Message $sendResult.Message -Data $result }
@@ -4422,6 +4466,20 @@ function Invoke-QCNotificationForStateChange {
     if (-not (_QCN-IsBlank $resolvedReviewType)) {
         $event['reviewType'] = $resolvedReviewType
         $event['qcReviewType'] = $resolvedReviewType
+    }
+
+    $resolvedSheetPackageId = _QCN-ResolveNotificationSheetPackageId -Job $Job -Event $event
+    if (_QCN-IsBlank $resolvedSheetPackageId -and -not (_QCN-IsBlank $DocumentGuid) `
+            -and (Get-Command -Name 'Get-SheetPackageIdForDocument' -ErrorAction SilentlyContinue) `
+            -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) `
+            -and (Test-QCDatabaseEnabled -Config $Config)) {
+        try {
+            $pkgFromDoc = Get-SheetPackageIdForDocument -Config $Config -DocumentGuid $DocumentGuid
+            if ($null -ne $pkgFromDoc) { $resolvedSheetPackageId = $pkgFromDoc.ToString() }
+        } catch { }
+    }
+    if (-not (_QCN-IsBlank $resolvedSheetPackageId)) {
+        $event['sheetPackageId'] = $resolvedSheetPackageId
     }
 
     $resolvedSubmittedBy = Resolve-QCNotificationSubmittedBy -Config $Config -ChangedByUser $ChangedByUser `

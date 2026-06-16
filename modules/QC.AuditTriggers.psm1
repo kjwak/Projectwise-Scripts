@@ -672,6 +672,31 @@ function _QCAT-TryRecordQCCycleCompletion {
     if (-not [string]::IsNullOrWhiteSpace($reviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
         $normalizedReviewType = Get-QCReviewTypeBucket -ReviewType $reviewType
     }
+    if (-not $normalizedReviewType -and $Context -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+        foreach ($k in @('activeQcProcessType', 'qcProcessType')) {
+            if (-not $Context.ContainsKey($k)) { continue }
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Context[$k]) -AllowNullOnEmpty
+            if ($norm) {
+                $normalizedReviewType = $norm
+                if ([string]::IsNullOrWhiteSpace($reviewType)) { $reviewType = [string]$Context[$k] }
+                break
+            }
+        }
+    }
+    if (-not $normalizedReviewType -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
+        foreach ($name in @($DocumentName, $reviewDocName)) {
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $name
+            if ($lane -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+                $norm = Normalize-QCProcessType -ProcessType ([string]$lane) -AllowNullOnEmpty
+                if ($norm) {
+                    $normalizedReviewType = $norm
+                    if ([string]::IsNullOrWhiteSpace($reviewType)) { $reviewType = [string]$lane }
+                    break
+                }
+            }
+        }
+    }
     if (-not $normalizedReviewType) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
@@ -1882,14 +1907,14 @@ function Resolve-QCWorkflowEventQcReviewType {
         if ($Context.ContainsKey('attributes') -and $Context.attributes) {
             $attrs = _QCAT-ToHashtable $Context.attributes
             if ($attrs) {
-                foreach ($k in @('reviewType', 'qcReviewType', 'qc_review_type')) {
+                foreach ($k in @('reviewType', 'qcReviewType', 'qc_review_type', 'qcProcessType', 'qc_process_type')) {
                     if ($attrs.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$attrs[$k])) {
                         return [string]$attrs[$k]
                     }
                 }
             }
         }
-        foreach ($k in @('reviewType', 'qcReviewType')) {
+        foreach ($k in @('reviewType', 'qcReviewType', 'qcProcessType', 'activeQcProcessType', 'qc_process_type')) {
             if ($Context.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$Context[$k])) {
                 return [string]$Context[$k]
             }
@@ -1897,12 +1922,16 @@ function Resolve-QCWorkflowEventQcReviewType {
     }
 
     $reviewCol = 'QC_Review_Type'
+    $processCol = 'QC_Process_Type'
     if ($Config -and (Get-Command -Name 'Get-PWQcReviewTypeAttributeName' -ErrorAction SilentlyContinue)) {
         try { $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config } catch { }
     }
+    if ($Config -and (Get-Command -Name 'Get-PWQcProcessTypeAttributeName' -ErrorAction SilentlyContinue)) {
+        try { $processCol = Get-PWQcProcessTypeAttributeName -Config $Config } catch { }
+    }
 
     if ($PwAttributes) {
-        foreach ($k in @('qc_review_type', 'reviewType', 'qcReviewType', $reviewCol, 'QC_Review_Type')) {
+        foreach ($k in @('qc_process_type', 'qcProcessType', $processCol, 'QC_Process_Type', 'qc_review_type', 'reviewType', 'qcReviewType', $reviewCol, 'QC_Review_Type')) {
             if ($PwAttributes.ContainsKey($k) -and -not [string]::IsNullOrWhiteSpace([string]$PwAttributes[$k])) {
                 return [string]$PwAttributes[$k]
             }
@@ -1910,7 +1939,7 @@ function Resolve-QCWorkflowEventQcReviewType {
     }
 
     if ($Document) {
-        foreach ($k in @($reviewCol, 'QC_Review_Type', 'qcReviewType', 'reviewType')) {
+        foreach ($k in @($processCol, 'QC_Process_Type', 'qcProcessType', 'qc_process_type', $reviewCol, 'QC_Review_Type', 'qcReviewType', 'reviewType')) {
             try {
                 if ($Document.PSObject.Properties[$k] -and -not [string]::IsNullOrWhiteSpace([string]$Document.$k)) {
                     return [string]$Document.$k
@@ -1948,8 +1977,13 @@ function Resolve-QCWorkflowEventQcReviewType {
     if ($Config -and -not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($source)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
             $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $folder -SourceDocumentName $source -Config $Config
-            if ($pw.found -and -not [string]::IsNullOrWhiteSpace([string]$pw.qcReviewType)) {
-                return [string]$pw.qcReviewType
+            if ($pw.found) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$pw.qcReviewType)) {
+                    return [string]$pw.qcReviewType
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$pw.qcProcessType)) {
+                    return [string]$pw.qcProcessType
+                }
             }
         }
     }
@@ -1959,13 +1993,16 @@ function Resolve-QCWorkflowEventQcReviewType {
             if (Test-QCDatabaseEnabled -Config $Config) {
                 try {
                     $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT qc_review_type FROM sheet_index WHERE document_guid = @docGuid
+SELECT qc_review_type, qc_process_type FROM sheet_index WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $DocumentGuid }
                     if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
                         $r = $siRes.Data.table.Rows[0]
-                        if (-not ($r.qc_review_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_review_type)) {
-                            return [string]$r.qc_review_type
-                        }
+                        $raw = if (-not ($r.qc_process_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_process_type)) {
+                            [string]$r.qc_process_type
+                        } elseif (-not ($r.qc_review_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_review_type)) {
+                            [string]$r.qc_review_type
+                        } else { '' }
+                        if (-not [string]::IsNullOrWhiteSpace($raw)) { return $raw }
                     }
                 } catch { }
             }

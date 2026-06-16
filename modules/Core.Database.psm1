@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.20.0'
+    $targetVersion = '1.21.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot20Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot20Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot21Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -464,7 +464,7 @@ IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = @version)
 INSERT INTO schema_version (version, description) VALUES (@version, @desc)
 "@
         [void]$insertCmd.Parameters.AddWithValue("@version", $targetVersion)
-        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema with automation_events and MCP debug views")
+        [void]$insertCmd.Parameters.AddWithValue("@desc", "QC telemetry schema with notification email threading tables")
         [void]$insertCmd.ExecuteNonQuery()
 
         if ($null -eq $currentVersion) {
@@ -1987,6 +1987,70 @@ WHERE level IN ('Error', 'error', 'Warning', 'warning')
 '@
 }
 
+function _QDB-GetSchemaV1dot21Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.qc_notification_threads', 'U') IS NULL
+CREATE TABLE qc_notification_threads (
+    id                                INT IDENTITY(1,1) NOT NULL,
+    sheet_package_id                  UNIQUEIDENTIFIER NOT NULL,
+    review_type                       NVARCHAR(128) NOT NULL,
+    status                            NVARCHAR(32) NOT NULL CONSTRAINT DF_qc_notification_threads_status DEFAULT 'active',
+    graph_conversation_id             NVARCHAR(256) NULL,
+    latest_graph_message_id           NVARCHAR(256) NULL,
+    latest_graph_immutable_message_id NVARCHAR(256) NULL,
+    latest_internet_message_id        NVARCHAR(512) NULL,
+    created_at                        DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_qc_notification_threads_created DEFAULT SYSDATETIMEOFFSET(),
+    updated_at                        DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_qc_notification_threads_updated DEFAULT SYSDATETIMEOFFSET(),
+    superseded_at                     DATETIMEOFFSET(3) NULL,
+    CONSTRAINT PK_qc_notification_threads PRIMARY KEY (id),
+    CONSTRAINT CK_qc_notification_threads_status CHECK (status IN ('active', 'superseded', 'invalid'))
+);
+GO
+IF OBJECT_ID('dbo.qc_notification_threads', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_qc_notification_threads_active_package_review')
+    CREATE UNIQUE INDEX UX_qc_notification_threads_active_package_review
+    ON qc_notification_threads (sheet_package_id, review_type)
+    WHERE status = 'active';
+GO
+IF OBJECT_ID('dbo.qc_notification_threads', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_notification_threads_package')
+    CREATE INDEX IX_qc_notification_threads_package ON qc_notification_threads (sheet_package_id);
+GO
+IF OBJECT_ID('dbo.qc_notification_messages', 'U') IS NULL
+CREATE TABLE qc_notification_messages (
+    id                          INT IDENTITY(1,1) NOT NULL,
+    thread_id                   INT NOT NULL,
+    notification_log_id         INT NULL,
+    workflow_event              NVARCHAR(100) NULL,
+    graph_message_id            NVARCHAR(256) NULL,
+    graph_immutable_message_id  NVARCHAR(256) NULL,
+    graph_conversation_id       NVARCHAR(256) NULL,
+    internet_message_id         NVARCHAR(512) NULL,
+    send_mode                   NVARCHAR(32) NOT NULL,
+    delivery_status             NVARCHAR(32) NOT NULL CONSTRAINT DF_qc_notification_messages_delivery DEFAULT 'sent',
+    sent_at                     DATETIMEOFFSET(3) NULL,
+    error_message               NVARCHAR(2000) NULL,
+    created_at                  DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_qc_notification_messages_created DEFAULT SYSDATETIMEOFFSET(),
+    updated_at                  DATETIMEOFFSET(3) NOT NULL CONSTRAINT DF_qc_notification_messages_updated DEFAULT SYSDATETIMEOFFSET(),
+    CONSTRAINT PK_qc_notification_messages PRIMARY KEY (id),
+    CONSTRAINT FK_qc_notification_messages_thread FOREIGN KEY (thread_id) REFERENCES qc_notification_threads(id),
+    CONSTRAINT CK_qc_notification_messages_send_mode CHECK (send_mode IN ('root', 'reply', 'replacement_root', 'unthreaded')),
+    CONSTRAINT CK_qc_notification_messages_delivery CHECK (delivery_status IN ('sent', 'failed', 'pending'))
+);
+GO
+IF OBJECT_ID('dbo.qc_notification_messages', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.notification_log', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_qc_notification_messages_log')
+    ALTER TABLE qc_notification_messages
+    ADD CONSTRAINT FK_qc_notification_messages_log FOREIGN KEY (notification_log_id) REFERENCES notification_log(id);
+GO
+IF OBJECT_ID('dbo.qc_notification_messages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_notification_messages_thread')
+    CREATE INDEX IX_qc_notification_messages_thread ON qc_notification_messages (thread_id);
+GO
+IF OBJECT_ID('dbo.qc_notification_messages', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_qc_notification_messages_notification_log')
+    CREATE INDEX IX_qc_notification_messages_notification_log ON qc_notification_messages (notification_log_id) WHERE notification_log_id IS NOT NULL;
+'@
+}
+
 function _QDB-GetSchemaV1dot9Additive {
     return @'
 GO
@@ -3221,6 +3285,7 @@ function Write-QCNotificationTelemetry {
         $sql = @"
 INSERT INTO notification_log
     (event_type, document_guid, document_name, folder_path, recipients, subject, dedupe_key, provider, success, error_message, transition_id, sheet_package_id)
+OUTPUT INSERTED.id
 VALUES
     (@eventType, @documentGuid, @documentName, @folderPath, @recipients, @subject, @dedupeKey, @provider, @success, @errorMessage, @transitionId, @sheetPackageId)
 "@
@@ -3238,12 +3303,16 @@ VALUES
             transitionId = if ($null -ne $TransitionId) { $TransitionId } else { $null }
             sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
         }
-        $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
+        $dbRes = Invoke-QCDatabaseScalar -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {
             Write-QCJsonLog -Flush -Level 'Error' -Code 'NOTIFICATION_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_notification_log'; eventType=$EventType }
             return New-QCErrorResult -Code 'NOTIFICATION_TELEMETRY_WRITE_FAILED' -Message $dbRes.Message -Data @{ operation='insert_notification_log'; eventType=$EventType }
         }
-        return New-QCSuccessResult -Code 'NOTIFICATION_TELEMETRY_WRITTEN' -Message 'Notification telemetry inserted.' -Data @{ written = $true; rowsAffected = $dbRes.Data.rowsAffected }
+        $notificationLogId = $null
+        if ($null -ne $dbRes.Data.value) {
+            try { $notificationLogId = [int]$dbRes.Data.value } catch { $notificationLogId = $null }
+        }
+        return New-QCSuccessResult -Code 'NOTIFICATION_TELEMETRY_WRITTEN' -Message 'Notification telemetry inserted.' -Data @{ written = $true; notificationLogId = $notificationLogId }
     } catch {
         $msg=[string]$_.Exception.Message
         Write-QCJsonLog -Flush -Level 'Error' -Code 'NOTIFICATION_TELEMETRY_EXCEPTION' -Message $msg -Data @{ operation='insert_notification_log'; eventType=$EventType }

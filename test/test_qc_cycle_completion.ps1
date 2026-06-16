@@ -238,6 +238,19 @@ Assert-Eq $script:completionCalls.Count 1 'Sheet PDF trigger should record one p
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'Sheet PDF trigger should canonicalize to DGN GUID'
 Assert-Eq $script:summaryCalls[0] $packageId.ToString() 'Sheet PDF trigger rollup should target sheet_packages'
 
+# QC_Process_Type only (no QC_Review_Type) should record completion
+Reset-CompletionState
+$processTypeOnlyMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $sheetGuid; documentName = ($sheetStem + '.pdf'); document = [pscustomobject]@{ QC_Process_Type = 'Review' } }
+)
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $sheetGuid `
+    -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $processTypeOnlyMembers -PreviousStateByGuid $prevMap -AuditEventId 9025
+Assert-Eq $script:completionCalls.Count 1 'QC_Process_Type on stem should record cycle completion'
+Assert-Eq $script:completionCalls[0].qcReviewType 'review' 'QC_Process_Type Review normalizes to review bucket'
+
 # 3. QC PDF-triggered completion resolves to DGN GUID
 Reset-CompletionState
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
