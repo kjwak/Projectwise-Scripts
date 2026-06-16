@@ -210,4 +210,34 @@ InModuleScope -ModuleName Core.Database {
     Assert-Eq $rev.sheetStem 'CA001' 'rev stem'
 }
 
+Assert-True ($discoveryText -match '_PWD-TryEnqueueLaneQcPrependFromState') `
+    'lane QC PDF workflow enqueues prepend for automation intake states'
+Assert-True ($discoveryText -match 'QC_PREPEND_FINAL_INTAKE_WITHOUT_SIBLING_SYNC') `
+    'Initiate Verification prepend allowed without sibling state writes'
+
+InModuleScope -ModuleName PW.Discovery {
+    $script:finalPrependCalls = 0
+    function Get-PWSheetStemFromDocumentName { param($DocumentName) return 'sheet' }
+    function Test-QCWorkflowStateIsQcInitiated { return $false }
+    function Test-QCWorkflowStateIsQcFinalizing { param($StateName, $Config) return ($StateName -eq 'Initiate Verification') }
+    function Add-QCPrependJobForQcInitiatedStateChange { throw 'should not call initiated prepend' }
+    function Add-QCPrependJobForQcFinalizingStateChange {
+        param($Config, $TriggerDocumentGuid, $TriggerDocumentName, $FolderPath, $CurrentStateName)
+        $script:finalPrependCalls++
+    }
+    function Test-QCPrependEnqueueBlockedForSheet { return @{ blocked = $false } }
+    function Test-QCPrependBlockedByMissingEmailAttributes { return @{ blocked = $false } }
+    function Write-QCJsonLog { param($Flush, $Level, $Code, $Message, $Data) }
+
+    $script:finalPrependCalls = 0
+    _PWD-TryEnqueueLaneQcPrependFromState -Config @{} -DocumentGuid '7362ac50-bf4c-4dfb-b4c5-4d4aac912ba4' `
+        -DocumentName 'sheet-rev.pdf' -FolderPath 'Documents\X' -CanonicalState 'Initiate Verification'
+    Assert-Eq $script:finalPrependCalls 1 'Initiate Verification on lane PDF enqueues finalizing prepend'
+}
+
+Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\QC.AuditTriggers.psm1') -Force
+Assert-Eq (_QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName '080J082001ab001-rev.pdf') '080J082001ab001.pdf' `
+    'lane QC PDF trigger resolves to stem sheet PDF for prepend source'
+
 Write-Host 'test_qc_lane_state_independence: OK' -ForegroundColor Green

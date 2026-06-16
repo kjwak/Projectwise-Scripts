@@ -2562,6 +2562,7 @@ function Sync-PWPostInitialPrependLaneStates {
         [Parameter(Mandatory)][string]$LaneTargetState,
         [Parameter(Mandatory)][string]$ReferenceState,
         [string]$ExpectedLanePdfName = '',
+        [bool]$WriteStemPdfReferenceState = $true,
         [bool]$DryRun = $false
     )
 
@@ -2582,12 +2583,12 @@ function Sync-PWPostInitialPrependLaneStates {
             $referenceTarget = Format-QCWorkflowStateName -StateName $referenceTarget -Config $Config
         } catch { }
     }
-    if ([string]::IsNullOrWhiteSpace($laneTarget) -or [string]::IsNullOrWhiteSpace($referenceTarget)) {
+    if ([string]::IsNullOrWhiteSpace($laneTarget) -or ($WriteStemPdfReferenceState -and [string]::IsNullOrWhiteSpace($referenceTarget))) {
         return @{ updates = @(); skipped = $true; skipReason = 'empty_target_state' }
     }
 
-    # Lane PDF is workflow authority; stem PDF returns to reference state. DGN and sibling lanes are not written.
-    $writeStemPdfReferenceState = $true
+    # Lane PDF is workflow authority; stem PDF may return to reference state on initial prepend only.
+    $writeStemPdfReferenceState = [bool]$WriteStemPdfReferenceState
 
     $sheetStem = ''
     if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
@@ -3536,6 +3537,124 @@ function _PWD-ResolveSheetPackageNotificationDocumentGuid {
     return ''
 }
 
+function _PWD-TryEnqueueLaneQcPrependFromState {
+    <#
+    .SYNOPSIS
+    Enqueues QC_PREPEND for lane QC PDF automation intake states (Initiate Origination / Initiate Verification).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentGuid,
+        [Parameter(Mandatory)][string]$DocumentName,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$CanonicalState,
+        [string]$PreviousLaneState = '',
+        [string]$LastAuditEventAt = '',
+        [Nullable[long]]$AuditEventId = $null,
+        [bool]$DryRun = $false,
+        [Nullable[int]]$ChangedByUser = $null,
+        [string]$ChangedByUsername = ''
+    )
+
+    $isInitiated = $false
+    $isFinalizing = $false
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+        $isInitiated = Test-QCWorkflowStateIsQcInitiated -StateName $CanonicalState -Config $Config
+    }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
+        $isFinalizing = Test-QCWorkflowStateIsQcFinalizing -StateName $CanonicalState -Config $Config
+    }
+    if (-not $isInitiated -and -not $isFinalizing) { return }
+
+    if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) `
+        -or -not (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
+        try {
+            $procPath = Join-Path $PSScriptRoot 'QC.Processors.psm1'
+            Import-Module $procPath -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
+    $sheetStem = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $sheetStem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+    }
+    if ([string]::IsNullOrWhiteSpace($sheetStem)) { return }
+    $sheetPdfName = $sheetStem + '.pdf'
+
+    $prependTrigger = if ($isInitiated) { 'initialQcPdf' } else { 'finalQcComplete' }
+
+    if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
+        try { Import-Module (Join-Path $PSScriptRoot 'QC.Processors.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
+        $intendedLane = ''
+        if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+            $intendedLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName
+        }
+        $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
+            -SheetPdfName $sheetPdfName -PrependTrigger $prependTrigger -QcProcessType $intendedLane
+        if ($sheetBlock -and [bool]$sheetBlock.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
+                    -Message 'QC_PREPEND skipped for lane intake: prepend already pending, running, or recently succeeded for this sheet lane.' -Data @{
+                    folderPath = $FolderPath; sheetPdf = $sheetPdfName; sheetStem = $sheetStem
+                    triggerDocumentName = $DocumentName; qcProcessType = $intendedLane
+                    reason = [string]$sheetBlock.reason; prependTrigger = $prependTrigger
+                } | Out-Null
+            }
+            return
+        }
+    }
+
+    if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
+        try { Import-Module (Join-Path $PSScriptRoot 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
+        $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
+            -SheetPdfName $sheetPdfName -DocumentGuid $DocumentGuid
+        if ($emailGate -and [bool]$emailGate.blocked) {
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PREPEND_SKIPPED_MISSING_EMAIL' `
+                    -Message 'QC_PREPEND skipped for lane intake: required notification email attributes are missing.' -Data @{
+                    folderPath = $FolderPath; sheetPdf = $sheetPdfName; sheetStem = $sheetStem
+                    triggerDocumentName = $DocumentName; missingFields = @($emailGate.missingFields)
+                    postPrependState = [string]$emailGate.postPrependState; prependTrigger = $prependTrigger
+                } | Out-Null
+            }
+            return
+        }
+    }
+
+    $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+        -ChangedByUser $ChangedByUser -TriggerDocumentGuid $DocumentGuid `
+        -SheetStem $sheetStem -PreviousSheetState $PreviousLaneState -TargetStateName $CanonicalState `
+        -PrependTrigger $prependTrigger
+
+    try {
+        if ($isInitiated) {
+            Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
+                -TriggerDocumentGuid $DocumentGuid -TriggerDocumentName $DocumentName -FolderPath $FolderPath `
+                -CurrentStateName $CanonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+                -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
+                -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
+        } else {
+            Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
+                -TriggerDocumentGuid $DocumentGuid -TriggerDocumentName $DocumentName -FolderPath $FolderPath `
+                -CurrentStateName $CanonicalState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
+                -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
+                -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
+        }
+    } catch {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            $code = if ($isInitiated) { 'QC_PREPEND_STATE_ENQUEUE_ERROR' } else { 'QC_PREPEND_FINAL_ENQUEUE_ERROR' }
+            Write-QCJsonLog -Flush -Level 'Warning' -Code $code -Message $_.Exception.Message -Data @{
+                folderPath = $FolderPath; triggerDocumentName = $DocumentName; prependTrigger = $prependTrigger
+            } | Out-Null
+        }
+    }
+}
+
 function _PWD-InvokeLaneQcPdfDocumentStateWorkflow {
     <#
     .SYNOPSIS
@@ -3744,6 +3863,11 @@ WHERE document_guid = @docGuid
             -StaleCheckMembers $members -StaleCheckStateByGuid $stateByGuid -StaleCheckCanonicalState $CanonicalState | Out-Null
     }
 
+    _PWD-TryEnqueueLaneQcPrependFromState -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
+        -FolderPath $FolderPath -CanonicalState $CanonicalState -PreviousLaneState $prevIndex `
+        -LastAuditEventAt $LastAuditEventAt -AuditEventId $AuditEventId -DryRun:$DryRun `
+        -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername
+
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_LANE_STATE_INDEPENDENT' `
             -Message 'Lane workflow state recorded from DOCUMENT_STATE audit event without sibling sync.' -Data @{
@@ -3885,9 +4009,9 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
     Enqueues QC_PREPEND once per sheet workflow transition after sibling state sync.
     .DESCRIPTION
     QC Initiated uses the canonical synced workflow state (first prepend often runs before *-qc.pdf exists).
-    QC Finalizing prefers *-qc.pdf workflow state when that file exists. Dedupe uses the audit event id when
-    available (see Get-QCPrependStateTransitionDedupeKey). Initiate Origination intake always enqueues prepend
-    even when lane-independent sync applies no PW state writes; QC Finalizing still requires applied sibling updates.
+    QC Finalizing prefers the active lane QC PDF workflow state. Dedupe uses the audit event id when
+    available (see Get-QCPrependStateTransitionDedupeKey). Initiate Origination and Initiate Verification
+    intake always enqueue prepend even when lane-independent sync applies no PW state writes.
     #>
     [CmdletBinding()]
     param(
@@ -3919,9 +4043,19 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
         if ([string]::IsNullOrWhiteSpace($dn)) { continue }
         if (($dn -match '(?i)\.pdf$') -and ($dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
             $sheetPdfGuid = [string]$member.documentGuid
-        } elseif ($dn -match '(?i)-prod\.pdf$') {
-            $qcPdfGuid = [string]$member.documentGuid
-            $qcPdfName = $dn
+        } elseif ($dn -match '(?i)-(prod|chk|rev)\.pdf$') {
+            if ([string]::IsNullOrWhiteSpace($qcPdfName)) {
+                $qcPdfGuid = [string]$member.documentGuid
+                $qcPdfName = $dn
+            }
+        }
+    }
+
+    if ((Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) `
+        -and (Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName)) {
+        $qcPdfName = [string]$TriggerDocumentName
+        if (-not [string]::IsNullOrWhiteSpace($TriggerDocumentGuid)) {
+            $qcPdfGuid = [string]$TriggerDocumentGuid
         }
     }
 
@@ -3950,6 +4084,12 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
 
     $prependGuid = if (-not [string]::IsNullOrWhiteSpace($qcPdfGuid)) { $qcPdfGuid } else { $TriggerDocumentGuid }
     if ([string]::IsNullOrWhiteSpace($prependGuid)) { $prependGuid = $sheetPdfGuid }
+
+    $prependTriggerName = $sheetPdfName
+    if ((Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) `
+        -and (Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName)) {
+        $prependTriggerName = [string]$TriggerDocumentName
+    }
 
     if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
         if (Test-QCWorkflowStateIsQcInitiated -StateName $canonical -Config $Config) {
@@ -4010,7 +4150,7 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
             if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
                 try {
                     Add-QCPrependJobForQcInitiatedStateChange -Config $Config `
-                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $sheetPdfName -FolderPath $FolderPath `
+                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $prependTriggerName -FolderPath $FolderPath `
                         -CurrentStateName $canonical -DryRun:$DryRun -ChangedByUser $ChangedByUser `
                         -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
                         -AuditEventId $AuditEventId -StateTransitionKey $stKey | Out-Null
@@ -4036,7 +4176,7 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
             if (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue) {
                 try {
                     Add-QCPrependJobForQcFinalizingStateChange -Config $Config `
-                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $sheetPdfName -FolderPath $FolderPath `
+                        -TriggerDocumentGuid $prependGuid -TriggerDocumentName $prependTriggerName -FolderPath $FolderPath `
                         -CurrentStateName $finalizingState -DryRun:$DryRun -ChangedByUser $ChangedByUser `
                         -ChangedByUsername $ChangedByUsername -LastAuditEventAt $LastAuditEventAt `
                         -AuditEventId $AuditEventId -StateTransitionKey $stKeyFinal | Out-Null
@@ -4822,9 +4962,14 @@ WHERE document_guid = @docGuid
     }
 
     $qcInitiated = $false
+    $qcFinalizing = $false
     if ((-not [string]::IsNullOrWhiteSpace($canonicalState)) -and (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue)) {
         $qcInitiated = Test-QCWorkflowStateIsQcInitiated -StateName $canonicalState -Config $Config
-    } elseif ([string]::IsNullOrWhiteSpace($canonicalState)) {
+    }
+    if ((-not [string]::IsNullOrWhiteSpace($canonicalState)) -and (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue)) {
+        $qcFinalizing = Test-QCWorkflowStateIsQcFinalizing -StateName $canonicalState -Config $Config
+    }
+    if ([string]::IsNullOrWhiteSpace($canonicalState)) {
         _PWD-WriteEmptyStateGuardLog -CallSite 'Sync-PWAssociatedSheetWorkflowState.qcInitiatedTest' `
             -AuditEventId $AuditEventId -DocumentName $DocumentName -FolderPath $FolderPath `
             -SourceVariableName 'canonicalState' -SourceValue $canonicalState -LivePwState $sourcePwState `
@@ -4862,10 +5007,12 @@ WHERE document_guid = @docGuid
 
     $appliedStateUpdates = @($stateUpdates | Where-Object { $_ -and $_.applied -eq $true })
     if ($appliedStateUpdates.Count -eq 0) {
-        if ($qcInitiated) {
+        if ($qcInitiated -or $qcFinalizing) {
+            $intakeReason = if ($qcInitiated) { 'qc_initiated_intake' } else { 'qc_finalizing_intake' }
+            $intakeCode = if ($qcInitiated) { 'QC_PREPEND_INTAKE_WITHOUT_SIBLING_SYNC' } else { 'QC_PREPEND_FINAL_INTAKE_WITHOUT_SIBLING_SYNC' }
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_INTAKE_WITHOUT_SIBLING_SYNC' `
-                    -Message 'QC_PREPEND allowed for Initiate Origination even though lane-independent sync applied no PW state writes.' -Data @{
+                Write-QCJsonLog -Flush -Level 'Information' -Code $intakeCode `
+                    -Message 'QC_PREPEND allowed for automation intake even though lane-independent sync applied no PW state writes.' -Data @{
                     triggerDocumentGuid = $DocumentGuid
                     triggerDocumentName = $DocumentName
                     folderPath          = $FolderPath
@@ -4873,13 +5020,13 @@ WHERE document_guid = @docGuid
                     canonicalState      = $canonicalState
                     memberCount         = $members.Count
                     auditEventId        = $AuditEventId
-                    reason              = 'qc_initiated_intake'
+                    reason              = $intakeReason
                 } | Out-Null
             }
         } else {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NO_SHEET_STATE_CHANGES' `
-                    -Message 'QC_PREPEND skipped (QC Finalizing): sibling sync made no state changes (echo audit).' -Data @{
+                    -Message 'QC_PREPEND skipped: sibling sync made no state changes (echo audit).' -Data @{
                     triggerDocumentGuid = $DocumentGuid
                     triggerDocumentName = $DocumentName
                     folderPath          = $FolderPath

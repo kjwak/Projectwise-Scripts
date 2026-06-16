@@ -2150,6 +2150,7 @@ function Resolve-QCNotificationRecipients {
         -RoleOverrides $RoleOverrides -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -DocumentGuid $DocumentGuid
     $reviewers = _QCN-ParseEmailList $roles.reviewerEmail
     $designers = _QCN-ParseEmailList $roles.designerEmail
+    $checkers = _QCN-ParseEmailList $roles.checkerEmail
     $ccFromAttr = _QCN-ParseEmailList (_QCN-GetAttributeValue -Document $Document -AttributeName $ccField)
 
     $to = [System.Collections.Generic.List[string]]::new()
@@ -2159,6 +2160,7 @@ function Resolve-QCNotificationRecipients {
         switch -Regex ($role) {
             '^reviewers?$' { foreach ($e in $reviewers) { if (-not $to.Contains($e)) { $to.Add($e) | Out-Null } } }
             '^designers?$' { foreach ($e in $designers) { if (-not $to.Contains($e)) { $to.Add($e) | Out-Null } } }
+            '^checkers?$' { foreach ($e in $checkers) { if (-not $to.Contains($e)) { $to.Add($e) | Out-Null } } }
             default {
                 foreach ($e in (_QCN-ParseEmailList $role)) {
                     if (-not $to.Contains($e)) { $to.Add($e) | Out-Null }
@@ -2170,6 +2172,7 @@ function Resolve-QCNotificationRecipients {
         switch -Regex ($role) {
             '^reviewers?$' { foreach ($e in $reviewers) { if (-not $cc.Contains($e)) { $cc.Add($e) | Out-Null } } }
             '^designers?$' { foreach ($e in $designers) { if (-not $cc.Contains($e)) { $cc.Add($e) | Out-Null } } }
+            '^checkers?$' { foreach ($e in $checkers) { if (-not $cc.Contains($e)) { $cc.Add($e) | Out-Null } } }
             default {
                 foreach ($e in (_QCN-ParseEmailList $role)) {
                     if (-not $cc.Contains($e)) { $cc.Add($e) | Out-Null }
@@ -2185,6 +2188,7 @@ function Resolve-QCNotificationRecipients {
     return @{
         reviewers = @($reviewers)
         designers = @($designers)
+        checkers = @($checkers)
         to = @($to)
         cc = @($cc)
     }
@@ -2391,9 +2395,10 @@ function _QCN-GetWorkflowNotificationPriorStateMap {
     param([hashtable]$Config = $null)
 
     $map = @{
-        'Verified' = 'Initiate Verification'
+        'Verified' = 'Ready for Verification'
+        'Ready for Verification' = 'Initiate Verification'
         'QC Complete' = 'QC Finalizing'
-        'Initiate Verification' = 'Originated'
+        'Initiate Verification' = 'Redlines Received'
         'QC Finalizing' = 'Ready for QC'
         'Originated' = 'Initiate Origination'
         'Redlines Received' = 'Originated'
@@ -2407,8 +2412,9 @@ function _QCN-GetWorkflowNotificationPriorStateMap {
         if ($states) {
             $resolved = @{}
             $pairs = @(
-                @('complete', 'qcFinalizing')
-                @('qcFinalizing', 'readyForQc')
+                @('complete', 'readyForVerification')
+                @('readyForVerification', 'qcFinalizing')
+                @('qcFinalizing', 'redlinesReceived')
                 @('redlinesReceived', 'readyForQc')
                 @('correctionsReceived', 'redlinesReceived')
                 @('readyForQc', 'qcInitiated')
@@ -3716,6 +3722,48 @@ function _QCN-ResolveSheetNotificationIdentity {
     }
 }
 
+function _QCN-GetFinalizingPrependPostStateName {
+    param([hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            if (Get-Command -Name 'Resolve-QCWorkflowStateAfterPrepend' -ErrorAction SilentlyContinue) {
+                return [string](Resolve-QCWorkflowStateAfterPrepend -Settings $wf -Context @{ prependTrigger = 'finalQcComplete' })
+            }
+        } catch { }
+    }
+    return 'Ready for Verification'
+}
+
+function _QCN-GetQcFinalizingWorkflowStateName {
+    param([hashtable]$Config)
+
+    $name = 'Initiate Verification'
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing'
+            if (-not (_QCN-IsBlank $resolved)) { $name = [string]$resolved }
+        } catch { }
+    }
+    return $name
+}
+
+function _QCN-TestWorkflowStateNameIsQcFinalizing {
+    param(
+        [string]$StateName,
+        [hashtable]$Config
+    )
+
+    $state = ([string]$StateName).Trim()
+    if ([string]::IsNullOrWhiteSpace($state)) { return $false }
+    if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
+        try { return [bool](Test-QCWorkflowStateIsQcFinalizing -StateName $state -Config $Config) } catch { }
+    }
+    return ($state.ToLowerInvariant() -eq 'initiate verification')
+}
+
 function _QCN-GetInitialPrependPostStateName {
     param([hashtable]$Config)
 
@@ -3781,6 +3829,12 @@ function Get-QCWorkflowTransitionMissingEmailFields {
 
     if (_QCN-TestWorkflowStateNameIsQcInitiated -StateName $target -Config $Config) {
         $postState = _QCN-GetInitialPrependPostStateName -Config $Config
+        if (-not (_QCN-IsBlank $postState) -and ($postState.ToLowerInvariant() -ne $target.ToLowerInvariant())) {
+            $statesToCheck.Add([string]$postState) | Out-Null
+        }
+    }
+    if (_QCN-TestWorkflowStateNameIsQcFinalizing -StateName $target -Config $Config) {
+        $postState = _QCN-GetFinalizingPrependPostStateName -Config $Config
         if (-not (_QCN-IsBlank $postState) -and ($postState.ToLowerInvariant() -ne $target.ToLowerInvariant())) {
             $statesToCheck.Add([string]$postState) | Out-Null
         }

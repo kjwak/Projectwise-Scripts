@@ -722,4 +722,42 @@ $display = Resolve-QCNotificationSubmittedBy -Config $actorCfg -ChangedByUser $r
     -ChangedByUsername $resolvedActor.changedByUsername
 Assert-Eq $display 'audit.user' 'SubmittedBy prefers explicit username over PW User fallback'
 
+# State-specific recipient routing (Originated / Redlines / Ready for Verification / Verified)
+$routeCfg = New-NotifyConfig -Enabled $true
+$routeCfg.qcWorkflow = @{
+    reviewTypes = @{ independentCheck = 'Check'; peerReview = 'Review'; productionQc = 'Production' }
+    processTypes = @{ production = 'Production'; check = 'Check'; review = 'Review' }
+}
+$routeSettings = Get-QCNotificationSettings -Config $routeCfg
+$routeCfg.notifications.events['Originated'] = @{ enabled = $true; eventType = 'READY_FOR_QC'; to = @('reviewers'); cc = @() }
+$routeCfg.notifications.events['Redlines Received'] = @{ enabled = $true; eventType = 'REDLINES_RECEIVED'; to = @('designers'); cc = @() }
+$routeCfg.notifications.events['Ready for Verification'] = @{ enabled = $true; eventType = 'READY_FOR_VERIFICATION'; to = @('reviewers'); cc = @() }
+$routeCfg.notifications.events['Verified'] = @{ enabled = $true; eventType = 'QC_COMPLETE'; to = @('designers', 'reviewers', 'checkers'); cc = @() }
+
+$revDoc = New-MockDocument -Reviewer 'reviewer@company.com' -Designer 'designer@company.com' -Checker 'checker@company.com' -ReviewType 'Review'
+$revDoc.Name = 'sheet-rev.pdf'
+$originated = Resolve-QCNotificationRecipients -Document $revDoc -Settings $routeSettings -Config $routeCfg `
+    -ToRoles @('reviewers') -CcRoles @()
+Assert-Eq $originated.to[0] 'reviewer@company.com' 'Originated review lane notifies reviewer only'
+Assert-Eq $originated.to.Count 1 'Originated should not include designer'
+
+$chkDoc = New-MockDocument -Reviewer 'reviewer@company.com' -Designer 'designer@company.com' -Checker 'checker@company.com' -ReviewType 'Check'
+$chkDoc.Name = 'sheet-chk.pdf'
+$chkOriginated = Resolve-QCNotificationRecipients -Document $chkDoc -Settings $routeSettings -Config $routeCfg `
+    -ToRoles @('reviewers') -CcRoles @()
+Assert-Eq $chkOriginated.to[0] 'checker@company.com' 'Originated check lane notifies checker via reviewers role'
+Assert-Eq $chkOriginated.to.Count 1 'Originated check lane should not include designer'
+
+$redlines = Resolve-QCNotificationRecipients -Document $revDoc -Settings $routeSettings -Config $routeCfg `
+    -ToRoles @('designers') -CcRoles @()
+Assert-Eq $redlines.to[0] 'designer@company.com' 'Redlines Received notifies designer only'
+Assert-Eq $redlines.to.Count 1 'Redlines Received should not include reviewer'
+
+$verified = Resolve-QCNotificationRecipients -Document $revDoc -Settings $routeSettings -Config $routeCfg `
+    -ToRoles @('designers', 'reviewers', 'checkers') -CcRoles @()
+Assert-Eq $verified.to.Count 3 'Verified notifies designer, reviewer, and checker'
+Assert-True ($verified.to -contains 'designer@company.com') 'Verified includes designer'
+Assert-True ($verified.to -contains 'reviewer@company.com') 'Verified includes reviewer'
+Assert-True ($verified.to -contains 'checker@company.com') 'Verified includes checker'
+
 Write-Host 'All QC notification tests passed.'

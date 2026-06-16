@@ -394,9 +394,6 @@ function _QCP-TryApplyReviewStampFromJob {
         [string]$OverlayExe = ''
     )
 
-    if (_QCP-IsFinalQcPrependJob -Job $Job) {
-        return @{ applied = $false; skipped = $true; reason = 'Review stamps skipped for QC Finalizing prepend.' }
-    }
 
     if (-not (Get-Command -Name 'Invoke-QCReviewStampForReviewType' -ErrorAction SilentlyContinue)) {
         return @{ applied = $false; reason = 'QC.ReviewStamp module not loaded' }
@@ -1893,6 +1890,21 @@ function _QCP-ResolveSheetPdfForPrependTrigger {
     $name = [System.IO.Path]::GetFileName([string]$TriggerDocumentName)
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
     if (Test-QCLegacyQcPdfDocumentName -DocumentName $name) { return $null }
+    if (Get-Command -Name 'Test-QCIsQcPdfDocumentName' -ErrorAction SilentlyContinue) {
+        if (Test-QCIsQcPdfDocumentName -DocumentName $name) {
+            $stem = ''
+            if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                $stem = Get-PWSheetStemFromDocumentName -DocumentName $name
+            }
+            if ([string]::IsNullOrWhiteSpace($stem)) {
+                $stem = [System.IO.Path]::GetFileNameWithoutExtension($name) -replace '(?i)-(prod|chk|rev)$', ''
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stem)) { return ($stem + '.pdf') }
+        }
+    } elseif ($name -match '(?i)-(prod|chk|rev)\.pdf$') {
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($name) -replace '(?i)-(prod|chk|rev)$', ''
+        if (-not [string]::IsNullOrWhiteSpace($stem)) { return ($stem + '.pdf') }
+    }
     if ($name -match '(?i)\.dgn$') {
         return ([System.IO.Path]::GetFileNameWithoutExtension($name) + '.pdf')
     }
@@ -2317,7 +2329,7 @@ function Add-QCPrependJobForQcInitiatedStateChange {
 function Add-QCPrependJobForQcFinalizingStateChange {
     <#
     .SYNOPSIS
-    Enqueues QC_PREPEND when a non-automation actor sets workflow state to QC Finalizing (final history capture).
+    Enqueues QC_PREPEND when workflow state is Initiate Verification (correction-cycle prepend).
     #>
     [CmdletBinding()]
     param(
@@ -2343,12 +2355,6 @@ function Add-QCPrependJobForQcFinalizingStateChange {
 
     $curr = ([string]$CurrentStateName).Trim()
     if ($curr.Length -eq 0 -or $curr.ToLowerInvariant() -ne $finalizingName.ToLowerInvariant()) { return $null }
-
-    if (Get-Command -Name 'Test-QCIsAutomationPwActor' -ErrorAction SilentlyContinue) {
-        if (Test-QCIsAutomationPwActor -Config $Config -ChangedByUser $ChangedByUser -ChangedByUsername $ChangedByUsername) {
-            return $null
-        }
-    }
 
     $sheetPdf = _QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName $TriggerDocumentName
     if (_QCP-IsNullOrWhiteSpace $sheetPdf) { return $null }

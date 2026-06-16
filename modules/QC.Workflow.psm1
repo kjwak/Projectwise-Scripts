@@ -950,6 +950,7 @@ function _QCW-DefaultWorkflowStates {
         redlinesReceived = 'Redlines Received'
         correctionsReceived = 'Corrections Received'
         qcFinalizing = 'Initiate Verification'
+        readyForVerification = 'Ready for Verification'
         complete = 'Verified'
         error = 'Error Needs Attention'
     }
@@ -1103,7 +1104,7 @@ function _QCW-DefaultPrependStateTriggers {
     $states = _QCW-DefaultWorkflowStates
     return @{
         initialQcPdf = [string]$states.readyForQc
-        finalQcComplete = [string]$states.complete
+        finalQcComplete = [string]$states.readyForVerification
     }
 }
 
@@ -1736,6 +1737,7 @@ function Set-PWQCWorkflowState {
     $laneIndependentInitialPrepend = $false
     $laneTargetState = $StateName
     $referenceState = ''
+    $prependTrigger = ''
     # The lane PDF is the process record. Stem PDF returns to In Development via verified writeback; DGN is not written.
     # Success notification requires verified lane PDF state.
     if ($Context) {
@@ -1750,9 +1752,20 @@ function Set-PWQCWorkflowState {
                 $Context['laneIndependentInitialPrepend'] = $true
                 $Context['laneTargetState'] = $laneTargetState
                 $Context['referenceState'] = $referenceState
+                $Context['writeStemPdfReferenceState'] = $true
                 if ($Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
                     $Context['activeQcProcessType'] = [string]$Context.qcProcessType
                 }
+            }
+        } elseif ($prependTrigger -eq 'finalQcComplete') {
+            $laneIndependentInitialPrepend = $true
+            $laneTargetState = $StateName
+            $Context['laneIndependentInitialPrepend'] = $true
+            $Context['laneTargetState'] = $laneTargetState
+            $Context['writeStemPdfReferenceState'] = $false
+            $Context['finalizingPrepend'] = $true
+            if ($Context.ContainsKey('qcProcessType') -and -not (_QCW-IsNullOrWhiteSpace $Context.qcProcessType)) {
+                $Context['activeQcProcessType'] = [string]$Context.qcProcessType
             }
         }
     }
@@ -1917,6 +1930,9 @@ function Set-PWQCWorkflowState {
                     ReferenceState = $referenceState
                     DryRun = $DryRun
                 }
+                if ($Context -and $Context.ContainsKey('writeStemPdfReferenceState')) {
+                    try { $laneSplitParams['WriteStemPdfReferenceState'] = [bool]$Context.writeStemPdfReferenceState } catch { }
+                }
                 if (-not (_QCW-IsNullOrWhiteSpace $expectedLanePdf)) {
                     $laneSplitParams['ExpectedLanePdfName'] = $expectedLanePdf
                 }
@@ -1986,7 +2002,9 @@ function Set-PWQCWorkflowState {
         }
 
         $notifyPrevious = if ($laneIndependentInitialPrepend) {
-            if (-not (_QCW-IsNullOrWhiteSpace $lanePreviousState)) { $lanePreviousState } else {
+            if ($prependTrigger -eq 'finalQcComplete') {
+                Get-QCWorkflowStateName -Settings $Settings -StateKey 'qcFinalizing'
+            } elseif (-not (_QCW-IsNullOrWhiteSpace $lanePreviousState)) { $lanePreviousState } else {
                 Get-QCWorkflowStateName -Settings $Settings -StateKey 'production'
             }
         } else {

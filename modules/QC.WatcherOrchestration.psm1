@@ -198,6 +198,61 @@ function Test-QCWorkflowStateIsQcFinalizing {
     return ($StateName.Trim().ToLowerInvariant() -eq $finalizing.Trim().ToLowerInvariant())
 }
 
+function Get-QCReadyForVerificationWorkflowStateName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
+        try {
+            if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
+                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+            }
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'readyForVerification'
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) { return [string]$resolved }
+        } catch { }
+    }
+    try {
+        if ($Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow) {
+            $wf = $Config.qcWorkflow
+            if ($wf -is [hashtable] -and $wf.ContainsKey('states') -and $wf.states) {
+                $st = $wf.states
+                if ($st -is [hashtable] -and $st.ContainsKey('readyForVerification') -and $st.readyForVerification) {
+                    return [string]$st.readyForVerification
+                }
+                if ($st.readyForVerification) { return [string]$st.readyForVerification }
+            }
+        }
+    } catch { }
+    return 'Ready for Verification'
+}
+
+function Test-QCWorkflowStateIsReadyForVerification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if ([string]::IsNullOrWhiteSpace($StateName)) { return $false }
+    $ready = Get-QCReadyForVerificationWorkflowStateName -Config $Config
+    return ($StateName.Trim().ToLowerInvariant() -eq $ready.Trim().ToLowerInvariant())
+}
+
+function Test-QCWorkflowStateIsAutomationIntake {
+    <#
+    .SYNOPSIS
+    Automation-owned intake states that enqueue prepend and suppress user notifications.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$StateName,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+    if (Test-QCWorkflowStateIsQcInitiated -StateName $StateName -Config $Config) { return $true }
+    if (Test-QCWorkflowStateIsQcFinalizing -StateName $StateName -Config $Config) { return $true }
+    return $false
+}
+
 function Get-QCPrependAuditActions {
     <#
     .SYNOPSIS
@@ -603,4 +658,4 @@ function Get-QCFullFolderScanReconciliationPlan {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete

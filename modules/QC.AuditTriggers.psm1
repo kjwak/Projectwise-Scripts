@@ -1165,6 +1165,11 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 -PreviousState $packagePreviousState -CurrentState $target)) {
             $shouldNotify = $false
         }
+        if ($shouldNotify -and (Get-Command -Name 'Test-QCWorkflowStateIsAutomationIntake' -ErrorAction SilentlyContinue)) {
+            if (Test-QCWorkflowStateIsAutomationIntake -StateName $target -Config $Config) {
+                $shouldNotify = $false
+            }
+        }
     }
 
     if ($shouldNotify -and -not [string]::IsNullOrWhiteSpace($notifyGuid) -and $packagePreviousState -ne $target) {
@@ -2364,6 +2369,11 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
                 currentState = $curr
                 previousState = $prev
             } | Out-Null
+        }
+    }
+    if ($shouldNotify -and (Get-Command -Name 'Test-QCWorkflowStateIsAutomationIntake' -ErrorAction SilentlyContinue)) {
+        if (Test-QCWorkflowStateIsAutomationIntake -StateName $curr -Config $Config) {
+            $shouldNotify = $false
         }
     }
 
