@@ -567,15 +567,32 @@ function Invoke-PrependQcStampByProcessType {
     }
   }
 
-  $stampCfg = Get-QCReviewStampSettings -Config $Config
-  if (-not $stampCfg) {
-    return @{ applied = $false; skipped = $true; reason = 'review stamps disabled or overlay exe / stamp template missing' }
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $stampMod = Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1'
+  if (Test-Path -LiteralPath $stampMod) {
+    Import-Module $stampMod -Force -ErrorAction SilentlyContinue | Out-Null
   }
+
+  $qcPrepend = if ($Config -and $Config.qcPrepend) { $Config.qcPrepend } else { @{} }
+  $preferredOverlay = if ($qcPrepend -is [hashtable] -and $qcPrepend.overlayExePath) { [string]$qcPrepend.overlayExePath } else { '' }
+  $overlayExe = if ($QcOverlayExe) { [string]$QcOverlayExe } else { '' }
+  if ([string]::IsNullOrWhiteSpace($overlayExe) -and (Get-Command -Name 'Resolve-QCReviewStampOverlayExe' -ErrorAction SilentlyContinue)) {
+    $overlayExe = Resolve-QCReviewStampOverlayExe -PreferredPath $preferredOverlay -RepoRoot $repoRoot
+  }
+  if ([string]::IsNullOrWhiteSpace($overlayExe)) {
+    return @{ applied = $false; skipped = $true; reason = 'overlay exe not found for review stamp' }
+  }
+
+  $stampCfg = if (Get-Command -Name 'Get-QCReviewStampSettings' -ErrorAction SilentlyContinue) {
+    Get-QCReviewStampSettings -Config $Config -RepoRoot $repoRoot
+  } else { $null }
 
   $layout = if (Get-Command -Name 'Get-QCStampProfileLayout' -ErrorAction SilentlyContinue) {
     Get-QCStampProfileLayout -Config $Config -StampProfile ([string]$stampResolved.resolvedStampProfile)
-  } else {
+  } elseif ($stampCfg) {
     $stampCfg
+  } else {
+    @{ stampHeightPt = 200; marginOutsidePt = 12; populateTextFields = $false }
   }
 
   $roles = @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = '' }
@@ -595,7 +612,7 @@ function Invoke-PrependQcStampByProcessType {
   }
 
   $stampParams = @{
-    OverlayExe = if ($QcOverlayExe) { $QcOverlayExe } else { [string]$stampCfg.overlayExe }
+    OverlayExe = $overlayExe
     PdfPath = $MergedPdfPath
     StampPath = [string]$stampResolved.stampPath
     StampHeightPt = if ($layout) { [double]$layout.stampHeightPt } else { 200 }
