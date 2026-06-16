@@ -536,6 +536,85 @@ function Test-PrependQcSkipReviewStamp {
   return ($t -in @('finalqccomplete', 'qcfinalizing', 'finalprepend'))
 }
 
+function Invoke-PrependQcStampByProcessType {
+  param(
+    [Parameter(Mandatory)][string]$MergedPdfPath,
+    [Parameter(Mandatory)][string]$FolderPath,
+    [Parameter(Mandatory)][string]$SourceDocumentName,
+    [Parameter(Mandatory)][string]$ProcessType,
+    [Parameter(Mandatory)][hashtable]$Config
+  )
+
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $processTypeMod = Join-Path $repoRoot 'modules\QC.ProcessType.psm1'
+  if (-not (Test-Path -LiteralPath $processTypeMod)) {
+    return @{ applied = $false; skipped = $true; reason = 'QC.ProcessType.psm1 not found' }
+  }
+  Import-Module $processTypeMod -Force -ErrorAction Stop | Out-Null
+
+  $stampResolved = Resolve-QCStampForProcess -Config $Config -ProcessType $ProcessType -FolderPath $FolderPath
+  if (-not $stampResolved.IsSuccess) {
+    return @{
+      applied = $false
+      skipped = ($ProcessType -eq 'production')
+      reason = [string]$stampResolved.Message
+      qcProcessType = $ProcessType
+    }
+  }
+
+  $stampCfg = Get-QCReviewStampSettings -Config $Config
+  if (-not $stampCfg) {
+    return @{ applied = $false; skipped = $true; reason = 'review stamps disabled or overlay exe / stamp template missing' }
+  }
+
+  $layout = if (Get-Command -Name 'Get-QCStampProfileLayout' -ErrorAction SilentlyContinue) {
+    Get-QCStampProfileLayout -Config $Config -StampProfile ([string]$stampResolved.resolvedStampProfile)
+  } else {
+    $stampCfg
+  }
+
+  $roles = @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = '' }
+  if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+    $pwRoles = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SourceDocumentName -Config $Config
+    if ($pwRoles.found) {
+      $roles.designerEmail = [string]$pwRoles.designerEmail
+      $roles.reviewerEmail = [string]$pwRoles.reviewerEmail
+      $roles.checkerEmail = [string]$pwRoles.checkerEmail
+    }
+  }
+
+  $profileKey = if ($stampResolved.profileKey) { [string]$stampResolved.profileKey } else { 'check' }
+  $roleValues = $roles
+  if (Get-Command -Name '_QCRS-ResolveStampRoleValues' -ErrorAction SilentlyContinue) {
+    $roleValues = _QCRS-ResolveStampRoleValues -RoleFields $roles -ProfileKey $profileKey
+  }
+
+  $stampParams = @{
+    OverlayExe = if ($QcOverlayExe) { $QcOverlayExe } else { [string]$stampCfg.overlayExe }
+    PdfPath = $MergedPdfPath
+    StampPath = [string]$stampResolved.stampPath
+    StampHeightPt = if ($layout) { [double]$layout.stampHeightPt } else { 200 }
+    MarginOutsidePt = if ($layout) { [double]$layout.marginOutsidePt } else { 12 }
+    PopulateTextFields = if ($layout) { [bool]$layout.populateTextFields } else { $false }
+  }
+  if ($layout -and $null -ne $layout.stampXPt -and $null -ne $layout.stampYPt) {
+    $stampParams['StampXPt'] = [double]$layout.stampXPt
+    $stampParams['StampYPt'] = [double]$layout.stampYPt
+  }
+  if ($stampParams.PopulateTextFields) {
+    $stampParams['Originator'] = [string]$roleValues.Originator
+    $stampParams['Checker'] = [string]$roleValues.Checker
+    $stampParams['Backchecker'] = [string]$roleValues.Backchecker
+  }
+
+  Write-Log ("Applying stamp for qc_process_type=$ProcessType profile=$($stampResolved.resolvedStampProfile) asset=$($stampResolved.resolvedStampName) on page 1: $MergedPdfPath")
+  $result = Invoke-QCReviewStamp @stampParams
+  $result['qcProcessType'] = $ProcessType
+  $result['stampProfile'] = $stampResolved.resolvedStampProfile
+  $result['stampName'] = $stampResolved.resolvedStampName
+  return $result
+}
+
 function Invoke-QcReviewStampIfNeeded {
   param(
     [Parameter(Mandatory)][string]$MergedPdfPath,
@@ -555,6 +634,35 @@ function Invoke-QcReviewStampIfNeeded {
   Import-Module $stampMod -Force -ErrorAction Stop | Out-Null
 
   $cfg = Get-PrependQcConfig
+  $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+
+  # Lane prepend: resolve stamp from QCProcess.StampProfiles by qc_process_type (check/review/production).
+  if (-not [string]::IsNullOrWhiteSpace($processType) `
+      -and (Get-Command -Name 'Resolve-QCStampForProcess' -ErrorAction SilentlyContinue)) {
+    $result = Invoke-PrependQcStampByProcessType -MergedPdfPath $MergedPdfPath -FolderPath $FolderPath `
+      -SourceDocumentName $SourceDocumentName -ProcessType $processType -Config $cfg
+    if ($result.skipped) {
+      if ($result.reason) { Write-Log "Review stamp skipped: $($result.reason)" }
+      return
+    }
+    if (-not $result.applied) {
+      $detail = if ($result.stdout) { $result.stdout } else { $result.reason }
+      if ($detail) {
+        foreach ($line in @([string]$detail -split "`n")) {
+          $s = $line.TrimEnd("`r")
+          if ($s.Trim()) { Write-Log $s }
+        }
+      }
+      Write-Log "Review stamp failed: $($result.reason)" -Severity ERROR
+      if ($processType -in @('check', 'review')) {
+        throw "Review stamp failed: $($result.reason)"
+      }
+      return
+    }
+    Write-Log "Review stamp applied for qc_process_type=$processType (profile=$($result.stampProfile))."
+    return
+  }
+
   if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
     Write-Log 'Review stamp skipped: Get-PWQcPrependRoleFieldsFromSourcePdf not available.' -Severity WARNING
     return
