@@ -32,6 +32,9 @@ InModuleScope -ModuleName QC.Processors {
         param($Config, $Sql, $Parameters = @{})
         $table = New-Object System.Data.DataTable
         [void]$table.Columns.Add('qc_process_type', [string])
+        if ($script:mockSheetIndexProcessType) {
+            [void]$table.Rows.Add([string]$script:mockSheetIndexProcessType)
+        }
         return New-QCSuccessResult -Code 'DB_OK' -Message 'ok' -Data @{ table = $table }
     }
     function Test-QCDatabaseEnabled { param($Config) return $true }
@@ -89,6 +92,25 @@ InModuleScope -ModuleName QC.Processors {
     Assert-True $reviewLane.IsSuccess 'PDF QC_Process_Type review resolves over stale DGN production'
     Assert-Eq $reviewLane.Data.qcProcessType 'review' 'review lane from QC_Process_Type'
     Assert-Eq $reviewLane.Data.expectedLanePdfName '0818000063ea501-rev.pdf' 'expected *-rev.pdf from QC_Process_Type'
+    $script:mockProcessIntent = $null
+
+    $script:mockSheetIndexProcessType = 'production'
+    $script:mockProcessIntent = @{
+        found = $true
+        qcProcessType = 'Check'
+    }
+    $staleIndexJob = @{
+        id = 'j-stale-index-check'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        sourceName = '045_D-01.01_d0847key.pdf'
+        metadata = @{}
+    }
+    $checkLane = _QCP-TryResolvePrependLaneContext -Job $staleIndexJob -Config $cfg
+    Assert-True $checkLane.IsSuccess 'live PW Check resolves over stale sheet_index production'
+    Assert-Eq $checkLane.Data.qcProcessType 'check' 'check lane when PW disagrees with sheet_index'
+    Assert-Eq $checkLane.Data.expectedLanePdfName '045_D-01.01_d0847key-chk.pdf' 'expected *-chk.pdf from live PW'
+    Assert-Eq $checkLane.Data.resolutionSource 'projectwise_attributes' 'PW wins over stale sheet_index'
+    $script:mockSheetIndexProcessType = $null
     $script:mockProcessIntent = $null
 
     foreach ($pair in @(

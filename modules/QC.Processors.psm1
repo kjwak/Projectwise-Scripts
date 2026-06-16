@@ -233,6 +233,55 @@ function _QCP-LogPrependLaneResolved {
     } | Out-Null
 }
 
+function _QCP-ResolvePrependProcessTypeFromSourceAttributes {
+    <#
+    .SYNOPSIS
+    Resolves qc_process_type for prepend from live ProjectWise QC_Process_Type first, then sheet_index fallback.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath,
+        [string]$SourceDocumentName
+    )
+
+    if ((_QCP-IsNullOrWhiteSpace $FolderPath) -or (_QCP-IsNullOrWhiteSpace $SourceDocumentName)) {
+        return @{ processType = $null; resolutionSource = '' }
+    }
+
+    if (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue) {
+        try {
+            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath ([string]$FolderPath) `
+                -SourceDocumentName ([string]$SourceDocumentName) -Config $Config
+            if ($pw -and [bool]$pw.found) {
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) {
+                    return @{ processType = [string]$norm; resolutionSource = 'projectwise_attributes' }
+                }
+            }
+        } catch { }
+    } elseif (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
+        try {
+            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$FolderPath) `
+                -SourceDocumentName ([string]$SourceDocumentName) -Config $Config
+            if ($pw -and [bool]$pw.found) {
+                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
+                if ($norm) {
+                    return @{ processType = [string]$norm; resolutionSource = 'projectwise_attributes' }
+                }
+            }
+        } catch { }
+    }
+
+    $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$FolderPath) `
+        -SourceDocumentName ([string]$SourceDocumentName)
+    if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
+        return @{ processType = [string]$idxProcess; resolutionSource = 'sheet_index' }
+    }
+
+    return @{ processType = $null; resolutionSource = '' }
+}
+
 function _QCP-TryResolvePrependLaneContext {
     <#
     .SYNOPSIS
@@ -284,32 +333,13 @@ function _QCP-TryResolvePrependLaneContext {
     $attributeLookupName = if (-not (_QCP-IsNullOrWhiteSpace $sheetPdfName)) { [string]$sheetPdfName } else { [string]$laneTriggerName }
     if (-not $processType -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $attributeLookupName)) {
         if (_QCP-IsStemSheetDocumentName ([string]$attributeLookupName)) {
-            $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName)
-            if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
-                $processType = [string]$idxProcess
-                $resolutionSource = 'sheet_index'
+            $attrResolved = _QCP-ResolvePrependProcessTypeFromSourceAttributes -Config $Config `
+                -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName)
+            if ($attrResolved.processType) {
+                $processType = [string]$attrResolved.processType
+                $resolutionSource = [string]$attrResolved.resolutionSource
             }
-        }
-        if (-not $processType -and (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue)) {
-            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName) -Config $Config
-            if ($pw.found) {
-                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
-                if ($norm) {
-                    $processType = $norm
-                    $resolutionSource = 'projectwise_attributes'
-                }
-            }
-        } elseif (-not $processType -and (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
-            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName) -Config $Config
-            if ($pw.found) {
-                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
-                if ($norm) {
-                    $processType = $norm
-                    $resolutionSource = 'projectwise_attributes'
-                }
-            }
-        }
-        if (-not $processType -and -not (_QCP-IsStemSheetDocumentName ([string]$attributeLookupName))) {
+        } elseif (-not $processType) {
             $idxProcess = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath ([string]$folder) -SourceDocumentName ([string]$attributeLookupName)
             if (-not (_QCP-IsNullOrWhiteSpace $idxProcess)) {
                 $processType = [string]$idxProcess
@@ -2018,29 +2048,9 @@ function _QCP-ResolveIntendedPrependProcessType {
         [string]$SheetPdfName,
         [string]$SheetPdfGuid = ''
     )
-    if (Get-Command -Name 'Get-PWQcPrependProcessIntentFromSourcePdf' -ErrorAction SilentlyContinue) {
-        try {
-            $pw = Get-PWQcPrependProcessIntentFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SheetPdfName -Config $Config
-            if ($pw -and [bool]$pw.found) {
-                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
-                if ($norm) { return [string]$norm }
-            }
-        } catch { }
-    } elseif (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
-        try {
-            $pw = Get-PWQcPrependRoleFieldsFromSourcePdf -FolderPath $FolderPath -SourceDocumentName $SheetPdfName -Config $Config
-            if ($pw -and [bool]$pw.found) {
-                $norm = _QCP-NormalizePrependProcessTypeValue -RawProcessType ([string]$pw.qcProcessType)
-                if ($norm) { return [string]$norm }
-            }
-        } catch { }
-    }
-    if (Get-Command -Name '_QCP-ResolveProcessTypeFromSheetIndex' -ErrorAction SilentlyContinue) {
-        try {
-            $idx = _QCP-ResolveProcessTypeFromSheetIndex -Config $Config -FolderPath $FolderPath -SourceDocumentName $SheetPdfName
-            if (-not (_QCP-IsNullOrWhiteSpace $idx)) { return [string]$idx }
-        } catch { }
-    }
+    $resolved = _QCP-ResolvePrependProcessTypeFromSourceAttributes -Config $Config `
+        -FolderPath $FolderPath -SourceDocumentName $SheetPdfName
+    if ($resolved.processType) { return [string]$resolved.processType }
     return ''
 }
 
