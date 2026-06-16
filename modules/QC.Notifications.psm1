@@ -4206,7 +4206,7 @@ function Invoke-QCNotificationForStateChange {
         [Parameter(Mandatory)]
         [string]$CurrentState,
         [object]$Document,
-        [string]$DocumentName = '',
+        [AllowNull()][AllowEmptyString()][string]$DocumentName = $null,
         [string]$DocumentPath = '',
         [string]$DocumentGuid = '',
         [string]$Project = '',
