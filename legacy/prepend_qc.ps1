@@ -457,6 +457,11 @@ function Invoke-PrependQcReviewTypeDefaultIfNeeded {
     [Parameter(Mandatory)][string]$FolderPath,
     [Parameter(Mandatory)][string]$SourceDocumentName
   )
+  $laneType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+  if ($laneType -in @('check', 'review', 'production')) {
+    Write-Log "QC_Review_Type default skipped for lane prepend (qc_process_type=$laneType)."
+    return
+  }
   $cfg = Get-PrependQcConfig
   if (Get-Command -Name 'Ensure-PWQcReviewTypeOnAssociatedSheet' -ErrorAction SilentlyContinue) {
     try {
@@ -645,6 +650,17 @@ function Invoke-QcReviewStampIfNeeded {
       Write-Log "Review stamp qc_process_type from stem sheet PDF: $processType"
     } elseif (-not $intent.found -and $intent.error) {
       Write-Log "Review stamp: could not read stem sheet PDF QC_Process_Type ($($intent.error))." -Severity WARNING
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($processType) -and -not [string]::IsNullOrWhiteSpace($HistoryDocName)) {
+    if ([string]$HistoryDocName -match '(?i)-(prod|chk|rev)\.pdf$') {
+      switch ($Matches[1].ToLowerInvariant()) {
+        'prod' { $processType = 'production' }
+        'chk' { $processType = 'check' }
+        'rev' { $processType = 'review' }
+      }
+      if ($processType) { Write-Log "Review stamp qc_process_type from lane PDF name: $processType" }
     }
   }
 
