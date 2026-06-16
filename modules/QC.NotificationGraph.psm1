@@ -146,16 +146,80 @@ function _QCNG-InvokeGraphRequest {
     return Invoke-RestMethod @params
 }
 
+function _QCNG-GetGraphHttpErrorDetail {
+    param([object]$ErrorRecord)
+
+    $detail = ''
+    if ($null -ne $ErrorRecord -and $ErrorRecord.Exception) {
+        $detail = [string]$ErrorRecord.Exception.Message
+    }
+    if ($ErrorRecord -and $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        if (-not (_QCNG-IsBlank $detail)) { $detail += ' ' }
+        $detail += [string]$ErrorRecord.ErrorDetails.Message
+    }
+
+    $httpStatus = $null
+    if ($detail -match '\((\d{3})\)') {
+        try { $httpStatus = [int]$Matches[1] } catch { $httpStatus = $null }
+    }
+
+    $graphErrorCode = ''
+    if ($detail -match '"code"\s*:\s*"([^"]+)"') {
+        $graphErrorCode = [string]$Matches[1]
+    }
+
+    $isAccessDenied = $false
+    if ($httpStatus -in @(401, 403)) { $isAccessDenied = $true }
+    elseif ($detail -match '(?i)(forbidden|erroraccessdenied|mailboxnotenabledforrestapi)') { $isAccessDenied = $true }
+
+    $isNotFound = $false
+    if ($httpStatus -eq 404) { $isNotFound = $true }
+    elseif ($detail -match '(?i)(erroritemnotfound|not\s*found)') { $isNotFound = $true }
+
+    return @{
+        detail = $detail
+        httpStatus = $httpStatus
+        graphErrorCode = $graphErrorCode
+        isAccessDenied = $isAccessDenied
+        isNotFound = $isNotFound
+    }
+}
+
 function _QCNG-TestGraphMailboxWriteDenied {
     param([object]$ErrorRecord)
 
     if ($null -eq $ErrorRecord) { return $false }
-    $detail = [string]$ErrorRecord.Exception.Message
-    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
-        $detail += ' ' + [string]$ErrorRecord.ErrorDetails.Message
-    }
-    if ($detail -match '(?i)(403|503|forbidden|erroraccessdenied|mailboxnotenabledforrestapi)') { return $true }
+    $parsed = _QCNG-GetGraphHttpErrorDetail -ErrorRecord $ErrorRecord
+    if ($parsed.isAccessDenied) { return $true }
+    if ($parsed.httpStatus -eq 503) { return $true }
+    if ($parsed.detail -match '(?i)503') { return $true }
     return $false
+}
+
+function _QCNG-WriteThreadParentLookupLog {
+    param(
+        [hashtable]$Status,
+        [string]$SenderMailbox,
+        [string]$ParentMessageId,
+        [string]$ThreadKey = ''
+    )
+
+    if (-not $Status) { return }
+    $level = if ($Status.status -eq 'access_denied') { 'Warning' } else { 'Information' }
+    $message = if ($Status.message) { [string]$Status.message } else { 'Graph parent message lookup completed.' }
+    $logData = @{
+        senderMailbox = $SenderMailbox
+        parentGraphMessageId = $ParentMessageId
+        threadKey = $ThreadKey
+        parentLookupStatus = [string]$Status.status
+        threadRecoveryReason = [string]$Status.recoveryReason
+        parentLookupHttpStatus = $Status.httpStatus
+        parentLookupDetail = [string]$Status.detail
+        graphErrorCode = [string]$Status.graphErrorCode
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level $level -Code 'QC_NOTIFICATION_THREAD_PARENT_LOOKUP' -Message $message -Data $logData | Out-Null
+    }
 }
 
 function _QCNG-InvokeGraphSendMailFromMessage {
@@ -482,25 +546,92 @@ function Invoke-QCNotificationGraphCreateReplyAndSend {
     return $meta
 }
 
-function Test-QCNotificationGraphParentMessageExists {
+function Get-QCNotificationGraphParentMessageStatus {
+    <#
+    .SYNOPSIS
+    Resolves whether a stored Graph parent message ID is readable for threaded reply dispatch.
+    #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SenderMailbox,
         [Parameter(Mandatory)][string]$AccessToken,
         [Parameter(Mandatory)][string]$MessageId
     )
+
     if ($script:QCNG_TestHttpHandler -and $script:QCNG_TestMessageRegistry.ContainsKey($MessageId)) {
-        return $true
+        return @{
+            exists = $true
+            status = 'found'
+            recoveryReason = ''
+            httpStatus = 200
+            detail = ''
+            graphErrorCode = ''
+            message = 'Graph parent message lookup succeeded.'
+        }
     }
+
     $encodedMailbox = [Uri]::EscapeDataString($SenderMailbox)
     $encodedId = [Uri]::EscapeDataString($MessageId)
     $uri = "https://graph.microsoft.com/v1.0/users/$encodedMailbox/messages/$encodedId?`$select=id"
     $headers = _QCNG-NewGraphHeaders -AccessToken $AccessToken -ImmutableId
     try {
         _QCNG-InvokeGraphRequest -Method Get -Uri $uri -Headers $headers | Out-Null
-        return $true
+        return @{
+            exists = $true
+            status = 'found'
+            recoveryReason = ''
+            httpStatus = 200
+            detail = ''
+            graphErrorCode = ''
+            message = 'Graph parent message lookup succeeded.'
+        }
     } catch {
-        return $false
+        $parsed = _QCNG-GetGraphHttpErrorDetail -ErrorRecord $_
+        if ($parsed.isAccessDenied) {
+            return @{
+                exists = $false
+                status = 'access_denied'
+                recoveryReason = 'parent_message_read_forbidden'
+                httpStatus = $parsed.httpStatus
+                detail = $parsed.detail
+                graphErrorCode = $parsed.graphErrorCode
+                message = 'Graph parent message lookup denied: application Mail.ReadWrite (or mailbox read access) is required to verify reply parents before createReply.'
+            }
+        }
+        if ($parsed.isNotFound) {
+            return @{
+                exists = $false
+                status = 'not_found'
+                recoveryReason = 'parent_message_not_found'
+                httpStatus = $parsed.httpStatus
+                detail = $parsed.detail
+                graphErrorCode = $parsed.graphErrorCode
+                message = 'Graph parent message was not found; reply threading will fall back to replacement_root.'
+            }
+        }
+        return @{
+            exists = $false
+            status = 'error'
+            recoveryReason = 'parent_message_lookup_failed'
+            httpStatus = $parsed.httpStatus
+            detail = $parsed.detail
+            graphErrorCode = $parsed.graphErrorCode
+            message = 'Graph parent message lookup failed with an unexpected error; reply threading will fall back to replacement_root.'
+        }
     }
+}
+
+function Test-QCNotificationGraphParentMessageExists {
+    param(
+        [Parameter(Mandatory)][string]$SenderMailbox,
+        [Parameter(Mandatory)][string]$AccessToken,
+        [Parameter(Mandatory)][string]$MessageId,
+        [switch]$PassThru
+    )
+
+    $status = Get-QCNotificationGraphParentMessageStatus -SenderMailbox $SenderMailbox -AccessToken $AccessToken -MessageId $MessageId
+    if ($PassThru) { return $status }
+    return [bool]$status.exists
 }
 
 function Send-QCNotificationGraph {
@@ -589,11 +720,18 @@ function Send-QCNotificationGraph {
         $meta = @{}
 
         if ($sendMode -eq 'reply' -and -not (_QCNG-IsBlank $parentId)) {
-            $parentExists = Test-QCNotificationGraphParentMessageExists -SenderMailbox $senderMailbox -AccessToken $token -MessageId $parentId
-            if (-not $parentExists) {
+            $parentStatus = Get-QCNotificationGraphParentMessageStatus -SenderMailbox $senderMailbox -AccessToken $token -MessageId $parentId
+            _QCNG-WriteThreadParentLookupLog -Status $parentStatus -SenderMailbox $senderMailbox `
+                -ParentMessageId $parentId -ThreadKey $threadKey
+            if (-not $parentStatus.exists) {
                 $parentInvalid = $true
                 $attemptSendMode = 'replacement_root'
-                $baseData['threadRecoveryReason'] = 'parent_message_not_found'
+                $baseData['threadRecoveryReason'] = [string]$parentStatus.recoveryReason
+                $baseData['parentLookupStatus'] = [string]$parentStatus.status
+                if ($null -ne $parentStatus.httpStatus) { $baseData['parentLookupHttpStatus'] = $parentStatus.httpStatus }
+                if ($parentStatus.detail) { $baseData['parentLookupDetail'] = [string]$parentStatus.detail }
+                if ($parentStatus.graphErrorCode) { $baseData['parentLookupGraphErrorCode'] = [string]$parentStatus.graphErrorCode }
+                if ($parentStatus.message) { $baseData['parentLookupMessage'] = [string]$parentStatus.message }
             }
         }
 
@@ -673,6 +811,7 @@ function Send-QCNotificationGraph {
 Export-ModuleMember -Function Test-QCNotificationGraphConfigured, New-QCNotificationGraphSendMailBody, `
     New-QCGraphEmailMessage, Get-QCNotificationGraphAccessToken, Invoke-QCNotificationGraphSendMail, `
     Invoke-QCNotificationGraphCreateAndSendMessage, Invoke-QCNotificationGraphCreateReplyAndSend, `
-    Test-QCNotificationGraphParentMessageExists, Register-QCNotificationGraphTestMessage, `
+    Get-QCNotificationGraphParentMessageStatus, Test-QCNotificationGraphParentMessageExists, `
+    Register-QCNotificationGraphTestMessage, `
     Set-QCNotificationGraphTestHttpHandler, Clear-QCNotificationGraphTestHttpHandler, `
     Send-QCNotificationGraph

@@ -295,6 +295,42 @@ $replPayload = @{
 $gRepl = Send-QCNotificationGraph -GraphSettings $graphSettings -Payload $replPayload
 Assert-True $gRepl.IsSuccess 'Replacement root should succeed'
 Assert-Eq $gRepl.Data.sendMode 'replacement_root' 'Should recover with replacement_root'
+Assert-Eq $gRepl.Data.threadRecoveryReason 'parent_message_not_found' 'Missing parent should use not_found reason'
+Assert-Eq $gRepl.Data.parentLookupStatus 'not_found' 'Missing parent lookup status'
+Clear-QCNotificationGraphTestHttpHandler
+
+# 11b. Graph replacement root when parent lookup is forbidden (Mail.Read missing)
+$global:QCTestGraphState = @{
+    messages = @{}
+    sentOrder = [System.Collections.Generic.List[string]]::new()
+}
+Set-QCNotificationGraphTestHttpHandler -Handler {
+    param($Method, $Uri, $Headers, $Body)
+    if ($Uri -match 'oauth2/v2.0/token') { return @{ access_token = 'test-token' } }
+    if ($Method -eq 'GET' -and $Uri -match '/messages/') {
+        throw 'The remote server returned an error: (403) Forbidden.'
+    }
+    if ($Method -eq 'POST' -and $Uri -match '/sendMail$') { return @{} }
+    throw "Unexpected: $Method $Uri"
+}
+$forbiddenPayload = @{
+    eventType = 'QC_RECEIVED'
+    documentName = 'sheet.pdf'
+    subject = 'Forbidden parent lookup'
+    body = 'Body'
+    htmlBody = '<p>Body</p>'
+    to = @('a@b.com')
+    cc = @()
+    threadSendMode = 'reply'
+    parentGraphMessageId = 'parent-without-read-access'
+    threadKey = 'pkg|Review'
+}
+$gForbidden = Send-QCNotificationGraph -GraphSettings $graphSettings -Payload $forbiddenPayload
+Assert-True $gForbidden.IsSuccess 'Forbidden parent lookup should still send replacement_root'
+Assert-Eq $gForbidden.Data.sendMode 'replacement_root' 'Forbidden parent should recover with replacement_root'
+Assert-Eq $gForbidden.Data.threadRecoveryReason 'parent_message_read_forbidden' 'Forbidden parent should use read_forbidden reason'
+Assert-Eq $gForbidden.Data.parentLookupStatus 'access_denied' 'Forbidden parent lookup status'
+Assert-Eq $gForbidden.Data.parentLookupHttpStatus 403 'Forbidden parent HTTP status'
 Clear-QCNotificationGraphTestHttpHandler
 
 # 12. HTML unthreaded uses sendMail (Mail.Send only)
