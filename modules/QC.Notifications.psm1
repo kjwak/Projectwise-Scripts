@@ -215,13 +215,6 @@ function Get-QCNotificationSettings {
                 cc = @('reviewers')
                 actionRequired = 'Designer to address QC comments and return corrections.'
             }
-            'Corrections Received' = @{
-                enabled = $true
-                eventType = 'CORRECTIONS_RECEIVED'
-                to = @('reviewers')
-                cc = @('designers')
-                actionRequired = 'Reviewer to verify corrections and approve or return redlines.'
-            }
             'Error Needs Attention' = @{
                 enabled = $true
                 eventType = 'QC_ERROR'
@@ -2402,7 +2395,6 @@ function _QCN-GetWorkflowNotificationPriorStateMap {
         'QC Finalizing' = 'Ready for QC'
         'Originated' = 'Initiate Origination'
         'Redlines Received' = 'Originated'
-        'Corrections Received' = 'Redlines Received'
         'Ready for QC' = 'QC Initiated'
         'QC Received' = 'In Development'
     }
@@ -2416,7 +2408,6 @@ function _QCN-GetWorkflowNotificationPriorStateMap {
                 @('readyForVerification', 'qcFinalizing')
                 @('qcFinalizing', 'redlinesReceived')
                 @('redlinesReceived', 'readyForQc')
-                @('correctionsReceived', 'redlinesReceived')
                 @('readyForQc', 'qcInitiated')
                 @('qcReceived', 'production')
             )

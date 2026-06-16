@@ -1430,14 +1430,14 @@ function Get-QCRestartIntakeSourceStateNames {
         try {
             $wf = Get-QCWorkflowSettings -Config $Config
             if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
-                foreach ($key in @('correctionsReceived','correctionsInProgress','complete','error')) {
+                foreach ($key in @('correctionsInProgress','complete','error')) {
                     $name = Get-QCWorkflowStateName -Settings $wf -StateKey $key
                     if (-not [string]::IsNullOrWhiteSpace($name)) { & $addName $name }
                 }
             }
         } catch { }
     }
-    foreach ($fallback in @('Corrections Received','Corrections In Progress','QC Complete','Error Needs Attention')) { & $addName $fallback }
+    foreach ($fallback in @('Corrections In Progress','QC Complete','Error Needs Attention')) { & $addName $fallback }
     return @($names)
 }
 

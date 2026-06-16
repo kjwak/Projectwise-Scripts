@@ -14,9 +14,8 @@ function Get-QCCommentDecisionSettings {
         }
         targetStates = @{
             redlinesReceived = 'Redlines Received'
-            correctionsReceived = 'Corrections Received'
-            qcFinalizing = 'QC Finalizing'
-            completed = 'QC Complete'
+            qcFinalizing = 'Initiate Verification'
+            completed = 'Verified'
             error = 'Error Needs Attention'
         }
         strictMode = $false
@@ -37,15 +36,12 @@ function Get-QCCommentDecisionSettings {
         if ($wfStates) {
             if ($wfStates.redlinesReceived) { $out.targetStates.redlinesReceived = [string]$wfStates.redlinesReceived }
             elseif ($wfStates.redlinesIssued) { $out.targetStates.redlinesReceived = [string]$wfStates.redlinesIssued }
-            if ($wfStates.correctionsReceived) { $out.targetStates.correctionsReceived = [string]$wfStates.correctionsReceived }
-            elseif ($wfStates.verificationInProgress) { $out.targetStates.correctionsReceived = [string]$wfStates.verificationInProgress }
-            elseif ($wfStates.correctionsInProgress) { $out.targetStates.correctionsReceived = [string]$wfStates.correctionsInProgress }
             if ($wfStates.qcFinalizing) { $out.targetStates.qcFinalizing = [string]$wfStates.qcFinalizing }
             if ($wfStates.complete) { $out.targetStates.completed = [string]$wfStates.complete }
             if ($wfStates.error) { $out.targetStates.error = [string]$wfStates.error }
         }
-        if ($wf.correctionsInProgressStateName) { $out.targetStates.correctionsReceived = [string]$wf.correctionsInProgressStateName }
-        if ($wf.backcheckInProgressStateName) { $out.targetStates.correctionsReceived = [string]$wf.backcheckInProgressStateName }
+        if ($wf.correctionsInProgressStateName) { $out.targetStates.qcFinalizing = [string]$wf.correctionsInProgressStateName }
+        if ($wf.backcheckInProgressStateName) { $out.targetStates.qcFinalizing = [string]$wf.backcheckInProgressStateName }
         if ($wf.errorStateName) { $out.targetStates.error = [string]$wf.errorStateName }
         try { if ($null -ne $wf.strictMode) { $out.strictMode = [bool]$wf.strictMode } } catch { }
     }
@@ -187,11 +183,11 @@ function Resolve-QCCommentWorkflowState {
     }
 
     if ($resolved -gt 0) {
-        $correctionsState = if ($targets.correctionsReceived) { [string]$targets.correctionsReceived } elseif ($targets.verificationInProgress) { [string]$targets.verificationInProgress } else { 'Corrections Received' }
+        $finalizingState = if ($targets.qcFinalizing) { [string]$targets.qcFinalizing } else { 'Initiate Verification' }
         return @{
-            targetState = $correctionsState
-            decisionCode = 'CORRECTIONS_RECEIVED'
-            summary = "$resolved reviewer comment(s) resolved; reviewer verification needed."
+            targetState = $finalizingState
+            decisionCode = 'QC_FINALIZING'
+            summary = "$resolved reviewer comment(s) resolved; correction prepend will run via Initiate Verification."
             reviewerOpenCount = $open
             reviewerResolvedCount = $resolved
             reviewerClosedCount = $closed

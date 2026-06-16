@@ -17,9 +17,8 @@ $config = @{
         }
         targetStates = @{
             redlinesReceived = 'Redlines Received'
-            correctionsReceived = 'Corrections Received'
-            qcFinalizing = 'QC Finalizing'
-            completed = 'QC Complete'
+            qcFinalizing = 'Initiate Verification'
+            completed = 'Verified'
             error = 'Error Needs Attention'
         }
     }
@@ -40,11 +39,11 @@ Assert-Eq $d1.targetState 'Redlines Received' 'Open reviewer comment -> redlines
 Assert-Eq $d1.decisionCode 'REDLINES_RECEIVED' 'Decision code redlines received'
 
 $d2 = Resolve-QCCommentWorkflowState -Annotations @($resolvedAnnot) -Config $config -ParserStatus 'ok'
-Assert-Eq $d2.targetState 'Corrections Received' 'Resolved -> corrections received'
-Assert-Eq $d2.decisionCode 'CORRECTIONS_RECEIVED' 'Decision code corrections received'
+Assert-Eq $d2.targetState 'Initiate Verification' 'Resolved -> initiate verification'
+Assert-Eq $d2.decisionCode 'QC_FINALIZING' 'Decision code initiate verification'
 
 $d3 = Resolve-QCCommentWorkflowState -Annotations @($closedAnnot) -Config $config -ParserStatus 'ok'
-Assert-Eq $d3.targetState 'QC Finalizing' 'Closed -> QC Finalizing'
+Assert-Eq $d3.targetState 'Initiate Verification' 'Closed -> initiate verification'
 Assert-Eq $d3.decisionCode 'QC_FINALIZING' 'Decision code QC Finalizing'
 
 $d4 = Resolve-QCCommentWorkflowState -Annotations @() -Config $config -ParserStatus 'error'

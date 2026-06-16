@@ -26,10 +26,6 @@ function Get-QCCommentSyncNotificationPlan {
         $eventType = 'REDLINES_RECEIVED'
         $toRoles = @('designers')
         $ccRoles = @('reviewers')
-    } elseif ($targetState -eq [string]$targets.correctionsReceived -or $targetState -eq [string]$targets.correctionsInProgress -or $targetState -eq [string]$targets.verificationInProgress) {
-        $eventType = 'CORRECTIONS_RECEIVED'
-        $toRoles = @('reviewers')
-        $ccRoles = @('designers')
     } elseif ($targetState -eq [string]$targets.qcFinalizing) {
         $eventType = 'QC_FINALIZING'
         $toRoles = @()

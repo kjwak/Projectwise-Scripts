@@ -40,7 +40,8 @@ def test_appsettings_notification_events_include_lifecycle_states():
     assert events["Ready for QC"]["eventType"] == "READY_FOR_QC"
     assert events["Ready for QC"]["enabled"] is True
     assert events["Redlines Received"]["eventType"] == "REDLINES_RECEIVED"
-    assert events["Corrections Received"]["eventType"] == "CORRECTIONS_RECEIVED"
+    assert events["Ready for Verification"]["eventType"] == "READY_FOR_VERIFICATION"
+    assert "Corrections Received" not in events
     assert events["Error Needs Attention"]["eventType"] == "QC_ERROR"
     assert events["QC Complete"]["eventType"] == "QC_COMPLETE"
     assert events["QC Complete"]["enabled"] is True

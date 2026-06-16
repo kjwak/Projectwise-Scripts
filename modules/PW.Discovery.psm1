@@ -3378,13 +3378,13 @@ function _PWD-GetConfiguredWorkflowStateNames {
         try {
             $wf = Get-QCWorkflowSettings -Config $Config
             if ($wf -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
-                foreach ($key in @('production','qcInitiated','qcReceived','readyForQc','redlinesReceived','correctionsReceived','correctionsInProgress','qcFinalizing','complete','error')) {
+                foreach ($key in @('production','qcInitiated','qcReceived','readyForQc','redlinesReceived','correctionsInProgress','qcFinalizing','readyForVerification','complete','error')) {
                     try { & $add (Get-QCWorkflowStateName -Settings $wf -StateKey $key) } catch { }
                 }
             }
         } catch { }
     }
-    foreach ($fallback in @('In Production','QC Initiated','Ready for QC','Redlines Received','Corrections Received','Corrections In Progress','QC Finalizing','QC Complete','Error Needs Attention')) {
+    foreach ($fallback in @('In Production','QC Initiated','Ready for QC','Redlines Received','Corrections In Progress','Initiate Verification','Ready for Verification','QC Complete','Error Needs Attention')) {
         & $add $fallback
     }
     return @($states)

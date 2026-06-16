@@ -28,8 +28,9 @@ def test_appsettings_uses_states_and_review_types_not_stage_map():
     assert workflow["states"]["qcReceived"] == "Ready for QC"
     assert workflow["states"]["readyForQc"] == "Ready for QC"
     assert workflow["states"]["redlinesReceived"] == "Redlines Received"
-    assert workflow["states"]["correctionsReceived"] == "Corrections Received"
-    assert workflow["states"]["qcFinalizing"] == "QC Finalizing"
+    assert "correctionsReceived" not in workflow["states"]
+    assert workflow["states"]["readyForVerification"] == "Ready for Verification"
+    assert workflow["states"]["qcFinalizing"] == "Initiate Verification"
     assert workflow["stateAfterSuccessfulPrepend"] == "Ready for QC"
     assert workflow["stateAfterPrependByTrigger"]["initialQcPdf"] == "Ready for QC"
     assert workflow["stateAfterPrependByTrigger"]["finalQcComplete"] == "QC Complete"
@@ -52,8 +53,8 @@ def test_workflow_module_defaults_exclude_stage_map_and_qc_stage():
     assert "QC_Stage" not in text
     assert "readyForQc = 'Ready for QC'" in text
     assert "redlinesReceived = 'Redlines Received'" in text
-    assert "correctionsReceived = 'Corrections Received'" in text
-    assert "qcFinalizing = 'QC Finalizing'" in text
+    assert "readyForVerification = 'Ready for Verification'" in text
+    assert "qcFinalizing = 'Initiate Verification'" in text
     assert "Resolve-QCWorkflowAssignee" in text
     assert "Get-QCWorkflowDeprecationWarnings" in text
 
@@ -66,7 +67,6 @@ def test_processors_workflow_context_does_not_write_qc_stage():
     assert "Resolve-QCWorkflowAssignee" in text
     assert "Add-QCPrependJobForQcFinalizingStateChange" in text
     assert "_QCP-IsFinalQcPrependJob" in text
-    assert "Review stamps skipped for QC Finalizing prepend" in text
 
 
 def test_reporting_docs_include_state_based_metric_names():
@@ -114,7 +114,7 @@ def test_resolve_qc_workflow_assignee_by_review_type():
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Ready for QC' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Ready for QC' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Redlines Received' -ReviewType 'Peer Review' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
-      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Corrections Received' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
+      (Resolve-QCWorkflowAssignee -Settings $s -StateName 'Ready for Verification' -ReviewType 'Independent Check' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'QC Complete' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com')
     ) -join '|'
     """

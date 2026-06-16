@@ -41,8 +41,8 @@ function New-WorkflowConfig([bool]$Enabled, [bool]$Strict, [bool]$DryRunWritebac
                 production = 'In Production'
                 readyForQc = 'Ready for QC'
                 redlinesReceived = 'Redlines Received'
-                correctionsReceived = 'Corrections Received'
-                qcFinalizing = 'QC Finalizing'
+                readyForVerification = 'Ready for Verification'
+                qcFinalizing = 'Initiate Verification'
                 complete = 'QC Complete'
                 error = 'Error Needs Attention'
             }
@@ -107,8 +107,8 @@ Assert-Eq $defaultSettings.mode 'AttributesOnly' 'AttributesOnly should remain t
 Assert-Eq $defaultSettings.autoSetState $false 'autoSetState should remain false by default'
 Assert-Eq $defaultSettings.states.readyForQc 'Originated' 'Default ready for QC state'
 Assert-Eq $defaultSettings.states.redlinesReceived 'Redlines Received' 'Default redlines received state'
-Assert-Eq $defaultSettings.states.correctionsReceived 'Corrections Received' 'Default corrections received state'
-Assert-Eq $defaultSettings.states.qcFinalizing 'QC Finalizing' 'Default QC Finalizing state'
+Assert-Eq $defaultSettings.states.readyForVerification 'Ready for Verification' 'Default ready for verification state'
+Assert-Eq $defaultSettings.states.qcFinalizing 'Initiate Verification' 'Default initiate verification state'
 Assert-True (-not $defaultSettings.attributeMap.ContainsKey('stage')) 'Default attribute map must not include stage'
 
 $prodCfg = @{ qcWorkflow = @{ states = @{ production = 'In Development'; readyForQc = 'Originated' } } }
@@ -117,21 +117,21 @@ Assert-Eq (Format-QCWorkflowStateName -StateName 'originated' -Config $prodCfg) 
 Assert-Eq (Format-QCWorkflowStateName -StateName 'redlines received' -Settings $defaultSettings) 'Redlines Received' 'Title-cases unknown multi-word states'
 
 # review-type-based assignment
-$assignReviewer = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Ready for QC' -ReviewType 'Production QC' `
+$assignReviewer = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Originated' -ReviewType 'Production QC' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignReviewer 'r@x.com' 'Production QC Ready for QC assigns reviewer'
-$assignChecker = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Corrections Received' -ReviewType 'Independent Check' `
+Assert-Eq $assignReviewer 'r@x.com' 'Production QC Originated assigns reviewer'
+$assignChecker = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Ready for Verification' -ReviewType 'Independent Check' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignChecker 'c@x.com' 'Independent Check corrections received assigns checker'
-$assignProduction = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'In Production' -ReviewType 'Production QC' `
+Assert-Eq $assignChecker 'c@x.com' 'Independent Check ready for verification assigns checker'
+$assignProduction = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'In Development' -ReviewType 'Production QC' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignProduction 'd@x.com' 'In Production assigns designer'
+Assert-Eq $assignProduction 'd@x.com' 'In Development assigns designer'
 $assignRedlines = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Redlines Received' -ReviewType 'Peer Review' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
 Assert-Eq $assignRedlines 'd@x.com' 'Redlines Received assigns designer'
-$assignReviewerVerify = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Corrections Received' -ReviewType 'Peer Review' `
+$assignReviewerVerify = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'Ready for Verification' -ReviewType 'Peer Review' `
     -DesignerEmail 'd@x.com' -ReviewerEmail 'r@x.com' -CheckerEmail 'c@x.com'
-Assert-Eq $assignReviewerVerify 'r@x.com' 'Corrections Received assigns reviewer'
+Assert-Eq $assignReviewerVerify 'r@x.com' 'Ready for Verification assigns reviewer'
 $assignNone = Resolve-QCWorkflowAssignee -Settings $defaultSettings -StateName 'QC Complete' -ReviewType 'Production QC' -ReviewerEmail 'r@x.com'
 Assert-Eq $assignNone $null 'QC Complete has no active assignee'
 
