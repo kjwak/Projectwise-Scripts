@@ -26,5 +26,6 @@ appsettings.test.json
 appsettings.*.local.json
 !appsettings.test.json.example
 !appsettings.secrets.json.example
-tools\pw-qc-mcp\.venv\.env
+tools/pw-qc-mcp/
 reports/
+build/

@@ -278,7 +278,7 @@ function _QCRS-ResolveStampRoleValues {
 function Invoke-QCReviewStamp {
     <#
     .SYNOPSIS
-    Stamps page 1 of a QC PDF using qc_overlay_prepend.exe --apply-review-stamp (editable AcroForm fields).
+    Stamps page 1 of a QC PDF using qc_overlay_prepend.exe --apply-review-stamp (copies stamp markup like Bluebeam paste).
     #>
     [CmdletBinding()]
     param(
