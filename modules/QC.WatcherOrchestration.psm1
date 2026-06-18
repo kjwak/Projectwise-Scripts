@@ -658,4 +658,172 @@ function Get-QCFullFolderScanReconciliationPlan {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete
+function _QCWO-ToHashtable([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $h = @{}
+        foreach ($k in $Value.Keys) { $h[[string]$k] = $Value[$k] }
+        return $h
+    }
+    if ($Value -is [pscustomobject]) {
+        $h = @{}
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    }
+    return $null
+}
+
+function Get-QCWatcherStallRecoverySettings {
+    <#
+    .SYNOPSIS
+    Dashboard-side recovery when the Watch-QCTrigger child stops writing logs (blocked PW SQL, etc.).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $defaults = @{
+        enabled = $true
+        noLogActivitySeconds = 600
+        auditScanMaxSeconds = 300
+        sendSessionAlert = $true
+    }
+
+    $settings = @{}
+    foreach ($key in @($defaults.Keys)) { $settings[$key] = $defaults[$key] }
+
+    $watcher = _QCWO-ToHashtable $Config.watcher
+    $stall = $null
+    if ($watcher -and $watcher.ContainsKey('stallRecovery')) {
+        $stall = _QCWO-ToHashtable $watcher.stallRecovery
+    }
+    if ($stall) {
+        if ($stall.ContainsKey('enabled') -and $null -ne $stall.enabled) { try { $settings.enabled = [bool]$stall.enabled } catch { } }
+        if ($stall.ContainsKey('noLogActivitySeconds') -and $null -ne $stall.noLogActivitySeconds) { try { $settings.noLogActivitySeconds = [int]$stall.noLogActivitySeconds } catch { } }
+        if ($stall.ContainsKey('auditScanMaxSeconds') -and $null -ne $stall.auditScanMaxSeconds) { try { $settings.auditScanMaxSeconds = [int]$stall.auditScanMaxSeconds } catch { } }
+        if ($stall.ContainsKey('sendSessionAlert') -and $null -ne $stall.sendSessionAlert) { try { $settings.sendSessionAlert = [bool]$stall.sendSessionAlert } catch { } }
+    }
+
+    if ($settings.noLogActivitySeconds -lt 120) { $settings.noLogActivitySeconds = 120 }
+    if ($settings.auditScanMaxSeconds -lt 60) { $settings.auditScanMaxSeconds = 60 }
+
+    return $settings
+}
+
+function Test-QCWatcherChildStalled {
+    <#
+    .SYNOPSIS
+    Returns whether a live watcher child appears wedged (no JSONL progress / audit scan never finished).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Settings,
+        [Parameter(Mandatory)]
+        [bool]$WatcherAlive,
+        [Nullable[datetime]]$LastLogActivityUtc,
+        [string]$LastWatcherEventCode = '',
+        [Nullable[datetime]]$LastWatcherEventUtc,
+        [string]$CurrentScanStage = '',
+        [Nullable[datetime]]$StageSinceUtc,
+        [Nullable[datetime]]$NowUtc = $null
+    )
+
+    if (-not [bool]$Settings.enabled -or -not $WatcherAlive) {
+        return @{ stalled = $false; reason = 'not_applicable' }
+    }
+
+    $now = if ($NowUtc) { $NowUtc.ToUniversalTime() } else { (Get-Date).ToUniversalTime() }
+    $lastLog = if ($LastLogActivityUtc) { $LastLogActivityUtc.ToUniversalTime() } else { $null }
+    $lastEvent = if ($LastWatcherEventUtc) { $LastWatcherEventUtc.ToUniversalTime() } else { $null }
+    $stageSince = if ($StageSinceUtc) { $StageSinceUtc.ToUniversalTime() } else { $null }
+
+    $code = ([string]$LastWatcherEventCode).Trim().ToUpperInvariant()
+    $stage = ([string]$CurrentScanStage).Trim()
+
+    if ($code -eq 'WATCH_AUDIT_SCAN_START' -and $lastEvent) {
+        $auditSec = ($now - $lastEvent).TotalSeconds
+        if ($auditSec -ge [double]$Settings.auditScanMaxSeconds) {
+            return @{
+                stalled = $true
+                reason = 'audit_scan_timeout'
+                seconds = [int][Math]::Floor($auditSec)
+                thresholdSeconds = [int]$Settings.auditScanMaxSeconds
+                lastEventCode = $code
+            }
+        }
+    }
+
+    if ($stage -match '(?i)audit trail scan starting' -and $stageSince) {
+        $stageSec = ($now - $stageSince).TotalSeconds
+        if ($stageSec -ge [double]$Settings.auditScanMaxSeconds) {
+            return @{
+                stalled = $true
+                reason = 'audit_scan_stage_timeout'
+                seconds = [int][Math]::Floor($stageSec)
+                thresholdSeconds = [int]$Settings.auditScanMaxSeconds
+                lastEventCode = $code
+            }
+        }
+    }
+
+    if ($lastLog) {
+        $silentSec = ($now - $lastLog).TotalSeconds
+        if ($silentSec -ge [double]$Settings.noLogActivitySeconds) {
+            return @{
+                stalled = $true
+                reason = 'no_log_activity'
+                seconds = [int][Math]::Floor($silentSec)
+                thresholdSeconds = [int]$Settings.noLogActivitySeconds
+                lastEventCode = $code
+            }
+        }
+    }
+
+    return @{ stalled = $false; reason = 'healthy' }
+}
+
+function Stop-QCWatcherChildForStall {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Diagnostics.Process]$Process,
+        [string]$Reason = 'watcher_child_stalled',
+        [int]$SecondsSilent = 0
+    )
+
+    $pidVal = 0
+    try { $pidVal = [int]$Process.Id } catch { }
+    $killed = $false
+    $exitCode = $null
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            $killed = $true
+            try { $Process.WaitForExit(15000) } catch { }
+        }
+        try { $exitCode = [int]$Process.ExitCode } catch { }
+    } catch {
+        return @{
+            killed = $false
+            pid = $pidVal
+            reason = $Reason
+            secondsSilent = $SecondsSilent
+            errorMessage = [string]$_.Exception.Message
+        }
+    }
+
+    return @{
+        killed = $killed
+        pid = $pidVal
+        reason = $Reason
+        secondsSilent = $SecondsSilent
+        exitCode = $exitCode
+        errorMessage = $null
+    }
+}
+
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Stop-QCWatcherChildForStall

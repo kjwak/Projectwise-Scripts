@@ -76,6 +76,7 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningA
 Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
 
 function _Pause-IfInteractiveConsole {
     # Double-click / powershell.exe -File closes the window as soon as the script exits.
@@ -404,6 +405,9 @@ $state = @{
     workerSlotMax = 0
     # Updated each poll tick for status text (worker child processes still alive).
     activeWorkerSlots = 0
+    stageSinceUtc = $null
+    lastStallRecoveryUtc = $null
+    lastStallRecoveryReason = $null
     errors = New-Object System.Collections.Generic.List[object]
 }
 
@@ -721,6 +725,10 @@ function _Get-ProductionFrameLines([hashtable]$Cfg) {
     if ($state.lastPassDurationMs) { $passText += (' last={0:0.0}s' -f ([double]$state.lastPassDurationMs / 1000.0)) }
     if ([int]$state.pwFolderTotal -gt 0) { $passText += (' folders={0}/{1}' -f [int]$state.pwFolderIndex, [int]$state.pwFolderTotal) }
     $lines.Add($passText) | Out-Null
+
+    if ($state.lastStallRecoveryUtc) {
+        $lines.Add(('Stall recovery: {0} ({1})' -f (_Format-UiTs -IsoOrNull ([string]$state.lastStallRecoveryUtc)), (_Trunc -Text ([string]$state.lastStallRecoveryReason) -Max 40))) | Out-Null
+    }
 
     if ($state.currentScanStage) {
         $lines.Add(('Stage: {0}' -f (_Trunc -Text ([string]$state.currentScanStage) -Max ($wideMax - 8)))) | Out-Null
@@ -1050,6 +1058,9 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         jsonLogTag = $tag
         lastLogHour = $hour
         lastStdoutLen = 0
+        lastLogActivityUtc = (Get-Date).ToUniversalTime()
+        lastWatcherEventCode = ''
+        lastWatcherEventUtc = $null
         # Incomplete tail of log (JSON split across reads) — kept until a full line arrives.
         stdoutTail = ''
         lastHeartbeatAt = (Get-Date)
@@ -1061,6 +1072,61 @@ function _Stop-Child([hashtable]$Child) {
     # Intentionally do NOT delete the log files: they're the only forensic trail
     # when a worker is killed by AV and never gets to write a failure result.
     # A separate housekeeping step can prune _logs\ on age if needed.
+}
+
+function _Invoke-WatcherStallRecovery {
+    param(
+        [hashtable]$Cfg,
+        [hashtable]$Child,
+        [hashtable]$StallResult
+    )
+
+    if (-not $Child -or -not $StallResult -or -not $StallResult.stalled) { return $null }
+
+    $proc = $Child.process
+    $kill = Stop-QCWatcherChildForStall -Process $proc -Reason ([string]$StallResult.reason) -SecondsSilent ([int]$StallResult.seconds)
+    $ts = Get-QCTimestamp
+    $state.lastStallRecoveryUtc = $ts
+    $state.lastStallRecoveryReason = [string]$StallResult.reason
+    $msg = ("Watcher child stalled ({0}, {1}s); killed pid={2} for respawn." -f [string]$StallResult.reason, [int]$StallResult.seconds, [int]$kill.pid)
+    $state.lastError = $msg
+    $evt = @{
+        ts = $ts
+        level = 'Warning'
+        code = 'DASH_WATCHER_STALL_KILL'
+        message = $msg
+        data = @{
+            reason = [string]$StallResult.reason
+            seconds = [int]$StallResult.seconds
+            thresholdSeconds = if ($null -ne $StallResult.thresholdSeconds) { [int]$StallResult.thresholdSeconds } else { $null }
+            lastEventCode = if ($StallResult.lastEventCode) { [string]$StallResult.lastEventCode } else { $null }
+            pid = [int]$kill.pid
+            killed = [bool]$kill.killed
+        }
+    }
+    _State-PushError -LogObj $evt
+
+    $stallSettings = Get-QCWatcherStallRecoverySettings -Config $Cfg
+    if ([bool]$stallSettings.sendSessionAlert -and (Get-Command -Name 'Send-QCWatcherSessionLostAlert' -ErrorAction SilentlyContinue)) {
+        try {
+            Send-QCWatcherSessionLostAlert -Config $Cfg -Details @{
+                detectedUtc = $ts
+                reason = 'watcher_child_stalled'
+                stallReason = [string]$StallResult.reason
+                secondsSilent = [int]$StallResult.seconds
+                watcherPid = [int]$kill.pid
+                errorMessage = $msg
+            } | Out-Null
+        } catch { }
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        try {
+            Write-QCJsonLog -Flush -Level 'Warning' -Code 'DASH_WATCHER_STALL_KILL' -Message $msg -Data $evt.data | Out-Null
+        } catch { }
+    }
+
+    return $kill
 }
 
 function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
@@ -1090,6 +1156,7 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
     if ($read.Text.Length -gt 0) {
         $delta = [string]$read.Text
         $Child.lastStdoutLen = [int64]$read.NewPos
+        $Child.lastLogActivityUtc = (Get-Date).ToUniversalTime()
         $buffer = ([string]$Child.stdoutTail) + $delta
 
         $lines = New-Object System.Collections.Generic.List[string]
@@ -1116,6 +1183,14 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                 try {
                     $o = ($t | ConvertFrom-Json -ErrorAction Stop)
                     _State-PushError -LogObj $o
+
+                    if ($Kind -eq 'watcher') {
+                        try {
+                            $Child.lastWatcherEventCode = [string]$o.code
+                            $evtUtc = _Parse-UtcIso -Value ([string]$o.ts)
+                            $Child.lastWatcherEventUtc = if ($evtUtc) { $evtUtc } else { (Get-Date).ToUniversalTime() }
+                        } catch { }
+                    }
 
                     if ($Kind -eq 'worker' -and $o.code -match '^WORKER_') {
                         $state.lastWorkerEvent = $o
@@ -1274,6 +1349,10 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
                         } else {
                             $state.currentScanStage = 'audit trail scan starting'
                         }
+                        try {
+                            $stageUtc = _Parse-UtcIso -Value ([string]$o.ts)
+                            $state.stageSinceUtc = if ($stageUtc) { $stageUtc.ToString('o') } else { Get-QCTimestamp }
+                        } catch { $state.stageSinceUtc = Get-QCTimestamp }
                     }
                     if ($o.code -eq 'WATCH_AUDIT_SCAN_DONE') {
                         $rel = 0; $tot = 0; $cand = 0
@@ -1681,6 +1760,52 @@ while ($true) {
             _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher'
         } else {
             try { _Poll-Child -Child $watcherChild -Cfg $cfg -Kind 'watcher' } catch { }
+        }
+
+        if ($watcherChild -and $hasPw) {
+            $stallSettings = Get-QCWatcherStallRecoverySettings -Config $cfg
+            if ([bool]$stallSettings.enabled) {
+                $watcherStillAlive = $false
+                try {
+                    $null = $watcherChild.process.Refresh()
+                    $watcherStillAlive = -not [bool]$watcherChild.process.HasExited
+                } catch { $watcherStillAlive = $false }
+
+                if ($watcherStillAlive) {
+                    $lastLogUtc = $null
+                    try { if ($watcherChild.lastLogActivityUtc) { $lastLogUtc = $watcherChild.lastLogActivityUtc } } catch { }
+                    try {
+                        $jsonPath = _Get-ChildJsonLogPath -Child $watcherChild -HourStamp (Get-QCLogHourStamp)
+                        if ($jsonPath -and (Test-Path -LiteralPath $jsonPath)) {
+                            $fileUtc = (Get-Item -LiteralPath $jsonPath).LastWriteTimeUtc
+                            if (-not $lastLogUtc -or $fileUtc -gt $lastLogUtc) { $lastLogUtc = $fileUtc }
+                        }
+                    } catch { }
+
+                    $lastEventUtc = $null
+                    try { if ($watcherChild.lastWatcherEventUtc) { $lastEventUtc = $watcherChild.lastWatcherEventUtc } } catch { }
+
+                    $stageSince = $null
+                    try {
+                        if ($state.stageSinceUtc) { $stageSince = _Parse-UtcIso -Value ([string]$state.stageSinceUtc) }
+                    } catch { }
+
+                    $stall = Test-QCWatcherChildStalled -Settings $stallSettings -WatcherAlive $true `
+                        -LastLogActivityUtc $lastLogUtc `
+                        -LastWatcherEventCode ([string]$watcherChild.lastWatcherEventCode) `
+                        -LastWatcherEventUtc $lastEventUtc `
+                        -CurrentScanStage ([string]$state.currentScanStage) `
+                        -StageSinceUtc $stageSince
+
+                    if ($stall.stalled) {
+                        _Invoke-WatcherStallRecovery -Cfg $cfg -Child $watcherChild -StallResult $stall | Out-Null
+                        _Stop-Child -Child $watcherChild
+                        $watcherChild = $null
+                        $state.watcherAlive = $false
+                        $state.watcherPid = 0
+                    }
+                }
+            }
         }
 
         $state.activeWorkerSlots = $workerSlots.Count
