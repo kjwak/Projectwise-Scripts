@@ -690,6 +690,7 @@ function Get-QCWatcherStallRecoverySettings {
         noLogActivitySeconds = 600
         auditScanMaxSeconds = 300
         sendSessionAlert = $true
+        postKillCooldownSeconds = 120
     }
 
     $settings = @{}
@@ -705,10 +706,12 @@ function Get-QCWatcherStallRecoverySettings {
         if ($stall.ContainsKey('noLogActivitySeconds') -and $null -ne $stall.noLogActivitySeconds) { try { $settings.noLogActivitySeconds = [int]$stall.noLogActivitySeconds } catch { } }
         if ($stall.ContainsKey('auditScanMaxSeconds') -and $null -ne $stall.auditScanMaxSeconds) { try { $settings.auditScanMaxSeconds = [int]$stall.auditScanMaxSeconds } catch { } }
         if ($stall.ContainsKey('sendSessionAlert') -and $null -ne $stall.sendSessionAlert) { try { $settings.sendSessionAlert = [bool]$stall.sendSessionAlert } catch { } }
+        if ($stall.ContainsKey('postKillCooldownSeconds') -and $null -ne $stall.postKillCooldownSeconds) { try { $settings.postKillCooldownSeconds = [int]$stall.postKillCooldownSeconds } catch { } }
     }
 
     if ($settings.noLogActivitySeconds -lt 120) { $settings.noLogActivitySeconds = 120 }
     if ($settings.auditScanMaxSeconds -lt 60) { $settings.auditScanMaxSeconds = 60 }
+    if ($settings.postKillCooldownSeconds -lt 30) { $settings.postKillCooldownSeconds = 30 }
 
     return $settings
 }
@@ -727,6 +730,7 @@ function Test-QCWatcherChildStalled {
         [Nullable[datetime]]$LastLogActivityUtc,
         [string]$LastWatcherEventCode = '',
         [Nullable[datetime]]$LastWatcherEventUtc,
+        [Nullable[datetime]]$WatcherSpawnedAtUtc,
         [string]$CurrentScanStage = '',
         [Nullable[datetime]]$StageSinceUtc,
         [Nullable[datetime]]$NowUtc = $null
@@ -739,10 +743,24 @@ function Test-QCWatcherChildStalled {
     $now = if ($NowUtc) { $NowUtc.ToUniversalTime() } else { (Get-Date).ToUniversalTime() }
     $lastLog = if ($LastLogActivityUtc) { $LastLogActivityUtc.ToUniversalTime() } else { $null }
     $lastEvent = if ($LastWatcherEventUtc) { $LastWatcherEventUtc.ToUniversalTime() } else { $null }
+    $spawnedAt = if ($WatcherSpawnedAtUtc) { $WatcherSpawnedAtUtc.ToUniversalTime() } else { $null }
     $stageSince = if ($StageSinceUtc) { $StageSinceUtc.ToUniversalTime() } else { $null }
 
     $code = ([string]$LastWatcherEventCode).Trim().ToUpperInvariant()
     $stage = ([string]$CurrentScanStage).Trim()
+
+    if ($spawnedAt -and $lastEvent -and $lastEvent -lt $spawnedAt) {
+        $lastEvent = $null
+        $code = ''
+    }
+    if ($spawnedAt -and $stageSince -and $stageSince -lt $spawnedAt) {
+        $stageSince = $null
+        $stage = ''
+    }
+
+    if ($spawnedAt -and $lastLog -and $lastLog -lt $spawnedAt) {
+        $lastLog = $spawnedAt
+    }
 
     if ($code -eq 'WATCH_AUDIT_SCAN_START' -and $lastEvent) {
         $auditSec = ($now - $lastEvent).TotalSeconds
@@ -799,19 +817,24 @@ function Stop-QCWatcherChildForStall {
     try { $pidVal = [int]$Process.Id } catch { }
     $killed = $false
     $exitCode = $null
+    $alreadyExited = $false
     try {
-        if (-not $Process.HasExited) {
+        if ($Process.HasExited) {
+            $alreadyExited = $true
+            try { $exitCode = [int]$Process.ExitCode } catch { }
+        } else {
             $Process.Kill()
             $killed = $true
             try { $Process.WaitForExit(15000) } catch { }
+            try { $exitCode = [int]$Process.ExitCode } catch { }
         }
-        try { $exitCode = [int]$Process.ExitCode } catch { }
     } catch {
         return @{
             killed = $false
             pid = $pidVal
             reason = $Reason
             secondsSilent = $SecondsSilent
+            alreadyExited = $alreadyExited
             errorMessage = [string]$_.Exception.Message
         }
     }
@@ -822,6 +845,7 @@ function Stop-QCWatcherChildForStall {
         reason = $Reason
         secondsSilent = $SecondsSilent
         exitCode = $exitCode
+        alreadyExited = $alreadyExited
         errorMessage = $null
     }
 }

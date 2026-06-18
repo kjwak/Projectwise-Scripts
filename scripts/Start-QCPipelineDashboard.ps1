@@ -859,6 +859,7 @@ function _Write-Ansi([string]$Text) {
 $script:_DashEsc = [char]27
 $script:_DashPrevFrame = $null
 $script:_DashLastRenderUtc = [DateTime]::MinValue
+$script:_DashWatcherStallCooldownUntil = [DateTime]::MinValue
 $script:_DashEffectiveRenderMode = if ($RenderMode -eq 'DiffAnsi' -and -not (_Test-VtSupported)) { 'FullRedraw' } else { $RenderMode }
 $script:_DashCursorHidden = $false
 try {
@@ -1050,6 +1051,21 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         if ($null -ne $savedLogDir) { $env:QC_JSON_LOG_DIR = $savedLogDir } else { Remove-Item -Path 'Env:QC_JSON_LOG_DIR' -ErrorAction SilentlyContinue }
         if ($null -ne $savedLogTag) { $env:QC_JSON_LOG_TAG = $savedLogTag } else { Remove-Item -Path 'Env:QC_JSON_LOG_TAG' -ErrorAction SilentlyContinue }
     }
+
+    $spawnedAtUtc = (Get-Date).ToUniversalTime()
+    $initialLogPos = [int64]0
+    $initialLogActivityUtc = $spawnedAtUtc
+    if ($tag -ieq 'Watch-QCTrigger') {
+        try {
+            $jsonPath = Join-Path $logDir ("${tag}_${hour}.jsonl")
+            if (Test-Path -LiteralPath $jsonPath) {
+                $fi = Get-Item -LiteralPath $jsonPath
+                $initialLogPos = [int64]$fi.Length
+                $initialLogActivityUtc = $fi.LastWriteTimeUtc
+            }
+        } catch { }
+    }
+
     return @{
         process = $p
         stdoutPath = $stdoutPath
@@ -1057,10 +1073,12 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         jsonLogDir = $logDir
         jsonLogTag = $tag
         lastLogHour = $hour
-        lastStdoutLen = 0
-        lastLogActivityUtc = (Get-Date).ToUniversalTime()
+        lastStdoutLen = $initialLogPos
+        lastLogActivityUtc = $initialLogActivityUtc
         lastWatcherEventCode = ''
         lastWatcherEventUtc = $null
+        spawnedAtUtc = $spawnedAtUtc
+        stallKillIssued = $false
         # Incomplete tail of log (JSON split across reads) — kept until a full line arrives.
         stdoutTail = ''
         lastHeartbeatAt = (Get-Date)
@@ -1082,14 +1100,28 @@ function _Invoke-WatcherStallRecovery {
     )
 
     if (-not $Child -or -not $StallResult -or -not $StallResult.stalled) { return $null }
+    if ($Child.stallKillIssued) {
+        return @{ skipped = $true; pid = try { [int]$Child.process.Id } catch { 0 } }
+    }
+    $Child.stallKillIssued = $true
+
+    $stallSettings = Get-QCWatcherStallRecoverySettings -Config $Cfg
+    $cooldownSec = [int]$stallSettings.postKillCooldownSeconds
+    if ($cooldownSec -lt 30) { $cooldownSec = 30 }
+    $script:_DashWatcherStallCooldownUntil = (Get-Date).ToUniversalTime().AddSeconds($cooldownSec)
 
     $proc = $Child.process
     $kill = Stop-QCWatcherChildForStall -Process $proc -Reason ([string]$StallResult.reason) -SecondsSilent ([int]$StallResult.seconds)
+    if ($kill.alreadyExited -and -not $kill.killed) {
+        return $kill
+    }
     $ts = Get-QCTimestamp
     $state.lastStallRecoveryUtc = $ts
     $state.lastStallRecoveryReason = [string]$StallResult.reason
     $msg = ("Watcher child stalled ({0}, {1}s); killed pid={2} for respawn." -f [string]$StallResult.reason, [int]$StallResult.seconds, [int]$kill.pid)
     $state.lastError = $msg
+    $state.currentScanStage = ''
+    $state.stageSinceUtc = $null
     $evt = @{
         ts = $ts
         level = 'Warning'
@@ -1106,7 +1138,6 @@ function _Invoke-WatcherStallRecovery {
     }
     _State-PushError -LogObj $evt
 
-    $stallSettings = Get-QCWatcherStallRecoverySettings -Config $Cfg
     if ([bool]$stallSettings.sendSessionAlert -and (Get-Command -Name 'Send-QCWatcherSessionLostAlert' -ErrorAction SilentlyContinue)) {
         try {
             Send-QCWatcherSessionLostAlert -Config $Cfg -Details @{
@@ -1186,9 +1217,15 @@ function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
 
                     if ($Kind -eq 'watcher') {
                         try {
-                            $Child.lastWatcherEventCode = [string]$o.code
                             $evtUtc = _Parse-UtcIso -Value ([string]$o.ts)
-                            $Child.lastWatcherEventUtc = if ($evtUtc) { $evtUtc } else { (Get-Date).ToUniversalTime() }
+                            $spawnedUtc = $null
+                            try { if ($Child.spawnedAtUtc) { $spawnedUtc = $Child.spawnedAtUtc } } catch { }
+                            if ($spawnedUtc -and $evtUtc -and $evtUtc -lt $spawnedUtc) {
+                                # Ignore events from a prior watcher instance in the same hourly JSONL file.
+                            } else {
+                                $Child.lastWatcherEventCode = [string]$o.code
+                                $Child.lastWatcherEventUtc = if ($evtUtc) { $evtUtc } else { (Get-Date).ToUniversalTime() }
+                            }
                         } catch { }
                     }
 
@@ -1764,7 +1801,8 @@ while ($true) {
 
         if ($watcherChild -and $hasPw) {
             $stallSettings = Get-QCWatcherStallRecoverySettings -Config $cfg
-            if ([bool]$stallSettings.enabled) {
+            $cooldownActive = ($script:_DashWatcherStallCooldownUntil -ne [DateTime]::MinValue) -and ((Get-Date).ToUniversalTime() -lt $script:_DashWatcherStallCooldownUntil)
+            if ([bool]$stallSettings.enabled -and -not $cooldownActive -and -not $watcherChild.stallKillIssued) {
                 $watcherStillAlive = $false
                 try {
                     $null = $watcherChild.process.Refresh()
@@ -1790,10 +1828,14 @@ while ($true) {
                         if ($state.stageSinceUtc) { $stageSince = _Parse-UtcIso -Value ([string]$state.stageSinceUtc) }
                     } catch { }
 
+                    $spawnedUtc = $null
+                    try { if ($watcherChild.spawnedAtUtc) { $spawnedUtc = $watcherChild.spawnedAtUtc } } catch { }
+
                     $stall = Test-QCWatcherChildStalled -Settings $stallSettings -WatcherAlive $true `
                         -LastLogActivityUtc $lastLogUtc `
                         -LastWatcherEventCode ([string]$watcherChild.lastWatcherEventCode) `
                         -LastWatcherEventUtc $lastEventUtc `
+                        -WatcherSpawnedAtUtc $spawnedUtc `
                         -CurrentScanStage ([string]$state.currentScanStage) `
                         -StageSinceUtc $stageSince
 

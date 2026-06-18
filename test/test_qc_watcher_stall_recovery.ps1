@@ -53,4 +53,13 @@ $off = Test-QCWatcherChildStalled -Settings $disabled -WatcherAlive $true `
     -LastLogActivityUtc $now.AddSeconds(-900) -NowUtc $now
 Assert-True (-not $off.stalled) 'disabled stall recovery should not trigger'
 
+$spawned = $now.AddSeconds(-60)
+$replay = Test-QCWatcherChildStalled -Settings $settings -WatcherAlive $true `
+    -LastLogActivityUtc $now.AddSeconds(-400) `
+    -LastWatcherEventCode 'WATCH_AUDIT_SCAN_START' `
+    -LastWatcherEventUtc $now.AddSeconds(-400) `
+    -WatcherSpawnedAtUtc $spawned `
+    -NowUtc $now
+Assert-True (-not $replay.stalled) 'pre-spawn audit events should not trigger stall on respawn'
+
 Write-Host 'OK: QC watcher stall recovery tests passed.' -ForegroundColor Green
