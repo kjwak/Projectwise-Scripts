@@ -466,6 +466,18 @@ function _QCP-TryApplyReviewStampFromJob {
     }
     $roles.qcProcessType = $processType
 
+    if (Get-Command -Name 'Test-QCPrependSkipReviewStamp' -ErrorAction SilentlyContinue) {
+        $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
+        if (Test-QCPrependSkipReviewStamp -PrependTrigger $prependTrigger -ProcessType $processType) {
+            return @{
+                applied = $false
+                skipped = $true
+                reason = 'Review stamp skipped: QC Finalizing prepend (production lane).'
+                qcProcessType = $processType
+            }
+        }
+    }
+
     if (_QCP-IsNullOrWhiteSpace $OverlayExe) {
         $qc = _QCP-ToHashtable $Config.qcPrepend
         if ($qc -and $qc.overlayExePath) { $OverlayExe = [string]$qc.overlayExePath }

@@ -436,6 +436,31 @@ function Invoke-QCReviewStampForReviewType {
     return $result
 }
 
+function Test-QCPrependSkipReviewStamp {
+    <#
+    .SYNOPSIS
+    Returns whether review stamping should be skipped for a prepend job.
+    Final QC prepends apply stamps for check/review lanes only; production is skipped.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$PrependTrigger = '',
+        [string]$ProcessType = ''
+    )
+
+    if (_QCRS-IsBlank $PrependTrigger) { return $false }
+    $trigger = ([string]$PrependTrigger).Trim().ToLowerInvariant()
+    if ($trigger -notin @('finalqccomplete', 'qcfinalizing', 'finalprepend')) { return $false }
+
+    $processType = ([string]$ProcessType).Trim().ToLowerInvariant()
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        $norm = Normalize-QCProcessType -ProcessType $processType
+        if (-not (_QCRS-IsBlank $norm)) { $processType = [string]$norm }
+    }
+    if ($processType -in @('check', 'review')) { return $false }
+    return $true
+}
+
 function Invoke-QCReviewStampIfPeerReview {
     param(
         [Parameter(Mandatory)][string]$PdfPath,
@@ -452,6 +477,7 @@ Export-ModuleMember -Function @(
     'Join-QCProcessArgumentList',
     'Resolve-QCReviewStampOverlayExe',
     'Get-QCReviewStampSettings',
+    'Test-QCPrependSkipReviewStamp',
     'Invoke-QCReviewStamp',
     'Invoke-QCReviewStampForReviewType',
     'Invoke-QCReviewStampIfPeerReview'

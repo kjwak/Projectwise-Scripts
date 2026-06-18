@@ -73,7 +73,7 @@ param(
   [Parameter(Mandatory=$false)]
   [string] $AppsettingsPath = "",
 
-  # initialQcPdf | finalQcComplete — QC Finalizing prepend must not apply review stamps.
+  # initialQcPdf | finalQcComplete — final prepends stamp check/review lanes only (not production).
   [Parameter(Mandatory=$false)]
   [string] $PrependTrigger = "",
 
@@ -536,9 +536,24 @@ function Invoke-PrependQcPdfAttributeSync {
 }
 
 function Test-PrependQcSkipReviewStamp {
+  $processType = ([string]$QcProcessType).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($processType) -and -not [string]::IsNullOrWhiteSpace($HistoryDocName)) {
+    if ([string]$HistoryDocName -match '(?i)-(prod|chk|rev)\.pdf$') {
+      switch ($Matches[1].ToLowerInvariant()) {
+        'prod' { $processType = 'production' }
+        'chk' { $processType = 'check' }
+        'rev' { $processType = 'review' }
+      }
+    }
+  }
+  if (Get-Command -Name 'Test-QCPrependSkipReviewStamp' -ErrorAction SilentlyContinue) {
+    return Test-QCPrependSkipReviewStamp -PrependTrigger $PrependTrigger -ProcessType $processType
+  }
   if (-not $PrependTrigger) { return $false }
   $t = ([string]$PrependTrigger).Trim().ToLowerInvariant()
-  return ($t -in @('finalqccomplete', 'qcfinalizing', 'finalprepend'))
+  if ($t -notin @('finalqccomplete', 'qcfinalizing', 'finalprepend')) { return $false }
+  if ($processType -in @('check', 'review')) { return $false }
+  return $true
 }
 
 function Invoke-PrependQcStampByProcessType {
@@ -644,7 +659,7 @@ function Invoke-QcReviewStampIfNeeded {
     [Parameter(Mandatory)][string]$SourceDocumentName
   )
   if (Test-PrependQcSkipReviewStamp) {
-    Write-Log 'Review stamp skipped: QC Finalizing prepend (finalQcComplete).'
+    Write-Log 'Review stamp skipped: QC Finalizing prepend (production lane).'
     return
   }
   $repoRoot = Split-Path -Parent $PSScriptRoot
