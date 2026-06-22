@@ -8,6 +8,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Workflow.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
@@ -266,6 +267,7 @@ $writeContext.config = $writeCfg
 $writeContext.skipSiblingStateSync = $true
 $global:qcWorkflowTestWriteSettings = $writeSettings
 $global:qcWorkflowTestWriteContext = $writeContext
+Remove-QCModuleFlatShims -ModuleName 'QC.Workflow.psm1'
 InModuleScope -ModuleName QC.Workflow {
     function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
     function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Redlines Received' } }
@@ -299,6 +301,7 @@ $fallbackCtx.config = $fallbackCfg
 $fallbackCtx.skipSiblingStateSync = $true
 $global:qcWorkflowTestFallbackSettings = $fallbackSettings
 $global:qcWorkflowTestFallbackCtx = $fallbackCtx
+Remove-QCModuleFlatShims -ModuleName 'QC.Workflow.psm1'
 InModuleScope -ModuleName QC.Workflow {
     function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'TYPSA QC' } }
     function Get-PWWorkflowStateLinks { [CmdletBinding()] param() @() }

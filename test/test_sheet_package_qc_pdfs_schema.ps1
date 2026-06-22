@@ -1,13 +1,14 @@
 # Schema v1.19: sheet_package_qc_pdfs table and reporting views.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
 
 function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg" } }
 
-$dbText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Core.Database.psm1') -Raw
+$dbText = Get-Content -LiteralPath (Resolve-ModuleImplPath -ModuleName 'Core.Database.psm1') -Raw
 
 Assert-True ($dbText -match '_QDB-GetSchemaV1dot19Additive') 'schema v1.19 additive patch exists'
 Assert-True ($dbText -match "targetVersion = '1.19.0'") 'schema target version is 1.19.0'

@@ -2,7 +2,23 @@
 
 Modules own the reusable pipeline logic. Scripts should call these functions instead of duplicating credential parsing, ProjectWise compatibility handling, queue transitions, status-set generation, trigger evaluation, or processor dispatch.
 
-**Inventory sync:** every `modules/*.psm1` must appear in the table below. Run `test/test_module_inventory.ps1` after adding or removing modules.
+**Inventory sync:** every flat `modules/*.psm1` shim must appear in the table below (41 modules). Implementations live under `modules/<Folder>/`. Run `test/test_module_inventory.ps1` and `test/test_module_folder_shims.ps1` after adding or moving modules.
+
+## Folder layout (Phase 4E)
+
+| Folder | Role |
+| --- | --- |
+| `Core/` | Results, runtime, paths, config, logging, hashing, telemetry, watcher orchestration |
+| `Database/` | SQL connectivity and telemetry writers |
+| `ProjectWise/` | PW connection, discovery, audit poller, users |
+| `Workflow/` | Workflow writeback, audit triggers, process type |
+| `Queue/` | JSON queue, job factory, worker policy, filters, triggers |
+| `Processing/` | Processors, status set, rendition, comment sync, PDF export |
+| `Notifications/` | Email notifications, Graph, templates, threads, watcher alerts |
+| `Reporting/` | Reporting scan aggregation |
+| `Diagnostics/` | MCP debug module |
+
+Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`.
 
 ## Refactoring assessment completed
 

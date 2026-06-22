@@ -2,6 +2,14 @@
 
 Production QC uses the **TYPSA three-lane model** (`Production` / `Review` / `Check` via `QC_Process_Type`, lane PDFs `*-prod/-rev/-chk.pdf`). See [`docs/qc-workflow-framework.md`](../docs/qc-workflow-framework.md).
 
+## Folder layout (Phase 4E)
+
+Active module implementations live in responsibility-based subfolders (`Core/`, `Database/`, `ProjectWise/`, `Workflow/`, `Queue/`, `Processing/`, `Notifications/`, `Reporting/`, `Diagnostics/`).
+
+Flat paths such as `modules/QC.Queue.Json.psm1` remain as **silent compatibility shims** that forward `Import-Module` to the implementation in the subfolder (`-Force -Global`). Production scripts and tests should continue importing via flat paths until Phase 4F updates import paths.
+
+Implementations live under `modules/<Folder>/<Name>.psm1`; see [`FILES.md`](FILES.md) for the full inventory.
+
 All modules primarily communicate via a shared result envelope from `Core.Results.psm1`:
 
 - Result shape: **`IsSuccess`**, **`Code`**, **`Message`**, **`Data`**

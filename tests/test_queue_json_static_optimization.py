@@ -1,7 +1,6 @@
-from pathlib import Path
+from module_impl import read_module_source
 
-MODULE = Path(__file__).resolve().parents[1] / "modules" / "QC.Queue.Json.psm1"
-SOURCE = MODULE.read_text(encoding="utf-8")
+SOURCE = read_module_source("QC.Queue.Json.psm1")
 
 
 def test_queue_json_array_conversions_use_linear_lists() -> None:

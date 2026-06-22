@@ -1,6 +1,7 @@
 # Phase 4: package-aware telemetry, reporting views, and correlation (mocked SQL).
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
@@ -21,7 +22,7 @@ $mockDocGuid = $phase4DocGuid
 $config = $phase4Config
 
 # --- Schema v1.17 reporting views ---
-$dbText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Core.Database.psm1') -Raw
+$dbText = Get-Content -LiteralPath (Resolve-ModuleImplPath -ModuleName 'Core.Database.psm1') -Raw
 Assert-True ($dbText -match '_QDB-GetSchemaV1dot17Additive') 'schema v1.17 additive patch exists'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_status') 'v_sheet_package_status defined'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_cycle_aging') 'v_sheet_package_cycle_aging defined'

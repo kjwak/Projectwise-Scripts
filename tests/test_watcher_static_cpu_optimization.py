@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from module_impl import read_module_source
+
 REPO = Path(__file__).resolve().parents[1]
 WATCHER = (REPO / "scripts" / "Watch-QCTrigger.ps1").read_text(encoding="utf-8")
-TRIGGERS = (REPO / "modules" / "QC.Triggers.psm1").read_text(encoding="utf-8")
+TRIGGERS = read_module_source("QC.Triggers.psm1")
 DASHBOARD = (REPO / "scripts" / "Start-QCPipelineDashboard.ps1").read_text(encoding="utf-8")
 
 

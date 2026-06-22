@@ -30,6 +30,7 @@ function Assert-NonEmptyPath([object]$Value, [string]$Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
@@ -376,7 +377,7 @@ try {
     }
 } finally { Remove-Item -LiteralPath $tmp7 -Recurse -Force -ErrorAction SilentlyContinue }
 
-$procText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Raw -Encoding UTF8
+$procText = Get-Content -LiteralPath (Resolve-ModuleImplPath -ModuleName 'QC.Processors.psm1') -Raw -Encoding UTF8
 Assert-Contains $procText '_QCP-IsFinalQcPrependJob' 'Processors should detect QC Finalizing prepend jobs'
 Assert-Contains $procText 'Test-QCPrependSkipReviewStamp' 'Processors should gate finalizing stamps by process type'
 Assert-Contains $procText '-PrependTrigger' 'ProjectWise prepend must receive prependTrigger from job metadata'

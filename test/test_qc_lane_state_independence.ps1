@@ -1,6 +1,7 @@
 # Lane-independent workflow state: sibling sync gated off by default.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
@@ -115,7 +116,7 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $script:staleAuditCalls 1 'lane-only stale index trigger records telemetry without deferred notification'
 }
 
-$discoveryText = Get-Content (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Raw
+$discoveryText = Get-Content -LiteralPath (Resolve-ModuleImplPath -ModuleName 'PW.Discovery.psm1') -Raw
 Assert-True ($discoveryText -match '_PWD-InvokeLaneQcPdfDocumentStateWorkflow') `
     'lane QC PDF DOCUMENT_STATE uses dedicated workflow path'
 Assert-True ($discoveryText -match '_PWD-TestTriggerIsLaneQcPdf -DocumentName \$DocumentName\) \{[\s\S]{0,200}_PWD-InvokeLaneQcPdfDocumentStateWorkflow') `

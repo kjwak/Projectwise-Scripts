@@ -428,15 +428,16 @@ flowchart TD
 
 ### Module shims (Phase 4E)
 
-Leave a one-line re-exporter at the flat path:
+Silent forward at the flat path (no warnings in this phase):
 
 ```powershell
 # modules/QC.Queue.Json.psm1 — compatibility shim (remove Phase 4H)
-if (-not $script:QC_ModuleShimWarned) {
-    Write-Warning 'Importing QC.Queue.Json.psm1 from modules/ root is deprecated; use modules/Queue/QC.Queue.Json.psm1'
-    $script:QC_ModuleShimWarned = $true
+$ErrorActionPreference = 'Stop'
+$target = Join-Path $PSScriptRoot 'Queue\QC.Queue.Json.psm1'
+if (-not (Test-Path -LiteralPath $target)) {
+    throw "Module implementation not found: $target"
 }
-Import-Module (Join-Path $PSScriptRoot 'Queue\QC.Queue.Json.psm1') -Global
+Import-Module $target -Force -Global
 ```
 
 ### Script shims
@@ -549,7 +550,7 @@ dev (untouched until Phase 4 complete)
 | **4B** | `phase-4/prepend-path-promotion` | **Complete** — Move prepend to `scripts/processing/Invoke-QCPrependPw.ps1`; wrapper at `legacy/prepend_qc.ps1`; `projectWise`/`pw` mode aliases | **High** | `test_qc_prepend_processor.ps1`, `test_qc_prepend_lane_resolution.ps1`, pytest, focus suite | Revert mode + path | QC_PREPEND failure in staging |
 | **4C** | `phase-4/diagnostics-scripts` | **Complete** — Move Show/Get/Scan/Test scripts to `scripts/diagnostics/`; silent wrappers at old `scripts/*.ps1` paths | Low | focus tests, wrapper test, MCP smoke | Shims at old paths | Broken diagnostic workflows |
 | **4D** | `phase-4/maintenance-scripts` | **Complete** — Move Reset/Purge/Repair/Remove/Sync/Reconcile maintenance scripts to `scripts/maintenance/`; silent wrappers at old paths | Medium | focus tests, maintenance wrapper test | Shims at old paths | Publish copy list broken |
-| **4E** | `phase-4/module-folders` | Subfolders + module copies + flat shims | **High** | inventory, bootstrap, focus, watcher dry-run | Shims at old paths | Bootstrap or inventory fail |
+| **4E** | `phase-4/module-folders` | **Complete** — Move 41 modules into responsibility subfolders; flat `modules/*.psm1` shims; internal imports via flat shim paths | **High** | inventory, bootstrap, focus, module folder shim test | Shims at old paths | Bootstrap or inventory fail |
 | **4F** | `phase-4/import-updates` | Update all Import-Module paths; Publish; add `test_entrypoint_imports.ps1` | **High** | full suite + new entrypoint test | Revert + shims | Production entry import failure |
 | **4G** | `phase-4/psd1-manifests` | Add `.psd1`; narrow exports | Medium | manifest parse, PW-free import tests | Keep shims | PW leakage into Core |
 | **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, external path audit | Re-add shims | External caller still hits old path |
@@ -690,6 +691,38 @@ Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@arg
 | `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
 | `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 |
 | `./test/test_maintenance_script_wrappers.ps1` | **PASS** — 16/16 (new) |
+
+---
+
+## Appendix F — Phase 4E module folder move (complete)
+
+**Branch:** `phase-4/module-folders` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-module-folder-move-summary.md`](phase-4-module-folder-move-summary.md)
+
+### Moved modules (41)
+
+Implementations under `modules/Core/` (8), `Database/` (1), `ProjectWise/` (4), `Workflow/` (3), `Queue/` (5), `Processing/` (12), `Notifications/` (6), `Reporting/` (1), `Diagnostics/` (1).
+
+### Shim strategy
+
+Flat `modules/<Name>.psm1` → silent `Import-Module` forward to subfolder implementation with `-Force -Global`. Production script import paths unchanged until Phase 4F. Tests that need implementation module scope or source text use [`test/_Resolve-ModuleImplPath.ps1`](../test/_Resolve-ModuleImplPath.ps1).
+
+### Internal path resolution
+
+Moved implementations import sibling modules via flat shim paths: `Join-Path (Split-Path -Parent $PSScriptRoot) 'Module.psm1'`. Repo-root helpers use `Split-Path -Parent (Split-Path -Parent $PSScriptRoot)`.
+
+### Validation
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
+| `./test/test_module_inventory.ps1` | **PASS** — 41 modules |
+| `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
+| `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 |
+| `./test/test_maintenance_script_wrappers.ps1` | **PASS** — 16/16 |
+| `./test/test_module_folder_shims.ps1` | **PASS** — 41 shims + 11 import probes (new) |
 
 ---
 

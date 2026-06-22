@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
 Import-Module (Join-Path $root 'modules\Core.Paths.psm1') -Force
 
@@ -33,7 +34,7 @@ Write-Host "Test: writeback decision returns failure when upload throws (and wri
 # added. The minimum useful regression is: the source still contains that block.
 # Read the module text and assert the failure-return is in place.
 
-$modPath = Join-Path $root 'modules\QC.StatusSet.psm1'
+$modPath = Resolve-ModuleImplPath -ModuleName 'QC.StatusSet.psm1'
 $src = Get-Content -LiteralPath $modPath -Raw
 
 _Assert ($src -match [regex]::Escape("if (`$pwUpload -eq 'FAILED')")) "writeback-failure short-circuit is present"

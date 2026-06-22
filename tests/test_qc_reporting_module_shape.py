@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from module_impl import module_impl_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REPORTING = REPO_ROOT / "modules" / "QC.Reporting.psm1"
-PROCESSORS = REPO_ROOT / "modules" / "QC.Processors.psm1"
+REPORTING = module_impl_path("QC.Reporting.psm1")
+PROCESSORS = module_impl_path("QC.Processors.psm1")
 
 
 def test_reporting_module_exports_expected_functions_and_metrics():

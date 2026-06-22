@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from module_impl import read_module_source
+
 REPO = Path(__file__).resolve().parents[1]
-DB = (REPO / "modules" / "Core.Database.psm1").read_text(encoding="utf-8")
-POLLER = (REPO / "modules" / "PW.AuditPoller.psm1").read_text(encoding="utf-8")
+DB = read_module_source("Core.Database.psm1")
+POLLER = read_module_source("PW.AuditPoller.psm1")
 
 
 def test_write_audit_event_rows_exported() -> None:

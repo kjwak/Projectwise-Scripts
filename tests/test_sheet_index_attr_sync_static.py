@@ -2,9 +2,11 @@
 import json
 from pathlib import Path
 
+from module_impl import module_impl_path, read_module_source
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DISCOVERY = REPO_ROOT / "modules" / "PW.Discovery.psm1"
-DATABASE = REPO_ROOT / "modules" / "Core.Database.psm1"
+DISCOVERY = module_impl_path("PW.Discovery.psm1")
+DATABASE = module_impl_path("Core.Database.psm1")
 WATCHER = REPO_ROOT / "scripts" / "Watch-QCTrigger.ps1"
 TELEMETRY_DOC = REPO_ROOT / "docs" / "database-telemetry.md"
 
@@ -149,6 +151,6 @@ def test_qc_prepend_audit_checks_description_on_paired_pdf_actions():
     assert "WATCH_AUDIT_STATUSSET_SKIP_CURRENT" in watch
     assert "Audit PDF skipped (not QC Initiated and no QC_Archivist in description)." in watch
 
-    orch = (REPO_ROOT / "modules" / "QC.WatcherOrchestration.psm1").read_text(encoding="utf-8")
+    orch = read_module_source("QC.WatcherOrchestration.psm1")
     assert "function Get-QCPrependAuditActions" in orch
     assert "DOCUMENT_MODIFY" in orch

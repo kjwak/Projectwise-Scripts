@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
+from module_impl import module_impl_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPSETTINGS = REPO_ROOT / "appsettings.json"
-NOTIFICATIONS = REPO_ROOT / "modules" / "QC.Notifications.psm1"
-TEMPLATES = REPO_ROOT / "modules" / "QC.NotificationTemplates.psm1"
-GRAPH = REPO_ROOT / "modules" / "QC.NotificationGraph.psm1"
+NOTIFICATIONS = module_impl_path("QC.Notifications.psm1")
+TEMPLATES = module_impl_path("QC.NotificationTemplates.psm1")
+GRAPH = module_impl_path("QC.NotificationGraph.psm1")
 EMAIL_TEMPLATE = REPO_ROOT / "email" / "templates" / "qc_notification.html"
 DOC = REPO_ROOT / "docs" / "qc-notifications.md"
 

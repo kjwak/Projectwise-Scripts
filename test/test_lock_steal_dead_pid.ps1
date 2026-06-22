@@ -9,6 +9,7 @@ TimeoutMs on QUEUE_LOCK_TIMEOUT until a dashboard restart.
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
 
@@ -26,7 +27,8 @@ try {
     Stop-Process -Id $deadPid -Force
     Start-Sleep -Milliseconds 200
 
-    $module = Get-Module QC.Queue.Json
+    $module = Get-QCModuleImplementation -ModuleName 'QC.Queue.Json.psm1'
+    if (-not $module) { throw 'QC.Queue.Json implementation module is not loaded' }
     $acquire = { param($Path,$ms) & $module { param($P,$M) _QCQJ-AcquireLockFile -LockPath $P -TimeoutMs $M -SleepMs 50 } $Path $ms }
 
     # 1) Lock file owned by dead PID -> AcquireLockFile must steal it within TimeoutMs.

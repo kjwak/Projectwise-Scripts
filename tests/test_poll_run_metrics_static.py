@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from module_impl import read_module_source
+
 REPO = Path(__file__).resolve().parents[1]
 WATCHER = (REPO / 'scripts' / 'Watch-QCTrigger.ps1').read_text(encoding='utf-8')
-DB = (REPO / 'modules' / 'Core.Database.psm1').read_text(encoding='utf-8')
+DB = read_module_source('Core.Database.psm1')
 
 
 def test_poll_runs_schema_contains_extended_runtime_metrics() -> None:
