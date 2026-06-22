@@ -75,9 +75,17 @@ if (-not $NoDashboard) {
   exit $LASTEXITCODE
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
+. (Join-Path $PSScriptRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
+  'Core\Core.Results.psm1'
+  'Queue\QC.Queue.Json.psm1'
+) -RequiredCommands @(
+  'Get-QCAppSettingsConfig'
+  'Get-QCTimestamp'
+  'Get-NextQCJob'
+  'Get-QCQueueStats'
+  'Invoke-QCQueueStartupCheck'
+) -Context 'run_prepend_qc bootstrap'
 
 $watcher = Join-Path $PSScriptRoot 'Watch-QCTrigger.ps1'
 $worker = Join-Path $PSScriptRoot 'Run-QCProcessor.ps1'

@@ -1,7 +1,9 @@
-# Phase 4F: production entrypoints resolve folder implementation paths; flat shims still work.
+# Phase 4F/4G: production entrypoints resolve folder implementation paths; flat shims still work.
 $ErrorActionPreference = 'Stop'
+$WarningPreference = 'SilentlyContinue'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$scriptsRoot = Join-Path $repoRoot 'scripts'
 $modulesRoot = Join-Path $repoRoot 'modules'
 $fail = 0
 
@@ -24,6 +26,8 @@ function Import-QCModuleImpl {
     Import-Module $path -Force -WarningAction SilentlyContinue | Out-Null
 }
 
+. (Join-Path $scriptsRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+
 Write-Host '=== Watcher bootstrap chain (folder paths) ===' -ForegroundColor Cyan
 Import-QCModuleImpl 'Core\Core.Results.psm1'
 Import-QCModuleImpl 'Core\Core.Runtime.psm1'
@@ -44,22 +48,54 @@ Assert-Command 'Read-QCAppSettings' 'watcher chain exposes Read-QCAppSettings'
 Assert-Command 'New-QCJobObject' 'watcher chain exposes New-QCJobObject'
 Assert-Command 'Invoke-AuditTrailScan' 'watcher chain exposes Invoke-AuditTrailScan'
 
-Write-Host '=== Processor entry imports (folder paths) ===' -ForegroundColor Cyan
-Import-QCModuleImpl 'Processing\QC.Processors.psm1'
-Import-QCModuleImpl 'Queue\QC.Worker.psm1'
-Assert-Command 'Invoke-QCPrependProcessor' 'processor map exposes Invoke-QCPrependProcessor'
-Assert-Command 'Move-QCJobWithLockRetries' 'worker exposes Move-QCJobWithLockRetries'
+Write-Host '=== Processor bootstrap (shared restore helper) ===' -ForegroundColor Cyan
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    'Processing\QC.Processors.psm1'
+    'Notifications\QC.Notifications.psm1'
+    'Processing\QC.Rendition.psm1'
+    'Queue\QC.Worker.psm1'
+    'Core\Core.Telemetry.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Get-NextQCJob'
+    'Lock-QCJob'
+    'Move-QCJob'
+    'Move-QCJobWithLockRetries'
+    'Invoke-QCPrependProcessor'
+    'Invoke-QCProcessorByType'
+    'Write-QCJsonLog'
+    'Test-QCDatabaseEnabled'
+) -Context 'processor entrypoint test'
 
-Write-Host '=== Dashboard dependencies (folder paths) ===' -ForegroundColor Cyan
-Import-QCModuleImpl 'Core\Core.Results.psm1'
-Import-QCModuleImpl 'Core\Core.Config.psm1'
-Import-QCModuleImpl 'Queue\QC.Queue.Json.psm1'
-Import-QCModuleImpl 'Core\QC.WatcherOrchestration.psm1'
-Import-QCModuleImpl 'Notifications\QC.WatcherAlerts.psm1'
-Import-QCModuleImpl 'Core\Core.Runtime.psm1'
-Assert-Command 'Get-QCAppSettingsConfig' 'dashboard boot exposes Get-QCAppSettingsConfig after import chain'
-Assert-Command 'Read-AppConfig' 'dashboard config helper available'
-Assert-Command 'Send-QCWatcherSessionLostAlert' 'dashboard watcher alerts available'
+Write-Host '=== Dashboard bootstrap (shared restore helper) ===' -ForegroundColor Cyan
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Core\Core.Config.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    'Core\QC.WatcherOrchestration.psm1'
+    'Notifications\QC.WatcherAlerts.psm1'
+) -RequiredCommands @(
+    'Get-QCAppSettingsConfig'
+    'Get-QCTimestamp'
+    'Recover-QCStaleJobs'
+    'Clear-QCWatcherActive'
+    'Read-AppConfig'
+    'Send-QCWatcherSessionLostAlert'
+) -Context 'dashboard entrypoint test'
+
+Write-Host '=== run_prepend_qc -NoDashboard bootstrap (shared restore helper) ===' -ForegroundColor Cyan
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Queue\QC.Queue.Json.psm1'
+) -RequiredCommands @(
+    'Get-QCAppSettingsConfig'
+    'Get-QCTimestamp'
+    'Get-NextQCJob'
+    'Get-QCQueueStats'
+    'Invoke-QCQueueStartupCheck'
+) -Context 'run_prepend_qc entrypoint test'
 
 Write-Host '=== MCP diagnostic module (folder path) ===' -ForegroundColor Cyan
 Import-QCModuleImpl 'Workflow\QC.ProcessType.psm1'

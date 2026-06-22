@@ -72,20 +72,19 @@ function _Resolve-RepoRootFromSettings([string]$SettingsPath, [string]$DefaultRo
 function _Import-DashboardModules {
     param([Parameter(Mandatory)][string]$RepoRoot)
 
-    $modulesRoot = Join-Path $RepoRoot 'modules'
-    Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force
-    Import-Module (Join-Path $modulesRoot 'Core\Core.Config.psm1') -Force -WarningAction SilentlyContinue
-    Import-Module (Join-Path $modulesRoot 'Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
-    Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-    Import-Module (Join-Path $modulesRoot 'Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
-    # Nested Import-Module -Force in the modules above can drop Core.Runtime session exports (PS 5.1).
-    Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
-
-    foreach ($cmd in @('Get-QCAppSettingsConfig', 'Get-QCTimestamp', 'Recover-QCStaleJobs', 'Clear-QCWatcherActive')) {
-        if (-not (Get-Command -Name $cmd -ErrorAction SilentlyContinue)) {
-            throw "Dashboard module bootstrap failed: $cmd is not available after import. Check modules under $modulesRoot."
-        }
-    }
+    . (Join-Path $PSScriptRoot 'Restore-QCModuleExports.ps1') -RepoRoot $RepoRoot
+    Import-QCModuleBootstrapSet -RepoRoot $RepoRoot -FeatureModules @(
+        'Core\Core.Results.psm1'
+        'Core\Core.Config.psm1'
+        'Queue\QC.Queue.Json.psm1'
+        'Core\QC.WatcherOrchestration.psm1'
+        'Notifications\QC.WatcherAlerts.psm1'
+    ) -RequiredCommands @(
+        'Get-QCAppSettingsConfig'
+        'Get-QCTimestamp'
+        'Recover-QCStaleJobs'
+        'Clear-QCWatcherActive'
+    ) -Context 'dashboard bootstrap'
 }
 
 function _Pause-IfInteractiveConsole {

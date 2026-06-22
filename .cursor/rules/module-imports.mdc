@@ -50,7 +50,31 @@ Import-Module (& $mod 'Core' 'Core.Runtime.psm1') -Force -WarningAction Silently
 - Always `-Force` when reloading in the same session.
 - Use `-WarningAction SilentlyContinue` on optional or re-imported modules.
 
-### 2. DB maintenance scripts (global scope on PS 5.1)
+### 2. Production entrypoints (PS 5.1 export restore)
+
+Dot-source the shared bootstrap helper for multi-module production scripts:
+
+```powershell
+. (Join-Path $PSScriptRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    # …feature modules…
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Write-QCJsonLog'
+) -Context 'my entrypoint bootstrap'
+```
+
+`Restore-QCModuleExports.ps1` imports folder implementation paths with `-Force -Global`, runs `Restore-QCFoundationModuleExports` after feature modules, and throws via `Test-QCRequiredCommands` if exports are still missing.
+
+**Protected entrypoints:** `Start-QCPipelineDashboard.ps1`, `Run-QCProcessor.ps1`, `run_prepend_qc.ps1` (`-NoDashboard`).
+
+**Deferred:** diagnostic/maintenance scripts with hand-rolled imports (migrate in a later phase or use `Import-QCScriptModules.ps1`).
+
+**`.psd1` manifests:** prototype manifests exist (`QC.Core.psd1`, `QC.Queue.psd1`) but are **not** used by production entrypoints. Any future manifest adoption must include the same post-import restore validation — nested manifest loads have the same clobber behavior.
+
+### 3. DB maintenance scripts (global scope on PS 5.1)
 
 Dot-source the shared loader — do **not** hand-roll Core imports:
 
@@ -62,7 +86,7 @@ Dot-source the shared loader — do **not** hand-roll Core imports:
 
 `Import-QCScriptModules.ps1` loads `Core\Core.Results` → `Database\Core.Database` → `Core\Core.Runtime` (re-imports Results), uses `-Scope Global`, and adds session proxies if exports are hidden.
 
-### 3. Inside `.psm1` files (folder implementations)
+### 4. Inside `.psm1` files (folder implementations)
 
 Use `$PSScriptRoot` for same-folder siblings; parent folder for cross-folder deps:
 
@@ -83,6 +107,7 @@ Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAct
 
 **After importing feature modules**, restore foundation or call existing helpers:
 
+- **Production entrypoints:** `Restore-QCModuleExports.ps1` → `Import-QCModuleBootstrapSet` / `Restore-QCFoundationModuleExports`
 - Watcher: `_Watch-RestoreFoundationModules` / `_Watch-EnsureAllModuleExports` in `Watch-QCTrigger.ps1`
 - Discovery: `Ensure-PWDiscoveryModuleLoaded` in `PW.Discovery.psm1`
 
@@ -90,11 +115,15 @@ Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAct
 
 | Entry point | Module sequence |
 | --- | --- |
+| `Restore-QCModuleExports.ps1` | Feature modules → foundation restore order (Results, Paths, Runtime, Config, Logging, Hashing, Database) |
 | `Import-QCScriptModules.ps1` | `Core\Core.Results`, `Database\Core.Database`, `Core\Core.Runtime` (+ `-AdditionalModules`) |
-| `Run-QCProcessor.ps1` | Results, Runtime, `Queue/QC.Queue.Json`, `Processing/QC.Processors`, Notifications, Rendition, `Queue/QC.Worker`, Database |
+| `Start-QCPipelineDashboard.ps1` | Via `Import-QCModuleBootstrapSet` (Results, Config, Queue.Json, WatcherOrchestration, WatcherAlerts → restore) |
+| `Run-QCProcessor.ps1` | Via `Import-QCModuleBootstrapSet` (Results, Queue.Json, Processors, Notifications, Rendition, Worker, Telemetry → restore) |
+| `run_prepend_qc.ps1` (`-NoDashboard`) | Via `Import-QCModuleBootstrapSet` (Results, Queue.Json → restore) |
 | `Watch-QCTrigger.ps1` | See `$script:WatchModuleLoadOrder` and `$script:WatchModuleRestoreOrder` (folder-relative paths) |
 | `test/test_watcher_module_bootstrap.ps1` | Minimal watcher chain smoke test |
 | `test/test_entrypoint_imports.ps1` | Entrypoint + flat-shim compatibility smoke test |
+| `test/test_module_bootstrap_restore.ps1` | Shared restore helper + clobber-chain post-restore guarantees |
 
 Import **feature** modules before a final foundation restore when they nested-reload Core.
 
@@ -106,7 +135,7 @@ After changing imports, confirm required commands exist:
 Get-Command Read-QCAppSettings, Write-QCJsonLog, Test-QCDatabaseEnabled -ErrorAction SilentlyContinue
 ```
 
-Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`, `test/test_entrypoint_imports.ps1`.
+Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`, `test/test_entrypoint_imports.ps1`, `test/test_module_bootstrap_restore.ps1`.
 
 For `InModuleScope` or private function tests, use `test/_Resolve-ModuleImplPath.ps1` (`Get-QCModuleImplementation`, `Remove-QCModuleFlatShims`).
 
@@ -115,5 +144,5 @@ For `InModuleScope` or private function tests, use `test/_Resolve-ModuleImplPath
 - Importing `Database/Core.Database` without re-importing `Core/Core.Results` / `Core/Core.Runtime` in the **session** → `Read-QCAppSettings` or DB helpers missing.
 - Calling nested module functions without importing the **top-level** module the script uses (e.g. worker needs `Processing/QC.Processors`, not only `Queue/QC.Queue.Json`).
 - Using `Import-Module` without `-Force` in long-lived watcher/worker sessions after file edits.
-- Duplicating load-order arrays in new scripts instead of matching an existing entry point or extending `Import-QCScriptModules.ps1`.
+- Duplicating load-order arrays in new scripts instead of `Restore-QCModuleExports.ps1`, an existing entry point, or `Import-QCScriptModules.ps1`.
 - Importing flat shim paths in new code when folder implementation paths avoid duplicate module registration.
