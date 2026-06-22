@@ -6,7 +6,7 @@ This folder contains scripts retained for **production prepend** and parity fall
 
 Committed `appsettings.json` sets **`qcPrepend.mode: "legacyPw"`**. `QC_PREPEND` jobs therefore route through **`legacy/prepend_qc.ps1`** for ProjectWise export, overlay merge, lane PDF upload, and attribute sync. **Do not remove this folder** while that mode remains in use.
 
-Native prepend logic exists in `modules/QC.Processors.psm1` (`mode` other than `legacyPw`) but is not the production default. See Phase 2 Branch 4 parity planning (`docs/phase-2-native-prepend-parity-plan.md` when created).
+Native prepend logic exists in `modules/QC.Processors.psm1` (`mode` other than `legacyPw`) but is not the production default. See [`docs/phase-2-native-prepend-parity-plan.md`](../docs/phase-2-native-prepend-parity-plan.md).
 
 ## What's in here
 
