@@ -47,7 +47,8 @@ try {
     _Assert ($w2.watermarkBefore -eq '2026-05-26 10:00:00') 'watermarkBefore string should match UTC clock'
 
     $w2b = Get-AuditTrailPollWindow -Config $config -WatermarkPath $wmPath -LookbackSeconds 60
-    _Assert ($w2b.since -eq $captured) 'default steady-state since should equal watermark (no overlap)'
+    _Assert ($w2b.since -eq $captured.AddSeconds(-1)) 'default steady-state should rewind 1s at watermark for second-granular dms_audt'
+    _Assert ([int]$w2b.overlapSecondsUsed -eq 1) 'implicit 1s overlap when overlapSeconds unset'
 
     $read = Get-AuditTrailCaptureWatermark -Config $config -WatermarkPath $wmPath
     _Assert ($read.ToUniversalTime() -eq $captured) 'read watermark should match written UTC value'
