@@ -15,7 +15,7 @@
 
 .PARAMETER FolderPath
     PW folder path without the Documents\ prefix (pwps_dab style).
-    Default: JFlint Prepend Test folder used by void/test_description_update.ps1.
+    Default: JFlint Prepend Test folder used for rendition discovery probes.
 
 .PARAMETER DocumentName
     Exact document name. When set, -FileName is ignored.

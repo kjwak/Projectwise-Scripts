@@ -8,7 +8,7 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 
 - ProjectWise command-line diagnostics now reuse `PW.Connection.psm1` for key/value credential parsing, ProjectWise module loading, connection cleanup, folder-view compatibility, child splitting, and document enumeration.
 - This reduces duplicate script-local credential and `Get-PWFolderView` compatibility logic and makes future ProjectWise diagnostics safer to implement as thin wrappers.
-- Future cleanup should continue moving long-lived orchestration/UI behavior from scripts into modules: dashboard rendering can become a dashboard module, and watcher ProjectWise expansion can be consolidated behind `PW.Discovery.psm1`/`Orchestrator.Pipeline.psm1` ports.
+- Future cleanup should continue moving long-lived orchestration/UI behavior from scripts into modules: dashboard rendering can become a dashboard module, and watcher ProjectWise expansion can be consolidated behind `PW.Discovery.psm1`.
 
 ## File purposes
 
@@ -20,7 +20,6 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `Core.Database.psm1` | SQL Server connectivity, schema management, and telemetry writers for QC pipeline data. |
 | `Core.Hashing.psm1` | Shared SHA-256 helpers for file and text hashing. |
 | `Core.Logging.psm1` | Structured application/audit logging primitives. |
-| `Core.Metrics.psm1` | Queue and processing metrics initialization, updates, reset, and flush helpers. |
 | `Core.Paths.psm1` | Path normalization, root-containment checks, and path splitting for local and ProjectWise-style paths. |
 | `Core.Results.psm1` | Standard QC result constructors (`IsSuccess`, `Code`, `Message`, `Data`) used across modules. |
 | `Core.Runtime.psm1` | Runtime helpers for deep hashtable conversion, appsettings loading, merged config construction, and JSON log output. |
@@ -68,12 +67,6 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `PW.Connection.psm1` | ProjectWise session boundary: module loading, credentials, connect/disconnect, folder helpers, CLI diagnostics. |
 | `PW.Discovery.psm1` | Read-only PW/local discovery: watch paths, trigger candidates, metadata, folder/document listing, sheets expansion. |
 | `PW.Users.psm1` | ProjectWise user lookup helpers for notifications and workflow. |
-
-### Orchestration
-
-| File | Purpose |
-| --- | --- |
-| `Orchestrator.Pipeline.psm1` | Composable pipeline/worker ticks that compose discovery, enqueue, processing, and queue transitions. |
 
 ### Documentation
 

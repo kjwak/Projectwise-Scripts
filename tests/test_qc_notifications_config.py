@@ -21,6 +21,7 @@ def test_appsettings_notifications_production_delivery_defaults():
     assert notifications["dedupe"]["enabled"] is True
     assert notifications["dedupe"]["keyFields"] == [
         "sheetStem",
+        "qcProcessType",
         "previousState",
         "currentState",
         "transitionSource",
@@ -37,14 +38,16 @@ def test_appsettings_notifications_production_delivery_defaults():
 def test_appsettings_notification_events_include_lifecycle_states():
     events = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["notifications"]["events"]
 
-    assert events["Ready for QC"]["eventType"] == "READY_FOR_QC"
-    assert events["Ready for QC"]["enabled"] is True
+    assert events["Originated"]["eventType"] == "READY_FOR_QC"
+    assert events["Originated"]["enabled"] is True
+    assert events["Ready for QC"]["enabled"] is False
     assert events["Redlines Received"]["eventType"] == "REDLINES_RECEIVED"
     assert events["Ready for Verification"]["eventType"] == "READY_FOR_VERIFICATION"
     assert "Corrections Received" not in events
     assert events["Error Needs Attention"]["eventType"] == "QC_ERROR"
-    assert events["QC Complete"]["eventType"] == "QC_COMPLETE"
-    assert events["QC Complete"]["enabled"] is True
+    assert events["Verified"]["eventType"] == "QC_COMPLETE"
+    assert events["Verified"]["enabled"] is True
+    assert events["QC Complete"]["enabled"] is False
     assert "Review In Progress" not in events
     assert "Corrections In Progress" not in events
     assert "Verification In Progress" not in events
