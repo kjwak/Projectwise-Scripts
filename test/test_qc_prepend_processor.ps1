@@ -32,8 +32,8 @@ function Assert-NonEmptyPath([object]$Value, [string]$Message) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.Processors.psm1" -Force
 
 function New-TempRoot() {
     $t = Join-Path $env:TEMP ("qc-prepend-proc-test-" + ([guid]::NewGuid().ToString('N')))

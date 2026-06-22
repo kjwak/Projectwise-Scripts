@@ -18,7 +18,7 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `Reporting/` | Reporting scan aggregation |
 | `Diagnostics/` | MCP debug module |
 
-Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`.
+Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`. **Phase 4F:** active scripts/tests import folder implementation paths; shims remain for compatibility.
 
 ## Refactoring assessment completed
 

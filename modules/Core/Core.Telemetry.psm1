@@ -1,9 +1,9 @@
 # Core.Telemetry.psm1
 # Durable automation_events telemetry + JSONL event routing helpers.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 if (-not (Get-Command -Name 'Invoke-QCDatabaseNonQuery' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Database.psm1') -Force
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Database/Core.Database.psm1') -Force
 }
 
 $script:QCT_Config = $null

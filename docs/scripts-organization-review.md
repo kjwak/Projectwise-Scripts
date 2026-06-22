@@ -18,7 +18,7 @@ After re-checking the latest branch, the original conclusion still stands: the r
 ## Updated recommendations (same direction, tightened scope)
 
 ### Priority 1: runtime foundation module — DONE
-~~Create `modules/Core.Runtime.psm1`~~ with:
+~~Create `modules/Core/Core.Runtime.psm1`~~ with:
 - `ConvertTo-HashtableDeep`
 - `Read-QCAppSettings`
 - `Write-QCJsonLog`
@@ -27,21 +27,21 @@ After re-checking the latest branch, the original conclusion still stands: the r
 `Core.Runtime.psm1` exists and is imported by all scripts. Local `_ToHashtable` / `_Read-AppSettings` copies have been removed from most scripts.
 
 ### Priority 1b: database telemetry module — DONE
-`modules/Core.Database.psm1` created with SQL Server connectivity, schema management, and fire-and-forget telemetry writers. Wired into `Watch-QCTrigger.ps1` and `Run-QCProcessor.ps1`.
+`modules/Database/Core.Database.psm1` created with SQL Server connectivity, schema management, and fire-and-forget telemetry writers. Wired into `Watch-QCTrigger.ps1` and `Run-QCProcessor.ps1`.
 
 ### Priority 1c: audit poller module — DONE
-`modules/PW.AuditPoller.psm1` created with audit-trail scanning, watermark management, and watch-root matching. Integrated into `Watch-QCTrigger.ps1` as the primary trigger source.
+`modules/ProjectWise/PW.AuditPoller.psm1` created with audit-trail scanning, watermark management, and watch-root matching. Integrated into `Watch-QCTrigger.ps1` as the primary trigger source.
 
 ### Priority 2: PW discovery utilities
-Extend `modules/PW.Discovery.psm1` with:
+Extend `modules/ProjectWise/PW.Discovery.psm1` with:
 - metadata helpers (`Get-PWDocName`, `Get-PWDocDescription`, `Get-PWDocLastModifiedUtc`)
 - folder traversal helpers used by watcher discovery
 
 ### Priority 3: hashing utilities — DONE
-`modules/Core.Hashing.psm1` exists and is used by status-set processing.
+`modules/Core/Core.Hashing.psm1` exists and is used by status-set processing.
 
 ### Priority 4: worker policy extraction — DONE
-`modules/QC.Worker.psm1` exists with lock-retry and transition policy.
+`modules/Queue/QC.Worker.psm1` exists with lock-retry and transition policy.
 
 ## What should remain in scripts
 Keep scripts as thin entrypoints only:

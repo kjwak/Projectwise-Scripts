@@ -17,9 +17,9 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
 
 if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings.json' }
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath

@@ -2,8 +2,8 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
 
 function Assert-Eq($a, $b, $msg) {
     if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" }

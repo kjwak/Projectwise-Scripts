@@ -2,9 +2,9 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.PdfExport.psm1" -Force
-Import-Module "$repoRoot/modules/QC.CommentStatusProcessor.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.PdfExport.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.CommentStatusProcessor.psm1" -Force
 
 function Assert-True($Condition, $Message) {
     if (-not $Condition) { throw "ASSERT FAILED: $Message" }

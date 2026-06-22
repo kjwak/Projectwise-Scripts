@@ -4,7 +4,7 @@ Connects to ProjectWise and prints child folders/docs for a given folder path.
 
 .DESCRIPTION
 Read-only helper to validate folder paths in the current datasource. The ProjectWise
-connection and folder-view compatibility logic lives in modules\PW.Connection.psm1.
+connection and folder-view compatibility logic lives in modules\ProjectWise\PW.Connection.psm1.
 #>
 
 [CmdletBinding()]
@@ -24,6 +24,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
 
 Show-PWFolderBrowser -DatasourceName $DatasourceName -CredentialPath $CredentialPath -FolderPath $FolderPath -Max $Max

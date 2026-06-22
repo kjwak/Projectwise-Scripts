@@ -2,9 +2,9 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules/Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules/PW.Discovery.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules/QC.Notifications.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/Core/Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/ProjectWise/PW.Discovery.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/Notifications/QC.Notifications.psm1') -Force
 
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }

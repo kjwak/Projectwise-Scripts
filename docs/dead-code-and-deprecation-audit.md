@@ -508,13 +508,13 @@ Only changes with **demonstrable safety** from in-repo evidence.
 | 1 | `modules/Orchestrator.Pipeline.psm1` | Entire module | Safe to delete | Delete |
 | 2 | `modules/Core.Metrics.psm1` | Entire module | Safe to delete | Delete |
 | 3 | `void/*` | 3 scripts | Safe to delete | Delete directory |
-| 4 | `modules/Core.Config.psm1` | `Get-AppSetting` | Safe to delete | Remove function + export |
+| 4 | `modules/Core/Core.Config.psm1` | `Get-AppSetting` | Safe to delete | Remove function + export |
 | 5 | `test/run_focus_tests.ps1` | Duplicate line 21 | Safe to delete | Remove duplicate |
 | 6 | `tests/test_qc_workflow_config_defaults.py` | 4 tests with wrong state names | Obsolete tests | Update assertions to TYPSA names |
 | 7 | `tests/test_qc_notifications_config.py` | 2 stale tests | Obsolete tests | Update to `Originated`/`Verified` |
 | 8 | `tests/test_sheet_index_attr_sync_static.py` | 2 stale tests | Obsolete tests | Update static expectations |
 | 9 | `tests/test_audit_events_db_static.py` | 1 stale test | Obsolete tests | Fix delegate assertion |
-| 10 | `modules/QC.StatusSet.psm1` | Duplicate `Export-ModuleMember` at 1495 | Simplify | Merge into single export at 3239 |
+| 10 | `modules/Processing/QC.StatusSet.psm1` | Duplicate `Export-ModuleMember` at 1495 | Simplify | Merge into single export at 3239 |
 | 11 | `modules/README.md` | Lists `Orchestrator.Pipeline` | Obsolete docs | Remove from inventory |
 | 12 | `QC.Notifications.psm1` ~175, ~1704 | Comments referencing `*-qc.pdf` as authoritative | Obsolete comments | Update comment text only |
 

@@ -1,7 +1,7 @@
 # Core.Paths.psm1
 # Responsibility: Normalize and inspect local/ProjectWise-style paths.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
 function Normalize-QCPath {
     [CmdletBinding()]

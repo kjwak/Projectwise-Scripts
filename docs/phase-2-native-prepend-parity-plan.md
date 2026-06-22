@@ -8,7 +8,7 @@
 
 ## Executive summary
 
-Production `QC_PREPEND` jobs route through **`legacy/prepend_qc.ps1`** when `qcPrepend.mode: "legacyPw"` (committed default in `appsettings.json`). A **native** path exists in [`modules/QC.Processors.psm1`](../modules/QC.Processors.psm1) (`mode` other than `legacypw`) but performs **local file I/O only** — no ProjectWise export/import.
+Production `QC_PREPEND` jobs route through **`legacy/prepend_qc.ps1`** when `qcPrepend.mode: "legacyPw"` (committed default in `appsettings.json`). A **native** path exists in [`modules/Processing/QC.Processors.psm1`](../modules/Processing/QC.Processors.psm1) (`mode` other than `legacypw`) but performs **local file I/O only** — no ProjectWise export/import.
 
 **Recommendation:** **Native prepend is not ready for production flip.** Close P0 gaps (PW I/O parity, golden tests, check/review history without overlay) before any pilot of `qcPrepend.mode: local` (or a future `nativePw` mode).
 
@@ -60,7 +60,7 @@ flowchart TD
 
 ### Legacy-only path (`legacyPw`)
 
-[`Invoke-QCPrependProcessor`](../modules/QC.Processors.psm1) lines ~1345–1568:
+[`Invoke-QCPrependProcessor`](../modules/Processing/QC.Processors.psm1) lines ~1345–1568:
 
 - Spawns `powershell.exe -MTA -File legacy\prepend_qc.ps1`
 - Passes `-QcProcessType`, `-QcPdfSuffix`, `-HistoryDocumentName`, `-PrependTrigger`, overlay flags
@@ -70,7 +70,7 @@ flowchart TD
 
 ### Native-only path
 
-[`Invoke-QCPrependProcessor`](../modules/QC.Processors.psm1) lines ~1571+:
+[`Invoke-QCPrependProcessor`](../modules/Processing/QC.Processors.psm1) lines ~1571+:
 
 - Requires local `Job.sourcePath` on worker disk
 - History: `{historyRoot}/{folderKey}/{expectedLanePdfName}`

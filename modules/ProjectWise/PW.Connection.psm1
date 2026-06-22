@@ -1,7 +1,7 @@
 # PW.Connection.psm1
 # Responsibility: ProjectWise connection port (read-only safe by default).
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
 
 $script:PWC_ActiveDatasource = $null
 

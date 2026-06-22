@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
-Import-Module (Join-Path $PSScriptRoot '..\..\modules\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\..\modules\Core\Core.Runtime.psm1') -Force
 
 if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings.json' }
 

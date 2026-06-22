@@ -62,8 +62,8 @@ foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'QC.NotificationGra
     if (-not (Test-Path -LiteralPath $modPath)) { throw "Module not found: $modPath" }
     Import-Module $modPath -Force
 }
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationTemplates.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationTemplates.psm1') -Force
 
 if (-not (Test-Path -LiteralPath $SampleDataPath)) {
     throw "Sample data not found: $SampleDataPath"
@@ -110,8 +110,8 @@ if ($Send) {
     if ([string]::IsNullOrWhiteSpace($To)) {
         throw '-To is required when using -Send (default is jflint@aztec.us).'
     }
-    Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-    Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
     $configResult = Read-QCAppSettings -Path $AppSettingsPath
     if (-not $configResult.IsSuccess) {
         throw ('Failed to load appsettings: ' + $configResult.Message)

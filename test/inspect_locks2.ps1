@@ -1,8 +1,8 @@
 $qroot = 'C:\QC_E2E_RealRun\queue'
 $locksDir = Join-Path $qroot 'locks'
 $root = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $root 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $root 'modules\Queue\QC.Queue.Json.psm1') -Force
 
 Write-Host "=== Lock files - using the SAME _QCQJ-IsLockOwnerDead logic the acquire loop uses ===" -ForegroundColor Cyan
 Get-ChildItem -LiteralPath $locksDir -Filter '*.lock' -File -ErrorAction SilentlyContinue |

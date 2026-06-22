@@ -1,7 +1,7 @@
 # Core.Runtime.psm1
 # Responsibility: Shared script runtime helpers for config conversion/loading, JSON log output, and timezone utilities.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
 
 # ---------------------------------------------------------------------------
 # Timezone utilities -- wall-clock display from appsettings runtime.displayTimeZoneId

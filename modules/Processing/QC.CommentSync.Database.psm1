@@ -1,10 +1,10 @@
 # QC.CommentSync.Database.psm1
 # Responsibility: Persist comment sync runs, comments, status history, and workflow events.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Database.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Database/Core.Database.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCDB-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }

@@ -2,28 +2,28 @@
 
 # Responsibility: Thin orchestrator for QC_COMMENT_STATUS_SYNC jobs.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Hashing.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Hashing.psm1') -Force -ErrorAction SilentlyContinue
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentExtract.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentExtract.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentStatusDecision.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentStatusDecision.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentSync.Job.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentSync.Job.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentSync.State.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentSync.State.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentSync.Database.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentSync.Database.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentSync.Notifications.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentSync.Notifications.psm1') -Force
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCSP-Log([string]$Code, [string]$Message, [hashtable]$Data) {
 

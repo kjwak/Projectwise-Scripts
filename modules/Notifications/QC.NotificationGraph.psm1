@@ -1,8 +1,8 @@
 # QC.NotificationGraph.psm1
 # Responsibility: Microsoft Graph email provider (client-secret app auth) with conversation threading.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
 
 # Optional test hook: scriptblock param(Method, Uri, Headers, Body) returns response object.
 $script:QCNG_TestHttpHandler = $null

@@ -109,8 +109,8 @@ def _pwsh_eval(script: str) -> str:
 def test_resolve_qc_workflow_assignee_by_review_type():
     script = r"""
     $ErrorActionPreference = 'Stop'
-    Import-Module './modules/Core.Results.psm1' -Force
-    Import-Module './modules/QC.Workflow.psm1' -Force
+    Import-Module './modules/Core/Core.Results.psm1' -Force
+    Import-Module './modules/Workflow/QC.Workflow.psm1' -Force
     $s = Get-QCWorkflowSettings -Config @{}
     @(
       (Resolve-QCWorkflowAssignee -Settings $s -StateName 'In Development' -ReviewType 'Production' -ReviewerEmail 'r@x.com' -DesignerEmail 'd@x.com' -CheckerEmail 'c@x.com'),
@@ -128,8 +128,8 @@ def test_resolve_qc_workflow_assignee_by_review_type():
 def test_deprecated_config_emits_warnings():
     script = r"""
     $ErrorActionPreference = 'Stop'
-    Import-Module './modules/Core.Results.psm1' -Force
-    Import-Module './modules/QC.Workflow.psm1' -Force
+    Import-Module './modules/Core/Core.Results.psm1' -Force
+    Import-Module './modules/Workflow/QC.Workflow.psm1' -Force
     $cfg = @{
       qcWorkflow = @{
         enabled = $true
@@ -147,8 +147,8 @@ def test_deprecated_config_emits_warnings():
 def test_resolve_state_after_prepend_by_trigger():
     script = r"""
     $ErrorActionPreference = 'Stop'
-    Import-Module './modules/Core.Results.psm1' -Force
-    Import-Module './modules/QC.Workflow.psm1' -Force
+    Import-Module './modules/Core/Core.Results.psm1' -Force
+    Import-Module './modules/Workflow/QC.Workflow.psm1' -Force
     $s = Get-QCWorkflowSettings -Config @{}
     @(
       (Resolve-QCWorkflowStateAfterPrepend -Settings $s -Context @{ prependTrigger = 'finalQcComplete' }),
@@ -164,8 +164,8 @@ def test_resolve_state_after_prepend_by_trigger():
 def test_dry_run_attributes_do_not_include_qc_stage():
     script = r"""
     $ErrorActionPreference = 'Stop'
-    Import-Module './modules/Core.Results.psm1' -Force
-    Import-Module './modules/QC.Workflow.psm1' -Force
+    Import-Module './modules/Core/Core.Results.psm1' -Force
+    Import-Module './modules/Workflow/QC.Workflow.psm1' -Force
     $settings = Get-QCWorkflowSettings -Config @{}
     $ctx = @{
       attributes = @{

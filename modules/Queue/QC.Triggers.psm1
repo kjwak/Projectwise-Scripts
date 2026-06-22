@@ -1,9 +1,9 @@
 # QC.Triggers.psm1
 # Responsibility: Trigger rule ordering, evaluation, and job-type classification.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Paths.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Paths.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 function Get-OrderedTriggerRules {
     [CmdletBinding()]

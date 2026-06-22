@@ -25,11 +25,11 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -Global -ErrorAction Stop | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -Global -ErrorAction Stop | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Config.psm1') -Force -Global -ErrorAction Stop | Out-Null
 
-$coreDbPath = (Join-Path $repoRoot 'modules\Core.Database.psm1')
+$coreDbPath = (Join-Path $repoRoot 'modules\Database\Core.Database.psm1')
 $coreDbModule = $null
 try {
     $coreDbModule = Import-Module $coreDbPath -Force -Global -ErrorAction Stop -PassThru
@@ -46,9 +46,9 @@ if (-not (Test-Path -LiteralPath $coreDbPath)) {
     throw "Core.Database.psm1 not found: $coreDbPath"
 }
 
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentExtract.psm1') -Force -Global -ErrorAction Stop | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.CommentSync.Database.psm1') -Force -Global -ErrorAction Stop | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force -Global -ErrorAction SilentlyContinue | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.CommentExtract.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.CommentSync.Database.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force -Global -ErrorAction SilentlyContinue | Out-Null
 
 function Assert-True($Condition, $Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
 

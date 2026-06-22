@@ -1,7 +1,7 @@
 # Pure decision engine tests (no PW/DB/file I/O).
 $ErrorActionPreference = 'Stop'
 
-Import-Module "$PSScriptRoot/../modules/QC.CommentStatusDecision.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Processing/QC.CommentStatusDecision.psm1" -Force
 
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }

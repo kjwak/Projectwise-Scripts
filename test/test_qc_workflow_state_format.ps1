@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\QC.Workflow.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.Workflow.psm1') -Force
 
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
 

@@ -75,9 +75,9 @@ if (-not $NoDashboard) {
   exit $LASTEXITCODE
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
 
 $watcher = Join-Path $PSScriptRoot 'Watch-QCTrigger.ps1'
 $worker = Join-Path $PSScriptRoot 'Run-QCProcessor.ps1'

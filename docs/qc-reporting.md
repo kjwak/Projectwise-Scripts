@@ -57,7 +57,7 @@ Power BI connects to the `QC_Pipeline` database via SQL Server connector.
 
 ## Module
 
-`modules/QC.Reporting.psm1` is read-only and provides:
+`modules/Reporting/QC.Reporting.psm1` is read-only and provides:
 
 - `Get-QCReportingSettings`, `Get-QCReportingDocuments`, `ConvertTo-QCReportingDocument`
 - `New-QCReportingSnapshot`, `Write-QCReportingSnapshot`, `Invoke-QCReportingScan`

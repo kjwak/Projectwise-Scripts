@@ -8,7 +8,7 @@ All public module functions should return a result object with this shape:
 - `Message` `[string]`: Human-readable summary message.
 - `Data` `[object]`: Optional payload with function-specific details.
 
-Helper constructors are defined in `modules/Core.Results.psm1`:
+Helper constructors are defined in `modules/Core/Core.Results.psm1`:
 - `New-QCResult`
 - `New-QCSuccessResult`
 - `New-QCFailureResult`

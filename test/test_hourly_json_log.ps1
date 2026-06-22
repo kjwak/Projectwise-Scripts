@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 
 $tmpdir = Join-Path $env:TEMP ('qc_log_test_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null

@@ -2,7 +2,7 @@
 
 ## What changed
 
-- Introduced a dedicated orchestration module (`modules/QC.WatcherOrchestration.psm1`) to separate watcher operating-mode decisions and reconciliation scheduling decisions from the main watcher ingestion script.
+- Introduced a dedicated orchestration module (`modules/Core/QC.WatcherOrchestration.psm1`) to separate watcher operating-mode decisions and reconciliation scheduling decisions from the main watcher ingestion script.
 - Watcher modes are now explicit: `audit_only`, `reconciliation`, `recovery`, `hybrid`.
 - Reconciliation planning moved behind `Get-QCReconciliationPlan` with reason + trigger source + downtime/audit-gap metadata.
 - Extended poll-run telemetry model for reconciliation lifecycle and service-health context.

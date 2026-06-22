@@ -1,8 +1,8 @@
 # QC.Reporting.psm1
 # Responsibility: Read-only QC attribute-first reporting aggregation and JSON snapshots.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
 
 function _QCR-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }

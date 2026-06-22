@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $root 'modules\Core.Paths.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Paths.psm1') -Force
 
 function Assert-Eq($a, $b, $msg) {
     if ($a -ne $b) { throw "FAIL: $msg (got '$a', want '$b')" }

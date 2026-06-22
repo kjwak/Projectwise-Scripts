@@ -24,7 +24,7 @@ def test_watcher_supports_continuous_pw_session() -> None:
 
 
 def test_watcher_imports_orchestration_module() -> None:
-    assert "Import-Module (Join-Path $repoRoot 'modules\\QC.WatcherOrchestration.psm1')" in WATCHER
+    assert "Import-Module (Join-Path $repoRoot 'modules\\Core\\QC.WatcherOrchestration.psm1')" in WATCHER
     assert "Get-QCWatcherMode -Config $config" in WATCHER
     assert "Get-QCReconciliationPlan -Config $config" in WATCHER
 

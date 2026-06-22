@@ -1,21 +1,21 @@
 # QC.Rendition.psm1
 # Responsibility: QC_RENDITION jobs, profile resolution, readiness gating for Ready for QC notifications.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -ErrorAction SilentlyContinue
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -ErrorAction SilentlyContinue
     if (-not (Get-Command -Name 'Get-PWDocumentDescriptionForFolder' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
     }
 }
 if (-not (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 }
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Test-QCDuplicateJob' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Queue.Json.psm1') -Force -ErrorAction SilentlyContinue
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Queue/QC.Queue.Json.psm1') -Force -ErrorAction SilentlyContinue
 }
 
 function _QCR-IsNullOrWhiteSpace([object]$Value) {

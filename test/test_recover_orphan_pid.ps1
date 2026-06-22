@@ -7,8 +7,8 @@ even when the job's startedAtUtc is younger than queue.recover.staleSeconds.
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
 
 function New-StubJob([string]$Id, [string]$Type = 'STATUS_SET_GEN') {
     return @{

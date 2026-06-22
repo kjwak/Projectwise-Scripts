@@ -1,6 +1,6 @@
 # QC Package Model (SQL-backed)
 
-Production QC treats related ProjectWise sheet artifacts as a single **sheet package** persisted in SQL. Package identity, document membership, and per-lane QC PDF registry are owned by [`modules/Core.Database.psm1`](../modules/Core.Database.psm1).
+Production QC treats related ProjectWise sheet artifacts as a single **sheet package** persisted in SQL. Package identity, document membership, and per-lane QC PDF registry are owned by [`modules/Database/Core.Database.psm1`](../modules/Database/Core.Database.psm1).
 
 > **Archived v1:** An earlier in-memory `QC.Package*` module cluster (`Resolve-QCPackage`, attribute/state sync, fictional `QCPackageCache`) lived under `modules/` and was never wired into production. It was archived in Phase 3 to [`archive/package-model-v1/`](../archive/package-model-v1/). See [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md) and [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
 

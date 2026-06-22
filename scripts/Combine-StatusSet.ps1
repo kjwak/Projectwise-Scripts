@@ -3,7 +3,7 @@
   Build/refresh _StatusSet.pdf using legacy combine_status_set.ps1 method (native implementation).
 
 .DESCRIPTION
-  Thin wrapper over modules\QC.StatusSet.psm1.
+  Thin wrapper over modules\Processing\QC.StatusSet.psm1.
   For ProjectWise folders, run from pwps (ProjectWise PowerShell) so pwps_dab cmdlets are available.
 
 .PARAMETER SheetsFolderPath
@@ -35,8 +35,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force
 
 $job = @{
     id = 'manual_combine'

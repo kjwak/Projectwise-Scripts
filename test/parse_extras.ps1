@@ -4,8 +4,8 @@ $paths = @(
     'scripts\Watch-QCTrigger.ps1'
     'scripts\Reconcile-QCStatusSets.ps1'
     'scripts\Run-QCProcessor.ps1'
-    'modules\QC.StatusSet.psm1'
-    'modules\QC.Queue.Json.psm1'
+    'modules\Processing\QC.StatusSet.psm1'
+    'modules\Queue\QC.Queue.Json.psm1'
 )
 $failed = $false
 foreach ($p in $paths) {

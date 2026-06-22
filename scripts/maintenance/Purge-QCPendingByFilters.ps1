@@ -26,10 +26,10 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings.json' }
 if (-not (Test-Path -LiteralPath $AppSettingsPath)) { throw "appsettings.json not found: $AppSettingsPath" }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }

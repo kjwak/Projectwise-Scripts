@@ -56,10 +56,10 @@
 
 ## Files not modified (explicit)
 
-- `modules/Core.Database.psm1`, SQL schema/migrations, Power BI views
-- `modules/QC.JobFactory.psm1` (`New-QCPackageJobDedupeKey`, `metadata.package` branch)
+- `modules/Database/Core.Database.psm1`, SQL schema/migrations, Power BI views
+- `modules/Queue/QC.JobFactory.psm1` (`New-QCPackageJobDedupeKey`, `metadata.package` branch)
 - Watcher, processor, notifications, ProjectWise, MCP, Graph, prepend (`qcPrepend.mode`, `legacy/prepend_qc.ps1`)
-- `modules/QC.Reporting.psm1` SQL reporting helpers
+- `modules/Reporting/QC.Reporting.psm1` SQL reporting helpers
 
 ---
 

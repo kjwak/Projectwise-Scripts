@@ -35,7 +35,7 @@ if (-not (Test-Path -LiteralPath $target)) {
 Import-Module $target -Force -Global
 ```
 
-Callers using `Import-Module "$repoRoot\modules\QC.Queue.Json.psm1"` continue to work unchanged.
+Callers using `Import-Module "$repoRoot\modules\Queue\QC.Queue.Json.psm1"` continue to work unchanged.
 
 **Note:** Importing via a flat shim briefly registers both the shim script module and the folder implementation under the same module name. Public exports resolve correctly. Tests that use `InModuleScope` or invoke private module functions should target the implementation module via [`test/_Resolve-ModuleImplPath.ps1`](../test/_Resolve-ModuleImplPath.ps1) helpers (`Get-QCModuleImplementation`, `Remove-QCModuleFlatShims`).
 

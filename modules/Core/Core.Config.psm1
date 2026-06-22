@@ -2,8 +2,8 @@
 # Responsibility: Config validation helpers and compatibility wrappers.
 # Canonical config loading: Read-QCAppSettings in Core.Runtime.psm1
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _CC-ToHashtableDeep {
     param([AllowNull()][object]$Value)

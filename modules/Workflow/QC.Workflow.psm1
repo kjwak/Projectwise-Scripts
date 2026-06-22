@@ -1,15 +1,15 @@
 # QC.Workflow.psm1
 # Responsibility: Configurable ProjectWise QC workflow/state/attribute writeback framework.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 }
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCW-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -267,7 +267,7 @@ function _QCW-ApplyCycleToContext {
 
 function _QCW-EnsureNotificationCommandsLoaded {
     if (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue) { return $true }
-    $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1'
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1'
     if (-not (Test-Path -LiteralPath $path)) { return $false }
     try { Import-Module $path -Force -ErrorAction Stop | Out-Null } catch { return $false }
     return [bool](Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue)

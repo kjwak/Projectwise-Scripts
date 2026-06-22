@@ -1,8 +1,8 @@
 # QC.NotificationTemplates.psm1
 # Responsibility: Subject/body template expansion for QC workflow notifications.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Config.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Config.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCNT-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }

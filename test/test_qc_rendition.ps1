@@ -3,10 +3,10 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Rendition.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force
 
 function Assert-Eq($Actual, $Expected, [string]$Label) {
     if ("$Actual" -cne "$Expected") {

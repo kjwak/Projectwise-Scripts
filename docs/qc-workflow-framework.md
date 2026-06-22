@@ -197,7 +197,7 @@ Pilot writeback:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\discovery\Test-QCWorkflowWriteback.ps1 -ConfirmWrites
 ```
 
-## PowerShell API (`modules/QC.Workflow.psm1`)
+## PowerShell API (`modules/Workflow/QC.Workflow.psm1`)
 
 | Function | Role |
 | --- | --- |

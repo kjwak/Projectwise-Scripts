@@ -6,7 +6,7 @@ This folder contains the Python implementation used to generate the QC overlay o
 
 - The pipeline can run an overlay step via the packaged executable:
   - `dist/qc_overlay_prepend/qc_overlay_prepend.exe`
-- `modules/QC.Processors.psm1` builds an argument list and launches the overlay exe when `qcPrepend.enableOverlay = true`.
+- `modules/Processing/QC.Processors.psm1` builds an argument list and launches the overlay exe when `qcPrepend.enableOverlay = true`.
 
 ## Build artifacts
 

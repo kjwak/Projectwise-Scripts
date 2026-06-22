@@ -11,8 +11,8 @@ function Assert-True($Condition, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
 Assert-Eq (Get-PWSheetStemFromDocumentName -DocumentName 'CA001-prod.pdf') 'CA001' 'strip prod suffix'
 Assert-Eq (Get-PWSheetStemFromDocumentName -DocumentName 'CA001-chk.pdf') 'CA001' 'strip chk suffix'

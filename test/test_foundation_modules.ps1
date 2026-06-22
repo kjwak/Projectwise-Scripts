@@ -1,10 +1,10 @@
 # Lightweight test script for pure foundation modules.
 $ErrorActionPreference = 'Stop'
 
-Import-Module "$PSScriptRoot/../modules/Core.Results.psm1" -Force
-Import-Module "$PSScriptRoot/../modules/Core.Paths.psm1" -Force
-Import-Module "$PSScriptRoot/../modules/QC.Filters.psm1" -Force
-Import-Module "$PSScriptRoot/../modules/QC.Triggers.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Core/Core.Results.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Core/Core.Paths.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Queue/QC.Filters.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Queue/QC.Triggers.psm1" -Force
 
 function Assert-True($Condition, $Message) {
     if (-not $Condition) { throw "ASSERT FAILED: $Message" }

@@ -75,9 +75,9 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Config.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
 
 # Resolve config defaults from appsettings.json unless overridden.
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath

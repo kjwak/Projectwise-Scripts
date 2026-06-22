@@ -1,18 +1,18 @@
 # QC.Notifications.psm1
 # Responsibility: Configurable QC workflow email notifications (Mock + future Microsoft Graph).
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Config.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationTemplates.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationMock.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationThreads.psm1') -Force -Global -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Config.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationTemplates.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationMock.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationThreads.psm1') -Force -Global -ErrorAction SilentlyContinue
 if (-not (Get-Command -Name 'Get-PWDocName' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 }
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 # Core.Database must be imported by the caller. Re-importing with -Force
 # here clobbers the caller's global-scope exports.
 

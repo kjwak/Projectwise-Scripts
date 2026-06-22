@@ -1,8 +1,8 @@
 # QC.CommentExtract.psm1
 # Responsibility: Invoke PDF comment parser and normalize to framework annotation objects.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
 
 function _QCE-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }

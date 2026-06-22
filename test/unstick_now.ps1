@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $root 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $root 'modules\Queue\QC.Queue.Json.psm1') -Force
 
 $cfg = @{ queue = @{ root = 'C:\QC_E2E_RealRun\queue'; backend = 'json' } }
 

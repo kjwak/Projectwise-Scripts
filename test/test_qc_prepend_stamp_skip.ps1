@@ -2,8 +2,8 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1') -Force
 
 function Assert-True($c, $msg) { if (-not $c) { throw "ASSERT FAILED: $msg" } }
 function Assert-False($c, $msg) { if ($c) { throw "ASSERT FAILED: $msg" } }

@@ -105,10 +105,10 @@ function _TWSA-ReadAppSettings([string]$Path) {
     return $cfg
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules/QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules/QC.WatcherAlerts.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/Notifications/QC.NotificationGraph.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules/Notifications/QC.WatcherAlerts.psm1') -Force
 
 $config = _TWSA-ReadAppSettings -Path $AppSettingsPath
 $alertSettings = Get-QCWatcherSessionAlertSettings -Config $config

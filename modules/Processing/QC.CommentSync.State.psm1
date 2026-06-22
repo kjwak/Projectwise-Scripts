@@ -1,9 +1,9 @@
 # QC.CommentSync.State.psm1
 # Responsibility: Apply workflow state to *-qc.pdf via existing QC.Workflow module.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
 
 function Test-QCCommentSyncDryRun {
     param([hashtable]$Config)

@@ -8,8 +8,8 @@ config is missing or contains an unrecognized mode. The previous default
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Force -DisableNameChecking | Out-Null
 
 function Assert-True($Cond, $Msg) {
     if (-not $Cond) { throw "ASSERT FAILED: $Msg" }

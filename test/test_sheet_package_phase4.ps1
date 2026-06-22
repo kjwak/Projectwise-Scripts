@@ -3,8 +3,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
 
 function Assert-True($cond, $msg) {
     if (-not $cond) { throw "ASSERT FAILED: $msg" }
@@ -106,7 +106,7 @@ Assert-True ($agingView -match 'days_in_current_state') 'aging view exposes days
 Assert-True ($agingView -match 'days_since_last_completion') 'aging view exposes days_since_last_completion'
 
 # QC.Reporting package metrics
-Import-Module (Join-Path $repoRoot 'modules\QC.Reporting.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Reporting\QC.Reporting.psm1') -Force
 $table = New-Object System.Data.DataTable
 foreach ($col in @('sheet_package_id','sheet_stem','folder_path','pw_state_name','qc_review_type','qc_assigned_to',
     'production_qc_completed_count','peer_review_completed_count','independent_check_completed_count',

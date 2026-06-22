@@ -47,7 +47,7 @@ Other environments exist (renditions, lookups, etc.) but do not define these EM 
 
 ### 1. Connect and resolve the folder
 
-- Open PW with `Open-PWConnection` (see `modules/PW.Connection.psm1`).
+- Open PW with `Open-PWConnection` (see `modules/ProjectWise/PW.Connection.psm1`).
 - Folder path for cmdlets: `Caltrans\...\CADD\Sheets\Seg_1` (often **without** leading `Documents\`; both forms were tried during verification).
 - Read folder metadata:
 
@@ -214,7 +214,7 @@ Run under the same PowerShell host / MTA profile used by QC workers (`pwps_dab`)
 - **PDF vs DGN:** Email samples were verified on **PDFs** in `Seg_1`; DGN files had empty EM email bags in spot checks. Prefer PDFs for QC notification unless business rules say otherwise.
 - **Population vs schema:** Empty values mean the attribute exists in the environment but is not set on that document version—not that extraction failed.
 - **Workflow vs attributes:** TYPSA QC workflow state and Caltrans environment attributes are independent layers; folder carries both.
-- **Future module home:** Consider `Get-PWEnvironmentEmailAttributeSettings`, `Get-PWDocumentAttributeMap`, and `Get-PWDocumentEmailContacts` in `modules/PW.Discovery.psm1` or a thin `PW.EnvironmentAttributes.psm1`, driven by `environmentEmailAttributes` config.
+- **Future module home:** Consider `Get-PWEnvironmentEmailAttributeSettings`, `Get-PWDocumentAttributeMap`, and `Get-PWDocumentEmailContacts` in `modules/ProjectWise/PW.Discovery.psm1` or a thin `PW.EnvironmentAttributes.psm1`, driven by `environmentEmailAttributes` config.
 
 ---
 
@@ -222,7 +222,7 @@ Run under the same PowerShell host / MTA profile used by QC workers (`pwps_dab`)
 
 - QC workflow states: `docs/qc-workflow-framework.md` (when present on branch)
 - ProjectWise cmdlet conventions: `.cursor/rules/projectwise-powershell.mdc`
-- Path normalization (`pw:\...` URIs): `modules/Core.Paths.psm1`
+- Path normalization (`pw:\...` URIs): `modules/Core/Core.Paths.psm1`
 
 ---
 

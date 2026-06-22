@@ -1,8 +1,8 @@
 # QC.NotificationMock.psm1
 # Responsibility: Mock/dry-run notification delivery with deterministic email threading.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
 
 function _QCNM-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }

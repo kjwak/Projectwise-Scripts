@@ -9,12 +9,12 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Runtime.psm1" -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationThreads.psm1') -Force -Global
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationMock.psm1') -Force -Global
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationGraph.psm1') -Force -Global
-Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -Global
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Runtime.psm1" -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationThreads.psm1') -Force -Global
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationMock.psm1') -Force -Global
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1') -Force -Global
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force -Global
 
 $testRoot = Join-Path $env:TEMP ("qc-thread-test-" + [guid]::NewGuid().ToString('N'))
 $mockRoot = Join-Path $testRoot 'notifications'
@@ -169,7 +169,7 @@ foreach ($field in @('thread_id', 'thread_key', 'parent_message_id', 'message_id
 }
 
 # 10. Graph HTTP mock: root then reply via createReply
-Import-Module (Join-Path $repoRoot 'modules\QC.NotificationGraph.psm1') -Force -Global
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1') -Force -Global
 Clear-QCNotificationGraphTestHttpHandler
 $global:QCTestGraphState = @{
     messages = @{}
@@ -412,7 +412,7 @@ Write-Host 'test_qc_notification_threading.ps1: PASS' -ForegroundColor Green
 # Optional SQL integration: concurrent thread create + DB tables
 $appSettings = Join-Path $repoRoot 'appsettings.json'
 if (Test-Path -LiteralPath $appSettings) {
-    Import-Module "$repoRoot/modules/Core.Database.psm1" -Force
+    Import-Module "$repoRoot/modules/Database/Core.Database.psm1" -Force
     try { $dbConfig = Get-QCAppSettingsConfig -Path $appSettings } catch { $dbConfig = $null }
     if ($dbConfig -and (Test-QCDatabaseEnabled -Config $dbConfig)) {
         $connProbe = Get-QCDatabaseConnection -Config $dbConfig

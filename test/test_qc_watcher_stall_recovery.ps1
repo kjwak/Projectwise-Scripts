@@ -8,7 +8,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/QC.WatcherOrchestration.psm1" -Force
+Import-Module "$repoRoot/modules/Core/QC.WatcherOrchestration.psm1" -Force
 
 $config = @{
     watcher = @{

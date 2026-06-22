@@ -1,10 +1,10 @@
 # QC.CommentSync.Notifications.psm1
 # Responsibility: Route comment-sync notifications by decision target state.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentStatusDecision.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentStatusDecision.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
 
 function Get-QCCommentSyncNotificationPlan {
     param(

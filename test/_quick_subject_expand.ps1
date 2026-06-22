@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot '..\modules\QC.NotificationTemplates.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\modules\Notifications\QC.NotificationTemplates.psm1') -Force
 $t = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
 $t['DocumentName'] = '0818000063ea501-qc.pdf'
 $t['ProjectName'] = 'CAFWY2200-I-15_ELPSE'

@@ -1,9 +1,9 @@
 # QC.WatcherAlerts.psm1
 # Responsibility: Operational email alerts when the QC watcher loses ProjectWise connectivity.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationGraph.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationGraph.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCWA-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -247,7 +247,7 @@ function Send-QCWatcherSessionLostAlert {
         if (-not $graph) { $graph = @{} }
         $sendResult = Send-QCNotificationGraph -GraphSettings $graph -Payload $payload -DryRun:$dryRun
     } else {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.NotificationMock.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationMock.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
         if (Get-Command -Name 'Send-QCNotificationMock' -ErrorAction SilentlyContinue) {
             $outputRoot = if ($notif.outputRoot) { [string]$notif.outputRoot } else { 'notifications' }
             if (-not [System.IO.Path]::IsPathRooted($outputRoot)) {

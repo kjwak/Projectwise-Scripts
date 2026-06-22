@@ -48,8 +48,8 @@ if ([string]::IsNullOrWhiteSpace($TestDocumentPath)) {
 }
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Workflow.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.Workflow.psm1') -Force
 
 foreach ($moduleName in @('pwps','pwps_dab')) {
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {

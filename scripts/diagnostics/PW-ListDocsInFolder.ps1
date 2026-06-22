@@ -23,6 +23,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
 
 Show-PWFolderDocumentList -DatasourceName $DatasourceName -CredentialPath $CredentialPath -FolderPath $FolderPath -Max $Max

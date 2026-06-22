@@ -13,11 +13,22 @@ alwaysApply: false
 
 When adding or removing a module, update **both** docs and any load-order lists below that need the new module.
 
+## Folder layout (Phase 4E+)
+
+Active implementations live under `modules/<Folder>/`. **Prefer folder paths** for new imports:
+
+```powershell
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
+```
+
+Flat `modules/<Name>.psm1` paths remain **silent compatibility shims** (forward to folder implementations). Use only for external/manual compatibility or shim tests — not for new production code.
+
 ## When to use modules vs scripts
 
 | Layer | Role |
 | --- | --- |
-| `modules/*.psm1` | Reusable logic, PW/queue/processor behavior, shared result shape |
+| `modules/<Folder>/*.psm1` | Reusable logic, PW/queue/processor behavior, shared result shape |
 | `scripts/*.ps1` | Thin launchers: params, repo root, import modules, delegate |
 | `test/*.ps1` | Import only the modules under test (+ their Core deps) |
 
@@ -29,9 +40,9 @@ Move logic into a module before duplicating credential parsing, queue transition
 
 ```powershell
 $repoRoot = Split-Path -Parent $PSScriptRoot   # from scripts/ or test/
-$mod = { param($name) Join-Path $repoRoot "modules\$name" }
-Import-Module (& $mod 'Core.Results.psm1') -Force
-Import-Module (& $mod 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+$mod = { param($folder, $name) Join-Path $repoRoot "modules\$folder\$name" }
+Import-Module (& $mod 'Core' 'Core.Results.psm1') -Force
+Import-Module (& $mod 'Core' 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 # …then feature modules you call directly
 ```
 
@@ -45,18 +56,19 @@ Dot-source the shared loader — do **not** hand-roll Core imports:
 
 ```powershell
 . (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot
-# Optional extra modules:
-. (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot -AdditionalModules @('PW.AuditPoller.psm1')
+# Optional extra modules (bare filename OK — loader resolves to folder path):
+. (Join-Path $PSScriptRoot 'Import-QCScriptModules.ps1') -RepoRoot $repoRoot -AdditionalModules @('ProjectWise\PW.Discovery.psm1')
 ```
 
-`Import-QCScriptModules.ps1` loads `Core.Results` → `Core.Database` → `Core.Runtime` (re-imports Results), uses `-Scope Global`, and adds session proxies if exports are hidden.
+`Import-QCScriptModules.ps1` loads `Core\Core.Results` → `Database\Core.Database` → `Core\Core.Runtime` (re-imports Results), uses `-Scope Global`, and adds session proxies if exports are hidden.
 
-### 3. Inside `.psm1` files
+### 3. Inside `.psm1` files (folder implementations)
 
-Use `$PSScriptRoot` (same folder as the importing module):
+Use `$PSScriptRoot` for same-folder siblings; parent folder for cross-folder deps:
 
 ```powershell
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force                    # Core/
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core\Core.Runtime.psm1') -Force   # Queue/, Processing/, etc.
 ```
 
 Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAction SilentlyContinue` for optional feature modules (see `QC.Processors.psm1`).
@@ -65,9 +77,9 @@ Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAct
 
 **Foundation (load first, re-import after nested `-Force`):**
 
-`Core.Results` → `Core.Paths` → `Core.Runtime` → `Core.Hashing` → `Core.Database`
+`Core\Core.Results` → `Core\Core.Paths` → `Core\Core.Runtime` → `Core\Core.Hashing` → `Database\Core.Database`
 
-**Why:** `Core.Database` nested-imports Runtime/Results into module scope and can hide session exports. `Import-Module -Force` on PW/QC modules (especially `PW.Discovery` / `QC.AuditTriggers`) can drop `Test-QCDatabaseEnabled`, `Write-QCJsonLog`, hashing helpers, etc.
+**Why:** `Core.Database` nested-imports Runtime/Results into module scope and can hide session exports. `Import-Module -Force` on PW/QC modules (especially `ProjectWise/PW.Discovery` / `Workflow/QC.AuditTriggers`) can drop `Test-QCDatabaseEnabled`, `Write-QCJsonLog`, hashing helpers, etc.
 
 **After importing feature modules**, restore foundation or call existing helpers:
 
@@ -78,10 +90,11 @@ Import only direct dependencies; nested modules pull the rest. Prefer `-ErrorAct
 
 | Entry point | Module sequence |
 | --- | --- |
-| `Import-QCScriptModules.ps1` | Results, Database, Runtime (+ `-AdditionalModules`) |
-| `Run-QCProcessor.ps1` | Results, Runtime, Queue.Json, Processors, Notifications, Rendition, Worker, Database |
-| `Watch-QCTrigger.ps1` | See `$script:WatchModuleLoadOrder` and `$script:WatchModuleRestoreOrder` |
+| `Import-QCScriptModules.ps1` | `Core\Core.Results`, `Database\Core.Database`, `Core\Core.Runtime` (+ `-AdditionalModules`) |
+| `Run-QCProcessor.ps1` | Results, Runtime, `Queue/QC.Queue.Json`, `Processing/QC.Processors`, Notifications, Rendition, `Queue/QC.Worker`, Database |
+| `Watch-QCTrigger.ps1` | See `$script:WatchModuleLoadOrder` and `$script:WatchModuleRestoreOrder` (folder-relative paths) |
 | `test/test_watcher_module_bootstrap.ps1` | Minimal watcher chain smoke test |
+| `test/test_entrypoint_imports.ps1` | Entrypoint + flat-shim compatibility smoke test |
 
 Import **feature** modules before a final foundation restore when they nested-reload Core.
 
@@ -93,11 +106,14 @@ After changing imports, confirm required commands exist:
 Get-Command Read-QCAppSettings, Write-QCJsonLog, Test-QCDatabaseEnabled -ErrorAction SilentlyContinue
 ```
 
-Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`.
+Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`, `test/test_entrypoint_imports.ps1`.
+
+For `InModuleScope` or private function tests, use `test/_Resolve-ModuleImplPath.ps1` (`Get-QCModuleImplementation`, `Remove-QCModuleFlatShims`).
 
 ## Common mistakes
 
-- Importing `Core.Database` without re-importing `Core.Results` / `Core.Runtime` in the **session** → `Read-QCAppSettings` or DB helpers missing.
-- Calling nested module functions without importing the **top-level** module the script uses (e.g. worker needs `QC.Processors`, not only `QC.Queue.Json`).
+- Importing `Database/Core.Database` without re-importing `Core/Core.Results` / `Core/Core.Runtime` in the **session** → `Read-QCAppSettings` or DB helpers missing.
+- Calling nested module functions without importing the **top-level** module the script uses (e.g. worker needs `Processing/QC.Processors`, not only `Queue/QC.Queue.Json`).
 - Using `Import-Module` without `-Force` in long-lived watcher/worker sessions after file edits.
 - Duplicating load-order arrays in new scripts instead of matching an existing entry point or extending `Import-QCScriptModules.ps1`.
+- Importing flat shim paths in new code when folder implementation paths avoid duplicate module registration.

@@ -1,7 +1,7 @@
 # Notification routing plan tests for comment sync.
 $ErrorActionPreference = 'Stop'
 
-Import-Module "$PSScriptRoot/../modules/QC.CommentSync.Notifications.psm1" -Force
+Import-Module "$PSScriptRoot/../modules/Processing/QC.CommentSync.Notifications.psm1" -Force
 
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }

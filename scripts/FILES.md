@@ -4,7 +4,7 @@ The PowerShell files in this directory are intended to stay thin: they parse com
 
 ## Refactoring assessment completed
 
-- `PW-BrowseFolder.ps1` was simplified so credential loading, ProjectWise module loading, connection cleanup, folder-view compatibility, and output shaping are provided by `modules/PW.Connection.psm1`.
+- `PW-BrowseFolder.ps1` was simplified so credential loading, ProjectWise module loading, connection cleanup, folder-view compatibility, and output shaping are provided by `modules/ProjectWise/PW.Connection.psm1`.
 - `PW-ListDocsInFolder.ps1` was simplified the same way; it now delegates connection/session handling and document enumeration to module functions.
 - The remaining larger entrypoints (`Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1`, and `Start-QCPipelineDashboard.ps1`) already depend heavily on modules but still contain orchestration/UI code. The next simplification target should be moving dashboard rendering and watcher ProjectWise expansion into module functions while keeping the scripts as parameter-only launchers.
 

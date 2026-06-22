@@ -8,8 +8,8 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/PW.Connection.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/ProjectWise/PW.Connection.psm1" -Force
 
 InModuleScope -ModuleName PW.Connection {
     Assert-Eq (_PWC-ConvertProbeFolderPath 'Documents\AZDOT 2024') 'AZDOT 2024' 'watch root path should strip Documents\ prefix'

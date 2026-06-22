@@ -7,7 +7,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
 $config = @{
     QCProcess = @{

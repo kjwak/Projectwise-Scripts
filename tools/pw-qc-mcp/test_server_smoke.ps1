@@ -11,7 +11,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\QC.DebugMcp.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Diagnostics\QC.DebugMcp.psm1') -Force
 Initialize-QCDebugMcpContext -AppSettingsPath $AppSettingsPath | Out-Null
 
 function Show-Result {

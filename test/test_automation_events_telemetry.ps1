@@ -9,9 +9,9 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force
 
 function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT: $msg" } }
 
@@ -47,9 +47,9 @@ Assert-True ($parsed.data.jobId -eq 'j1') 'fixture line parses'
 Write-Host 'Unit tests: PASS' -ForegroundColor Green
 
 if (-not (Test-Path -LiteralPath $AppSettingsPath)) { exit 0 }
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force
 try {
     $dbConfig = Get-QCAppSettingsConfig -Path $AppSettingsPath
 } catch {

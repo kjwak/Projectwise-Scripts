@@ -3,10 +3,10 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force
 
 function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg" } }
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
@@ -236,8 +236,8 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $script:finalPrependCalls 1 'Initiate Verification on lane PDF enqueues finalizing prepend'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.AuditTriggers.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.AuditTriggers.psm1') -Force
 Assert-Eq (_QCP-ResolveSheetPdfForPrependTrigger -TriggerDocumentName '080J082001ab001-rev.pdf') '080J082001ab001.pdf' `
     'lane QC PDF trigger resolves to stem sheet PDF for prepend source'
 

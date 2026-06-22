@@ -2,13 +2,13 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 
 function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg" } }
 function Assert-Eq($a, $b, $msg) { if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" } }
 
-$mod = Import-Module (Join-Path $repoRoot 'modules\QC.AuditTriggers.psm1') -Force -PassThru
-Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
+$mod = Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.AuditTriggers.psm1') -Force -PassThru
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
 Assert-True ($null -ne $mod) 'QC.AuditTriggers module loaded'
 
 $cfg = @{

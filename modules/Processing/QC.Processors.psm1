@@ -1,16 +1,16 @@
 # QC.Processors.psm1
 # Responsibility: Processor readiness checks and job-type-based dispatch.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.Workflow.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Reporting/QC.Reporting.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.CommentStatusProcessor.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 # Per-process throttle (milliseconds) inserted between PDF/cache file ops
 # (Move/Remove/Copy) so AV scanners (Fortinet, etc.) don't flag rapid temp
@@ -1534,7 +1534,7 @@ function Invoke-QCPrependProcessor {
             if ($clearTag) {
                 try {
                     $repoRoot = _QCP-GetRepoRoot
-                    $pwConnMod = Join-Path $repoRoot 'modules\PW.Connection.psm1'
+                    $pwConnMod = Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1'
                     if (Test-Path -LiteralPath $pwConnMod) { Import-Module $pwConnMod -Force -ErrorAction SilentlyContinue | Out-Null }
 
                     $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
@@ -1885,7 +1885,7 @@ function Invoke-StatusSetProcessor {
     if ($ss.ContainsKey('mode') -and $ss.mode) { $mode = ([string]$ss.mode).Trim().ToLowerInvariant() }
 
     if ($mode -eq 'native') {
-        $ssMod = Join-Path (_QCP-GetRepoRoot) 'modules\QC.StatusSet.psm1'
+        $ssMod = Join-Path (_QCP-GetRepoRoot) 'modules\Processing\QC.StatusSet.psm1'
         if (-not (Test-Path -LiteralPath $ssMod)) {
             return New-QCFailureResult -Code 'STATUS_SET_MODULE_MISSING' -Message "QC.StatusSet.psm1 not found: $ssMod" -Data @{ path = $ssMod }
         }
@@ -1990,16 +1990,16 @@ function Invoke-StatusSetProcessor {
 
 function _QCP-EnsureQueueModulesLoaded {
     if (-not (Get-Command -Name 'Add-QCQueueJob' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Queue.Json.psm1') -Force -ErrorAction Stop
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Queue/QC.Queue.Json.psm1') -Force -ErrorAction Stop
     }
     if (-not (Get-Command -Name 'New-QCJobObject' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.JobFactory.psm1') -Force -ErrorAction Stop
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Queue/QC.JobFactory.psm1') -Force -ErrorAction Stop
     }
 }
 
 function _QCP-EnsureNotificationModulesLoaded {
     if (Get-Command -Name 'Invoke-QCNotificationForStateChange' -ErrorAction SilentlyContinue) { return }
-    $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1'
+    $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1'
     if (Test-Path -LiteralPath $notifPath) {
         Import-Module $notifPath -Force -WarningAction SilentlyContinue | Out-Null
     }
@@ -2288,7 +2288,7 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     if (_QCP-IsNullOrWhiteSpace $sheetPdf) { return $null }
 
     if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
-        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
     }
     if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
         $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
@@ -2576,7 +2576,7 @@ function Invoke-QCNotificationProcessor {
         return New-QCFailureResult -Code 'QC_NOTIFICATION_UNAVAILABLE' -Message 'QC.Notifications module not loaded.' -Data @{}
     }
     if (-not (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue)) {
-        $discPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1'
+        $discPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1'
         if (Test-Path -LiteralPath $discPath) {
             Import-Module $discPath -Force -WarningAction SilentlyContinue | Out-Null
         }
@@ -2674,7 +2674,7 @@ function Invoke-QCReportingScanProcessor {
         [hashtable]$Config
     )
 
-    $mod = Join-Path (_QCP-GetRepoRoot) 'modules\QC.Reporting.psm1'
+    $mod = Join-Path (_QCP-GetRepoRoot) 'modules\Reporting\QC.Reporting.psm1'
     if (-not (Test-Path -LiteralPath $mod)) {
         return New-QCFailureResult -Code 'QC_REPORTING_MODULE_MISSING' -Message "QC.Reporting.psm1 not found: $mod" -Data @{ path = $mod }
     }

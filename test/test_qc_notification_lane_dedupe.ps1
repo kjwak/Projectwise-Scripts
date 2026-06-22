@@ -2,9 +2,9 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
 function Assert-True($cond, $msg) { if (-not $cond) { throw "ASSERT FAILED: $msg" } }
 function Assert-Ne($a, $b, $msg) { if ($a -eq $b) { throw "ASSERT FAILED: $msg" } }

@@ -1,8 +1,8 @@
 # QC.Filters.psm1
 # Responsibility: Whitelist/blacklist filtering decisions before job creation.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Paths.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Paths.psm1') -Force
 
 function Test-QCPathAllowed {
     [CmdletBinding()]

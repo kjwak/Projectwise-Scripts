@@ -29,7 +29,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 - **Modes**:
   - one-shot: default (`-MaxJobs 1`)
   - long-running: use `-MaxJobs`, `-LeaseSeconds`, and/or `-IdleSleepMs`
-- **Dispatch**: `modules/QC.Processors.psm1` (`QC_PREPEND`, `STATUS_SET_GEN`).
+- **Dispatch**: `modules/Processing/QC.Processors.psm1` (`QC_PREPEND`, `STATUS_SET_GEN`).
 - **Observability**: logs JSON lines like `WORKER_SELECTED`, `WORKER_SUCCEEDED`, `WORKER_FAILED`.
 
 ### `run_prepend_qc.ps1`

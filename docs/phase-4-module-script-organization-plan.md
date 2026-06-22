@@ -13,7 +13,7 @@ Phases 1–3 cleanup is merged into `dev`:
 - Dead `JobFactory` `metadata.package` dedupe branch removed ([`docs/phase-3-jobfactory-package-dedupe-decision.md`](phase-3-jobfactory-package-dedupe-decision.md)).
 - SQL `sheet_packages` / `sheet_package_qc_pdfs` is the production-canonical package model.
 - [`legacy/prepend_qc.ps1`](../legacy/prepend_qc.ps1) remains **production-relevant** while `qcPrepend.mode` is `legacyPw`.
-- Native prepend in [`modules/QC.Processors.psm1`](../modules/QC.Processors.psm1) (`mode` = `local`) is local-file-only and has never been used in production.
+- Native prepend in [`modules/Processing/QC.Processors.psm1`](../modules/Processing/QC.Processors.psm1) (`mode` = `local`) is local-file-only and has never been used in production.
 
 Phase 4A delivers this document only. Implementation is split into Phases 4B–4H (Section 9).
 
@@ -431,7 +431,7 @@ flowchart TD
 Silent forward at the flat path (no warnings in this phase):
 
 ```powershell
-# modules/QC.Queue.Json.psm1 — compatibility shim (remove Phase 4H)
+# modules/Queue/QC.Queue.Json.psm1 — compatibility shim (remove Phase 4H)
 $ErrorActionPreference = 'Stop'
 $target = Join-Path $PSScriptRoot 'Queue\QC.Queue.Json.psm1'
 if (-not (Test-Path -LiteralPath $target)) {
@@ -551,7 +551,7 @@ dev (untouched until Phase 4 complete)
 | **4C** | `phase-4/diagnostics-scripts` | **Complete** — Move Show/Get/Scan/Test scripts to `scripts/diagnostics/`; silent wrappers at old `scripts/*.ps1` paths | Low | focus tests, wrapper test, MCP smoke | Shims at old paths | Broken diagnostic workflows |
 | **4D** | `phase-4/maintenance-scripts` | **Complete** — Move Reset/Purge/Repair/Remove/Sync/Reconcile maintenance scripts to `scripts/maintenance/`; silent wrappers at old paths | Medium | focus tests, maintenance wrapper test | Shims at old paths | Publish copy list broken |
 | **4E** | `phase-4/module-folders` | **Complete** — Move 41 modules into responsibility subfolders; flat `modules/*.psm1` shims; internal imports via flat shim paths | **High** | inventory, bootstrap, focus, module folder shim test | Shims at old paths | Bootstrap or inventory fail |
-| **4F** | `phase-4/import-updates` | Update all Import-Module paths; Publish; add `test_entrypoint_imports.ps1` | **High** | full suite + new entrypoint test | Revert + shims | Production entry import failure |
+| **4F** | `phase-4/import-updates` | **Complete** — Update Import-Module paths to folder implementations; `test_entrypoint_imports.ps1`; flat shims retained | **High** | full suite + entrypoint test | Revert import paths | Production entry import failure |
 | **4G** | `phase-4/psd1-manifests` | Add `.psd1`; narrow exports | Medium | manifest parse, PW-free import tests | Keep shims | PW leakage into Core |
 | **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, external path audit | Re-add shims | External caller still hits old path |
 
@@ -568,12 +568,11 @@ python -m pytest tests/ -q
 ./test/test_watcher_module_bootstrap.ps1
 ```
 
-### Future test: `test/test_entrypoint_imports.ps1` (Phase 4F)
+### `test/test_entrypoint_imports.ps1` (Phase 4F — added)
 
-- Import each production entry script's module load order without executing pipeline side effects.
-- Assert required commands exist after import (`Test-QCDatabaseEnabled`, `Get-NextQCJob`, `Write-QCJsonLog`, etc.).
-- Assert `QC.DebugMcp` commands are **not** loaded by watcher/processor bootstrap.
-- Add to `run_focus_tests.ps1` after Phase 4F.
+- Import production entry module chains via folder paths; assert required commands exist.
+- Import flat shims (`modules/Core.Results.psm1`, etc.) and assert forwarding still works.
+- Not added to `run_focus_tests.ps1` (run separately with other inventory/bootstrap tests).
 
 ### Rollback principle
 
@@ -622,7 +621,7 @@ Post-doc validation: re-run the same four commands and record in PR description 
 | `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
 | `./test/test_qc_prepend_lane_resolution.ps1` | **PASS** |
 | `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
-| `./test/test_qc_prepend_processor.ps1` | **FAIL** — overlay 3-step qpdf page-count test (`qpdf` exit with warnings on reconstructed xref; unrelated to path move) |
+| `./test/test_qc_prepend_processor.ps1` | **PASS** (qpdf warning exit-code handling fixed in Phase 4B) |
 
 ### Rollback
 
@@ -706,7 +705,7 @@ Implementations under `modules/Core/` (8), `Database/` (1), `ProjectWise/` (4), 
 
 ### Shim strategy
 
-Flat `modules/<Name>.psm1` → silent `Import-Module` forward to subfolder implementation with `-Force -Global`. Production script import paths unchanged until Phase 4F. Tests that need implementation module scope or source text use [`test/_Resolve-ModuleImplPath.ps1`](../test/_Resolve-ModuleImplPath.ps1).
+Flat `modules/<Name>.psm1` → silent `Import-Module` forward to subfolder implementation with `-Force -Global`. **Phase 4F** updated production/test imports to folder paths; shims retained. Tests that need implementation module scope or source text use [`test/_Resolve-ModuleImplPath.ps1`](../test/_Resolve-ModuleImplPath.ps1).
 
 ### Internal path resolution
 
@@ -723,6 +722,36 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 | `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 |
 | `./test/test_maintenance_script_wrappers.ps1` | **PASS** — 16/16 |
 | `./test/test_module_folder_shims.ps1` | **PASS** — 41 shims + 11 import probes (new) |
+
+---
+
+## Appendix G — Phase 4F import path updates (complete)
+
+**Branch:** `phase-4/import-updates` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-import-update-summary.md`](phase-4-import-update-summary.md)
+
+### Strategy
+
+- Production entrypoints (`Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1`, `Start-QCPipelineDashboard.ps1`, `Import-QCScriptModules.ps1`, diagnostics/maintenance scripts, tests) import **folder implementation paths** (`modules/Core/Core.Results.psm1`, etc.).
+- Flat `modules/<Name>.psm1` shims **unchanged** — compatibility and rollback.
+- `Import-QCScriptModules.ps1` resolves bare `-AdditionalModules` filenames to folder paths via `_QCResolve-ModuleRelativePath`.
+- Module implementation cross-imports updated from flat shim parent paths to folder paths where safe.
+- **No `.psd1` manifests** introduced.
+- **`scripts/processing/Invoke-QCPrependPw.ps1`** unchanged (still uses flat paths; update deferred or intentional for prepend isolation).
+
+### Validation
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
+| `./test/test_module_inventory.ps1` | **PASS** — 41 modules |
+| `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
+| `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 |
+| `./test/test_maintenance_script_wrappers.ps1` | **PASS** — 16/16 |
+| `./test/test_module_folder_shims.ps1` | **PASS** — 41 shims + 11 probes |
+| `./test/test_entrypoint_imports.ps1` | **PASS** — new |
 
 ---
 

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force
 
 function Assert-True([bool]$Cond, [string]$Msg) {
     if (-not $Cond) { throw $Msg }

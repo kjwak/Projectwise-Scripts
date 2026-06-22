@@ -10,8 +10,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
 
 function Assert-True($Cond, $Msg) {
     if (-not $Cond) { throw "ASSERT FAILED: $Msg" }

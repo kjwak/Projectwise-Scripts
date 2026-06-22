@@ -16,10 +16,10 @@ Native StatusSet implementation that matches legacy/combine_status_set.ps1 metho
   - write-back:             optional _SSS-UpdatePWDocumentFileFromDisk (pwps_dab 24+: -InputDocuments/-NewFilePathName) / New-PWDocument
 #>
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Paths.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Connection.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Paths.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force
 
 $script:StatusSetManifestSchemaVersion = 2
 $script:StatusSetOutputName = '_StatusSet.pdf'
@@ -721,7 +721,7 @@ function _SSS-DedupePwDocRows {
 function _SSS-PWListDocsInFolderViaDiscovery {
     param([Parameter(Mandatory)][string]$FolderPath)
     try {
-        $discPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1'
+        $discPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1'
         if (-not (Get-Module -Name 'PW.Discovery' -ErrorAction SilentlyContinue)) {
             Import-Module $discPath -Force -ErrorAction Stop
         }
@@ -1239,7 +1239,7 @@ function Invoke-StatusSetNativeJob {
     }
 
     # --- ProjectWise legacy-method path ---
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Connection.psm1') -Force
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force
     $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
     if (-not $credRes.IsSuccess) { return $credRes }
     $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
@@ -2472,7 +2472,7 @@ function Invoke-StatusSetNativeJob {
 
     $pwConnected = $false
     if (-not $useLocalFs) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Connection.psm1') -Force
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force
         $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
         if (-not $credRes.IsSuccess) { return $credRes }
         $connRes = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)

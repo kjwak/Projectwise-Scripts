@@ -64,19 +64,19 @@ function _Resolve-RepoRootFromSettings([string]$SettingsPath, [string]$DefaultRo
     if ([string]::IsNullOrWhiteSpace($SettingsPath)) { return $DefaultRoot }
     try {
         $dir = Split-Path -Parent (Resolve-Path -LiteralPath $SettingsPath).Path
-        if ($dir -and (Test-Path -LiteralPath (Join-Path $dir 'modules\Core.Runtime.psm1'))) { return $dir }
+        if ($dir -and (Test-Path -LiteralPath (Join-Path $dir 'modules\Core\Core.Runtime.psm1'))) { return $dir }
     } catch { }
     return $DefaultRoot
 }
 
 $repoRoot = _Resolve-RepoRootFromSettings -SettingsPath $AppSettingsPath -DefaultRoot $repoRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Config.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
 
 function _Pause-IfInteractiveConsole {
     # Double-click / powershell.exe -File closes the window as soon as the script exits.

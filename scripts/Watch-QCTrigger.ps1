@@ -276,8 +276,8 @@ $script:WatchModulesRoot = $modulesRoot
 
 function _Watch-EnsureJsonLog {
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) { return $true }
-    $resultsPath = Join-Path $script:WatchModulesRoot 'Core.Results.psm1'
-    $runtimePath = Join-Path $script:WatchModulesRoot 'Core.Runtime.psm1'
+    $resultsPath = Join-Path $script:WatchModulesRoot 'Core\Core.Results.psm1'
+    $runtimePath = Join-Path $script:WatchModulesRoot 'Core\Core.Runtime.psm1'
     if (Test-Path -LiteralPath $resultsPath) {
         Import-Module $resultsPath -Force -WarningAction SilentlyContinue | Out-Null
     }
@@ -288,42 +288,42 @@ function _Watch-EnsureJsonLog {
 }
 
 $script:WatchModuleLoadOrder = @(
-    'Core.Results.psm1'
-    'Core.Paths.psm1'
-    'Core.Runtime.psm1'
-    'Core.Hashing.psm1'
-    'Core.Database.psm1'
-    'QC.Filters.psm1'
-    'QC.Triggers.psm1'
-    'QC.JobFactory.psm1'
-    'QC.Queue.Json.psm1'
-    'QC.Notifications.psm1'
-    'QC.Workflow.psm1'
-    'QC.Rendition.psm1'
-    'QC.Processors.psm1'
-    'QC.WatcherOrchestration.psm1'
-    'QC.StatusSet.psm1'
-    'QC.ProcessType.psm1'
-    'PW.Connection.psm1'
-    'PW.Users.psm1'
-    'PW.Discovery.psm1'
-    'PW.AuditPoller.psm1'
+    'Core\Core.Results.psm1'
+    'Core\Core.Paths.psm1'
+    'Core\Core.Runtime.psm1'
+    'Core\Core.Hashing.psm1'
+    'Database\Core.Database.psm1'
+    'Queue\QC.Filters.psm1'
+    'Queue\QC.Triggers.psm1'
+    'Queue\QC.JobFactory.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    'Notifications\QC.Notifications.psm1'
+    'Workflow\QC.Workflow.psm1'
+    'Processing\QC.Rendition.psm1'
+    'Processing\QC.Processors.psm1'
+    'Core\QC.WatcherOrchestration.psm1'
+    'Processing\QC.StatusSet.psm1'
+    'Workflow\QC.ProcessType.psm1'
+    'ProjectWise\PW.Connection.psm1'
+    'ProjectWise\PW.Users.psm1'
+    'ProjectWise\PW.Discovery.psm1'
+    'ProjectWise\PW.AuditPoller.psm1'
 )
 
 # QC.Workflow/Processors can drop QC.Notifications exports; QC.Notifications can drop PW.Discovery exports;
 # QC.StatusSet nested-import drops PW.Connection session exports.
 $script:WatchModuleRestoreOrder = @(
-    'Core.Results.psm1'
-    'Core.Paths.psm1'
-    'Core.Runtime.psm1'
-    'Core.Hashing.psm1'
-    'Core.Database.psm1'
-    'QC.Notifications.psm1'
-    'QC.StatusSet.psm1'
-    'QC.ProcessType.psm1'
-    'PW.Connection.psm1'
-    'PW.AuditPoller.psm1'
-    'PW.Discovery.psm1'
+    'Core\Core.Results.psm1'
+    'Core\Core.Paths.psm1'
+    'Core\Core.Runtime.psm1'
+    'Core\Core.Hashing.psm1'
+    'Database\Core.Database.psm1'
+    'Notifications\QC.Notifications.psm1'
+    'Processing\QC.StatusSet.psm1'
+    'Workflow\QC.ProcessType.psm1'
+    'ProjectWise\PW.Connection.psm1'
+    'ProjectWise\PW.AuditPoller.psm1'
+    'ProjectWise\PW.Discovery.psm1'
 )
 
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
@@ -507,40 +507,40 @@ function _Watch-WriteJsonLog {
     }
 }
 
-Import-Module (Join-Path $modulesRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $modulesRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 if (-not (_Watch-EnsureJsonLog)) {
     throw "Core.Runtime.psm1 did not load (Write-QCJsonLog missing). Repo root: $repoRoot"
 }
-Import-Module (Join-Path $repoRoot 'modules\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Triggers.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.JobFactory.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Workflow.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\PW.Users.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Hashing.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Filters.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Triggers.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.JobFactory.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.Workflow.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Users.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force -WarningAction SilentlyContinue
 # QC.AuditTriggers (via PW.Discovery) can reload Core.Database and drop session exports; restore before use.
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
 }
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
     throw "Core.Database.psm1 did not load; Test-QCDatabaseEnabled is unavailable. Repo: $repoRoot"
 }
-$pwConnPath = (Join-Path $repoRoot 'modules\PW.Connection.psm1')
+$pwConnPath = (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1')
 if (-not (Test-Path -LiteralPath $pwConnPath)) {
     throw "PW.Connection.psm1 not found at expected path: $pwConnPath"
 }
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue
 _Watch-RestoreFoundationModules
 if (-not (_Watch-EnsureAllModuleExports)) {
     $missingAtStart = @(_Watch-GetMissingRequiredCommands)

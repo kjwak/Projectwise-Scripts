@@ -26,7 +26,7 @@ The example sets **`database.enabled: false`** so you can test on a laptop with 
 
 ## How merge works
 
-`Read-QCAppSettings` (in `modules/Core.Runtime.psm1`) loads files in order; later files override earlier keys (deep merge for nested objects; arrays and scalars are replaced entirely).
+`Read-QCAppSettings` (in `modules/Core/Core.Runtime.psm1`) loads files in order; later files override earlier keys (deep merge for nested objects; arrays and scalars are replaced entirely).
 
 | You pass | Load order |
 |----------|------------|
@@ -64,7 +64,7 @@ When you install SQL Server Express (or already have an instance), set in `appse
 }
 ```
 
-Create an empty database `QC_Pipeline_Test` (or let `Initialize-QCDatabaseSchema` run on first pipeline start if your login can create it). Schema is applied automatically by `modules/Core.Database.psm1`.
+Create an empty database `QC_Pipeline_Test` (or let `Initialize-QCDatabaseSchema` run on first pipeline start if your login can create it). Schema is applied automatically by `modules/Database/Core.Database.psm1`.
 
 With global `dryRun: true`, SQL writes stay off unless `allowWritesInDryRun` is `true` — useful when you want PW dry run but still fill `audit_events` / `sheet_index` in a test database.
 

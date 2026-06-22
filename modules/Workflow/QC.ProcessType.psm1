@@ -1,8 +1,8 @@
 # QC.ProcessType.psm1
 # Process type normalization, lane PDF resolution, and stamp configuration.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCPT-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }

@@ -15,9 +15,9 @@
 | `void/prepend_watcher.ps1` | **Deleted** |
 | `void/test_description_update.ps1` | **Deleted** |
 | `void/dump_pw_powershell_inventory.ps1` | **Deleted** |
-| `modules/Core.Config.psm1` | Removed unused `Get-AppSetting` function |
-| `modules/QC.StatusSet.psm1` | Merged duplicate `Export-ModuleMember` into one block (export set preserved) |
-| `modules/QC.Notifications.psm1` | Updated 3 comments: `*-qc.pdf` → lane QC PDF wording |
+| `modules/Core/Core.Config.psm1` | Removed unused `Get-AppSetting` function |
+| `modules/Processing/QC.StatusSet.psm1` | Merged duplicate `Export-ModuleMember` into one block (export set preserved) |
+| `modules/Notifications/QC.Notifications.psm1` | Updated 3 comments: `*-qc.pdf` → lane QC PDF wording |
 | `modules/README.md` | Removed `Core.Metrics`, `Orchestrator.Pipeline`; fixed `Get-AppSetting` export list |
 | `modules/FILES.md` | Removed `Core.Metrics`, `Orchestrator.Pipeline`; added 5 missing module entries; updated cleanup note |
 | `test/run_focus_tests.ps1` | Removed duplicate `test_audit_watch_match.ps1` entry |

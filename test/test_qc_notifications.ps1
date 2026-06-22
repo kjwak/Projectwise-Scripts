@@ -8,11 +8,11 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Notifications.psm1" -Force
-Import-Module "$repoRoot/modules/QC.NotificationTemplates.psm1" -Force
-Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
-Import-Module "$repoRoot/modules/QC.AuditTriggers.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.Notifications.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationTemplates.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
+Import-Module "$repoRoot/modules/Workflow/QC.AuditTriggers.psm1" -Force
 
 # Test shim:
 # In this test suite we only need "state transition -> configured event -> Send-QCNotification".

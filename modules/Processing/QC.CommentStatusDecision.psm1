@@ -1,7 +1,7 @@
 # QC.CommentStatusDecision.psm1
 # Responsibility: Pure workflow state decision from normalized annotations (no side effects).
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
 
 function Get-QCCommentDecisionSettings {
     param([hashtable]$Config)

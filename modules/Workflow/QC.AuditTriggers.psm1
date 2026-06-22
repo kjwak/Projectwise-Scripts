@@ -1,10 +1,10 @@
 # QC.AuditTriggers.psm1
 # Responsibility: Audit-driven QC workflow state/attribute triggers (telemetry + notifications).
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
 if (-not (Get-Command -Name 'Write-QCDocumentStateHistoryRow' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Database.psm1') -Force
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Database/Core.Database.psm1') -Force
 }
 # Do not import QC.Notifications here: it loads PW.Discovery which re-imports this module and can
 # break exported cmdlets during circular load. Notifications are lazy-loaded in Invoke-QCAuditWorkflowStateChangeTriggers.
@@ -1211,7 +1211,7 @@ function Invoke-QCSheetGroupWorkflowTransition {
 
     if ($shouldNotify -and -not [string]::IsNullOrWhiteSpace($notifyGuid) -and $packagePreviousState -ne $target) {
         if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) {
-            try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
+            try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
         }
         if (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue) {
             $stateTransitionKey = $null
@@ -1347,7 +1347,7 @@ function Test-QCIsQcPdfDocumentName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentName)
     if (-not (Get-Command -Name 'Test-PWQcPdfLaneSuffix' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
     }
     return (Test-PWQcPdfLaneSuffix -DocumentName $DocumentName)
 }
@@ -2502,7 +2502,7 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         return
     }
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) {
-        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
+        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.Workflow.psm1') -ErrorAction SilentlyContinue } catch { }
     }
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateChangeNotification' -ErrorAction SilentlyContinue)) { return }
 

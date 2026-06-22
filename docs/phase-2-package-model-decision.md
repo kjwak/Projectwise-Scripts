@@ -8,7 +8,7 @@
 
 ## Executive summary
 
-**Production package grouping is SQL-backed** via `sheet_packages`, `sheet_documents`, and `sheet_package_qc_pdfs` in [`modules/Core.Database.psm1`](../modules/Core.Database.psm1).
+**Production package grouping is SQL-backed** via `sheet_packages`, `sheet_documents`, and `sheet_package_qc_pdfs` in [`modules/Database/Core.Database.psm1`](../modules/Database/Core.Database.psm1).
 
 The in-memory **`QC.Package*` module cluster** (`QC.PackageResolver`, `QC.AttributePolicy`, `QC.StatePolicy`, `QC.PackageSync`, `QC.Package.Database`) has **zero production callers**. It is exercised only by [`test/test_qc_package_model.ps1`](../test/test_qc_package_model.ps1) and referenced in [`docs/qc-package-model.md`](qc-package-model.md).
 

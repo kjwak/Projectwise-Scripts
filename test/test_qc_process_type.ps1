@@ -8,7 +8,7 @@ function Assert-Null($Actual, $Message) {
 function Assert-False($cond, $msg) { if ($cond) { throw "ASSERT FAILED: $msg" } }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
 Assert-Eq (Normalize-QCProcessType -ProcessType 'Production QC') 'production' 'Production QC -> production'
 Assert-Eq (Normalize-QCProcessType -ProcessType 'production') 'production' 'production -> production'

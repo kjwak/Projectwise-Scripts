@@ -94,7 +94,7 @@ flowchart TD
 
 | File | Change |
 |------|--------|
-| `modules/Core.Config.psm1` | `Read-AppConfig` → thin wrapper over `Read-QCAppSettings` + `Test-AppSettings`; `_CC-ToHashtableDeep` delegates to `ConvertTo-HashtableDeep` |
+| `modules/Core/Core.Config.psm1` | `Read-AppConfig` → thin wrapper over `Read-QCAppSettings` + `Test-AppSettings`; `_CC-ToHashtableDeep` delegates to `ConvertTo-HashtableDeep` |
 | `scripts/Get-PWFolderStateCounts.ps1` | `Read-QCAppSettings` + `Test-AppSettings`; removed local `_ToHashtable` |
 | `scripts/Scan-PWProjectMetrics.ps1` | Same |
 | `tools/discovery/Test-BluebeamCommentExtractAndDb.ps1` | Same; imports `Core.Runtime` |

@@ -39,20 +39,20 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\QC.Worker.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Telemetry.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Worker.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
 }
 if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 }
 if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
     throw "Core.Database.psm1 did not load (Test-QCDatabaseEnabled missing). Repo root: $repoRoot"

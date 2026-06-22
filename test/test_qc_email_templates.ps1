@@ -18,14 +18,14 @@ function Assert-Throws($ScriptBlock, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Runtime.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
-Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Notifications.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Runtime.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Config.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.Notifications.psm1" -Force
 # Re-import after Notifications so exports remain in the global session (nested import unloads globals).
-Import-Module "$repoRoot/modules/QC.NotificationGraph.psm1" -Force
-Import-Module "$repoRoot/modules/QC.NotificationTemplates.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationTemplates.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Config.psm1" -Force
 
 $pascalSubjectTokens = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
 $pascalSubjectTokens['DocumentName'] = '0818000063ea501-qc.pdf'
@@ -112,7 +112,7 @@ $configPath = Join-Path $repoRoot 'appsettings.json'
 $configRes = Read-QCAppSettings -Path $configPath
 if (-not $configRes.IsSuccess) { throw $configRes.Message }
 $configHt = $configRes.Data.config
-Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Config.psm1" -Force
 $azdotFolder = 'Documents\AZDOT 2024\Sample Highway\CADD\Sheets'
 $azdotProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $azdotFolder
 Assert-Eq $azdotProject 'Sample Highway' 'AZDOT 2024 project name should be folder segment before CADD\Sheets'

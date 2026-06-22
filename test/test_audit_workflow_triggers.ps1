@@ -2,11 +2,11 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.AuditTriggers.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.AuditTriggers.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
 function Assert-Eq($a, $b, $msg) {
     if ($a -ne $b) { throw "ASSERT FAILED: $msg (got '$a', expected '$b')" }
@@ -95,7 +95,7 @@ Assert-Eq (Resolve-QCWorkflowEventQcReviewType -Context @{ attributes = @{ revie
 Assert-Eq (Resolve-QCWorkflowEventQcReviewType -Context @{ attributes = @{ qcReviewType = 'Production QC' } }) `
     'Production QC' 'context attributes qcReviewType'
 
-Import-Module (Join-Path $repoRoot 'modules\QC.WatcherOrchestration.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force
 $prependActions = Get-QCPrependAuditActions -Config $cfgDefault
 Assert-True ($prependActions -contains 'DOCUMENT_ATTR') 'default prepend actions include DOCUMENT_ATTR'
 Assert-True ($prependActions -contains 'DOCUMENT_STATE') 'default prepend actions include DOCUMENT_STATE'

@@ -11,7 +11,7 @@ SQL Server serves as a **telemetry and reporting layer** alongside the existing 
 - **Server**: `localhost\SQLEXPRESS` (SQL Server 2025 Express Edition)
 - **Database**: `QC_Pipeline`
 - **Authentication**: Windows Authentication (`Trusted_Connection=True`)
-- **Module**: `modules/Core.Database.psm1`
+- **Module**: `modules/Database/Core.Database.psm1`
 
 ### Configuration (`appsettings.json`)
 
@@ -285,7 +285,7 @@ Preview by default; pass `-ConfirmDeletes` to apply.
 
 ### Write path
 
-All `Write-QCJsonLog` calls route through `Write-QCAutomationEvent` (`modules/Core.Telemetry.psm1`):
+All `Write-QCJsonLog` calls route through `Write-QCAutomationEvent` (`modules/Core/Core.Telemetry.psm1`):
 
 1. JSONL file line is written first (crash-recovery backup when `QC_JSON_LOG_DIR` is set).
 2. Filtered events are inserted into `automation_events` (never throws; failures are returned as `QCResult`).

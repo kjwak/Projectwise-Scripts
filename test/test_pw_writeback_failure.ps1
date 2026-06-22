@@ -3,8 +3,8 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
-Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $root 'modules\Core.Paths.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Paths.psm1') -Force
 
 $failures = 0
 function _Assert([bool]$ok, [string]$msg) {

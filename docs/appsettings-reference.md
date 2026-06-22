@@ -6,7 +6,7 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 
 | Mechanism | Purpose |
 |-----------|---------|
-| `Read-QCAppSettings` | All scripts and dashboard load config via `modules/Core.Runtime.psm1`. |
+| `Read-QCAppSettings` | All scripts and dashboard load config via `modules/Core/Core.Runtime.psm1`. |
 | `-AppSettingsPath` | Override path on `Watch-QCTrigger.ps1`, `Start-QCPipelineDashboard.ps1`, etc. |
 | `-DryRun` (CLI) | Forces `dryRun: true` even when JSON says false. |
 | `$schema` in JSON | IDE only; ignored at runtime. |
@@ -160,7 +160,7 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 ## qcRendition
 
-After a successful `QC_PREPEND` that sets workflow state to **Originated** (TYPSA), the pipeline can enqueue **`QC_RENDITION`** (`modules/QC.Rendition.psm1`). Profile resolution order: longest matching `folderOverrides[].folderPathPrefix`, then longest matching `projectWise.watchList.roots[].qcRendition`, then legacy `qcRendition.datasources[datasourceName]`, then optional `Get-PWFolderRenditionProfile` when `useFolderProfileWhenUnspecified` is true.
+After a successful `QC_PREPEND` that sets workflow state to **Originated** (TYPSA), the pipeline can enqueue **`QC_RENDITION`** (`modules/Processing/QC.Rendition.psm1`). Profile resolution order: longest matching `folderOverrides[].folderPathPrefix`, then longest matching `projectWise.watchList.roots[].qcRendition`, then legacy `qcRendition.datasources[datasourceName]`, then optional `Get-PWFolderRenditionProfile` when `useFolderProfileWhenUnspecified` is true.
 
 | Key | Description |
 |-----|-------------|
@@ -206,7 +206,7 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 
 ## qcWorkflow
 
-Optional ProjectWise **document attribute** writeback (and optional **workflow state** changes) after a successful `QC_PREPEND`. Implemented in `modules/QC.Workflow.psm1`; invoked from `QC.Processors.psm1` when prepend completes.
+Optional ProjectWise **document attribute** writeback (and optional **workflow state** changes) after a successful `QC_PREPEND`. Implemented in `modules/Workflow/QC.Workflow.psm1`; invoked from `QC.Processors.psm1` when prepend completes.
 
 **Full guide (lifecycle states, review types, assignment, PW admin setup, discovery scripts, rollout):** [`docs/qc-workflow-framework.md`](qc-workflow-framework.md)
 

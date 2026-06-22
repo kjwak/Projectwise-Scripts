@@ -155,8 +155,8 @@ function Get-TestNotificationAppSettings([string]$Path) {
     return $cfg
 }
 
-$resultsModule = Join-Path $repoRoot 'modules\Core.Results.psm1'
-$graphModule = Join-Path $repoRoot 'modules\QC.NotificationGraph.psm1'
+$resultsModule = Join-Path $repoRoot 'modules\Core\Core.Results.psm1'
+$graphModule = Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1'
 foreach ($modPath in @($resultsModule, $graphModule)) {
     if (-not (Test-Path -LiteralPath $modPath)) {
         throw "Required module not found: $modPath"

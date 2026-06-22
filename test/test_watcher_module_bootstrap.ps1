@@ -3,26 +3,26 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 $imports = @(
-    'modules\Core.Results.psm1',
-    'modules\Core.Runtime.psm1',
-    'modules\Core.Hashing.psm1',
-    'modules\Core.Paths.psm1',
-    'modules\QC.Filters.psm1',
-    'modules\QC.Triggers.psm1',
-    'modules\QC.JobFactory.psm1',
-    'modules\QC.Queue.Json.psm1',
-    'modules\Core.Database.psm1',
-    'modules\PW.Users.psm1',
-    'modules\PW.Discovery.psm1',
-    'modules\PW.AuditPoller.psm1',
-    'modules\QC.StatusSet.psm1',
-    'modules\QC.WatcherOrchestration.psm1'
+    'modules\Core\Core.Results.psm1',
+    'modules\Core\Core.Runtime.psm1',
+    'modules\Core\Core.Hashing.psm1',
+    'modules\Core\Core.Paths.psm1',
+    'modules\Queue\QC.Filters.psm1',
+    'modules\Queue\QC.Triggers.psm1',
+    'modules\Queue\QC.JobFactory.psm1',
+    'modules\Queue\QC.Queue.Json.psm1',
+    'modules\Database\Core.Database.psm1',
+    'modules\ProjectWise\PW.Users.psm1',
+    'modules\ProjectWise\PW.Discovery.psm1',
+    'modules\ProjectWise\PW.AuditPoller.psm1',
+    'modules\Processing\QC.StatusSet.psm1',
+    'modules\Core\QC.WatcherOrchestration.psm1'
 )
 foreach ($rel in $imports) {
     Import-Module (Join-Path $repoRoot $rel) -Force
 }
 if (-not (Get-Command Test-QCDatabaseEnabled -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Core.Database.psm1') -Force
+    Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
 }
 
 if (-not (Get-Command Test-QCDatabaseEnabled -ErrorAction SilentlyContinue)) {

@@ -1,9 +1,9 @@
 # PW.Discovery.psm1
 # Responsibility: Read-only ProjectWise watch-path resolution and candidate discovery.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 function Ensure-PWDiscoveryModuleLoaded {
     <#
@@ -62,7 +62,7 @@ function Ensure-PWDiscoveryModuleLoaded {
     if (Get-Command -Name 'Ensure-QCJsonLogAvailable' -ErrorAction SilentlyContinue) {
         [void](Ensure-QCJsonLogAvailable -ModulesRoot (Split-Path -Parent $PSScriptRoot))
     } elseif (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
     }
 
     $stillMissing = @($required | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
@@ -1681,7 +1681,7 @@ function _PWD-SyncSheetPackageLaneQcPdfs {
     )
     if (-not (Get-Command -Name 'Sync-SheetPackageLaneQcPdfsFromMembers' -ErrorAction SilentlyContinue)) {
         try {
-            Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Database.psm1') -Force -ErrorAction SilentlyContinue
+            Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Database/Core.Database.psm1') -Force -ErrorAction SilentlyContinue
         } catch { }
     }
     if ([string]::IsNullOrWhiteSpace($SheetStem)) {
@@ -3572,7 +3572,7 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
     if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) `
         -or -not (Get-Command -Name 'Add-QCPrependJobForQcFinalizingStateChange' -ErrorAction SilentlyContinue)) {
         try {
-            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Processors.psm1'
+            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1'
             Import-Module $procPath -Force -ErrorAction SilentlyContinue
         } catch { }
     }
@@ -3587,7 +3587,7 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
     $prependTrigger = if ($isInitiated) { 'initialQcPdf' } else { 'finalQcComplete' }
 
     if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
-        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Processors.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1') -Force -ErrorAction SilentlyContinue } catch { }
     }
     if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
         $intendedLane = ''
@@ -3610,7 +3610,7 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
     }
 
     if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
-        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
+        try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue } catch { }
     }
     if (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue) {
         $emailGate = Test-QCPrependBlockedByMissingEmailAttributes -Config $Config -FolderPath $FolderPath `
@@ -3764,7 +3764,7 @@ function _PWD-InvokeLaneQcPdfDocumentStateWorkflow {
 
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
         try {
-            $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1'
+            $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1'
             Import-Module $notifPath -ErrorAction SilentlyContinue
             if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
                 Import-Module $notifPath -Force -ErrorAction SilentlyContinue
@@ -4097,7 +4097,7 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
         if (Test-QCWorkflowStateIsQcInitiated -StateName $canonical -Config $Config) {
             if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
                 try {
-                    $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1'
+                    $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1'
                     Import-Module $notifPath -ErrorAction SilentlyContinue
                     if (-not (Get-Command -Name 'Test-QCPrependBlockedByMissingEmailAttributes' -ErrorAction SilentlyContinue)) {
                         Import-Module $notifPath -Force -ErrorAction SilentlyContinue
@@ -4106,7 +4106,7 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
             }
             if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
                 try {
-                    $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Processors.psm1'
+                    $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1'
                     Import-Module $procPath -Force -ErrorAction SilentlyContinue
                 } catch { }
             }
@@ -4452,7 +4452,7 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
         try {
-            $rendPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Rendition.psm1'
+            $rendPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Rendition.psm1'
             Import-Module $rendPath -ErrorAction SilentlyContinue
             if (-not (Get-Command -Name 'Add-QCRenditionJobForReadyForQcStateChange' -ErrorAction SilentlyContinue)) {
                 Import-Module $rendPath -Force -ErrorAction SilentlyContinue
@@ -4463,7 +4463,7 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     if (-not (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue)) {
         try {
-            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Processors.psm1'
+            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1'
             Import-Module $procPath -Force -ErrorAction SilentlyContinue
         } catch { }
     }
@@ -4666,7 +4666,7 @@ function Sync-PWAssociatedSheetWorkflowState {
 
     if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
         try {
-            $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Notifications.psm1'
+            $notifPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.Notifications.psm1'
             Import-Module $notifPath -ErrorAction SilentlyContinue
             if (-not (Get-Command -Name 'Invoke-QCWorkflowStateEmailAttributeGate' -ErrorAction SilentlyContinue)) {
                 Import-Module $notifPath -Force -ErrorAction SilentlyContinue
@@ -5109,7 +5109,7 @@ function _PWD-TryTriggerQcInitiatedFromAssociatedSheetPdf {
 
     if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
         try {
-            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.Processors.psm1'
+            $procPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1'
             Import-Module $procPath -Force -ErrorAction SilentlyContinue
         } catch { }
     }

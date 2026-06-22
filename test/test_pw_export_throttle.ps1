@@ -8,9 +8,9 @@ before the next export starts. Configurable via statusSet.pwExportThrottleMs.
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.StatusSet.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force -DisableNameChecking | Out-Null
 
 function Assert-True($Cond, $Msg) {
     if (-not $Cond) { throw "ASSERT FAILED: $Msg" }

@@ -1,8 +1,8 @@
 # QC.PdfExport.psm1
 # Responsibility: Download/export ProjectWise PDFs to local staging for inspection.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.StatusSet.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.StatusSet.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QPE-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }

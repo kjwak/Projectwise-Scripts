@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('qc_inflight_' + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path (Join-Path $tmp 'running') -Force | Out-Null

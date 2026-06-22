@@ -11,11 +11,11 @@ function Assert-Eq($Actual, $Expected, $Message) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Paths.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Triggers.psm1" -Force
-Import-Module "$repoRoot/modules/QC.JobFactory.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Queue.Json.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Paths.psm1" -Force
+Import-Module "$repoRoot/modules/Queue/QC.Triggers.psm1" -Force
+Import-Module "$repoRoot/modules/Queue/QC.JobFactory.psm1" -Force
+Import-Module "$repoRoot/modules/Queue/QC.Queue.Json.psm1" -Force
 
 $tempRoot = Join-Path $env:TEMP ("qc-watch-dryrun-test-" + ([guid]::NewGuid().ToString('N')))
 $watchDir = Join-Path $tempRoot "watch"

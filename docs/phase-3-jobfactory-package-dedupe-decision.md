@@ -8,11 +8,11 @@
 
 ## Executive summary
 
-After the in-memory `QC.Package*` model was archived, [`modules/QC.JobFactory.psm1`](../modules/QC.JobFactory.psm1) still contained an unwired package dedupe path: `New-QCPackageJobDedupeKey` and a `Get-QCDedupeKey` branch keyed on `job.metadata.package`. Phase 2/3 investigation found **no production code populates `metadata.package`**.
+After the in-memory `QC.Package*` model was archived, [`modules/Queue/QC.JobFactory.psm1`](../modules/Queue/QC.JobFactory.psm1) still contained an unwired package dedupe path: `New-QCPackageJobDedupeKey` and a `Get-QCDedupeKey` branch keyed on `job.metadata.package`. Phase 2/3 investigation found **no production code populates `metadata.package`**.
 
 **Chosen action (Option B):** Remove `New-QCPackageJobDedupeKey` and the `metadata.package` branch. Production queue dedupe behavior is unchanged because the branch never executed in live paths.
 
-Package-level notification dedupe remains in [`modules/QC.Notifications.psm1`](../modules/QC.Notifications.psm1) via `Get-QCNotificationDedupeKey` / `Get-QCNotificationSheetPackageDedupeKey` (SQL-aware, separate from JobFactory).
+Package-level notification dedupe remains in [`modules/Notifications/QC.Notifications.psm1`](../modules/Notifications/QC.Notifications.psm1) via `Get-QCNotificationDedupeKey` / `Get-QCNotificationSheetPackageDedupeKey` (SQL-aware, separate from JobFactory).
 
 ---
 
@@ -105,7 +105,7 @@ flowchart TD
 
 | File | Change |
 |------|--------|
-| `modules/QC.JobFactory.psm1` | Removed `New-QCPackageJobDedupeKey` and `metadata.package` branch in `Get-QCDedupeKey` |
+| `modules/Queue/QC.JobFactory.psm1` | Removed `New-QCPackageJobDedupeKey` and `metadata.package` branch in `Get-QCDedupeKey` |
 | `archive/package-model-v1/test/test_qc_package_model.ps1` | Removed package dedupe assertions; removed unused `QC.JobFactory` import |
 | `archive/package-model-v1/README.md` | Updated deferred note |
 | `test/test_job_factory.ps1` | Assert production jobs do not use `dq_pkg_` prefix |

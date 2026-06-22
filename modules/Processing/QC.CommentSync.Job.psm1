@@ -1,10 +1,10 @@
 # QC.CommentSync.Job.psm1
 # Responsibility: Build/enrich QC_COMMENT_STATUS_SYNC job metadata payloads.
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'QC.PdfExport.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PdfExport.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCJ-IsNullOrWhiteSpace([object]$Value) {
     if ($null -eq $Value) { return $true }

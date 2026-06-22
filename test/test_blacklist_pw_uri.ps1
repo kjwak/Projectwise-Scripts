@@ -10,9 +10,9 @@ which silently failed for JSON-encoded entries like "pw:\\\\datasource\\Document
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
 
 function Assert-True($Cond, $Msg) {
     if (-not $Cond) { throw "ASSERT FAILED: $Msg" }

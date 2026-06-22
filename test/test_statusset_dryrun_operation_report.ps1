@@ -2,9 +2,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $root 'modules\Core.Results.psm1') -Force
-Import-Module (Join-Path $root 'modules\Core.Paths.psm1') -Force
-Import-Module (Join-Path $root 'modules\QC.StatusSet.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
+Import-Module (Join-Path $root 'modules\Core\Core.Paths.psm1') -Force
+Import-Module (Join-Path $root 'modules\Processing\QC.StatusSet.psm1') -Force
 
 function Assert([bool]$Cond, [string]$Msg) {
     if (-not $Cond) { throw "ASSERT FAILED: $Msg" }

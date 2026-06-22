@@ -9,9 +9,9 @@ function Assert-Eq($Actual, $Expected, $Message) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.ProcessType.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Workflow/QC.ProcessType.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.Processors.psm1" -Force
 
 function New-TempQueueRoot {
     $t = Join-Path $env:TEMP ("qc-prepend-dedupe-" + ([guid]::NewGuid().ToString('N')))

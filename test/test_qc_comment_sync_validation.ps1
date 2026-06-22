@@ -2,8 +2,8 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Database.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Database/Core.Database.psm1" -Force
 
 function Assert-True($Condition, $Message) {
     if (-not $Condition) { throw "ASSERT FAILED: $Message" }
@@ -18,15 +18,15 @@ Assert-True (-not (Test-QCDatabaseWritesAllowed -Config $cfgDry)) 'Dry-run block
 $cfgDryAllow = @{ dryRun = $true; database = @{ enabled = $true; allowWritesInDryRun = $true } }
 Assert-True (Test-QCDatabaseWritesAllowed -Config $cfgDryAllow) 'allowWritesInDryRun permits dry-run DB writes'
 
-Import-Module "$repoRoot/modules/QC.CommentSync.Database.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.CommentSync.Database.psm1" -Force
 
 # Planned workflow events stay in-memory unless logPlannedEventsInDryRun
 $cfgPlanned = @{ dryRun = $true; database = @{ enabled = $true; logPlannedEventsInDryRun = $false } }
 $ev = Write-QCWorkflowEvent -Config $cfgPlanned -EventType 'STATE_DECIDED' -PlannedOnly
 Assert-True ($ev.Data.planned) 'Planned event not persisted without logPlannedEventsInDryRun'
 
-Import-Module "$repoRoot/modules/QC.CommentStatusProcessor.psm1" -Force
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.CommentStatusProcessor.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 
 # Invalid transition must not count as successful state apply when failOnStateApply=true
 $settings = @{ failOnStateApply = $true }

@@ -9,9 +9,9 @@ function Assert-Eq($Actual, $Expected, $Message) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Workflow.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Processors.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Workflow/QC.Workflow.psm1" -Force
+Import-Module "$repoRoot/modules/Processing/QC.Processors.psm1" -Force
 
 
 function Write-ValidPdf([string]$QpdfExe, [string]$Path) {

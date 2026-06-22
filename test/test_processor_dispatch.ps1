@@ -10,8 +10,8 @@ function Assert-Eq($Actual, $Expected, $Message) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module "$repoRoot/modules/Core.Results.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Queue.Json.psm1" -Force
+Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
+Import-Module "$repoRoot/modules/Queue/QC.Queue.Json.psm1" -Force
 
 function New-TestJob([string]$Id, [string]$Type, [string]$DedupeKey) {
     return @{

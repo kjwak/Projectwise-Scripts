@@ -1,8 +1,8 @@
 # QC.NotificationThreads.psm1
 # Responsibility: Durable QC notification email threading (sheet_package_id + review_type).
 
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Results.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Results.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCNT-IsBlank([object]$Value) {
     if ($null -eq $Value) { return $true }
