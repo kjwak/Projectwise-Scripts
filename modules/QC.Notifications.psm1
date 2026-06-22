@@ -172,7 +172,7 @@ function Get-QCNotificationSettings {
             enabled = $true
             storePath = (Join-Path (_QCN-GetRepoRoot) 'notifications\dedupe\sent-keys.jsonl')
             # Logical sheet-transition identity.  Do not key by transitionId by default because
-            # DGN, sheet PDF, and *-qc.pdf sibling sync can each create their own transition row.
+            # DGN, sheet PDF, and lane QC PDF sibling sync can each create their own transition row.
             keyFields = @('sheetStem', 'qcProcessType', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
             sheetPackageKeyFields = @('sheetStem', 'currentState', 'cycleId')
         }
@@ -1701,7 +1701,7 @@ function _QCN-WriteQcPdfNotificationGuidResolutionLog {
 
 function _QCN-ResolveLiveQcPdfDocumentGuid {
     <#
-    Resolves the current ProjectWise GUID for a sheet's *-qc.pdf.
+    Resolves the current ProjectWise GUID for a sheet's lane QC PDF (*-prod/-chk/-rev.pdf).
     Prefers package member tables over PW search and stale sheet_index rows.
     #>
     param(
@@ -2605,7 +2605,7 @@ function Get-QCNotificationDedupeKey {
     $dedupe = _QCN-ToHashtable $Settings.dedupe
     # Default to one durable notification per logical sheet transition + recipient set.  A
     # transition_events id is intentionally *not* authoritative here: sibling sync can create
-    # one transition row for the DGN, sheet PDF, and *-qc.pdf for the same logical sheet action.
+    # one transition row for the DGN, sheet PDF, and lane QC PDF for the same logical sheet action.
     $fields = if ($dedupe -and $dedupe.keyFields) { @($dedupe.keyFields) } else {
         @('sheetStem', 'documentGuid', 'previousState', 'currentState', 'transitionSource', 'logicalTransitionAnchor', 'recipientKey')
     }

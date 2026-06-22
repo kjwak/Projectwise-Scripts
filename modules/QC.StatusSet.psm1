@@ -1492,16 +1492,6 @@ function Invoke-StatusSetNativeJob {
     }
 }
 
-Export-ModuleMember -Function @(
-    'Get-StatusSetManifestPathLegacy',
-    'Get-StatusSetCacheDirLegacy',
-    'Read-StatusSetManifestLegacy',
-    'Write-StatusSetManifestLegacy',
-    'Get-StatusSetLocalFolderState',
-    'Get-StatusSetPWFolderState',
-    'Invoke-StatusSetNativeJob'
-)
-
 function _SSS-BuildPWStatusSetState {
     param(
         [Parameter(Mandatory)]
@@ -3237,6 +3227,10 @@ function Test-StatusSetWatcherShouldEnqueue {
 }
 
 Export-ModuleMember -Function @(
+    'Get-StatusSetManifestPathLegacy',
+    'Get-StatusSetCacheDirLegacy',
+    'Read-StatusSetManifestLegacy',
+    'Write-StatusSetManifestLegacy',
     'Get-StatusSetLocalFolderState',
     'Get-StatusSetPWFolderState',
     'Get-StatusSetWorkspaceDirectory',

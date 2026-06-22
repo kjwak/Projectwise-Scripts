@@ -107,52 +107,6 @@ function Test-AppSettings {
     return New-QCSuccessResult -Code 'CONFIG_VALID' -Message 'Config validated.' -Data @{}
 }
 
-function Get-AppSetting {
-    <#
-    .SYNOPSIS
-    Retrieves a nested setting value by key path.
-    .DESCRIPTION
-    Resolves a configuration value from the loaded settings object.
-    .PARAMETER Config
-    Loaded app configuration hashtable.
-    .PARAMETER KeyPath
-    Dot-delimited key path (for example: queue.backend).
-    .PARAMETER DefaultValue
-    Optional default returned when key is not found.
-    .OUTPUTS
-    PSCustomObject with shape: IsSuccess [bool], Code [string], Message [string], Data [object].
-    .NOTES
-    Side effects: none.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$Config,
-        [Parameter(Mandatory)]
-        [string]$KeyPath,
-        [object]$DefaultValue
-    )
-
-    if ([string]::IsNullOrWhiteSpace($KeyPath)) {
-        return New-QCFailureResult -Code 'CONFIG_KEYPATH_EMPTY' -Message 'KeyPath is required.' -Data @{}
-    }
-
-    $cur = $Config
-    foreach ($part in ($KeyPath -split '\.')) {
-        if ($cur -is [hashtable]) {
-            if (-not $cur.ContainsKey($part)) { return New-QCSuccessResult -Code 'CONFIG_VALUE_DEFAULT' -Message 'Setting not found; returning default.' -Data @{ value = $DefaultValue; isDefault = $true } }
-            $cur = $cur[$part]
-            continue
-        }
-        return New-QCSuccessResult -Code 'CONFIG_VALUE_DEFAULT' -Message 'Setting not found; returning default.' -Data @{ value = $DefaultValue; isDefault = $true }
-    }
-
-    if ($null -eq $cur) {
-        return New-QCSuccessResult -Code 'CONFIG_VALUE_DEFAULT' -Message 'Setting is null; returning default.' -Data @{ value = $DefaultValue; isDefault = $true }
-    }
-    return New-QCSuccessResult -Code 'CONFIG_VALUE' -Message 'Setting resolved.' -Data @{ value = $cur; isDefault = $false }
-}
-
 function _CC-ResolveProjectNamingAnchor([string]$WatchRootPath) {
     if ([string]::IsNullOrWhiteSpace($WatchRootPath)) { return '' }
     $rootNorm = ([string]$WatchRootPath).Trim() -replace '/', '\'

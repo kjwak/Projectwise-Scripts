@@ -15,7 +15,7 @@ def test_audit_poller_delegates_to_database_writer() -> None:
     assert "Write-QCAuditEventRows -Config $Config -Rows $dbRows" in scan
     assert "INSERT INTO audit_events" not in scan
     assert "o_action IN" not in scan
-    assert "Ingest every fetched row into audit_events" in scan
+    assert "# 2. Ingest QC-relevant rows into audit_events" in scan
 
 
 def test_audit_poller_reads_sql_rows_case_insensitively() -> None:

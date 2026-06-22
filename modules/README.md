@@ -17,7 +17,11 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 
 ### `Core.Config.psm1`
 - **Purpose**: intended config loader/validator façade.
-- **Declared exports**: `Read-AppConfig`, `Test-AppSettings`, `Get-AppSetting`, `Test-AppSettingsCompatibility`.
+- **Declared exports**: `Read-AppConfig`, `Test-AppSettings`, `Test-AppSettingsCompatibility`.
+
+### `Core.Logging.psm1`
+- **Purpose**: intended structured logging/audit façade.
+- **Declared exports**: `Write-QCLog`, `Write-QCAudit`.
 
 ### `Core.Runtime.psm1`
 - **Purpose**: script runtime helpers shared by entrypoints.
@@ -26,14 +30,6 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 ### `Core.Hashing.psm1`
 - **Purpose**: reusable SHA-256 helpers.
 - **Exports**: `Get-Sha256FileHex`, `Get-Sha256TextHex`.
-
-### `Core.Logging.psm1`
-- **Purpose**: intended structured logging/audit façade.
-- **Declared exports**: `Write-QCLog`, `Write-QCAudit`.
-
-### `Core.Metrics.psm1`
-- **Purpose**: intended counters/timing metrics layer.
-- **Declared exports**: `Initialize-QCMetrics`, `Get-QCMetricsSnapshot`, `Update-QCMetricsOn*`, `Reset-QCMetricsDaily`, `Flush-QCMetrics`.
 
 ## QC pipeline modules
 
@@ -121,10 +117,3 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 ### `PW.Discovery.psm1`
 - **Purpose**: discovery interface for PW candidates plus shared ProjectWise metadata/folder traversal helpers used by the watcher.
 - **Key exports**: `Resolve-WatchPaths`, `Get-PWTriggerCandidates`, `Get-PWCandidateMetadata`, `Get-PWDocName`, `Get-PWDocDescription`, `Get-PWDocLastModifiedUtc`, `ConvertTo-PWCmdletFolderPath`, `ConvertTo-PWCanonicalDocumentsFolderPath`, `Get-PWDocumentsInFolder`, `Find-PWSheetsFoldersUnderRoot`.
-
-## Orchestration
-
-### `Orchestrator.Pipeline.psm1`
-- **Purpose**: composable pipeline/worker ticks that call “port” functions and enforce QCResult shape.
-- **Exports**: `Invoke-QCPipelineTick`, `Invoke-QCWorkerTick`.
-
