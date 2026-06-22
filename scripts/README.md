@@ -39,14 +39,18 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 
 ## Diagnostics and maintenance
 
-### `Show-QCStatus.ps1`
+Diagnostic and discovery scripts live under `scripts/diagnostics/`. Compatibility wrappers at the former `scripts/*.ps1` paths forward to the new locations (Phase 4C).
+
+### `diagnostics/Show-QCStatus.ps1` (wrapper: `Show-QCStatus.ps1`)
 - **Purpose**: read-only queue snapshot (counts + recent jobs).
 
-### `Show-QCQueueDiag.ps1`
+### `diagnostics/Show-QCQueueDiag.ps1` (wrapper: `Show-QCQueueDiag.ps1`)
 - **Purpose**: deeper queue health view (running ages, lock owner PID liveness, orphan analysis).
 
-### `Test-PWConnection.ps1`
+### `diagnostics/Test-PWConnection.ps1` (wrapper: `Test-PWConnection.ps1`)
 - **Purpose**: connect/disconnect smoke test using `appsettings.json` credentials.
+
+See `scripts/diagnostics/` for ProjectWise browse/list/smoke probes, metrics scripts (`Get-PWFolderStateCounts`, `Scan-PWProjectMetrics`), and `Test-PWEmailAttributes*` / `Test-QC*` smoke scripts.
 
 ### `Stop-QCPipeline.ps1`
 - **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs).

@@ -547,7 +547,7 @@ dev (untouched until Phase 4 complete)
 |-------|--------|-------|------|------------|----------|----------------|
 | **4A** | `phase-4/module-script-organization-plan` | This plan doc only | None | Baseline tests (Appendix A) | Delete branch | N/A |
 | **4B** | `phase-4/prepend-path-promotion` | **Complete** — Move prepend to `scripts/processing/Invoke-QCPrependPw.ps1`; wrapper at `legacy/prepend_qc.ps1`; `projectWise`/`pw` mode aliases | **High** | `test_qc_prepend_processor.ps1`, `test_qc_prepend_lane_resolution.ps1`, pytest, focus suite | Revert mode + path | QC_PREPEND failure in staging |
-| **4C** | `phase-4/diagnostics-scripts` | Move Show/Get/Scan/Test scripts to `scripts/diagnostics/` | Low | focus tests, MCP smoke | Shims at old paths | Broken diagnostic workflows |
+| **4C** | `phase-4/diagnostics-scripts` | **Complete** — Move Show/Get/Scan/Test scripts to `scripts/diagnostics/`; silent wrappers at old `scripts/*.ps1` paths | Low | focus tests, wrapper test, MCP smoke | Shims at old paths | Broken diagnostic workflows |
 | **4D** | `phase-4/maintenance-scripts` | Move Reset, Purge, Repair, Remove, Sync scripts | Medium | focus tests, Reset preview | Shims | Publish copy list broken |
 | **4E** | `phase-4/module-folders` | Subfolders + module copies + flat shims | **High** | inventory, bootstrap, focus, watcher dry-run | Shims at old paths | Bootstrap or inventory fail |
 | **4F** | `phase-4/import-updates` | Update all Import-Module paths; Publish; add `test_entrypoint_imports.ps1` | **High** | full suite + new entrypoint test | Revert + shims | Production entry import failure |
@@ -626,6 +626,37 @@ Post-doc validation: re-run the same four commands and record in PR description 
 ### Rollback
 
 Set `qcPrepend.legacyScriptPath` to a saved copy of the pre-4B script, or revert the branch. `legacyPw` mode continues to work via the shim.
+
+---
+
+## Appendix D — Phase 4C diagnostics script move (complete)
+
+**Branch:** `phase-4/diagnostics-scripts` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-diagnostics-script-move-summary.md`](phase-4-diagnostics-script-move-summary.md)
+
+### Moved to `scripts/diagnostics/` (23 scripts)
+
+`Get-PWFolderStateCounts`, `Scan-PWProjectMetrics`, `Show-QCStatus`, `Show-QCQueueDiag`, `PW-BrowseFolder`, `PW-ListDocsInFolder`, `PW-TestWatchRoots`, `PW-SmokeTest`, `Test-PWConnection`, `Test-PWDocumentStateChange`, `Test-PWEmailAttributes` (+ 9 `Test-PWEmailAttributes-*` variants), `Test-QCEmailTemplate`, `Test-QCNotificationGraph`, `Test-QCWatcherSessionAlert`.
+
+### Wrappers retained
+
+Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@args` and `exit $LASTEXITCODE` to `scripts/diagnostics/<name>.ps1`.
+
+### Intentionally deferred
+
+- `tools/discovery/*.ps1` — docs, cross-script references, and MCP-adjacent paths still pin `tools/discovery/`; left unchanged.
+- Service, deployment, maintenance, processing, and prepend scripts (forbidden list in Phase 4C scope).
+
+### Validation
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
+| `./test/test_module_inventory.ps1` | **PASS** — 41 modules |
+| `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
+| `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 (new) |
 
 ---
 
