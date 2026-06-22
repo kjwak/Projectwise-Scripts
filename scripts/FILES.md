@@ -18,6 +18,16 @@ Read-only probes, smoke tests, and queue/PW inspection scripts are implemented u
 
 `tools/discovery/` is unchanged in Phase 4C (deferred).
 
+## Maintenance folder (Phase 4D)
+
+Queue, database, sheet-index, and ProjectWise operator recovery scripts are implemented under `maintenance/`. The same filenames remain at the `scripts/` root as silent compatibility wrappers.
+
+| Location | Examples |
+| --- | --- |
+| `maintenance/` | `Reset-QCFolderWorkflow`, `Purge-QCPendingByFilters`, `Requeue-QCJobs`, `Repair-*`, `Remove-*`, `Invoke-QCDatabaseRetention`, `Sync-*`, `Refresh-*`, `Reconcile-*` |
+
+`Import-QCScriptModules.ps1` stays at `scripts/` (dot-sourced helper). `Stop-QCPipeline.ps1` stays at `scripts/` (pipeline stop helper).
+
 ## File purposes
 
 | File | Purpose |
@@ -27,12 +37,12 @@ Read-only probes, smoke tests, and queue/PW inspection scripts are implemented u
 | `PW-ListDocsInFolder.ps1` | Compatibility wrapper → `diagnostics/PW-ListDocsInFolder.ps1`. |
 | `PW-SmokeTest.ps1` | Compatibility wrapper → `diagnostics/PW-SmokeTest.ps1`. |
 | `PW-TestWatchRoots.ps1` | Compatibility wrapper → `diagnostics/PW-TestWatchRoots.ps1`. |
-| `Purge-QCPendingByFilters.ps1` | Queue maintenance utility that re-evaluates pending jobs against current filters and moves disallowed jobs to failed. |
-| `Remove-QCAuditEvents.ps1` | Database maintenance: preview/delete aged `audit_events` rows (batched, processed-only by default). |
-| `Remove-QCWorkflowEvents.ps1` | Database maintenance: preview/delete `qc_workflow_events` by folder path fragment(s) (not scheduled retention). |
-| `Invoke-QCDatabaseRetention.ps1` | Scheduled `audit_events` retention only (`database.retention` in appsettings). |
-| `Reconcile-QCStatusSets.ps1` | Startup/catch-up utility that scans local status-set manifests and reconciles generated `_StatusSet.pdf` files back to ProjectWise. |
-| `Requeue-QCJobs.ps1` | Queue maintenance utility that moves matching succeeded or failed jobs back to pending for reprocessing. |
+| `Purge-QCPendingByFilters.ps1` | Compatibility wrapper → `maintenance/Purge-QCPendingByFilters.ps1`. |
+| `Remove-QCAuditEvents.ps1` | Compatibility wrapper → `maintenance/Remove-QCAuditEvents.ps1`. |
+| `Remove-QCWorkflowEvents.ps1` | Compatibility wrapper → `maintenance/Remove-QCWorkflowEvents.ps1`. |
+| `Invoke-QCDatabaseRetention.ps1` | Compatibility wrapper → `maintenance/Invoke-QCDatabaseRetention.ps1`. |
+| `Reconcile-QCStatusSets.ps1` | Compatibility wrapper → `maintenance/Reconcile-QCStatusSets.ps1`. |
+| `Requeue-QCJobs.ps1` | Compatibility wrapper → `maintenance/Requeue-QCJobs.ps1`. |
 | `Run-CombineStatusSet.ps1` | Convenience launcher that reads `statusSet.localRoot` from `appsettings.json` and forwards to `Combine-StatusSet.ps1`. |
 | `Run-QCProcessor.ps1` | Worker entrypoint that claims pending queue jobs, dispatches processors, renews locks, records logs, and transitions job states. |
 | `Show-QCQueueDiag.ps1` | Compatibility wrapper → `diagnostics/Show-QCQueueDiag.ps1`. |

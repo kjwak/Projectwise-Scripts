@@ -548,7 +548,7 @@ dev (untouched until Phase 4 complete)
 | **4A** | `phase-4/module-script-organization-plan` | This plan doc only | None | Baseline tests (Appendix A) | Delete branch | N/A |
 | **4B** | `phase-4/prepend-path-promotion` | **Complete** — Move prepend to `scripts/processing/Invoke-QCPrependPw.ps1`; wrapper at `legacy/prepend_qc.ps1`; `projectWise`/`pw` mode aliases | **High** | `test_qc_prepend_processor.ps1`, `test_qc_prepend_lane_resolution.ps1`, pytest, focus suite | Revert mode + path | QC_PREPEND failure in staging |
 | **4C** | `phase-4/diagnostics-scripts` | **Complete** — Move Show/Get/Scan/Test scripts to `scripts/diagnostics/`; silent wrappers at old `scripts/*.ps1` paths | Low | focus tests, wrapper test, MCP smoke | Shims at old paths | Broken diagnostic workflows |
-| **4D** | `phase-4/maintenance-scripts` | Move Reset, Purge, Repair, Remove, Sync scripts | Medium | focus tests, Reset preview | Shims | Publish copy list broken |
+| **4D** | `phase-4/maintenance-scripts` | **Complete** — Move Reset/Purge/Repair/Remove/Sync/Reconcile maintenance scripts to `scripts/maintenance/`; silent wrappers at old paths | Medium | focus tests, maintenance wrapper test | Shims at old paths | Publish copy list broken |
 | **4E** | `phase-4/module-folders` | Subfolders + module copies + flat shims | **High** | inventory, bootstrap, focus, watcher dry-run | Shims at old paths | Bootstrap or inventory fail |
 | **4F** | `phase-4/import-updates` | Update all Import-Module paths; Publish; add `test_entrypoint_imports.ps1` | **High** | full suite + new entrypoint test | Revert + shims | Production entry import failure |
 | **4G** | `phase-4/psd1-manifests` | Add `.psd1`; narrow exports | Medium | manifest parse, PW-free import tests | Keep shims | PW leakage into Core |
@@ -657,6 +657,39 @@ Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@arg
 | `./test/test_module_inventory.ps1` | **PASS** — 41 modules |
 | `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
 | `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 (new) |
+
+---
+
+## Appendix E — Phase 4D maintenance script move (complete)
+
+**Branch:** `phase-4/maintenance-scripts` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-maintenance-script-move-summary.md`](phase-4-maintenance-script-move-summary.md)
+
+### Moved to `scripts/maintenance/` (16 scripts)
+
+`Reset-QCFolderWorkflow`, `Purge-QCPendingByFilters`, `Requeue-QCJobs`, `Repair-QCQueueDuplicates`, `Repair-QCDocumentsFolderPaths`, `Invoke-QCDatabaseRetention`, `Remove-QCAuditEvents`, `Remove-QCWorkflowEvents`, `Remove-LegacyQcPdfDatabaseRows`, `Remove-InvalidSheetIndexRows`, `Import-QCJsonlLogsToAutomationEvents`, `Sync-QCFolderSheetIndex`, `Refresh-SheetIndexStates`, `Reconcile-QCSheetOwnership`, `Reconcile-QCStatusSets`, `Sync-PWUserDirectory`.
+
+### Wrappers retained
+
+Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@args` and `exit $LASTEXITCODE` to `scripts/maintenance/<name>.ps1`. `Publish-QCPipelineCode.ps1` unchanged — still copies `scripts\Reset-QCFolderWorkflow.ps1` (wrapper).
+
+### Intentionally deferred
+
+- `scripts/Import-QCScriptModules.ps1` — dot-sourced helper stays in `scripts/`
+- `scripts/Stop-QCPipeline.ps1` — pipeline stop helper, not maintenance entry
+- Processing, service, deployment, diagnostics, discovery, prepend scripts
+
+### Validation
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
+| `./test/test_module_inventory.ps1` | **PASS** — 41 modules |
+| `./test/test_watcher_module_bootstrap.ps1` | **PASS** |
+| `./test/test_diagnostic_script_wrappers.ps1` | **PASS** — 23/23 |
+| `./test/test_maintenance_script_wrappers.ps1` | **PASS** — 16/16 (new) |
 
 ---
 

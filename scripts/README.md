@@ -52,20 +52,23 @@ Diagnostic and discovery scripts live under `scripts/diagnostics/`. Compatibilit
 
 See `scripts/diagnostics/` for ProjectWise browse/list/smoke probes, metrics scripts (`Get-PWFolderStateCounts`, `Scan-PWProjectMetrics`), and `Test-PWEmailAttributes*` / `Test-QC*` smoke scripts.
 
-### `Stop-QCPipeline.ps1`
-- **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs).
+Maintenance and operator recovery scripts live under `scripts/maintenance/`. Compatibility wrappers at the former `scripts/*.ps1` paths forward to the new locations (Phase 4D).
 
-### `Reset-QCFolderWorkflow.ps1`
+### `maintenance/Reset-QCFolderWorkflow.ps1` (wrapper: `Reset-QCFolderWorkflow.ps1`)
 - **Purpose**: reset PW workflow states + clear folder-scoped QC telemetry for a clean prepend cycle.
 - **Lane PDF recycle**: after manually deleting `*-prod/-chk/-rev.pdf` in PW, run with `-ConfirmReset` to delete lane
   `sheet_index` ghosts, `sheet_documents` `qc_pdf` rows, and `sheet_package_qc_pdfs` (default). Use `-KeepLanePdfRegistry`
   for legacy UPDATE-only behavior.
+
+### `Stop-QCPipeline.ps1`
+- **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs).
+
+See `scripts/maintenance/` for queue purge/requeue/repair, database retention/removal, sheet-index sync/reconcile, and related operator tools (`Purge-QCPendingByFilters`, `Requeue-QCJobs`, `Invoke-QCDatabaseRetention`, etc.).
 
 ### `Publish-QCPipelineCode.ps1`
 - **Purpose**: copy `modules/` and key scripts to the production worker root; optional `-ConfirmRestart`.
 
 ### Other helper scripts
 
-This repo also includes queue/status-set helpers such as `Requeue-QCJobs.ps1`, `Purge-QCPendingByFilters.ps1`,
-and status-set wrappers (`Combine-StatusSet.ps1`, `Run-CombineStatusSet.ps1`, `Reconcile-QCStatusSets.ps1`).
+Status-set processing wrappers remain at the `scripts/` root: `Combine-StatusSet.ps1`, `Run-CombineStatusSet.ps1`. `Import-QCScriptModules.ps1` is dot-sourced by maintenance scripts under `scripts/maintenance/`.
 
