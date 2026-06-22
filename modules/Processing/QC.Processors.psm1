@@ -104,7 +104,11 @@ function _QCP-ResolveProjectWisePrependScriptPath {
 }
 
 function _QCP-GetRepoRoot() {
-    return (Split-Path -Parent $PSScriptRoot)
+    $parent = Split-Path -Parent $PSScriptRoot
+    if ((Split-Path -Leaf $parent) -eq 'modules') {
+        return (Split-Path -Parent $parent)
+    }
+    return $parent
 }
 
 function _QCP-GetReviewStampRoleFieldsFromJob {
@@ -1885,7 +1889,7 @@ function Invoke-StatusSetProcessor {
     if ($ss.ContainsKey('mode') -and $ss.mode) { $mode = ([string]$ss.mode).Trim().ToLowerInvariant() }
 
     if ($mode -eq 'native') {
-        $ssMod = Join-Path (_QCP-GetRepoRoot) 'modules\Processing\QC.StatusSet.psm1'
+        $ssMod = Join-Path $PSScriptRoot 'QC.StatusSet.psm1'
         if (-not (Test-Path -LiteralPath $ssMod)) {
             return New-QCFailureResult -Code 'STATUS_SET_MODULE_MISSING' -Message "QC.StatusSet.psm1 not found: $ssMod" -Data @{ path = $ssMod }
         }
@@ -2674,7 +2678,7 @@ function Invoke-QCReportingScanProcessor {
         [hashtable]$Config
     )
 
-    $mod = Join-Path (_QCP-GetRepoRoot) 'modules\Reporting\QC.Reporting.psm1'
+    $mod = Join-Path (Split-Path -Parent $PSScriptRoot) 'Reporting\QC.Reporting.psm1'
     if (-not (Test-Path -LiteralPath $mod)) {
         return New-QCFailureResult -Code 'QC_REPORTING_MODULE_MISSING' -Message "QC.Reporting.psm1 not found: $mod" -Data @{ path = $mod }
     }

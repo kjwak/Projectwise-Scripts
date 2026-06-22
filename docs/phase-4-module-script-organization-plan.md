@@ -833,6 +833,31 @@ Diagnostic/maintenance hand-rolled imports; `Combine-StatusSet.ps1` / `Run-Combi
 
 ---
 
+## Appendix J — Phase 4 processing/deployment script move (complete)
+
+**Branch:** `phase-4/processing-deployment-scripts` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-processing-deployment-script-move-summary.md`](phase-4-processing-deployment-script-move-summary.md)
+
+### Moved
+
+| Wrapper (retained) | Implementation |
+|--------------------|----------------|
+| `scripts/Combine-StatusSet.ps1` | `scripts/processing/Combine-StatusSet.ps1` |
+| `scripts/Run-CombineStatusSet.ps1` | `scripts/processing/Run-CombineStatusSet.ps1` |
+| `scripts/Promote-DevToMain.ps1` | `scripts/deployment/Promote-DevToMain.ps1` |
+| `scripts/Sync-OverlayReviewStamp.ps1` | `scripts/deployment/Sync-OverlayReviewStamp.ps1` |
+
+### Not moved
+
+`Publish-QCPipelineCode.ps1`, service entrypoints, `Invoke-QCPrependPw.ps1` (already under `processing/`).
+
+### Test
+
+`test/test_processing_deployment_script_wrappers.ps1`
+
+---
+
 ## Related documents
 
 - [`docs/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md)

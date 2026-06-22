@@ -65,10 +65,24 @@ Maintenance and operator recovery scripts live under `scripts/maintenance/`. Com
 
 See `scripts/maintenance/` for queue purge/requeue/repair, database retention/removal, sheet-index sync/reconcile, and related operator tools (`Purge-QCPendingByFilters`, `Requeue-QCJobs`, `Invoke-QCDatabaseRetention`, etc.).
 
+## Processing and deployment helpers
+
+Status-set processing scripts live under `scripts/processing/`. Deployment helpers live under `scripts/deployment/`. Compatibility wrappers at the former `scripts/*.ps1` paths forward to the new locations.
+
+### `processing/Combine-StatusSet.ps1` (wrapper: `Combine-StatusSet.ps1`)
+- **Purpose**: manual `_StatusSet.pdf` build/refresh via `QC.StatusSet.psm1`.
+
+### `processing/Run-CombineStatusSet.ps1` (wrapper: `Run-CombineStatusSet.ps1`)
+- **Purpose**: launcher that reads `statusSet.localRoot` from `appsettings.json` and forwards to `Combine-StatusSet.ps1`.
+
+### `deployment/Promote-DevToMain.ps1` (wrapper: `Promote-DevToMain.ps1`)
+- **Purpose**: promote `dev` to `main` and push (git workflow helper).
+
+### `deployment/Sync-OverlayReviewStamp.ps1` (wrapper: `Sync-OverlayReviewStamp.ps1`)
+- **Purpose**: sync `overlay/qc_review_stamp.py` into the PyInstaller onedir bundle.
+
 ### `Publish-QCPipelineCode.ps1`
 - **Purpose**: copy `modules/` and key scripts to the production worker root; optional `-ConfirmRestart`.
 
-### Other helper scripts
-
-Status-set processing wrappers remain at the `scripts/` root: `Combine-StatusSet.ps1`, `Run-CombineStatusSet.ps1`. `Import-QCScriptModules.ps1` is dot-sourced by maintenance scripts under `scripts/maintenance/`.
+`Import-QCScriptModules.ps1` is dot-sourced by maintenance scripts under `scripts/maintenance/`. `Restore-QCModuleExports.ps1` is dot-sourced by production entrypoints for PS 5.1 export restore.
 

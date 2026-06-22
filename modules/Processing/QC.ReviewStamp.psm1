@@ -20,7 +20,11 @@ function _QCRS-ToHashtable([object]$Value) {
 }
 
 function _QCRS-GetRepoRoot {
-    return (Split-Path -Parent $PSScriptRoot)
+    $parent = Split-Path -Parent $PSScriptRoot
+    if ((Split-Path -Leaf $parent) -eq 'modules') {
+        return (Split-Path -Parent $parent)
+    }
+    return $parent
 }
 
 function _QCRS-AppendOptionalCliFlags {

@@ -97,6 +97,15 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Invoke-QCQueueStartupCheck'
 ) -Context 'run_prepend_qc entrypoint test'
 
+Write-Host '=== Processor StatusSet module path (Phase 4E repo root) ===' -ForegroundColor Cyan
+$statusSetImpl = Join-Path $modulesRoot 'Processing\QC.StatusSet.psm1'
+if (-not (Test-Path -LiteralPath $statusSetImpl)) {
+    Write-Host "FAIL: missing StatusSet implementation $statusSetImpl" -ForegroundColor Red
+    $fail++
+} else {
+    Write-Host 'OK:   StatusSet implementation path exists for STATUS_SET_GEN processor' -ForegroundColor Green
+}
+
 Write-Host '=== MCP diagnostic module (folder path) ===' -ForegroundColor Cyan
 Import-QCModuleImpl 'Workflow\QC.ProcessType.psm1'
 Import-QCModuleImpl 'Diagnostics\QC.DebugMcp.psm1'

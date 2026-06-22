@@ -28,11 +28,29 @@ Queue, database, sheet-index, and ProjectWise operator recovery scripts are impl
 
 `Import-QCScriptModules.ps1` stays at `scripts/` (dot-sourced helper). `Stop-QCPipeline.ps1` stays at `scripts/` (pipeline stop helper).
 
+## Processing folder
+
+Status-set and related processing helpers are implemented under `processing/`. The same filenames remain at the `scripts/` root as silent compatibility wrappers.
+
+| Location | Examples |
+| --- | --- |
+| `processing/` | `Combine-StatusSet`, `Run-CombineStatusSet`, `Invoke-QCPrependPw` |
+
+## Deployment folder
+
+Low-risk deployment helpers are implemented under `deployment/`. The same filenames remain at the `scripts/` root as silent compatibility wrappers.
+
+| Location | Examples |
+| --- | --- |
+| `deployment/` | `Promote-DevToMain`, `Sync-OverlayReviewStamp` |
+
+`Publish-QCPipelineCode.ps1` remains at `scripts/` root (high-risk publish entrypoint; not moved in Phase 4 processing/deployment move).
+
 ## File purposes
 
 | File | Purpose |
 | --- | --- |
-| `Combine-StatusSet.ps1` | Manual wrapper that builds or refreshes `_StatusSet.pdf` for a specified sheets folder by calling `Invoke-StatusSetNativeJob` in `QC.StatusSet.psm1`. |
+| `Combine-StatusSet.ps1` | Compatibility wrapper → `processing/Combine-StatusSet.ps1` (manual `_StatusSet.pdf` build via `QC.StatusSet.psm1`). |
 | `PW-BrowseFolder.ps1` | Compatibility wrapper → `diagnostics/PW-BrowseFolder.ps1` (read-only ProjectWise folder browser). |
 | `PW-ListDocsInFolder.ps1` | Compatibility wrapper → `diagnostics/PW-ListDocsInFolder.ps1`. |
 | `PW-SmokeTest.ps1` | Compatibility wrapper → `diagnostics/PW-SmokeTest.ps1`. |
@@ -43,12 +61,14 @@ Queue, database, sheet-index, and ProjectWise operator recovery scripts are impl
 | `Invoke-QCDatabaseRetention.ps1` | Compatibility wrapper → `maintenance/Invoke-QCDatabaseRetention.ps1`. |
 | `Reconcile-QCStatusSets.ps1` | Compatibility wrapper → `maintenance/Reconcile-QCStatusSets.ps1`. |
 | `Requeue-QCJobs.ps1` | Compatibility wrapper → `maintenance/Requeue-QCJobs.ps1`. |
-| `Run-CombineStatusSet.ps1` | Convenience launcher that reads `statusSet.localRoot` from `appsettings.json` and forwards to `Combine-StatusSet.ps1`. |
+| `Promote-DevToMain.ps1` | Compatibility wrapper → `deployment/Promote-DevToMain.ps1` (git dev→main promote helper). |
+| `Run-CombineStatusSet.ps1` | Compatibility wrapper → `processing/Run-CombineStatusSet.ps1` (launcher reading `statusSet.localRoot` from appsettings). |
 | `Run-QCProcessor.ps1` | Worker entrypoint that claims pending queue jobs, dispatches processors, renews locks, records logs, and transitions job states. |
 | `Show-QCQueueDiag.ps1` | Compatibility wrapper → `diagnostics/Show-QCQueueDiag.ps1`. |
 | `Show-QCStatus.ps1` | Compatibility wrapper → `diagnostics/Show-QCStatus.ps1`. |
 | `Start-QCPipelineDashboard.ps1` | Unified dashboard entrypoint that runs watcher and worker processes while rendering live terminal status. |
 | `Stop-QCPipeline.ps1` | Safety/operations helper that finds and stops PowerShell processes running this repo's watcher, worker, or dashboard scripts. |
+| `Sync-OverlayReviewStamp.ps1` | Compatibility wrapper → `deployment/Sync-OverlayReviewStamp.ps1` (sync overlay Python into PyInstaller bundle). |
 | `Test-PWConnection.ps1` | Compatibility wrapper → `diagnostics/Test-PWConnection.ps1`. |
 | `Watch-QCTrigger.ps1` | One-shot trigger scan that discovers local/ProjectWise candidates, evaluates rules and filters, and enqueues queue jobs. |
 | `README.md` | Existing overview and usage notes for script entrypoints. |
