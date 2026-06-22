@@ -199,6 +199,7 @@ Assert-Eq $job.triggerRule.id 'rule-1' 'Job.triggerRule.id should match rule.id'
 Assert-Eq $job.status 'queued' 'Job.status should be queued'
 Assert-Eq $job.attempts 0 'Job.attempts should start at 0'
 Assert-True (-not [string]::IsNullOrWhiteSpace([string]$job.dedupeKey)) 'Job should have dedupeKey'
+Assert-True ($job.dedupeKey -notlike 'dq_pkg_*') 'Production jobs must not use removed package-level dedupe prefix'
 
 Write-Host 'All QC.JobFactory tests passed.' -ForegroundColor Green
 

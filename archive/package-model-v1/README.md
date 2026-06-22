@@ -74,4 +74,4 @@ Then re-add the five module rows to `modules/FILES.md` and remove or relocate th
 
 ## Deferred follow-up
 
-`QC.JobFactory.psm1` still contains an unwired `metadata.package` dedupe branch (`New-QCPackageJobDedupeKey`). Phase 3 did not modify job factory behavior. Product decision pending: wire to `sheet_package_id` at job creation or remove the dead branch.
+`QC.JobFactory.psm1` no longer contains the unwired `metadata.package` dedupe branch (`New-QCPackageJobDedupeKey`). Phase 3 decision branch `phase-3/jobfactory-package-dedupe-decision` removed it — see `docs/phase-3-jobfactory-package-dedupe-decision.md`.

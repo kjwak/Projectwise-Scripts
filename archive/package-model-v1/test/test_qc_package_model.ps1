@@ -6,7 +6,6 @@ Import-Module "$archiveRoot/modules/QC.AttributePolicy.psm1" -Force -Global
 Import-Module "$archiveRoot/modules/QC.StatePolicy.psm1" -Force -Global
 Import-Module "$archiveRoot/modules/QC.PackageSync.psm1" -Force -Global
 Import-Module "$archiveRoot/modules/QC.Package.Database.psm1" -Force -Global
-Import-Module "$repoRoot/modules/QC.JobFactory.psm1" -Force -Global
 
 function Assert-True([bool]$Condition, [string]$Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
 function Assert-Eq($Actual, $Expected, [string]$Message) { if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" } }
@@ -51,13 +50,6 @@ $autoWrites = @($sync.Data.writes | Where-Object { $_.Ownership -eq 'AutomationO
 Assert-Eq $autoWrites.Count 2 'Automation-owned attributes written only to configured documents'
 Assert-True (($autoWrites.Role -contains 'ProductionPdf') -and ($autoWrites.Role -contains 'QcPdf')) 'Automation writes target PDF and QC PDF'
 Remove-Item function:\Update-PWDocumentAttributes -ErrorAction SilentlyContinue
-
-$pkgMeta = @{ PackageId=$pkg.PackageId; CanonicalState=$state.Data.state; ReviewType='Production QC' }
-$j1 = @{ type='QC_PREPEND'; sourcePath='Documents\Proj\CADD\Sheets\A101.dgn'; triggerRule=@{id='pw-audit'}; metadata=@{ package=$pkgMeta } }
-$j2 = @{ type='QC_PREPEND'; sourcePath='Documents\Proj\CADD\Sheets\A101_QC.pdf'; triggerRule=@{id='pw-audit'}; metadata=@{ package=$pkgMeta } }
-$d1 = Get-QCDedupeKey -Job $j1 -Config @{}
-$d2 = Get-QCDedupeKey -Job $j2 -Config @{}
-Assert-Eq $d1.Data.dedupeKey $d2.Data.dedupeKey 'Package-level dedupe prevents duplicate jobs from sibling audit events'
 
 $cache = Write-QCPackageCache -Package $pkg -Config $config -DryRun
 Assert-Eq $cache.Code 'PACKAGE_CACHE_DRY_RUN' 'Dry-run does not mutate SQL package cache'

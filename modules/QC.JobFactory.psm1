@@ -304,34 +304,6 @@ function Test-QCJobRequiredFields {
 }
 
 
-function New-QCPackageJobDedupeKey {
-    <#
-    .SYNOPSIS
-    Computes package-level dedupe key for ProjectWise QC package jobs.
-    .DESCRIPTION
-    Uses PackageId + JobType + CanonicalState + ReviewType so DGN/PDF/QC PDF audit bursts collapse into one job.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$PackageId,
-        [Parameter(Mandatory)][string]$JobType,
-        [string]$CanonicalState,
-        [string]$ReviewType
-    )
-    if (_QCJF-IsNullOrWhiteSpace $PackageId) { return New-QCFailureResult -Code 'PACKAGE_DEDUPE_MISSING_PACKAGE_ID' -Message 'PackageId is required for package-level dedupe.' -Data @{} }
-    if (_QCJF-IsNullOrWhiteSpace $JobType) { return New-QCFailureResult -Code 'PACKAGE_DEDUPE_MISSING_JOB_TYPE' -Message 'JobType is required for package-level dedupe.' -Data @{ packageId=$PackageId } }
-    $stable = (@(
-        'dedupeV1_package',
-        ('packageId=' + $PackageId),
-        ('jobType=' + $JobType),
-        ('canonicalState=' + ($CanonicalState -as [string])),
-        ('reviewType=' + ($ReviewType -as [string]))
-    ) -join '|')
-    $hex = _QCJF-Sha256Hex -Text $stable
-    $dedupeKey = 'dq_pkg_' + (($JobType -replace '[^a-zA-Z0-9]+','').ToLowerInvariant()) + '_' + $hex.Substring(0,24)
-    return New-QCSuccessResult -Code 'PACKAGE_DEDUPE_KEY_COMPUTED' -Message 'Package-level dedupe key computed.' -Data @{ dedupeKey=$dedupeKey; stableInput=$stable; hash=$hex }
-}
-
 function Get-QCDedupeKey {
     <#
     .SYNOPSIS
@@ -365,17 +337,6 @@ function Get-QCDedupeKey {
     $path = [string]$pathRes.Data.path
     if (_QCJF-IsNullOrWhiteSpace $path) {
         return New-QCFailureResult -Code 'JOB_VALIDATION_MISSING_SOURCE_PATH' -Message 'Job.sourcePath is required to compute dedupe key.' -Data @{ job = $Job }
-    }
-
-    if ($Job.ContainsKey('metadata') -and $Job.metadata -is [hashtable] -and $Job.metadata.ContainsKey('package') -and $Job.metadata.package -is [hashtable]) {
-        $pkg = $Job.metadata.package
-        $pkgId = [string]$pkg.PackageId
-        if (_QCJF-IsNullOrWhiteSpace $pkgId -and $pkg.ContainsKey('packageId')) { $pkgId = [string]$pkg.packageId }
-        $canonicalState = [string]$pkg.CanonicalState
-        if (_QCJF-IsNullOrWhiteSpace $canonicalState -and $pkg.ContainsKey('WorkflowState')) { $canonicalState = [string]$pkg.WorkflowState }
-        $reviewType = [string]$pkg.ReviewType
-        $pkgKey = New-QCPackageJobDedupeKey -PackageId $pkgId -JobType $type -CanonicalState $canonicalState -ReviewType $reviewType
-        if ($pkgKey.IsSuccess) { return $pkgKey }
     }
 
     $ruleId = $null

@@ -88,7 +88,7 @@ flowchart TD
 
 - **Lane workflow** — prepend, notifications, and per-lane state use `sheet_package_qc_pdfs` and TYPSA three-lane naming (`-prod`, `-rev`, `-chk`). See [`docs/qc-workflow-framework.md`](qc-workflow-framework.md).
 - **Reporting** — `QC.Reporting.psm1` aggregates package status from `v_sheet_package_status`; this is separate from the archived in-memory package resolver.
-- **Job dedupe** — queue dedupe keys are computed in `QC.JobFactory.psm1` without requiring the archived package modules. A `metadata.package` branch exists but is not populated by production job creation today (deferred product decision).
+- **Job dedupe** — queue dedupe keys are computed in `QC.JobFactory.psm1` without requiring the archived package modules. The former `metadata.package` branch was removed in Phase 3 (`docs/phase-3-jobfactory-package-dedupe-decision.md`); production paths use file/folder dedupe only.
 
 ## Tests
 
