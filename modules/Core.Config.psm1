@@ -1,52 +1,28 @@
 # Core.Config.psm1
-# Responsibility: Load app settings, access values, and validate compatibility.
+# Responsibility: Config validation helpers and compatibility wrappers.
+# Canonical config loading: Read-QCAppSettings in Core.Runtime.psm1
 
 Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force
 
 function _CC-ToHashtableDeep {
     param([AllowNull()][object]$Value)
-
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [string] -or $Value -is [System.ValueType]) { return $Value }
-    if ($Value -is [hashtable]) { return $Value }
-
-    if ($Value -is [System.Collections.IDictionary]) {
-        $h = @{}
-        foreach ($k in $Value.Keys) {
-            $h[[string]$k] = _CC-ToHashtableDeep $Value[$k]
-        }
-        return $h
-    }
-
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        $arr = @()
-        foreach ($item in $Value) { $arr += (_CC-ToHashtableDeep $item) }
-        return $arr
-    }
-
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) {
-            $h[$p.Name] = _CC-ToHashtableDeep $p.Value
-        }
-        return $h
-    }
-
-    return $Value
+    return ConvertTo-HashtableDeep -Value $Value
 }
 
 function Read-AppConfig {
     <#
     .SYNOPSIS
-    Loads application settings from a file path.
+    Loads application settings from a file path (compatibility wrapper).
     .DESCRIPTION
-    Reads appsettings content and returns an in-memory configuration object.
+    Delegates to Read-QCAppSettings for merge chain and JSON comment support,
+    then runs Test-AppSettings validation. Prefer Read-QCAppSettings for new scripts.
     .PARAMETER Path
     Path to the appsettings file.
     .OUTPUTS
     PSCustomObject with shape: IsSuccess [bool], Code [string], Message [string], Data [object].
     .NOTES
-    Side effects: file read only.
+    Side effects: may set display timezone via Read-QCAppSettings.
     #>
     [CmdletBinding()]
     param(
@@ -54,25 +30,23 @@ function Read-AppConfig {
         [string]$Path
     )
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return New-QCFailureResult -Code 'CONFIG_MISSING_FILE' -Message "Config file not found: $Path" -Data @{ path = $Path }
+    $loadRes = Read-QCAppSettings -Path $Path
+    if (-not $loadRes.IsSuccess) {
+        if ($loadRes.Code -eq 'CONFIG_PARSE_ERROR') {
+            return New-QCFailureResult -Code 'CONFIG_PARSE_FAILED' -Message $loadRes.Message -Data $loadRes.Data
+        }
+        return $loadRes
     }
 
-    try {
-        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-    } catch {
-        return New-QCFailureResult -Code 'CONFIG_READ_FAILED' -Message 'Failed to read config file.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
-    }
+    $cfg = $loadRes.Data.config
+    if (-not ($cfg -is [hashtable])) { $cfg = @{} + $cfg }
 
-    try {
-        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
-        $cfg = _CC-ToHashtableDeep $obj
-        if (-not ($cfg -is [hashtable])) { $cfg = @{} + $cfg }
-        $valRes = Test-AppSettings -Config $cfg
-        if (-not $valRes.IsSuccess) { return $valRes }
-        return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{ path = $Path; config = $cfg }
-    } catch {
-        return New-QCFailureResult -Code 'CONFIG_PARSE_FAILED' -Message 'Failed to parse config as JSON.' -Data @{ path = $Path; errorMessage = $_.Exception.Message }
+    $valRes = Test-AppSettings -Config $cfg
+    if (-not $valRes.IsSuccess) { return $valRes }
+
+    return New-QCSuccessResult -Code 'CONFIG_LOADED' -Message 'Config loaded.' -Data @{
+        path = $Path
+        config = $cfg
     }
 }
 

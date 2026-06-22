@@ -18,8 +18,8 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 - **Notable behavior**: converts `pw:\...\Documents\...` into canonical `Documents\...`, collapses slashes, trims trailing `\`, lowercases.
 
 ### `Core.Config.psm1`
-- **Purpose**: intended config loader/validator façade.
-- **Declared exports**: `Read-AppConfig`, `Test-AppSettings`, `Test-AppSettingsCompatibility`.
+- **Purpose**: config validation helpers and compatibility wrappers (`Read-AppConfig` delegates to `Read-QCAppSettings`).
+- **Declared exports**: `Read-AppConfig`, `Test-AppSettings`, `Test-AppSettingsCompatibility`, `Get-QCProjectNameFromFolderPath`.
 
 ### `Core.Logging.psm1`
 - **Purpose**: intended structured logging/audit façade.

@@ -31,28 +31,9 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -DisableN
 Import-Module (Join-Path $repoRoot 'modules\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
 
-function ConvertTo-HashtableDeep([object]$obj) {
-    if ($null -eq $obj) { return $null }
-    if ($obj -is [hashtable]) {
-        $clone = @{}
-        foreach ($k in $obj.Keys) { $clone[$k] = ConvertTo-HashtableDeep $obj[$k] }
-        return $clone
-    }
-    if ($obj -is [System.Collections.IList] -and -not ($obj -is [string])) {
-        $arr = @()
-        foreach ($x in $obj) { $arr += ,(ConvertTo-HashtableDeep $x) }
-        return ,$arr
-    }
-    if ($obj -is [pscustomobject]) {
-        $clone = @{}
-        foreach ($p in $obj.PSObject.Properties) { $clone[$p.Name] = ConvertTo-HashtableDeep $p.Value }
-        return $clone
-    }
-    return $obj
-}
-
-$cfgRaw = Get-Content -LiteralPath $AppSettingsPath -Raw | ConvertFrom-Json
-$cfg = ConvertTo-HashtableDeep $cfgRaw
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
+if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
+$cfg = $cfgRes.Data.config
 
 $queueRoot = $null
 if ($cfg.queue) {

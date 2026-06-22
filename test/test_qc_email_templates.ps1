@@ -108,11 +108,10 @@ $settings = Get-QCNotificationSettings -Config @{ notifications = @{ email = @{ 
 $templateData = New-QCNotificationEmailTemplateData -Event $event -Settings $settings
 Assert-Eq $templateData.QCPdfUrl 'https://example.com/qc.pdf' 'Template data should carry qcPdfUrl from event'
 
-Import-Module "$repoRoot/modules/Core.Runtime.psm1" -Force
 $configPath = Join-Path $repoRoot 'appsettings.json'
-$configRaw = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
-$configObj = $configRaw | ConvertFrom-Json
-$configHt = ConvertTo-HashtableDeep -Value $configObj
+$configRes = Read-QCAppSettings -Path $configPath
+if (-not $configRes.IsSuccess) { throw $configRes.Message }
+$configHt = $configRes.Data.config
 Import-Module "$repoRoot/modules/Core.Config.psm1" -Force
 $azdotFolder = 'Documents\AZDOT 2024\Sample Highway\CADD\Sheets'
 $azdotProject = Get-QCProjectNameFromFolderPath -Config $configHt -FolderPath $azdotFolder

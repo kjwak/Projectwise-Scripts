@@ -34,19 +34,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function _ToHashtable([object]$Value) {
-    if ($null -eq $Value) { return $null }
-    if ($Value -is [hashtable]) { return $Value }
-    if ($Value -is [System.Collections.IDictionary]) { return $Value }
-    if ($Value -is [string] -or $Value -is [System.ValueType]) { return @{ value = $Value } }
-    if ($Value.PSObject -and $Value.PSObject.Properties) {
-        $h = @{}
-        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
-        return $h
-    }
-    return $null
-}
-
 function ConvertFrom-PWUriToFolderPath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Value)
@@ -93,10 +80,11 @@ Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force
 
 # Resolve config defaults from appsettings.json unless overridden.
-$cfgRes = Read-AppConfig -Path $AppSettingsPath
+$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $cfg = $cfgRes.Data.config
-if (-not ($cfg -is [hashtable])) { $cfg = _ToHashtable $cfg }
+$valRes = Test-AppSettings -Config $cfg
+if (-not $valRes.IsSuccess) { throw $valRes.Message }
 
 if ([string]::IsNullOrWhiteSpace($DatasourceName)) {
     $DatasourceName = [string]$cfg['projectWise']['datasourceName']

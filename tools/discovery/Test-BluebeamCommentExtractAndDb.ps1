@@ -26,6 +26,7 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 }
 
 Import-Module (Join-Path $repoRoot 'modules\Core.Results.psm1') -Force -Global -ErrorAction Stop | Out-Null
+Import-Module (Join-Path $repoRoot 'modules\Core.Runtime.psm1') -Force -Global -ErrorAction Stop | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Core.Config.psm1') -Force -Global -ErrorAction Stop | Out-Null
 
 $coreDbPath = (Join-Path $repoRoot 'modules\Core.Database.psm1')
@@ -51,9 +52,11 @@ Import-Module (Join-Path $repoRoot 'modules\PW.Connection.psm1') -Force -Global 
 
 function Assert-True($Condition, $Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
 
-$configRes = Read-AppConfig -Path $ConfigPath
+$configRes = Read-QCAppSettings -Path $ConfigPath
 Assert-True $configRes.IsSuccess "Config load failed: $($configRes.Message)"
 $config = $configRes.Data.config
+$valRes = Test-AppSettings -Config $config
+Assert-True $valRes.IsSuccess "Config validation failed: $($valRes.Message)"
 
 if (-not $config.database) { $config['database'] = @{} }
 if (-not $SkipDatabase) {
