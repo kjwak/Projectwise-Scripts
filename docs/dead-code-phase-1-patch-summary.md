@@ -19,7 +19,7 @@
 | `modules/QC.StatusSet.psm1` | Merged duplicate `Export-ModuleMember` into one block (export set preserved) |
 | `modules/QC.Notifications.psm1` | Updated 3 comments: `*-qc.pdf` → lane QC PDF wording |
 | `modules/README.md` | Removed `Core.Metrics`, `Orchestrator.Pipeline`; fixed `Get-AppSetting` export list |
-| `modules/FILES.md` | Removed `Core.Metrics`, `Orchestrator.Pipeline`; updated cleanup note |
+| `modules/FILES.md` | Removed `Core.Metrics`, `Orchestrator.Pipeline`; added 5 missing module entries; updated cleanup note |
 | `test/run_focus_tests.ps1` | Removed duplicate `test_audit_watch_match.ps1` entry |
 | `tests/test_qc_workflow_config_defaults.py` | TYPSA state/review-type assertions |
 | `tests/test_qc_notifications_config.py` | `Originated`/`Verified` event assertions; `qcProcessType` dedupe field |
@@ -71,25 +71,41 @@ Final export set = union of both prior blocks (21 functions). No runtime behavio
 - `test_sheet_index_attr_sync_static.py` (2)
 - `test_audit_events_db_static.py` (1)
 
-### After Phase 1
+### After Phase 1 (initial patch)
 
 | Suite | Result |
 |-------|--------|
 | `pytest tests/` | **86 passed, 0 failed, 3 skipped** |
 | `test/run_focus_tests.ps1` | **18 passed, 3 failed** |
-| `test/test_module_inventory.ps1` | **Failed** — `FILES.md` missing 5 on-disk modules (pre-existing drift, not introduced by this patch) |
+| `test/test_module_inventory.ps1` | **Failed** — `FILES.md` missing 5 on-disk modules (pre-existing drift) |
 | `test/test_watcher_module_bootstrap.ps1` | **Passed** |
+
+### After `FILES.md` inventory sync (pre-commit)
+
+| Suite | Result |
+|-------|--------|
+| `pytest tests/` | **86 passed, 0 failed, 3 skipped** |
+| `test/run_focus_tests.ps1` | **18 passed, 3 failed** |
+| `test/test_module_inventory.ps1` | **Passed** (46 modules) |
+| `test/test_watcher_module_bootstrap.ps1` | **Passed** |
+
+**`modules/FILES.md` entries added:**
+
+- `Core.Telemetry.psm1`
+- `QC.DebugMcp.psm1`
+- `QC.NotificationThreads.psm1`
+- `QC.ProcessType.psm1`
+- `QC.WatcherAlerts.psm1`
 
 ---
 
-## Tests still failing (after Phase 1)
+## Tests still failing (after Phase 1 + FILES.md sync)
 
 | Test | Failure | Notes |
 |------|---------|-------|
 | `test/test_queue_json.ps1` | Stale job recovery assertion | Pre-existing; environmental/timing (`ASSERT FAILED: Recovery should requeue stale job-b`) |
 | `test/test_qc_workflow.ps1` | `initialQcPdf -> Ready for QC` vs expected `Originated` | Pre-existing module-default vs test-config mismatch; **not modified in Phase 1** |
 | `test/test_audit_poll_window.ps1` | Watermark overlap assertion | Pre-existing timing/watermark sensitivity |
-| `test/test_module_inventory.ps1` | `FILES.md` out of sync | Missing entries for `Core.Telemetry`, `QC.DebugMcp`, `QC.NotificationThreads`, `QC.ProcessType`, `QC.WatcherAlerts` — predates this patch |
 
 ---
 
@@ -133,7 +149,6 @@ git checkout dev -- modules/Orchestrator.Pipeline.psm1 modules/Core.Metrics.psm1
 | `QC.Package*` modules | Phase 2 — product decision required |
 | `docs/qc-workflow-framework.md` full rewrite | Beyond comment-only scope; large doc drift |
 | `Read-AppConfig` → `Read-QCAppSettings` consolidation | Phase 2 |
-| `FILES.md` entries for 5 undocumented modules | Out of Phase 1 scope (would expand doc patch) |
 | `test/test_qc_workflow.ps1` updates | Runtime module defaults still emit `Ready for QC` for empty config merge — fixing requires production code change (forbidden) |
 
 ---
