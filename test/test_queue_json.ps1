@@ -98,11 +98,13 @@ try {
     $lockB = Lock-QCJob -JobId 'job-b' -Config $config
     Assert-True $lockB.IsSuccess 'Lock job-b should succeed'
 
-    # Force startedAtUtc far in the past.
+    # Force startedAtUtc/heartbeatUtc far in the past (recovery prefers heartbeat over started).
     $bLoc = Get-QCJobById -JobId 'job-b' -Config $config
     Assert-True ($bLoc.IsSuccess -and $bLoc.Data.state -eq 'running') 'job-b should be running'
     $jobB2 = $bLoc.Data.job
-    $jobB2.startedAtUtc = ([DateTime]::UtcNow.AddSeconds(-10).ToString('o'))
+    $staleUtc = [DateTime]::UtcNow.AddSeconds(-10).ToString('o')
+    $jobB2.startedAtUtc = $staleUtc
+    $jobB2.heartbeatUtc = $staleUtc
     $runningPath = Join-Path (Join-Path $root 'running') 'job-b.json'
     Set-Content -LiteralPath $runningPath -Value ($jobB2 | ConvertTo-Json -Depth 50) -Encoding utf8
 
@@ -116,7 +118,9 @@ try {
     Assert-True $lockB2.IsSuccess 'Lock job-b again should succeed'
     $bLoc2 = Get-QCJobById -JobId 'job-b' -Config $config
     $jobB3 = $bLoc2.Data.job
-    $jobB3.startedAtUtc = ([DateTime]::UtcNow.AddSeconds(-10).ToString('o'))
+    $staleUtc2 = [DateTime]::UtcNow.AddSeconds(-10).ToString('o')
+    $jobB3.startedAtUtc = $staleUtc2
+    $jobB3.heartbeatUtc = $staleUtc2
     Set-Content -LiteralPath $runningPath -Value ($jobB3 | ConvertTo-Json -Depth 50) -Encoding utf8
 
     $rec2 = Recover-QCStaleJobs -Config $config
