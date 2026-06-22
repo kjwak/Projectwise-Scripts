@@ -1,9 +1,11 @@
+# Archived v1: resolve production modules from repo modules/
+$script:_QCPkgV1RepoModules = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) 'modules'
 # QC.StatePolicy.psm1
 # Responsibility: Package-level workflow state precedence, conflict detection, and idempotent state planning.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'PW.Discovery.psm1') -Force
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force -Global
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'PW.Discovery.psm1') -Force
 
 function _QCSP-Get([object]$Object,[string[]]$Names){ foreach($n in @($Names)){ try{ if($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n){ return $Object.$n }}catch{}; if($Object -is [hashtable] -and $Object.ContainsKey($n)){ return $Object[$n] } }; return $null }
 function _QCSP-State([object]$Doc){ return [string](_QCSP-Get $Doc @('WorkflowState','StateName','CurrentState','DocumentState','state')) }

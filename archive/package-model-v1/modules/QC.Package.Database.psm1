@@ -1,8 +1,10 @@
+# Archived v1: resolve production modules from repo modules/
+$script:_QCPkgV1RepoModules = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) 'modules'
 # QC.Package.Database.psm1
 # Responsibility: Additive SQL/cache extension points for QC package relationships.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Results.psm1') -Force
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCPD-Get([object]$Object,[string[]]$Names){ foreach($n in @($Names)){ try{ if($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n){ return $Object.$n }}catch{}; if($Object -is [hashtable] -and $Object.ContainsKey($n)){ return $Object[$n] } }; return $null }
 function _QCPD-Guid([object]$Doc){ return [string](_QCPD-Get $Doc @('Guid','DocumentGuid','ObjectGuid','guid')) }

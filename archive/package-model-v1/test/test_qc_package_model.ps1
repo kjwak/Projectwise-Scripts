@@ -1,11 +1,12 @@
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
-Import-Module "$repoRoot/modules/QC.PackageResolver.psm1" -Force
-Import-Module "$repoRoot/modules/QC.AttributePolicy.psm1" -Force
-Import-Module "$repoRoot/modules/QC.StatePolicy.psm1" -Force
-Import-Module "$repoRoot/modules/QC.PackageSync.psm1" -Force
-Import-Module "$repoRoot/modules/QC.Package.Database.psm1" -Force
-Import-Module "$repoRoot/modules/QC.JobFactory.psm1" -Force
+$archiveRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $archiveRoot)
+Import-Module "$archiveRoot/modules/QC.PackageResolver.psm1" -Force -Global
+Import-Module "$archiveRoot/modules/QC.AttributePolicy.psm1" -Force -Global
+Import-Module "$archiveRoot/modules/QC.StatePolicy.psm1" -Force -Global
+Import-Module "$archiveRoot/modules/QC.PackageSync.psm1" -Force -Global
+Import-Module "$archiveRoot/modules/QC.Package.Database.psm1" -Force -Global
+Import-Module "$repoRoot/modules/QC.JobFactory.psm1" -Force -Global
 
 function Assert-True([bool]$Condition, [string]$Message) { if (-not $Condition) { throw "ASSERT FAILED: $Message" } }
 function Assert-Eq($Actual, $Expected, [string]$Message) { if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" } }

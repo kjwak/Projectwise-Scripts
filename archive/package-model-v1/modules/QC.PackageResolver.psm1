@@ -1,9 +1,11 @@
+# Archived v1: resolve production modules from repo modules/
+$script:_QCPkgV1RepoModules = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) 'modules'
 # QC.PackageResolver.psm1
 # Responsibility: Resolve related ProjectWise documents into a package-level QC model.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $PSScriptRoot 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Results.psm1') -Force
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Logging.psm1') -Force -ErrorAction SilentlyContinue
 
 function _QCPR-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
@@ -95,11 +97,11 @@ function Resolve-QCPackage {
         $df = [string](_QCPR-Get $d @('FolderPath','ProjectWiseFolder','Path','folderPath','sourceFolder'))
         if ($dk -ieq $key -and ((_QCPR-IsBlank $folder) -or (_QCPR-IsBlank $df) -or $df -ieq $folder)) { $siblings[$r] = $d }
     }
-    if ($CachedPackage) {
+    if ($CachedPackage -is [hashtable]) {
         foreach ($r in @('Dgn','ProductionPdf','QcPdf')) { if (-not $siblings[$r] -and $CachedPackage.ContainsKey(($r + 'Document'))) { $siblings[$r] = $CachedPackage[($r + 'Document')] } }
     }
     $pkgId = [string](_QCPR-Get $Document @('QC_PackageId','PackageId','packageId'))
-    if (_QCPR-IsBlank $pkgId -and $CachedPackage -and $CachedPackage.ContainsKey('PackageId')) { $pkgId = [string]$CachedPackage.PackageId }
+    if (_QCPR-IsBlank $pkgId -and ($CachedPackage -is [hashtable]) -and $CachedPackage.ContainsKey('PackageId')) { $pkgId = [string]$CachedPackage.PackageId }
     if (_QCPR-IsBlank $pkgId) { $pkgId = _QCPR-NewPackageId -PackageKey $key -Folder $folder }
     $package = @{
         PackageId = $pkgId; PackageKey = $key; DocumentKey = $key; BaseName = $key; SheetId = $key; PackageRootFolder = $folder

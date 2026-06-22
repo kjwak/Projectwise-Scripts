@@ -203,6 +203,12 @@ This design predates or parallels the SQL model but was **never wired** into wat
 
 ---
 
+## Implemented in Phase 3
+
+Branch `phase-3/package-model-archive` archived the in-memory `QC.Package*` modules and `test/test_qc_package_model.ps1` to [`archive/package-model-v1/`](../archive/package-model-v1/), rewrote [`docs/qc-package-model.md`](qc-package-model.md) for the SQL model, and updated module inventory docs. See [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
+
+---
+
 ## Validation results (Branch 3)
 
 Documentation-only branch. No production code changed.

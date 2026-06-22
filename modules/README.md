@@ -52,6 +52,12 @@ All modules primarily communicate via a shared result envelope from `Core.Result
   - `STATUS_SET_GEN` IDs/dedupe incorporate `folderStateHash` when present (folder content change → new identity).
   - `QC_PREPEND` dedupe can incorporate file hash when available.
 
+### Sheet package model (production)
+
+Production package grouping is **SQL-backed** via `Core.Database.psm1` (`sheet_packages`, `sheet_documents`, `sheet_package_qc_pdfs`). See [`docs/qc-package-model.md`](../docs/qc-package-model.md).
+
+An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under [`archive/package-model-v1/`](../archive/package-model-v1/) and is not wired into the watcher, processor, or notification paths.
+
 ### `QC.Queue.Json.psm1`
 - **Purpose**: JSON-backed durable queue + locks + recovery.
 - **Layout** (under `queue.rootDir`): `pending/ running/ succeeded/ failed/ locks/`.
