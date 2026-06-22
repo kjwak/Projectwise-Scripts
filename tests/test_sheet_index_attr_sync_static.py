@@ -129,9 +129,9 @@ def test_qc_prepend_defaults_review_type_on_associated_sheet():
     assert "Get-PWQcDefaultReviewType -Config $Config" in text
     assert "Test-PWQcReviewTypeAttributesEnabled -Config $Config -FolderPath $FolderPath" in text
 
-    legacy = (REPO_ROOT / "legacy" / "prepend_qc.ps1").read_text(encoding="utf-8")
-    assert "Invoke-PrependQcReviewTypeDefaultIfNeeded" in legacy
-    assert "Ensure-PWQcReviewTypeOnAssociatedSheet" in legacy
+    prepend_pw = (REPO_ROOT / "scripts" / "processing" / "Invoke-QCPrependPw.ps1").read_text(encoding="utf-8")
+    assert "Invoke-PrependQcReviewTypeDefaultIfNeeded" in prepend_pw
+    assert "Ensure-PWQcReviewTypeOnAssociatedSheet" in prepend_pw
 
     appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
     enabled = appsettings["projectWise"]["qcReviewTypeAttributes"]["enabledEnvironments"]
