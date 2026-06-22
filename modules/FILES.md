@@ -20,6 +20,8 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 
 Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`. **Phase 4F:** active scripts/tests import folder implementation paths; shims remain for compatibility.
 
+**Phase 4G prototype:** `modules/Core/QC.Core.psd1` and `modules/Queue/QC.Queue.psd1` bundle nested `.psm1` files for test/documentation only — not used by production entrypoints.
+
 ## Refactoring assessment completed
 
 - ProjectWise command-line diagnostics now reuse `PW.Connection.psm1` for key/value credential parsing, ProjectWise module loading, connection cleanup, folder-view compatibility, child splitting, and document enumeration.

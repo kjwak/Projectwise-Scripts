@@ -552,7 +552,7 @@ dev (untouched until Phase 4 complete)
 | **4D** | `phase-4/maintenance-scripts` | **Complete** — Move Reset/Purge/Repair/Remove/Sync/Reconcile maintenance scripts to `scripts/maintenance/`; silent wrappers at old paths | Medium | focus tests, maintenance wrapper test | Shims at old paths | Publish copy list broken |
 | **4E** | `phase-4/module-folders` | **Complete** — Move 41 modules into responsibility subfolders; flat `modules/*.psm1` shims; internal imports via flat shim paths | **High** | inventory, bootstrap, focus, module folder shim test | Shims at old paths | Bootstrap or inventory fail |
 | **4F** | `phase-4/import-updates` | **Complete** — Update Import-Module paths to folder implementations; `test_entrypoint_imports.ps1`; flat shims retained | **High** | full suite + entrypoint test | Revert import paths | Production entry import failure |
-| **4G** | `phase-4/psd1-manifests` | Add `.psd1`; narrow exports | Medium | manifest parse, PW-free import tests | Keep shims | PW leakage into Core |
+| **4G** | `phase-4/psd1-manifest-prototype` → future `phase-4/psd1-manifests` | **Prototype complete** — `QC.Core.psd1`, `QC.Queue.psd1` only; wildcard exports; not in production | Medium | `test_psd1_manifest_prototype.ps1` | Delete prototype psd1 | PW/DB/Workflow leakage via nested imports |
 | **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, external path audit | Re-add shims | External caller still hits old path |
 
 ---
@@ -764,6 +764,41 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 - No changes to `legacy/prepend_qc.ps1` or native prepend implementation
 - No scheduled task, MCP, or Rules Engine configuration changes
 - No test modifications
+
+---
+
+## Appendix H — Phase 4G PSD1 manifest prototype (complete)
+
+**Branch:** `phase-4/psd1-manifest-prototype` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-psd1-manifest-prototype-summary.md`](phase-4-psd1-manifest-prototype-summary.md)
+
+**Not full Phase 4G** — only Core + Queue prototype manifests; production entrypoints unchanged.
+
+### Manifests
+
+| File | Nested count |
+|------|----------------|
+| `modules/Core/QC.Core.psd1` | 8 Core modules |
+| `modules/Queue/QC.Queue.psd1` | 5 Queue modules |
+
+### Findings
+
+- PS 5.1 `Import-Module` + `Test-ModuleManifest` **pass** for both manifests.
+- `FunctionsToExport = '*'` re-exports nested public commands through `QC.Core` / `QC.Queue` aggregate names.
+- Wildcard exports also surface private nested helpers (debt for export-narrowing phase).
+- Nested import side effects: `Core.Telemetry` loads `Core.Database`; `QC.Triggers` loads `QC.ProcessType`.
+- Flat shims and folder `.psm1` paths remain compatible after manifest import in the same session.
+- PS 7 not validated (`pwsh` unavailable).
+
+### Validation
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/run_focus_tests.ps1` | **PASS** |
+| `./test/test_psd1_manifest_prototype.ps1` | **PASS** |
+| Full baseline suite (inventory, bootstrap, wrappers, shims, entrypoints) | **PASS** |
 
 ---
 

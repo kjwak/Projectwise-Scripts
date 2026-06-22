@@ -8,7 +8,9 @@ Active module implementations live in responsibility-based subfolders (`Core/`, 
 
 **Phase 4F:** Production scripts, tests, and loaders import **folder implementation paths** (for example `modules/Core/Core.Results.psm1`, `modules/Queue/QC.Queue.Json.psm1`).
 
-Flat paths such as `modules/QC.Queue.Json.psm1` remain as **silent compatibility shims** that forward `Import-Module` to the subfolder implementation. Keep shims for external/manual compatibility; do not remove until Phase 4H.
+Flat paths such as `modules/QC.Queue.Json.psm1` remain as **silent compatibility shims** that forward `Import-Module` to the subfolder implementation. Do not remove until Phase 4H.
+
+**Phase 4G prototype (test-only):** `modules/Core/QC.Core.psd1` and `modules/Queue/QC.Queue.psd1` bundle nested implementations via `NestedModules`. Production scripts still import folder `.psm1` paths directly.
 
 Implementations live under `modules/<Folder>/<Name>.psm1`; see [`FILES.md`](FILES.md) for the full inventory.
 
