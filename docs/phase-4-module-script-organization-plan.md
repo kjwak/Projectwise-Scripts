@@ -1,8 +1,9 @@
 # Phase 4: Module and Script Organization Plan
 
-**Branch:** `phase-4/module-script-organization-plan`  
+**Branch:** `phase-4/module-script-organization-plan` (Phase 4A plan — do not merge to `dev` alone)  
+**Integration branch:** `phase-4/integration` — base for Phases 4B–4H  
 **Base:** `dev` @ `e344206`  
-**Status:** Plan only (Phase 4A). No file moves, import changes, manifests, or production code edits.
+**Status:** Phase 4A complete (plan doc only). Implementation branches merge into `phase-4/integration`; `dev` is updated only after all Phase 4 phases are validated together.
 
 ## Context
 
@@ -518,6 +519,29 @@ Inspect before any file move:
 ---
 
 ## 9. Staged implementation plan
+
+### Integration branch workflow
+
+```text
+dev (untouched until Phase 4 complete)
+ └── phase-4/module-script-organization-plan   (4A — plan doc; do not merge to dev alone)
+      └── phase-4/integration                    (integration base for 4B–4H)
+           ├── phase-4/prepend-path-promotion   (4B) ──merge──► integration
+           ├── phase-4/diagnostics-scripts      (4C) ──merge──► integration
+           ├── phase-4/maintenance-scripts      (4D) ──merge──► integration
+           ├── phase-4/module-folders            (4E) ──merge──► integration
+           ├── phase-4/import-updates            (4F) ──merge──► integration
+           ├── phase-4/psd1-manifests            (4G) ──merge──► integration
+           └── phase-4/shim-removal               (4H) ──merge──► integration
+                                                    └──► dev (single merge after full validation)
+```
+
+**Rules:**
+
+- Create each implementation branch from `phase-4/integration` (rebase or merge integration before starting the next phase).
+- Merge each validated implementation branch back into `phase-4/integration` — not into `dev`.
+- Do **not** merge `phase-4/module-script-organization-plan` or partial Phase 4 work into `dev`.
+- Merge `phase-4/integration` into `dev` only after Phases 4B–4H are complete and validated together on the integration branch.
 
 | Phase | Branch | Scope | Risk | Validation | Rollback | Stop condition |
 |-------|--------|-------|------|------------|----------|----------------|
