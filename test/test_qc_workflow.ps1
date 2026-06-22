@@ -246,53 +246,72 @@ $legacyAttrs = Set-PWQCAttributes -Settings $legacySettings -Context (New-Workfl
 Assert-True $legacyAttrs.Data.attributes.ContainsKey('QC_History_PDF_Path') 'Legacy mode should write historyPdfPath to PW'
 Assert-Eq $legacyAttrs.Data.skippedWritebackKeys.Count 0 'Legacy mode should not skip writeback keys'
 
-# prepend trigger selects target state when autoSetState runs
-$triggerSettings = Get-QCWorkflowSettings -Config $writeCfg
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'Ready for QC' 'initialQcPdf -> Ready for QC'
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{ prependTrigger = 'finalQcComplete' }) 'QC Complete' 'finalQcComplete -> QC Complete'
-Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $triggerSettings -Context @{}) 'Ready for QC' 'unknown trigger falls back to stateAfterSuccessfulPrepend'
+# prepend trigger resolves target state from module defaults (TYPSA-aligned; $defaultSettings from line 105)
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $defaultSettings -Context @{ prependTrigger = 'initialQcPdf' }) 'Originated' 'initialQcPdf -> Originated'
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $defaultSettings -Context @{ prependTrigger = 'finalQcComplete' }) 'Ready for Verification' 'finalQcComplete -> Ready for Verification'
+Assert-Eq (Resolve-QCWorkflowStateAfterPrepend -Settings $defaultSettings -Context @{}) 'Ready for QC' 'unknown trigger falls back to stateAfterSuccessfulPrepend module default'
 
 # state write uses explicit targetState when provided
-$script:stateWrites = 0
-$script:attributeWrites = 0
-function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
-function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Redlines Received' } }
-function Set-PWDocumentState { [CmdletBinding()] param([object[]]$InputDocuments, [string]$StateName, [switch]$ReturnBoolean) $script:stateWrites++; return $true }
-function Update-PWDocumentAttributes { [CmdletBinding()] param([object[]]$InputDocuments, [hashtable]$Attributes, [switch]$ReturnBoolean) $script:attributeWrites++; return $true }
+$global:qcWorkflowTestStateWrites = 0
+$global:qcWorkflowTestAttributeWrites = 0
 $writeCfg = New-WorkflowConfig -Enabled:$true -Strict:$true -DryRunWriteback:$false
 $writeCfg.qcWorkflow.mode = 'StateAndAttributes'
 $writeCfg.qcWorkflow.autoSetState = $true
 $writeCfg.qcWorkflow.expectedWorkflowName = 'QC Review Workflow'
 $writeSettings = Get-QCWorkflowSettings -Config $writeCfg
-$doc = [pscustomobject]@{ WorkflowName = 'QC Review Workflow'; StateName = 'Ready for QC'; DocumentID = 1; ProjectID = 2 }
+$doc = [pscustomobject]@{ WorkflowName = 'QC Review Workflow'; StateName = 'Ready for QC'; DocumentID = 1; ProjectID = 2; DocumentGUID = 'qc-workflow-test-doc-1' }
 $writeContext = New-WorkflowContext
 $writeContext.document = $doc
-$stateWrite = Set-PWQCWorkflowState -Settings $writeSettings -Context $writeContext -StateName 'Redlines Received' -DryRun:$false
-Assert-True $stateWrite.IsSuccess 'Set-PWQCWorkflowState should succeed with confirmed Set-PWDocumentState stub'
-Assert-Eq $stateWrite.Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' 'State write success code'
-Assert-Eq $script:stateWrites 1 'Set-PWDocumentState should be called once'
+$writeContext.config = $writeCfg
+$writeContext.skipSiblingStateSync = $true
+$global:qcWorkflowTestWriteSettings = $writeSettings
+$global:qcWorkflowTestWriteContext = $writeContext
+InModuleScope -ModuleName QC.Workflow {
+    function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'QC Review Workflow' } }
+    function Get-PWWorkflowStateLinks { [CmdletBinding()] param() [pscustomobject]@{ FromStateName = 'Ready for QC'; ToStateName = 'Redlines Received' } }
+    function Set-PWDocumentWorkflowStateVerified {
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority, $WriteScope)
+        $global:qcWorkflowTestStateWrites++
+        return @{ applied = $true; verified = $true; readBackState = $TargetState; targetState = $TargetState }
+    }
+    $stateWrite = Set-PWQCWorkflowState -Settings $global:qcWorkflowTestWriteSettings -Context $global:qcWorkflowTestWriteContext -StateName 'Redlines Received' -DryRun:$false
+    if (-not $stateWrite.IsSuccess) { throw 'ASSERT FAILED: Set-PWQCWorkflowState should succeed with confirmed Set-PWDocumentState stub' }
+    if ($stateWrite.Code -ne 'QC_WORKFLOW_STATE_WRITE_SUCCESS') { throw "ASSERT FAILED: State write success code`nExpected: QC_WORKFLOW_STATE_WRITE_SUCCESS`nActual:   $($stateWrite.Code)" }
+}
+Assert-Eq $global:qcWorkflowTestStateWrites 1 'Set-PWDocumentState should be called once'
+function Update-PWDocumentAttributes { [CmdletBinding()] param([object[]]$InputDocuments, [hashtable]$Attributes, [switch]$ReturnBoolean) $global:qcWorkflowTestAttributeWrites++; return $true }
 $attrWrite = Set-PWQCAttributes -Settings $writeSettings -Context $writeContext -DryRun:$false
 Assert-True $attrWrite.IsSuccess 'Set-PWQCAttributes should succeed with confirmed Update-PWDocumentAttributes stub'
 Assert-Eq $attrWrite.Code 'QC_WORKFLOW_ATTRIBUTE_WRITE_SUCCESS' 'Attribute write success code'
-Assert-Eq $script:attributeWrites 1 'Update-PWDocumentAttributes should be called once'
+Assert-Eq $global:qcWorkflowTestAttributeWrites 1 'Update-PWDocumentAttributes should be called once'
 
 # empty Get-PWWorkflowStateLinks: fall back to qcWorkflow.states when strictMode=false
-$script:stateWrites = 0
-function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'TYPSA QC' } }
-function Get-PWWorkflowStateLinks { [CmdletBinding()] param() @() }
-function Set-PWDocumentState { [CmdletBinding()] param([object[]]$InputDocuments, [string]$StateName, [switch]$ReturnBoolean) $script:stateWrites++; return $true }
+$global:qcWorkflowTestStateWrites = 0
 $fallbackCfg = New-WorkflowConfig -Enabled:$true -Strict:$false -DryRunWriteback:$false
 $fallbackCfg.qcWorkflow.mode = 'StateAndAttributes'
 $fallbackCfg.qcWorkflow.autoSetState = $true
 $fallbackCfg.qcWorkflow.expectedWorkflowName = 'TYPSA QC'
 $fallbackSettings = Get-QCWorkflowSettings -Config $fallbackCfg
-$fallbackDoc = [pscustomobject]@{ WorkflowName = 'TYPSA QC'; StateName = 'In Production'; DocumentID = 1; ProjectID = 2 }
+$fallbackDoc = [pscustomobject]@{ WorkflowName = 'TYPSA QC'; StateName = 'In Production'; DocumentID = 1; ProjectID = 2; DocumentGUID = 'qc-workflow-test-doc-2' }
 $fallbackCtx = New-WorkflowContext
 $fallbackCtx.document = $fallbackDoc
-$fallbackWrite = Set-PWQCWorkflowState -Settings $fallbackSettings -Context $fallbackCtx -StateName 'Ready for QC' -DryRun:$false
-Assert-True $fallbackWrite.IsSuccess 'Set-PWQCWorkflowState should succeed via qcWorkflow.states fallback when links are empty'
-Assert-Eq $fallbackWrite.Code 'QC_WORKFLOW_STATE_WRITE_SUCCESS' 'Configured fallback should still write state'
-Assert-Eq $script:stateWrites 1 'Set-PWDocumentState should run once on configured fallback'
+$fallbackCtx.config = $fallbackCfg
+$fallbackCtx.skipSiblingStateSync = $true
+$global:qcWorkflowTestFallbackSettings = $fallbackSettings
+$global:qcWorkflowTestFallbackCtx = $fallbackCtx
+InModuleScope -ModuleName QC.Workflow {
+    function Get-PWWorkflows { [CmdletBinding()] param() [pscustomobject]@{ Name = 'TYPSA QC' } }
+    function Get-PWWorkflowStateLinks { [CmdletBinding()] param() @() }
+    function Set-PWDocumentWorkflowStateVerified {
+        param($Config, $FolderPath, $DocumentName, $DocumentGuid, $TargetState, $QcProcessType, $DryRun, $WorkflowName, $IsLaneAuthority, $WriteScope)
+        $global:qcWorkflowTestStateWrites++
+        return @{ applied = $true; verified = $true; readBackState = $TargetState; targetState = $TargetState }
+    }
+    $fallbackWrite = Set-PWQCWorkflowState -Settings $global:qcWorkflowTestFallbackSettings -Context $global:qcWorkflowTestFallbackCtx -StateName 'Ready for QC' -DryRun:$false
+    if (-not $fallbackWrite.IsSuccess) { throw 'ASSERT FAILED: Set-PWQCWorkflowState should succeed via qcWorkflow.states fallback when links are empty' }
+    if ($fallbackWrite.Code -ne 'QC_WORKFLOW_STATE_WRITE_SUCCESS') { throw "ASSERT FAILED: Configured fallback should still write state`nExpected: QC_WORKFLOW_STATE_WRITE_SUCCESS`nActual:   $($fallbackWrite.Code)" }
+}
+Assert-Eq $global:qcWorkflowTestStateWrites 1 'Set-PWDocumentState should run once on configured fallback'
 
 # successful QC_PREPEND calls Invoke-QCWorkflowWriteback (disabled default returns attached workflow result)
 $tmp = Join-Path $env:TEMP ("qc-workflow-prepend-" + ([guid]::NewGuid().ToString('N')))
