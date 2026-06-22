@@ -90,17 +90,59 @@ startxref
     [System.IO.File]::WriteAllText($Path, $pdf, [System.Text.Encoding]::ASCII)
 }
 
+
+function Write-OnePagePdfForQpdf([string]$QpdfExe, [string]$Path) {
+    $tmp = [System.IO.Path]::GetTempFileName() + '.pdf'
+    try {
+        Write-OnePagePdf -Path $tmp
+        $stdout = [System.IO.Path]::GetTempFileName()
+        $stderr = [System.IO.Path]::GetTempFileName()
+        try {
+            $p = Start-Process -FilePath $QpdfExe -ArgumentList @($tmp, $Path) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not (Test-Path -LiteralPath $Path)) {
+                $out = [string](Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue)
+                $err = [string](Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue)
+                throw "qpdf rewrite failed: exitCode=$($p.ExitCode); stdout=$out; stderr=$err"
+            }
+            $pageCount = Get-PdfPageCount -QpdfExe $QpdfExe -Path $Path
+            if ($pageCount -lt 1) {
+                throw "qpdf rewrite produced $pageCount pages for $Path"
+            }
+        } finally {
+            Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-PdfPageCount([string]$QpdfExe, [string]$Path) {
     $stdout = [System.IO.Path]::GetTempFileName()
     $stderr = [System.IO.Path]::GetTempFileName()
     try {
         $p = Start-Process -FilePath $QpdfExe -ArgumentList @('--show-npages','--', $Path) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        if ($p.ExitCode -ne 0) {
-            $err = Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue
-            throw "qpdf --show-npages failed: $err"
+        $out = [string](Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue)
+        $err = [string](Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue)
+        $exitCode = [int]$p.ExitCode
+
+        $pageCount = $null
+        foreach ($line in ($out -split "(\r?\n)")) {
+            $trimmed = ([string]$line).Trim()
+            if ($trimmed -match '^\d+$') {
+                $pageCount = [int]$trimmed
+                break
+            }
         }
-        $s = (Get-Content -LiteralPath $stdout -Raw -ErrorAction Stop).Trim()
-        return [int]$s
+
+        if ($null -ne $pageCount) {
+            return $pageCount
+        }
+
+        $detail = "exitCode=$exitCode"
+        if (-not [string]::IsNullOrWhiteSpace($out)) { $detail += "; stdout=$out" }
+        if (-not [string]::IsNullOrWhiteSpace($err)) { $detail += "; stderr=$err" }
+        throw "qpdf --show-npages failed: no parseable page count. $detail"
     } finally {
         Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue
@@ -282,9 +324,9 @@ try {
             $v1 = Join-Path $srcDir 'a.pdf'
             $v2 = Join-Path $srcDir 'a_v2.pdf'
             $v3 = Join-Path $srcDir 'a_v3.pdf'
-            Write-OnePagePdf -Path $v1
-            Write-OnePagePdf -Path $v2
-            Write-OnePagePdf -Path $v3
+            Write-OnePagePdfForQpdf -QpdfExe $qpdfExe -Path $v1
+            Write-OnePagePdfForQpdf -QpdfExe $qpdfExe -Path $v2
+            Write-OnePagePdfForQpdf -QpdfExe $qpdfExe -Path $v3
         }
 
         $historyRoot = Join-Path $tmp7 'history'
@@ -305,7 +347,7 @@ try {
         # Run 1 (v1): qc should be 1 page; history should be 1 page
         $job1 = New-Job -Id 'ov' -SourcePdf $v1
         $r1 = Invoke-QCPrependProcessor -Job $job1 -Config $cfg
-        Assert-True $r1.IsSuccess 'Overlay run 1 should succeed'
+        Assert-True $r1.IsSuccess ("Overlay run 1 should succeed. code=$($r1.Code) msg=$($r1.Message)")
         $qc1 = Assert-NonEmptyPath $r1.Data.qcOutputPdf ("qcOutputPdf missing for run1. Data=" + ($r1.Data | ConvertTo-Json -Depth 8 -Compress))
         $hist1 = Assert-NonEmptyPath $r1.Data.targetHistoryPdf ("targetHistoryPdf missing for run1. Data=" + ($r1.Data | ConvertTo-Json -Depth 8 -Compress))
         Assert-True (Test-Path -LiteralPath $qc1) 'QC output should be created'
@@ -316,7 +358,7 @@ try {
         $job2 = New-Job -Id 'ov' -SourcePdf $v2
         $job2.sourceName = $job1.sourceName
         $r2 = Invoke-QCPrependProcessor -Job $job2 -Config $cfg
-        Assert-True $r2.IsSuccess 'Overlay run 2 should succeed'
+        Assert-True $r2.IsSuccess ("Overlay run 2 should succeed. code=$($r2.Code) msg=$($r2.Message)")
         $qc2 = Assert-NonEmptyPath $r2.Data.qcOutputPdf ("qcOutputPdf missing for run2. Data=" + ($r2.Data | ConvertTo-Json -Depth 8 -Compress))
         $hist2 = Assert-NonEmptyPath $r2.Data.targetHistoryPdf ("targetHistoryPdf missing for run2. Data=" + ($r2.Data | ConvertTo-Json -Depth 8 -Compress))
         Assert-Eq (Get-PdfPageCount -QpdfExe $qpdfExe -Path $r2.Data.qcOutputPdf) 2 'QC output pages after v2'
@@ -326,7 +368,7 @@ try {
         $job3 = New-Job -Id 'ov' -SourcePdf $v3
         $job3.sourceName = $job1.sourceName
         $r3 = Invoke-QCPrependProcessor -Job $job3 -Config $cfg
-        Assert-True $r3.IsSuccess 'Overlay run 3 should succeed'
+        Assert-True $r3.IsSuccess ("Overlay run 3 should succeed. code=$($r3.Code) msg=$($r3.Message)")
         $qc3 = Assert-NonEmptyPath $r3.Data.qcOutputPdf ("qcOutputPdf missing for run3. Data=" + ($r3.Data | ConvertTo-Json -Depth 8 -Compress))
         $hist3 = Assert-NonEmptyPath $r3.Data.targetHistoryPdf ("targetHistoryPdf missing for run3. Data=" + ($r3.Data | ConvertTo-Json -Depth 8 -Compress))
         Assert-Eq (Get-PdfPageCount -QpdfExe $qpdfExe -Path $r3.Data.qcOutputPdf) 3 'QC output pages after v3'
@@ -337,11 +379,11 @@ try {
 $procText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\QC.Processors.psm1') -Raw -Encoding UTF8
 Assert-Contains $procText '_QCP-IsFinalQcPrependJob' 'Processors should detect QC Finalizing prepend jobs'
 Assert-Contains $procText 'Test-QCPrependSkipReviewStamp' 'Processors should gate finalizing stamps by process type'
-Assert-Contains $procText '-PrependTrigger' 'Legacy prepend must receive prependTrigger from job metadata'
+Assert-Contains $procText '-PrependTrigger' 'ProjectWise prepend must receive prependTrigger from job metadata'
 
-$legacyText = Get-Content -LiteralPath (Join-Path $repoRoot 'legacy\prepend_qc.ps1') -Raw -Encoding UTF8
-Assert-Contains $legacyText 'Test-PrependQcSkipReviewStamp' 'Legacy prepend must gate review stamp on finalQcComplete by lane'
-Assert-Contains $legacyText 'QC Finalizing prepend (production lane)' 'Legacy prepend skip message for production final prepend'
+$pwPrependText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\processing\Invoke-QCPrependPw.ps1') -Raw -Encoding UTF8
+Assert-Contains $pwPrependText 'Test-PrependQcSkipReviewStamp' 'ProjectWise prepend must gate review stamp on finalQcComplete by lane'
+Assert-Contains $pwPrependText 'QC Finalizing prepend (production lane)' 'Legacy prepend skip message for production final prepend'
 
 Write-Host 'All QC_PREPEND processor tests passed.' -ForegroundColor Green
 

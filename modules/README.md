@@ -72,7 +72,7 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
 - **Purpose**: job readiness validation and job-type dispatch.
 - **Exports**: `Test-QCJobReady`, `Invoke-QCProcessorByType`, `Invoke-QCPrependProcessor`, `Invoke-StatusSetProcessor`.
 - **QC_PREPEND modes**:
-  - `legacyPw`: runs `legacy\prepend_qc.ps1` (PW export + overlay + history) and can clear `QC_Archivist` tag on success.
+  - `projectWise` / `pw` / `legacyPw` (alias): runs `scripts\processing\Invoke-QCPrependPw.ps1` (PW export + overlay + history) and can clear `QC_Archivist` tag on success.
   - local: updates history with `qpdf`; optional overlay via `dist\qc_overlay_prepend\qc_overlay_prepend.exe`.
 - **STATUS_SET_GEN modes**:
   - `native`: imports `QC.StatusSet.psm1` and runs `Invoke-StatusSetNativeJob`

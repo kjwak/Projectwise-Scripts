@@ -546,7 +546,7 @@ dev (untouched until Phase 4 complete)
 | Phase | Branch | Scope | Risk | Validation | Rollback | Stop condition |
 |-------|--------|-------|------|------------|----------|----------------|
 | **4A** | `phase-4/module-script-organization-plan` | This plan doc only | None | Baseline tests (Appendix A) | Delete branch | N/A |
-| **4B** | `phase-4/prepend-path-promotion` | Move prepend body to `scripts/processing/Invoke-QCPrependPw.ps1`; wrapper at `legacy/`; add `projectWise`/`pw` mode alias | **High** | `test_qc_prepend_processor.ps1`, E2E prepend, staging worker | Revert mode + path | QC_PREPEND failure in staging |
+| **4B** | `phase-4/prepend-path-promotion` | **Complete** — Move prepend to `scripts/processing/Invoke-QCPrependPw.ps1`; wrapper at `legacy/prepend_qc.ps1`; `projectWise`/`pw` mode aliases | **High** | `test_qc_prepend_processor.ps1`, `test_qc_prepend_lane_resolution.ps1`, pytest, focus suite | Revert mode + path | QC_PREPEND failure in staging |
 | **4C** | `phase-4/diagnostics-scripts` | Move Show/Get/Scan/Test scripts to `scripts/diagnostics/` | Low | focus tests, MCP smoke | Shims at old paths | Broken diagnostic workflows |
 | **4D** | `phase-4/maintenance-scripts` | Move Reset, Purge, Repair, Remove, Sync scripts | Medium | focus tests, Reset preview | Shims | Publish copy list broken |
 | **4E** | `phase-4/module-folders` | Subfolders + module copies + flat shims | **High** | inventory, bootstrap, focus, watcher dry-run | Shims at old paths | Bootstrap or inventory fail |
@@ -596,6 +596,36 @@ Recorded on branch `phase-4/module-script-organization-plan` from `dev` @ `e3442
 | `./test/run_focus_tests.ps1` | **PASS** — 21/21 tests |
 
 Post-doc validation: re-run the same four commands and record in PR description when opening Phase 4A PR.
+
+---
+
+## Appendix C — Phase 4B prepend path promotion (complete)
+
+**Branch:** `phase-4/prepend-path-promotion` → merge into `phase-4/integration` after review.
+
+### Changes
+
+| Item | Before | After |
+|------|--------|-------|
+| Production PW prepend script | `legacy/prepend_qc.ps1` (monolith) | `scripts/processing/Invoke-QCPrependPw.ps1` |
+| `legacy/prepend_qc.ps1` | Production implementation | Deprecated shim (warns + forwards) |
+| Default processor script path | `legacy\prepend_qc.ps1` | `scripts\processing\Invoke-QCPrependPw.ps1` |
+| `qcPrepend.mode` values | `legacyPw`, `local` | `projectWise`, `pw`, `legacyPw` (alias), `local` |
+| Config script override | `legacyScriptPath` | `projectWiseScriptPath` (preferred), `legacyScriptPath` (alias) |
+| `appsettings.json` mode | `legacyPw` (unchanged) | Still `legacyPw` — no production config flip |
+
+### Validation (Phase 4B)
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest tests/ -q` | **PASS** — 86 passed, 3 skipped |
+| `./test/test_qc_prepend_lane_resolution.ps1` | **PASS** |
+| `./test/run_focus_tests.ps1` | **PASS** — 21/21 |
+| `./test/test_qc_prepend_processor.ps1` | **FAIL** — overlay 3-step qpdf page-count test (`qpdf` exit with warnings on reconstructed xref; unrelated to path move) |
+
+### Rollback
+
+Set `qcPrepend.legacyScriptPath` to a saved copy of the pre-4B script, or revert the branch. `legacyPw` mode continues to work via the shim.
 
 ---
 

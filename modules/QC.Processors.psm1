@@ -82,6 +82,27 @@ function _QCP-SanitizeProcessorDataForStorage([object]$Data) {
     return $out
 }
 
+
+function _QCP-TestQcPrependProjectWiseMode {
+    param([string]$Mode)
+    $m = ([string]$Mode).Trim().ToLowerInvariant()
+    return $m -in @('legacypw', 'projectwise', 'pw')
+}
+
+function _QCP-ResolveProjectWisePrependScriptPath {
+    param(
+        [Parameter(Mandatory)][hashtable]$QcPrependConfig,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+    if ($QcPrependConfig.ContainsKey('projectWiseScriptPath') -and $QcPrependConfig.projectWiseScriptPath) {
+        return [string]$QcPrependConfig.projectWiseScriptPath
+    }
+    if ($QcPrependConfig.ContainsKey('legacyScriptPath') -and $QcPrependConfig.legacyScriptPath) {
+        return [string]$QcPrependConfig.legacyScriptPath
+    }
+    return (Join-Path $RepoRoot 'scripts\processing\Invoke-QCPrependPw.ps1')
+}
+
 function _QCP-GetRepoRoot() {
     return (Split-Path -Parent $PSScriptRoot)
 }
@@ -1341,12 +1362,12 @@ function Invoke-QCPrependProcessor {
     $isDryRun = $false
     if ($Config.ContainsKey('dryRun')) { $isDryRun = [bool]$Config.dryRun }
 
-    # ProjectWise-triggered QC_PREPEND: use legacy prepend_qc.ps1 adapter (does PW export + overlay + history).
-    if ($mode -eq 'legacypw') {
+    # ProjectWise-triggered QC_PREPEND: Invoke-QCPrependPw.ps1 (PW export + overlay + history).
+    if (_QCP-TestQcPrependProjectWiseMode -Mode $mode) {
         $repoRoot = _QCP-GetRepoRoot
-        $legacyPrepend = if ($qc.ContainsKey('legacyScriptPath') -and $qc.legacyScriptPath) { [string]$qc.legacyScriptPath } else { (Join-Path $repoRoot 'legacy\prepend_qc.ps1') }
-        if (-not (Test-Path -LiteralPath $legacyPrepend)) {
-            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_SCRIPT_MISSING' -Message "Legacy prepend_qc.ps1 not found: $legacyPrepend" -Data @{ script = $legacyPrepend }
+        $pwPrependScript = _QCP-ResolveProjectWisePrependScriptPath -QcPrependConfig $qc -RepoRoot $repoRoot
+        if (-not (Test-Path -LiteralPath $pwPrependScript)) {
+            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_SCRIPT_MISSING' -Message "ProjectWise prepend script not found: $pwPrependScript" -Data @{ script = $pwPrependScript }
         }
 
         $pwCfg = @{}
@@ -1380,7 +1401,7 @@ function Invoke-QCPrependProcessor {
         }
 
         if ((_QCP-IsNullOrWhiteSpace $incomingFolder) -or (_QCP-IsNullOrWhiteSpace $incomingDocName)) {
-            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_MISSING_INPUTS' -Message 'Legacy PW prepend requires Job.sourceFolder and Job.sourceName.' -Data @{ jobId = [string]$Job.id; sourceFolder = [string]$Job.sourceFolder; sourceName = [string]$Job.sourceName; sourcePath = [string]$Job.sourcePath }
+            return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_MISSING_INPUTS' -Message 'ProjectWise prepend requires Job.sourceFolder and Job.sourceName.' -Data @{ jobId = [string]$Job.id; sourceFolder = [string]$Job.sourceFolder; sourceName = [string]$Job.sourceName; sourcePath = [string]$Job.sourcePath }
         }
 
         $localRoot = if ($qc.ContainsKey('localRoot') -and $qc.localRoot) { [string]$qc.localRoot } else { 'C:\PW_QC_LOCAL' }
@@ -1406,12 +1427,12 @@ function Invoke-QCPrependProcessor {
         if ($qc.ContainsKey('overlaySheetWorkDir')) { try { $ovSheetWorkDir = [bool]$qc.overlaySheetWorkDir } catch { $ovSheetWorkDir = $true } }
 
         if ($isDryRun) {
-            return New-QCSuccessResult -Code 'QC_PREPEND_DRYRUN' -Message 'Dry-run: would run legacy prepend_qc.ps1 for ProjectWise job.' -Data @{
+            return New-QCSuccessResult -Code 'QC_PREPEND_DRYRUN' -Message 'Dry-run: would run ProjectWise prepend (Invoke-QCPrependPw.ps1) for ProjectWise job.' -Data @{
                 jobId = [string]$Job.id
                 datasourceName = $ds
                 incomingFolderPath = $incomingFolder
                 incomingDocName = $incomingDocName
-                legacyScript = $legacyPrepend
+                prependScript = $pwPrependScript
                 localRoot = $localRoot
                 qpdfExe = $qpdfExe
                 overlayExe = $overlayExe
@@ -1425,7 +1446,7 @@ function Invoke-QCPrependProcessor {
         $args = @(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
-            '-File', $legacyPrepend,
+            '-File', $pwPrependScript,
             '-IncomingFolderPath', $incomingFolder,
             '-IncomingDocName', $incomingDocName,
             '-DatasourceName', $ds,
@@ -1454,8 +1475,8 @@ function Invoke-QCPrependProcessor {
         )
 
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_LEGACY_LANE_PARAMS' `
-                -Message 'Legacy prepend_qc.ps1 invoked with resolved lane parameters.' -Data @{
+            Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PW_LANE_PARAMS' `
+                -Message 'ProjectWise prepend invoked with resolved lane parameters.' -Data @{
                 jobId = [string]$Job.id
                 qc_process_type = [string]$laneCtx.qcProcessType
                 qcProcessType = [string]$laneCtx.qcProcessType
@@ -1464,7 +1485,7 @@ function Invoke-QCPrependProcessor {
                 historyDocumentName = $historyDocName
                 triggerDocumentName = [string]$laneCtx.triggerDocumentName
                 sourceDocumentGuid = [string]$laneCtx.sourceDocumentGuid
-                legacyScript = $legacyPrepend
+                prependScript = $pwPrependScript
             } | Out-Null
         }
 
@@ -1490,9 +1511,9 @@ function Invoke-QCPrependProcessor {
                     stderr = $stderr
                     args = $args
                     argLine = $argLine
-                    legacyScript = $legacyPrepend
+                    prependScript = $pwPrependScript
                 }
-                return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_FAILED' -Message 'Legacy prepend_qc.ps1 failed.' -Data $failData
+                return New-QCFailureResult -Code 'QC_PREPEND_PW_FAILED' -Message 'ProjectWise prepend failed.' -Data $failData
             }
 
             $tagCleared = $null
@@ -1500,11 +1521,11 @@ function Invoke-QCPrependProcessor {
             $writebackWhileConnected = $null
             $clearTag = $true
             if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
-            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via legacy prepend_qc.ps1.' -Data (_QCP-SanitizeProcessorDataForStorage @{
+            $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via ProjectWise prepend.' -Data (_QCP-SanitizeProcessorDataForStorage @{
                 exitCode = [int]$p.ExitCode
                 stdout = $stdout
                 stderr = $stderr
-                legacyScript = $legacyPrepend
+                prependScript = $pwPrependScript
                 incomingFolderPath = $incomingFolder
                 incomingDocName = $incomingDocName
                 triggerTagCleared = $tagCleared

@@ -130,14 +130,14 @@ InModuleScope -ModuleName QC.Processors {
     }
 }
 
-# legacy/prepend_qc.ps1 honors lane parameters (no PW connect; exits after param resolution logging would need mock - use strict param block)
-$legacyScript = Join-Path $repoRoot 'legacy\prepend_qc.ps1'
-Assert-True (Test-Path -LiteralPath $legacyScript) 'legacy prepend script exists'
-$legacyText = Get-Content -LiteralPath $legacyScript -Raw
-Assert-Match $legacyText 'QcProcessType' 'legacy script defines QcProcessType'
-Assert-Match $legacyText 'QcPdfSuffix' 'legacy script defines QcPdfSuffix'
-Assert-Match $legacyText 'HistoryDocumentName' 'legacy script defines HistoryDocumentName'
-Assert-Match $legacyText 'QC_PROCESS_TYPE_UNKNOWN' 'legacy script fails without lane in strict mode'
+# scripts/processing/Invoke-QCPrependPw.ps1 honors lane parameters (no PW connect; exits after param resolution logging would need mock - use strict param block)
+$pwPrependScript = Join-Path $repoRoot 'scripts\processing\Invoke-QCPrependPw.ps1'
+Assert-True (Test-Path -LiteralPath $pwPrependScript) 'ProjectWise prepend script exists'
+$pwPrependText = Get-Content -LiteralPath $pwPrependScript -Raw
+Assert-Match $pwPrependText 'QcProcessType' 'prepend script defines QcProcessType'
+Assert-Match $pwPrependText 'QcPdfSuffix' 'prepend script defines QcPdfSuffix'
+Assert-Match $pwPrependText 'HistoryDocumentName' 'prepend script defines HistoryDocumentName'
+Assert-Match $pwPrependText 'QC_PROCESS_TYPE_UNKNOWN' 'prepend script fails without lane in strict mode'
 
 $settings = Get-QCNotificationSettings -Config @{}
 $jobObj = [pscustomobject]@{ metadata = [pscustomobject]@{ qcProcessType = 'review' } }
