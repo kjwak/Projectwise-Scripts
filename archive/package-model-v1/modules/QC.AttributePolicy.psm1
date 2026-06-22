@@ -1,8 +1,10 @@
+# Archived v1: resolve production modules from repo modules/
+$script:_QCPkgV1RepoModules = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) 'modules'
 # QC.AttributePolicy.psm1
 # Responsibility: Attribute ownership, validation, and allowlisted package metadata reads/writes.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force -Global
 
 function _QCAP-Get([object]$Object, [string[]]$Names) { foreach ($n in @($Names)) { try { if ($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n) { return $Object.$n } } catch { }; if ($Object -is [hashtable] -and $Object.ContainsKey($n)) { return $Object[$n] } }; return $null }
 function _QCAP-Attrs([object]$Document) { $a = _QCAP-Get $Document @('Attributes','attributes','EnvironmentAttributes'); if ($a -is [hashtable]) { return $a }; $h=@{}; if($a -and $a.PSObject.Properties){foreach($p in $a.PSObject.Properties){$h[$p.Name]=$p.Value}}; return $h }

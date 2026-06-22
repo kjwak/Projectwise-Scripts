@@ -1,59 +1,100 @@
-# QC Package Model
+# QC Package Model (SQL-backed)
 
-> **Note (Phase 2):** Production package grouping uses SQL **`sheet_packages`** and **`sheet_package_qc_pdfs`** via `Core.Database.psm1`. The in-memory `QC.Package*` modules described below are **not wired into the production pipeline** (test/documentation only). See [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md).
+Production QC treats related ProjectWise sheet artifacts as a single **sheet package** persisted in SQL. Package identity, document membership, and per-lane QC PDF registry are owned by [`modules/Core.Database.psm1`](../modules/Core.Database.psm1).
 
-The QC automation framework treats related ProjectWise artifacts as a single QC Package instead of making workflow and attribute decisions on a single triggering file.
+> **Archived v1:** An earlier in-memory `QC.Package*` module cluster (`Resolve-QCPackage`, attribute/state sync, fictional `QCPackageCache`) lived under `modules/` and was never wired into production. It was archived in Phase 3 to [`archive/package-model-v1/`](../archive/package-model-v1/). See [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md) and [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
 
-A QC Package contains:
+## Package identity
 
-- `DgnDocument` for the source `*.dgn` design artifact.
-- `PdfDocument` for the production `*.pdf`, which is the preferred source of truth for user-controlled QC metadata.
-- `QcPdfDocument` for `*_QC.pdf`, `-QC.pdf`, or other configured QC history/review PDFs.
-- `PackageId`, `PackageKey`, `DocumentKey`, `BaseName`, `SheetId`, and `PackageRootFolder`.
-- Package-level workflow state, review type, role metadata, automation status fields, warnings, and conflicts.
+A sheet package groups documents that share the same **folder path** and **sheet stem** (base name without lane suffix):
 
-## Resolution strategy
+- **DGN** — source design file (`*.dgn`)
+- **Sheet PDF** — production sheet PDF (`{stem}.pdf`)
+- **Lane QC PDFs** — `{stem}-prod.pdf`, `{stem}-rev.pdf`, `{stem}-chk.pdf` per `QC_Process_Type` / lane registry
 
-`Resolve-QCPackage` accepts an audited ProjectWise document and candidate sibling documents. The resolver classifies the triggering document, derives a stable package key, and groups siblings using extension points for explicit package attributes, GUID cache, SQL package cache, folder proximity, and configurable naming rules. Filename matching is only one strategy and is intentionally isolated behind configuration.
+Package primary key: `sheet_package_id` (`UNIQUEIDENTIFIER`) in `sheet_packages`.
 
-## Metadata authority
+## SQL tables
 
-`Get-QCPackageCanonicalDocument` selects the canonical metadata source by configuration. The default preference is:
+| Table | Role |
+|-------|------|
+| `sheet_packages` | One row per `(folder_path, sheet_stem)`; package identity and rollup fields |
+| `sheet_documents` | Per-document membership (`dgn`, `sheet_pdf`, `qc_pdf`, `other`) |
+| `sheet_package_qc_pdfs` | Lane QC PDF registry (`production` / `review` / `check`); canonical for lane GUID and PW state mirror |
+| `sheet_index` | Operational index; dual-writes `sheet_package_id`; legacy `qc_pdf_name` / `qc_pdf_guid` columns remain |
 
-1. Production PDF
-2. QC PDF
-3. DGN
+Schema details and migrations: see `docs/database-telemetry.md` and `sql/` migrations (v1.15+ package tables, v1.19 lane registry).
 
-If the production PDF is missing, the fallback is deterministic and emits a warning. SQL cache rows are not treated as authoritative ProjectWise metadata; they are only relationship/job-history telemetry.
+## Key functions (`Core.Database.psm1`)
 
-## Attribute ownership
+| Function | Purpose |
+|----------|---------|
+| `Resolve-SheetPackageFromDocument` | Derive stem and document role from name + folder |
+| `Ensure-SheetPackage` | Upsert `sheet_packages` row (does not overwrite `pw_state_name` on update) |
+| `Write-SheetDocument` | Upsert document membership in `sheet_documents` |
+| `Get-SheetPackageIdForDocument` | Resolve document GUID → `sheet_package_id` |
+| `Resolve-SheetPackageIdForSheetGroup` | Sheet-group resolution for audit triggers |
+| `Upsert-SheetPackageQcPdf` | Lane PDF row in `sheet_package_qc_pdfs` |
+| `Sync-SheetPackageLaneQcPdfsFromMembers` | Discovery-driven lane registry sync |
+| `Update-SheetPackageQcPdfLaneState` | Per-lane ProjectWise state mirror |
 
-`QC.AttributePolicy.psm1` separates user-owned fields from automation-owned fields. User fields are read by automation and are not blindly copied across all documents. Automation status writes are allowlisted and default to production PDF + QC PDF. DGN receives only lightweight package/status fields when explicitly configured.
+## Production consumers
 
-Validation checks include missing environment columns, unavailable ProjectWise discovery cmdlets, bad emails, and invalid/missing configured attributes. Attribute writes use `Update-PWDocumentAttributes` and support dry-run planning.
+| Consumer | Usage |
+|----------|-------|
+| `Watch-QCTrigger.ps1` / `Run-QCProcessor.ps1` | Bootstrap `Core.Database` |
+| `QC.AuditTriggers.psm1` | `Get-SheetPackageIdForDocument`, `Resolve-SheetPackageIdForSheetGroup` |
+| `QC.Notifications.psm1` | GUID resolution via `sheet_package_qc_pdfs` |
+| `QC.NotificationThreads.psm1` | `Get-SheetPackageIdForDocument` |
+| `QC.DebugMcp.psm1` | Reads `sheet_packages` / `sheet_package_qc_pdfs` |
+| `PW.Discovery.psm1` | `Sync-SheetPackageLaneQcPdfsFromMembers` |
+| `Core.Telemetry.psm1` | Dual-write via `Core.Database` |
+| `scripts/Reset-QCFolderWorkflow.ps1` | Lane registry maintenance |
+| `QC.Reporting.psm1` | `Get-QCPackageReportingRows` → SQL view `v_sheet_package_status` |
 
-## State policy
+```mermaid
+flowchart TD
+    subgraph pw [ProjectWise]
+        DGN[stem.dgn]
+        PDF[stem.pdf]
+        LanePDFs["stem-prod/rev/chk.pdf"]
+    end
 
-`QC.StatePolicy.psm1` resolves package-level state using configurable precedence and reports conflicting sibling states. Package state changes are idempotent and use ProjectWise state APIs (`Set-PWDocumentState`) when mutation is not dry-run.
+    subgraph sql [SQL QC_Pipeline]
+        SP[sheet_packages]
+        SD[sheet_documents]
+        LANE[sheet_package_qc_pdfs]
+        SI[sheet_index]
+    end
 
-## SQL/cache contract
+    subgraph pipeline [Production pipeline]
+        Watch[Watch-QCTrigger]
+        Audit[QC.AuditTriggers]
+        Notif[QC.Notifications]
+        Disc[PW.Discovery]
+    end
 
-`QC.Package.Database.psm1` defines additive cache fields:
+    Watch --> Ensure[Ensure-SheetPackage / Write-SheetDocument]
+    Disc --> SyncLane[Sync-SheetPackageLaneQcPdfsFromMembers]
+    Audit --> GetPkg[Get-SheetPackageIdForDocument]
+    Notif --> LANE
+    Ensure --> SP
+    Ensure --> SD
+    SyncLane --> LANE
+    SI -.->|dual-write sheet_package_id| SP
+```
 
-- `PackageId`
-- `DgnGuid`
-- `PdfGuid`
-- `QcPdfGuid`
-- `PackageKey`
-- `LastResolvedUtc`
-- `LastCanonicalGuid`
-- `LastKnownState`
-- conflict flags
+## Workflow and metadata
 
-Manual ProjectWise/admin setup still required:
+- **Lane workflow** — prepend, notifications, and per-lane state use `sheet_package_qc_pdfs` and TYPSA three-lane naming (`-prod`, `-rev`, `-chk`). See [`docs/qc-workflow-framework.md`](qc-workflow-framework.md).
+- **Reporting** — `QC.Reporting.psm1` aggregates package status from `v_sheet_package_status`; this is separate from the archived in-memory package resolver.
+- **Job dedupe** — queue dedupe keys are computed in `QC.JobFactory.psm1` without requiring the archived package modules. A `metadata.package` branch exists but is not populated by production job creation today (deferred product decision).
 
-1. Ensure target ProjectWise environments contain configured user-owned and automation-owned attributes.
-2. Ensure configured workflow state names exactly match ProjectWise workflow state labels.
-3. Grant the automation account permission to update allowlisted automation fields and perform allowed workflow state changes.
-4. Create the additive package-cache table or migration equivalent if SQL relationship caching is enabled.
-5. Review naming suffixes and any future explicit GUID/package-link relationship attributes per datasource.
+## Tests
+
+SQL package path tests (retained under `test/`):
+
+- `test_sheet_package_resolution.ps1`, `test_sheet_package_incomplete.ps1`, `test_sheet_package_dual_write.ps1`
+- `test_sheet_package_backfill.ps1`, `test_sheet_package_qc_pdfs_schema.ps1`, `test_sheet_package_phase4.ps1`
+- `test_qc_lane_state_independence.ps1`, `test_qc_lane_pdf_guid_sync.ps1`, `test_qc_notification_guid_resolve.ps1`
+- Additional lane/trigger/completion tests listed in [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md)

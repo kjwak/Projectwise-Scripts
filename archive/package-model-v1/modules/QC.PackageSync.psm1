@@ -1,9 +1,11 @@
+# Archived v1: resolve production modules from repo modules/
+$script:_QCPkgV1RepoModules = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) 'modules'
 # QC.PackageSync.psm1
 # Responsibility: Apply package-level attribute synchronization without blindly copying metadata.
 
-Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'QC.AttributePolicy.psm1') -Force
+Import-Module (Join-Path $script:_QCPkgV1RepoModules 'Core.Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'QC.PackageResolver.psm1') -Force -Global
+Import-Module (Join-Path $PSScriptRoot 'QC.AttributePolicy.psm1') -Force -Global
 
 function _QCPS-Get([object]$Object,[string[]]$Names){ foreach($n in @($Names)){ try{ if($Object -and $Object.PSObject.Properties[$n] -and $null -ne $Object.$n){ return $Object.$n }}catch{}; if($Object -is [hashtable] -and $Object.ContainsKey($n)){ return $Object[$n] } }; return $null }
 function _QCPS-Attrs([object]$Document){ $a=_QCPS-Get $Document @('Attributes','attributes','EnvironmentAttributes'); if($a -is [hashtable]){return $a}; $h=@{}; if($a -and $a.PSObject.Properties){foreach($p in $a.PSObject.Properties){$h[$p.Name]=$p.Value}}; return $h }

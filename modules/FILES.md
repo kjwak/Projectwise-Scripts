@@ -29,7 +29,6 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 
 | File | Purpose |
 | --- | --- |
-| `QC.AttributePolicy.psm1` | Package attribute policy evaluation helpers. |
 | `QC.AuditTriggers.psm1` | Audit-trail-driven trigger helpers and workflow event hooks. |
 | `QC.CommentExtract.psm1` | Invokes `overlay/qc_pdf_comments.py`; normalized PDF comment annotations. |
 | `QC.CommentStatusDecision.psm1` | Pure `Resolve-QCCommentWorkflowState` decision logic (no side effects). |
@@ -46,9 +45,6 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `QC.NotificationTemplates.psm1` | HTML email template rendering (`ConvertTo-QCEmailHtml`). |
 | `QC.NotificationThreads.psm1` | Durable notification email threading by sheet package and review type. |
 | `QC.Notifications.psm1` | Configurable QC workflow email notifications (Mock + Graph). |
-| `QC.Package.Database.psm1` | Package-related database persistence helpers. |
-| `QC.PackageResolver.psm1` | Package resolution and validation logic. |
-| `QC.PackageSync.psm1` | Package synchronization orchestration. |
 | `QC.PdfExport.psm1` | `Export-QCPdfToStaging` — ProjectWise PDF download to staging. |
 | `QC.ProcessType.psm1` | `QC_Process_Type` normalization, lane PDF resolution, and stamp configuration. |
 | `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend, status-set, comment sync, reporting, and related job types. |
@@ -56,7 +52,6 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `QC.Rendition.psm1` | ProjectWise PDF rendition request helpers. |
 | `QC.Reporting.psm1` | Read-only QC reporting aggregation and JSON snapshot generation for `QC_REPORTING_SCAN` jobs. |
 | `QC.ReviewStamp.psm1` | QC review stamp processor integration. |
-| `QC.StatePolicy.psm1` | Workflow state policy evaluation for package workflows. |
 | `QC.StatusSet.psm1` | Native status-set implementation: manifest/cache, PW export/writeback, PDF merging, workspace reconciliation. |
 | `QC.Triggers.psm1` | Trigger rule ordering, matching, and job-type classification. |
 | `QC.WatcherAlerts.psm1` | Operational email alerts when the watcher loses ProjectWise connectivity. |
