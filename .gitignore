@@ -29,3 +29,4 @@ appsettings.*.local.json
 tools/pw-qc-mcp/
 reports/
 build/
+test/output/
