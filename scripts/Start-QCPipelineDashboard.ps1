@@ -69,14 +69,24 @@ function _Resolve-RepoRootFromSettings([string]$SettingsPath, [string]$DefaultRo
     return $DefaultRoot
 }
 
-$repoRoot = _Resolve-RepoRootFromSettings -SettingsPath $AppSettingsPath -DefaultRoot $repoRoot
+function _Import-DashboardModules {
+    param([Parameter(Mandatory)][string]$RepoRoot)
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Config.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
+    $modulesRoot = Join-Path $RepoRoot 'modules'
+    Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force
+    Import-Module (Join-Path $modulesRoot 'Core\Core.Config.psm1') -Force -WarningAction SilentlyContinue
+    Import-Module (Join-Path $modulesRoot 'Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
+    Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+    Import-Module (Join-Path $modulesRoot 'Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
+    # Nested Import-Module -Force in the modules above can drop Core.Runtime session exports (PS 5.1).
+    Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+
+    foreach ($cmd in @('Get-QCAppSettingsConfig', 'Get-QCTimestamp', 'Recover-QCStaleJobs', 'Clear-QCWatcherActive')) {
+        if (-not (Get-Command -Name $cmd -ErrorAction SilentlyContinue)) {
+            throw "Dashboard module bootstrap failed: $cmd is not available after import. Check modules under $modulesRoot."
+        }
+    }
+}
 
 function _Pause-IfInteractiveConsole {
     # Double-click / powershell.exe -File closes the window as soon as the script exits.
@@ -370,6 +380,8 @@ $watcher = Join-Path $repoRoot 'scripts\\Watch-QCTrigger.ps1'
 $worker = Join-Path $repoRoot 'scripts\\Run-QCProcessor.ps1'
 if (-not (Test-Path -LiteralPath $watcher)) { throw "Watcher script not found: $watcher" }
 if (-not (Test-Path -LiteralPath $worker)) { throw "Worker script not found: $worker" }
+
+_Import-DashboardModules -RepoRoot $repoRoot
 
 $state = @{
     phase = 'starting'

@@ -51,8 +51,13 @@ Assert-Command 'Invoke-QCPrependProcessor' 'processor map exposes Invoke-QCPrepe
 Assert-Command 'Move-QCJobWithLockRetries' 'worker exposes Move-QCJobWithLockRetries'
 
 Write-Host '=== Dashboard dependencies (folder paths) ===' -ForegroundColor Cyan
+Import-QCModuleImpl 'Core\Core.Results.psm1'
 Import-QCModuleImpl 'Core\Core.Config.psm1'
+Import-QCModuleImpl 'Queue\QC.Queue.Json.psm1'
+Import-QCModuleImpl 'Core\QC.WatcherOrchestration.psm1'
 Import-QCModuleImpl 'Notifications\QC.WatcherAlerts.psm1'
+Import-QCModuleImpl 'Core\Core.Runtime.psm1'
+Assert-Command 'Get-QCAppSettingsConfig' 'dashboard boot exposes Get-QCAppSettingsConfig after import chain'
 Assert-Command 'Read-AppConfig' 'dashboard config helper available'
 Assert-Command 'Send-QCWatcherSessionLostAlert' 'dashboard watcher alerts available'
 
