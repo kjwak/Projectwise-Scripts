@@ -32,9 +32,12 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = (Join-Path $repoRoot 'appsettings.json')
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'ProjectWise\PW.Connection.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+) -Context 'Test-PWConnection bootstrap'
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }

@@ -24,6 +24,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'ProjectWise\PW.Connection.psm1'
+) -RequiredCommands @(
+    'Show-PWFolderBrowser'
+) -Context 'PW-BrowseFolder bootstrap'
 
 Show-PWFolderBrowser -DatasourceName $DatasourceName -CredentialPath $CredentialPath -FolderPath $FolderPath -Max $Max

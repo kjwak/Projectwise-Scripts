@@ -35,10 +35,16 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Database\Core.Database.psm1'
+    'ProjectWise\PW.Discovery.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Test-QCDatabaseEnabled'
+    'Invoke-QCDatabaseQuery'
+    'Invoke-QCDatabaseNonQuery'
+) -Context 'Remove-InvalidSheetIndexRows bootstrap'
 
 if ($DryRun.IsPresent -and $ConfirmDeletes.IsPresent) {
     throw 'Use -DryRun (preview only) OR -ConfirmDeletes (apply deletes), not both.'

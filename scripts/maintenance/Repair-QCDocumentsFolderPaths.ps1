@@ -36,10 +36,16 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Database\Core.Database.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Invoke-QCDatabaseQuery'
+    'Invoke-QCDatabaseNonQuery'
+) -Context 'Repair-QCDocumentsFolderPaths bootstrap'
+Import-QCModuleGlobal -RelativePath 'Core\Core.Paths.psm1'
+Test-QCRequiredCommands -Names @('Normalize-QCDocumentsFolderPath') -Context 'Repair-QCDocumentsFolderPaths paths post-restore'
 
 $configRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $configRes.IsSuccess) { throw $configRes.Message }

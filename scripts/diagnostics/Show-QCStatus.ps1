@@ -19,9 +19,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Queue\QC.Queue.Json.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Get-QCQueueStats'
+    'Get-QCRecentJobs'
+) -Context 'Show-QCStatus bootstrap'
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }

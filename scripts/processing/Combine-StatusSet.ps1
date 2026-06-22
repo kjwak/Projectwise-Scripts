@@ -35,8 +35,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Processing\QC.StatusSet.psm1'
+) -RequiredCommands @(
+    'Invoke-StatusSetNativeJob'
+) -Context 'Combine-StatusSet bootstrap'
 
 $job = @{
     id = 'manual_combine'

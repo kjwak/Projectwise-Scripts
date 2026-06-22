@@ -39,12 +39,19 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Discovery.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Database\Core.Database.psm1'
+    'ProjectWise\PW.Connection.psm1'
+    'ProjectWise\PW.Discovery.psm1'
+    'Workflow\QC.ProcessType.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Test-QCDatabaseEnabled'
+    'Invoke-QCDatabaseQuery'
+    'Write-QCJsonLog'
+    'Write-QCSheetIndex'
+) -Context 'Reconcile-QCSheetOwnership bootstrap'
 
 foreach ($moduleName in @('pwps', 'pwps_dab')) {
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {

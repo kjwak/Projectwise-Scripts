@@ -824,7 +824,11 @@ When script A imports foundation modules and feature module B nested-reloads the
 
 ### Deferred
 
-Diagnostic/maintenance hand-rolled imports; `Combine-StatusSet.ps1` / `Run-CombineStatusSet.ps1`.
+- `Watch-QCTrigger.ps1` — inline watcher restore (not shared helper)
+- PW-only diagnostic probes
+- Full `.psd1` manifest production adoption
+
+Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 ### Tests
 
@@ -855,6 +859,25 @@ Diagnostic/maintenance hand-rolled imports; `Combine-StatusSet.ps1` / `Run-Combi
 ### Test
 
 `test/test_processing_deployment_script_wrappers.ps1`
+
+---
+
+## Appendix K — Phase 4 diagnostic/maintenance bootstrap (complete)
+
+**Branch:** `phase-4/diagnostic-maintenance-bootstrap` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md)
+
+### Scope
+
+- 11 QC diagnostic scripts → `Import-QCModuleBootstrapSet`
+- 16 maintenance scripts → shared bootstrap (replaces `Import-QCScriptModules.ps1` and hand-rolled imports)
+- `processing/Combine-StatusSet.ps1` → shared bootstrap
+- 12 PW-only probes unchanged
+
+### Test
+
+`test/test_diagnostic_maintenance_bootstrap.ps1`
 
 ---
 

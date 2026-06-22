@@ -57,7 +57,11 @@ foreach ($p in $sample.PSObject.Properties) {
 }
 
 $html = ConvertTo-QCEmailHtml -TemplatePath $templatePath -Data $sampleHt
-Assert-Contains $html 'Open QC PDF' 'Rendered HTML should include CTA label'
+Assert-Contains $html 'Open Review Package' 'Rendered HTML should include CTA label'
+
+# Production appsettings uses repo-relative templatePath (not absolute); must resolve via module repo root.
+$htmlRel = ConvertTo-QCEmailHtml -TemplatePath 'email/templates/qc_notification.html' -Data $sampleHt
+Assert-Contains $htmlRel 'Open Review Package' 'Relative template path must resolve from repo root (not modules/Notifications)'
 Assert-Contains $html 'cid:typsa-logo' 'Rendered HTML should reference inline logo CID'
 Assert-Contains $html '#bf1425' 'Rendered HTML should use TYPSA accent color'
 Assert-Contains $html ([System.Net.WebUtility]::HtmlEncode([string]$sampleHt.ProjectName)) 'Project name should be HTML-encoded'
@@ -92,11 +96,10 @@ Assert-Contains $escaped '&lt;script&gt;' 'Script tags in project name must be e
 
 $graphMsg = New-QCGraphEmailMessage -ToRecipients @('test@example.com') -Subject 'Test' `
     -HtmlBody '<p>Hi</p>' -LogoPath $logoPath
-Assert-True ($graphMsg.message.body.contentType -eq 'HTML') 'Graph body should be HTML'
-Assert-True ($graphMsg.message.attachments.Count -eq 1) 'Graph message should include one attachment'
-Assert-True ($graphMsg.message.attachments[0].contentId -eq 'typsa-logo') 'Inline logo contentId must be typsa-logo'
-Assert-True ($graphMsg.message.attachments[0].isInline -eq $true) 'Logo attachment must be inline'
-Assert-True ($graphMsg.saveToSentItems -eq $true) 'saveToSentItems must be true'
+Assert-True ($graphMsg.body.contentType -eq 'HTML') 'Graph body should be HTML'
+Assert-True ($graphMsg.attachments.Count -eq 1) 'Graph message should include one attachment'
+Assert-True ($graphMsg.attachments[0].contentId -eq 'typsa-logo') 'Inline logo contentId must be typsa-logo'
+Assert-True ($graphMsg.attachments[0].isInline -eq $true) 'Logo attachment must be inline'
 
 Assert-Throws {
     New-QCGraphEmailMessage -ToRecipients @() -Subject 'x' -HtmlBody 'y' -LogoPath $logoPath | Out-Null

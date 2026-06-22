@@ -57,13 +57,15 @@ function _TestEmail-GetGraphSettings([hashtable]$Config) {
     return $graph
 }
 
-foreach ($mod in @('Core.Results.psm1', 'Core.Runtime.psm1', 'QC.NotificationGraph.psm1', 'QC.Notifications.psm1')) {
-    $modPath = Join-Path $repoRoot "modules\$mod"
-    if (-not (Test-Path -LiteralPath $modPath)) { throw "Module not found: $modPath" }
-    Import-Module $modPath -Force
-}
-Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationTemplates.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Notifications\QC.NotificationGraph.psm1'
+    'Notifications\QC.NotificationTemplates.psm1'
+) -RequiredCommands @(
+    'ConvertTo-QCEmailHtml'
+    'New-QCGraphEmailMessage'
+    'ConvertTo-HashtableDeep'
+) -Context 'Test-QCEmailTemplate bootstrap'
 
 if (-not (Test-Path -LiteralPath $SampleDataPath)) {
     throw "Sample data not found: $SampleDataPath"
@@ -110,8 +112,6 @@ if ($Send) {
     if ([string]::IsNullOrWhiteSpace($To)) {
         throw '-To is required when using -Send (default is jflint@aztec.us).'
     }
-    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
     $configResult = Read-QCAppSettings -Path $AppSettingsPath
     if (-not $configResult.IsSuccess) {
         throw ('Failed to load appsettings: ' + $configResult.Message)

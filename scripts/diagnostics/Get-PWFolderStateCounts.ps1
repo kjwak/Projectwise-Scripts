@@ -75,9 +75,14 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Config.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Config.psm1'
+    'ProjectWise\PW.Connection.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Get-QCTimestamp'
+) -Context 'Get-PWFolderStateCounts bootstrap'
 
 # Resolve config defaults from appsettings.json unless overridden.
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath

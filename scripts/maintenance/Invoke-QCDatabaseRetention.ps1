@@ -27,8 +27,15 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-. (Join-Path $PSScriptRoot '..\Import-QCScriptModules.ps1') -RepoRoot $repoRoot
-
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Database\Core.Database.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Test-QCDatabaseEnabled'
+    'Invoke-QCDatabaseScalar'
+    'Invoke-QCDatabaseNonQuery'
+) -Context 'Invoke-QCDatabaseRetention bootstrap'
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config

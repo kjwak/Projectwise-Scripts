@@ -62,11 +62,14 @@ Core.Results → Core.Paths → Core.Runtime → Core.Config → Core.Logging �
 
 **run_prepend_qc (-NoDashboard):** `Get-QCAppSettingsConfig`, `Get-QCTimestamp`, `Get-NextQCJob`, `Get-QCQueueStats`, `Invoke-QCQueueStartupCheck`
 
-## Intentionally deferred (P2/P3)
+## Intentionally deferred (P2/P3) — superseded
 
-- `scripts/Combine-StatusSet.ps1` / `Run-CombineStatusSet.ps1` — StatusSet nested imports touch PW/Processing; defer to avoid scope creep
-- All diagnostic scripts with hand-rolled imports (`Show-QCStatus.ps1`, `Get-PWFolderStateCounts.ps1`, etc.)
-- All maintenance scripts not already using `Import-QCScriptModules.ps1`
+Diagnostic/maintenance/`Combine-StatusSet` bootstrap completed on `phase-4/diagnostic-maintenance-bootstrap`. See [`docs/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md).
+
+Remaining deferred:
+
+- `Watch-QCTrigger.ps1` inline restore (not shared helper)
+- PW-only probes (no QC modules)
 
 ## Tests added/updated
 

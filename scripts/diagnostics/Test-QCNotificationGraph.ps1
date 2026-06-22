@@ -155,20 +155,13 @@ function Get-TestNotificationAppSettings([string]$Path) {
     return $cfg
 }
 
-$resultsModule = Join-Path $repoRoot 'modules\Core\Core.Results.psm1'
-$graphModule = Join-Path $repoRoot 'modules\Notifications\QC.NotificationGraph.psm1'
-foreach ($modPath in @($resultsModule, $graphModule)) {
-    if (-not (Test-Path -LiteralPath $modPath)) {
-        throw "Required module not found: $modPath"
-    }
-}
-
-Import-Module $resultsModule -Force
-Import-Module $graphModule -Force
-
-if (-not (Get-Command -Name 'Send-QCNotificationGraph' -ErrorAction SilentlyContinue)) {
-    throw "Send-QCNotificationGraph not loaded from $graphModule"
-}
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Notifications\QC.NotificationGraph.psm1'
+) -RequiredCommands @(
+    'Send-QCNotificationGraph'
+    'Test-QCNotificationGraphConfigured'
+) -Context 'Test-QCNotificationGraph bootstrap'
 
 $config = Get-TestNotificationAppSettings -Path $AppSettingsPath
 

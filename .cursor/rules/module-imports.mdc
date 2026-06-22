@@ -70,7 +70,13 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
 
 **Protected entrypoints:** `Start-QCPipelineDashboard.ps1`, `Run-QCProcessor.ps1`, `run_prepend_qc.ps1` (`-NoDashboard`).
 
-**Deferred:** diagnostic/maintenance scripts with hand-rolled imports (migrate in a later phase or use `Import-QCScriptModules.ps1`).
+**Diagnostic/maintenance/processing helpers:** scripts under `scripts/diagnostics/`, `scripts/maintenance/`, and `scripts/processing/Combine-StatusSet.ps1` dot-source `Restore-QCModuleExports.ps1` and call `Import-QCModuleBootstrapSet` with script-specific feature modules and required commands. PW-only probes (`Test-PWEmailAttributes*`, `PW-SmokeTest`, `Test-PWDocumentStateChange`) are exempt.
+
+**Paths post-restore:** when a script calls `Normalize-QCDocumentsFolderPath` at session scope, re-import `Core\Core.Paths.psm1` via `Import-QCModuleGlobal` **after** `Import-QCModuleBootstrapSet` (foundation restore ends with `Core.Database`, which clobbers Paths exports on PS 5.1).
+
+**Legacy loader:** `Import-QCScriptModules.ps1` remains for reference but is no longer used by maintenance scripts after Phase 4 diagnostic/maintenance bootstrap.
+
+**Watcher:** inline `_Watch-RestoreFoundationModules` / `_Watch-EnsureAllModuleExports` in `Watch-QCTrigger.ps1` (not shared helper).
 
 **`.psd1` manifests:** prototype manifests exist (`QC.Core.psd1`, `QC.Queue.psd1`) but are **not** used by production entrypoints. Any future manifest adoption must include the same post-import restore validation — nested manifest loads have the same clobber behavior.
 
@@ -135,7 +141,7 @@ After changing imports, confirm required commands exist:
 Get-Command Read-QCAppSettings, Write-QCJsonLog, Test-QCDatabaseEnabled -ErrorAction SilentlyContinue
 ```
 
-Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`, `test/test_entrypoint_imports.ps1`, `test/test_module_bootstrap_restore.ps1`.
+Run relevant tests: `test/test_module_inventory.ps1`, `test/test_watcher_module_bootstrap.ps1`, `test/test_watch_foundation_restore.ps1`, `test/test_entrypoint_imports.ps1`, `test/test_module_bootstrap_restore.ps1`, `test/test_diagnostic_maintenance_bootstrap.ps1`.
 
 For `InModuleScope` or private function tests, use `test/_Resolve-ModuleImplPath.ps1` (`Get-QCModuleImplementation`, `Remove-QCModuleFlatShims`).
 

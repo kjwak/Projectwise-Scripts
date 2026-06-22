@@ -11,9 +11,8 @@ function _QCNT-IsBlank([object]$Value) {
 }
 
 function _QCNT-GetRepoRoot() {
-    $root = $PSScriptRoot
-    if ($root -match '[\\/]modules$') { return Split-Path -Parent $root }
-    return $root
+    # Implementation lives under modules/<Folder>/; repo root is two levels above $PSScriptRoot.
+    return (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 }
 
 function _QCNT-ResolveRepoPath([string]$Path) {

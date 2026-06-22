@@ -31,11 +31,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1')   -Force
-Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'ProjectWise\PW.Connection.psm1'
+    'Processing\QC.StatusSet.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Write-QCJsonLog'
+    'Invoke-StatusSetReconcile'
+) -Context 'Reconcile-QCStatusSets bootstrap'
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }

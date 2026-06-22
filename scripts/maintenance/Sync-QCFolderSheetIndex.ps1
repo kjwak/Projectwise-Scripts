@@ -40,12 +40,20 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }
 
-. (Join-Path $PSScriptRoot '..\Import-QCScriptModules.ps1') -RepoRoot $repoRoot -AdditionalModules @(
-    'Core.Paths.psm1'
-    'PW.Connection.psm1'
-    'PW.Discovery.psm1'
-    'QC.StatusSet.psm1'
-)
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Database\Core.Database.psm1'
+    'ProjectWise\PW.Connection.psm1'
+    'ProjectWise\PW.Discovery.psm1'
+    'Processing\QC.StatusSet.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Test-QCDatabaseEnabled'
+    'Invoke-QCDatabaseQuery'
+    'Write-QCSheetIndexBatch'
+) -Context 'Sync-QCFolderSheetIndex bootstrap'
+Import-QCModuleGlobal -RelativePath 'Core\Core.Paths.psm1'
+Test-QCRequiredCommands -Names @('Normalize-QCDocumentsFolderPath') -Context 'Sync-QCFolderSheetIndex paths post-restore'
 
 foreach ($moduleName in @('pwps', 'pwps_dab')) {
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {

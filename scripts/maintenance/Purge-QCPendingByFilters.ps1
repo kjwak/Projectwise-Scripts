@@ -26,10 +26,15 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 if (-not $AppSettingsPath) { $AppSettingsPath = Join-Path $repoRoot 'appsettings.json' }
 if (-not (Test-Path -LiteralPath $AppSettingsPath)) { throw "appsettings.json not found: $AppSettingsPath" }
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null
+. (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Paths.psm1'
+    'Queue\QC.Filters.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Test-QCPathAllowed'
+    'Get-QCTimestamp'
+) -Context 'Purge-QCPendingByFilters bootstrap'
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
