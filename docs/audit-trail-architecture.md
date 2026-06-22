@@ -27,7 +27,7 @@ Key differences from the original proposal below:
 | QC workflow state (`1012`) | “Not yet implemented” | **`Sync-PWAssociatedSheetWorkflowState`** + history / notifications via **`QC.AuditTriggers`** |
 | QC attribute change (`1003`) | “Not yet implemented” | **`Sync-PWSheetIndexOwnership`** + **`Invoke-QCAuditWorkflowAttributeChangeTriggers`** |
 | `document_state_history` / `transition_events` | Proposed only | Written on **audit** triggers and **`recordFromProcessor`** (QC_PREPEND / comment sync) |
-| Notifications from audit | Future | **`Invoke-QCNotificationForStateChange`** on `*-qc.pdf` when `notifications.enabled` + `workflowTriggers.notifyOnStateChange` |
+| Notifications from audit | Operational | **`Invoke-QCNotificationForStateChange`** on lane QC PDFs (`*-prod/-rev/-chk.pdf`) when `notifications.enabled` + `workflowTriggers.notifyOnStateChange` |
 
 ---
 

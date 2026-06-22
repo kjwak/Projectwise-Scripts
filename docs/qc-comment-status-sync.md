@@ -2,7 +2,11 @@
 
 ## Overview
 
-`QC_COMMENT_STATUS_SYNC` extends the existing **watcher → queue → worker → processor** pipeline. When a ProjectWise `*-qc.pdf` is updated, the automation exports the PDF, extracts comments, decides the workflow state, persists telemetry, optionally updates PW state, and sends notifications.
+`QC_COMMENT_STATUS_SYNC` extends the existing **watcher → queue → worker → processor** pipeline. When a ProjectWise **lane QC PDF** (`*-prod.pdf`, `*-rev.pdf`, `*-chk.pdf`) is updated, the automation exports the PDF, extracts comments, decides the workflow state, persists telemetry, optionally updates PW state, and sends notifications.
+
+### Legacy trigger (`*-qc.pdf`)
+
+Comment-sync trigger rules still match legacy `*-qc.pdf` filenames for backward compatibility. New deployments should use lane PDF suffixes.
 
 ## Module boundaries
 
@@ -25,20 +29,20 @@
 - `enabled`, `processorVersion`, `stagingRoot`, `retainTempFiles`
 - `pythonExecutable`, `commentExtractScript`, `parserVersion`
 - `auditActions` — default: `DOCUMENT_MODIFY`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`
-- `reviewerAuthorPatterns`, `statusMappings`, `targetStates`
+- `reviewerAuthorPatterns`, `statusMappings`, `targetStates` — use TYPSA state names (`Redlines Received`, `Ready for Verification`, etc.)
 - Per watch root: `enableQcCommentSync` (defaults to `enableQcPrepend` when omitted)
 
 ## Trigger rule
 
 - **id:** `qc-comment-status-pw`
 - **jobType:** `QC_COMMENT_STATUS_SYNC`
-- **match:** `*.pdf` + filename `(?i)-qc\.pdf$`
+- **match:** `*.pdf` + filename `(?i)-qc\.pdf$` (legacy); lane suffix rules also apply via watcher audit path
 
 Dedupe includes file hash (pseudo-hash at watch time; content SHA256 after export).
 
 ## `processing_jobs` telemetry
 
-Queue jobs remain type `QC_COMMENT_STATUS_SYNC`. When the worker records outcomes via `Write-QCJobTelemetry`, `processing_jobs.job_type` is stored as **`QC_STATE`** (see `Get-QCProcessingJobType` in `Core.Database.psm1`). Optional override: `database.processingJobTypeMap` in `appsettings.json`.
+Queue jobs remain type `QC_COMMENT_STATUS_SYNC`. When the worker records outcomes via `Write-QCJobTelemetry`, `processing_jobs.job_type` is stored as **`QC_STATE`** (see `Get-QCProcessingJobType` in `Core.Database.psm1`).
 
 ## Dry-run matrix
 
@@ -50,18 +54,14 @@ Queue jobs remain type `QC_COMMENT_STATUS_SYNC`. When the worker records outcome
 
 ## Bluebeam / parser calibration
 
-Standard PyMuPDF `annot.info` does not expose all Bluebeam review statuses. The Python parser also reads IRT-linked `/State` keys. **Calibrate against real project PDFs** before production trust. Parser version and `processorVersion` on each `qc_comment_runs` row support historical traceability.
+Standard PyMuPDF `annot.info` does not expose all Bluebeam review statuses. The Python parser also reads IRT-linked `/State` keys. **Calibrate against real project PDFs** before production trust.
 
 ## Database (schema 1.2.0)
 
-- `qc_comment_runs` — one row per processor run (`processor_version`)
+- `qc_comment_runs` — one row per processor run
 - `qc_comments` — annotation snapshot
 - `qc_comment_status_history` — status transitions
-- `qc_workflow_events` — workflow/audit events (replay, metrics, debugging)
-
-## Long-term platform value
-
-Comment/history data supports dashboards, turnaround metrics, recurring-issue tracking, replay audits, and future AI-assisted QC analysis—not only automated state updates.
+- `qc_workflow_events` — workflow/audit events
 
 ## Tests
 

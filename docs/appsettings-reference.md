@@ -70,7 +70,7 @@ Each entry discovers every `…/{sheetsPathFromProject}` folder under `path`:
 | `sheetsPathFromProject` | Usually `CADD\Sheets`. |
 | `projectDepth` | `1` = projects are direct children of `path`; `2` = one level deeper. |
 | `enableQcPrepend` | PDFs with `QC_Archivist` in description → `QC_PREPEND`. |
-| `enableQcCommentSync` | Audit path may enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf`. |
+| `enableQcCommentSync` | Audit path may enqueue `QC_COMMENT_STATUS_SYNC` on lane QC PDFs (`*-prod.pdf`, `*-rev.pdf`, `*-chk.pdf`; legacy `*-qc.pdf` still matched by some rules). |
 | `enableStatusSet` | Folder-level `STATUS_SET_GEN` (paired PDF + DGN). |
 | `qcRendition` | Per-root rendition profile for `QC_RENDITION` (see below). |
 
@@ -114,7 +114,7 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 |---------|---------|
 | `STATUS_SET_GEN` | Merge sheet PDFs → `_StatusSet.pdf` per folder. |
 | `QC_PREPEND` | Redline overlay on archivist-tagged PDF. |
-| `QC_COMMENT_STATUS_SYNC` | Update PW state from `*-qc.pdf` comments. |
+| `QC_COMMENT_STATUS_SYNC` | Update PW state from lane QC PDF comments (`*-prod/-rev/-chk.pdf`; legacy `*-qc.pdf` bridge). |
 
 | Key | Description |
 |-----|-------------|
@@ -160,14 +160,14 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 ## qcRendition
 
-After a successful `QC_PREPEND` that sets workflow state to **Ready for QC**, the pipeline can enqueue **`QC_RENDITION`** (`modules/QC.Rendition.psm1`). Profile resolution order: longest matching `folderOverrides[].folderPathPrefix`, then longest matching `projectWise.watchList.roots[].qcRendition`, then legacy `qcRendition.datasources[datasourceName]`, then optional `Get-PWFolderRenditionProfile` when `useFolderProfileWhenUnspecified` is true.
+After a successful `QC_PREPEND` that sets workflow state to **Originated** (TYPSA), the pipeline can enqueue **`QC_RENDITION`** (`modules/QC.Rendition.psm1`). Profile resolution order: longest matching `folderOverrides[].folderPathPrefix`, then longest matching `projectWise.watchList.roots[].qcRendition`, then legacy `qcRendition.datasources[datasourceName]`, then optional `Get-PWFolderRenditionProfile` when `useFolderProfileWhenUnspecified` is true.
 
 | Key | Description |
 |-----|-------------|
 | `enabled` | Master switch (default `false` in repo `appsettings.json`). |
-| `deferReadyForQcNotification` | `false` (default): **Ready for QC** email when prepend sets workflow state. `true`: wait until prepend **and** rendition complete. |
+| `deferReadyForQcNotification` | `false` (default): **Originated** email when prepend sets workflow state. `true`: wait until prepend **and** rendition complete. |
 | `readinessStorePath` | JSON files tracking `prependComplete` / `renditionComplete` per document. |
-| `deriveSourceFromQcPdf` | `sheet001-qc.pdf` → source `sheet001.dgn`. |
+| `deriveSourceFromQcPdf` | Lane QC PDF → source DGN (e.g. `sheet001-prod.pdf` → `sheet001.dgn`; legacy `sheet001-qc.pdf` still supported). |
 | `completion.mode` | `outputFolder` polls `outputFolderPath` or `outputFolderRelative`; `immediate` / `submitOnly` mark complete after `New-PWRenditionRequest`. |
 | `completion.fileNamePattern` | Glob with `{stem}` from DGN base name (e.g. `{stem}*.pdf`). |
 | `folderOverrides` | Per-folder `folderPathPrefix` + profile/output overrides (longest prefix wins; rare). |
@@ -182,7 +182,7 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 | Key | Description |
 |-----|-------------|
 | `historyRoot` / `outputRoot` / `tempRoot` | Overlay working directories. |
-| `mode` | `legacyPw` = export/check-in via ProjectWise. |
+| `mode` | `legacyPw` = production prepend via `legacy\prepend_qc.ps1` (PW export/overlay/upload). `local` = native path in `QC.Processors.psm1` (no PW file I/O; not production default). |
 | `qpdfExePath` | Path to qpdf binary. |
 
 ---
@@ -212,13 +212,13 @@ Optional ProjectWise **document attribute** writeback (and optional **workflow s
 
 **Related:** comment-driven state uses the same PW helpers via `qcCommentSync` — see [`docs/qc-comment-status-sync.md`](qc-comment-status-sync.md). SQL audit rows: `qc_workflow_events` in [`docs/database-telemetry.md`](database-telemetry.md).
 
-### When `enabled` is false (default)
+### When `enabled` is false
 
-Your repo ships with `"enabled": false` (see `appsettings.json` around line 160). Prepend/overlay still runs; **no** PW attributes or states are written. `Invoke-QCWorkflowWriteback` returns immediately with a skipped result. This is the recommended setting until PW attributes and (optional) states are created and validated.
+When `qcWorkflow.enabled` is false, prepend/overlay still runs; **no** PW attributes or states are written. Committed `appsettings.json` has workflow writeback **enabled** for TYPSA production; use `dryRunWriteback: true` on pilot environments.
 
 ### Enablement order
 
-1. `enabled: false` — production-safe default.
+1. Confirm PW attributes and TYPSA workflow states exist.
 2. `enabled: true`, `dryRunWriteback: true` — log planned writes (`QC_WORKFLOW_*` codes); no PW changes.
 3. Run `tools\discovery\Test-QCWorkflowCapabilities.ps1` (read-only).
 4. Pilot one document with `tools\discovery\Test-QCWorkflowWriteback.ps1 -ConfirmWrites`.
@@ -238,42 +238,45 @@ Global `dryRun: true` does **not** replace `qcWorkflow.dryRunWriteback`; both ar
 | `autoSetState` | `false` | When `mode` is `StateAndAttributes`, call `Set-PWDocumentState` if true. |
 | `expectedWorkflowName` | `""` | Workflow name for validation (alias: `workflowName`). |
 | `attributeMap` | see JSON | Logical key → PW environment attribute name (no `QC_Stage`). |
-| `states` | see JSON | ProjectWise lifecycle state names (source of truth). |
-| `reviewTypes` | `Production QC`, `Peer Review`, `Independent Check` | Allowed `QC_Review_Type` values. |
-| `defaultReviewType` | `Production QC` | Used when document/job has no review type. |
+| `states` | see JSON | TYPSA lifecycle state names (source of truth). |
+| `processTypes` | `Production`, `Review`, `Check` | Canonical `QC_Process_Type` values. |
+| `reviewTypes` | `Production`, `Review`, `Check` | Allowed `QC_Review_Type` values (mirrors process types in TYPSA). |
+| `defaultProcessType` | `production` | Used when document/job has no process type. |
+| `defaultReviewType` | `Production` | Used when document/job has no review type. |
 
-### Lifecycle states (`states.*`)
+### Lifecycle states (`states.*`) — TYPSA committed defaults
 
 Names must match your ProjectWise workflow:
 
-| Key | Default |
-|-----|---------|
-| `production` | `In Production` |
-| `readyForQc` | `Ready for QC` |
-| `reviewInProgress` | `Review In Progress` |
-| `redlinesIssued` | `Redlines Issued` |
-| `correctionsInProgress` | `Corrections In Progress` |
-| `verificationInProgress` | `Verification In Progress` |
-| `complete` | `QC Complete` |
+| Key | TYPSA default |
+|-----|---------------|
+| `production` | `In Development` |
+| `qcInitiated` | `Initiate Origination` |
+| `qcReceived` / `readyForQc` | `Originated` |
+| `redlinesReceived` | `Redlines Received` |
+| `qcFinalizing` | `Initiate Verification` |
+| `readyForVerification` | `Ready for Verification` |
+| `complete` | `Verified` |
 | `error` | `Error Needs Attention` |
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `defaultStateAfterPrepend` | `Ready for QC` | Informational default when state writeback is enabled later. |
-| `stateAfterSuccessfulPrepend` | `Ready for QC` | Fallback when `autoSetState` runs and prepend trigger is unknown. |
+**Legacy labels** (pre-TYPSA): `In Production`, `QC Initiated`, `QC Received`, `Ready for QC`, `Review In Progress`, `Corrections In Progress`, `Verification In Progress`, `QC Complete` — retained only in unmigrated configs.
+
+| Key | TYPSA default | Description |
+|-----|---------------|-------------|
+| `defaultStateAfterPrepend` | `Originated` | Informational default when state writeback is enabled. |
+| `stateAfterSuccessfulPrepend` | `Originated` | Fallback when `autoSetState` runs and prepend trigger is unknown. |
 | `stateAfterFailedPrepend` | `Error Needs Attention` | Target state after failed prepend. |
 | `defaultPrependTrigger` | `initialQcPdf` | Documented default; set `metadata.prependTrigger` on jobs. |
 | `stateAfterPrependByTrigger` | see JSON | Per-trigger target states after successful prepend. |
 
 **Prepend trigger keys** (`metadata.prependTrigger` on `QC_PREPEND` jobs):
 
-| Key | Target state (default) |
-|-----|------------------------|
-| `initialQcPdf` | `Ready for QC` |
-| `reviewerRedlineUpdate` | `Redlines Issued` |
-| `designerCorrectionComplete` | `Verification In Progress` (only when explicitly flagged on the job) |
+| Key | Target state (TYPSA default) |
+|-----|------------------------------|
+| `initialQcPdf` | `Originated` |
+| `finalQcComplete` | `Ready for Verification` |
 
-Assignment (`QC_Assigned_To`) is derived from **state + `QC_Review_Type`** via `Resolve-QCWorkflowAssignee` (reviewer vs checker vs designer).
+Assignment (`QC_Assigned_To`) is derived from **state + `QC_Process_Type`** via `Resolve-QCWorkflowAssignee` (reviewer vs checker vs designer).
 
 ### Deprecated keys (warnings only)
 
@@ -325,20 +328,20 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
 | `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
 | `reconcileEveryNCycles` | — | Legacy fallback when `fullScanSchedule.times` is empty. |
-| `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events, enqueue `QC_PREPEND` when workflow state is QC Initiated and/or when description has `QC_Archivist` (state must still be QC Initiated for the tag path). |
-| `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on `*-qc.pdf`. |
+| `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events, enqueue `QC_PREPEND` when workflow state is **Initiate Origination** and/or when description has `QC_Archivist` (state must still be **Initiate Origination** for the tag path). |
+| `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on lane QC PDFs. |
 | `workflowTriggers.recordFromProcessor` | true | Also record state/attribute changes from `QC_PREPEND` and `QC_COMMENT_STATUS_SYNC` processors. |
-| `workflowTriggers.ignoreStateChangeFromAutomation` | false | When **true**, skip audit notifications and sibling-sync for `DOCUMENT_STATE` from `automationPwUsernames`. Default **false** so automation-driven **QC Received** is visible to audit triggers (dedupe prevents duplicate emails). |
-| `workflowTriggers.suppressBaselineIndexStateTransition` | true | Skip `transition_events` / notifications when `sheet_index.pw_state_name` was empty and PW shows `qcWorkflow.states.production` (index seed only). Safe when expanding QC to folders that already have `sheet_index` rows from status-set scans. |
-| `workflowTriggers.baselineStateNames` | `[]` | Extra production-style labels (e.g. localized **In Production**). |
+| `workflowTriggers.ignoreStateChangeFromAutomation` | false | When **true**, skip audit notifications and sibling-sync for `DOCUMENT_STATE` from `automationPwUsernames`. Default **false** so automation-driven **Originated** is visible to audit triggers (dedupe prevents duplicate emails). |
+| `workflowTriggers.suppressBaselineIndexStateTransition` | true | Skip `transition_events` / notifications when `sheet_index.pw_state_name` was empty and PW shows `qcWorkflow.states.production` (**In Development**). Safe when expanding QC to folders that already have `sheet_index` rows from status-set scans. |
+| `workflowTriggers.baselineStateNames` | `[]` | Extra production-style labels (e.g. legacy **In Production**). |
 | `workflowTriggers.processingGoLiveUtc` | (empty) | Optional UTC ISO time. `DOCUMENT_STATE` workflow sync is skipped for older `audit_events` (still ingested + marked processed). Set to **now** when enabling QC on additional watch roots. Clear after backlog drains. |
 | `workflowTriggers.automationPwUsernames` | `["srv_typsa_archivist"]` | Service account logins from `dms_user` / `pw_users`. |
 | `workflowTriggers.automationPwUserNumbers` | `[]` | Optional numeric `o_userno` list if usernames differ by environment. |
 | `fallbackToFullScan` | false | Full scan when audit SQL fails. |
 
-After successful prepend, `QC.Workflow` calls `Sync-PWAssociatedSheetMembersToWorkflowState` so **DGN**, sheet **PDF**, and **`*-qc.pdf`** all receive `stateAfterSuccessfulPrepend` (**Ready for QC** by default). The **Ready for QC** email is sent from the workflow hook when `notifications.events['Ready for QC'].enabled` is true (not deferred when `deferReadyForQcNotification` is false). Set `ignoreStateChangeFromAutomation` to **true** only if you want audit to ignore service-account `DOCUMENT_STATE` echoes entirely.
+After successful prepend, `QC.Workflow` may call `Sync-PWPostInitialPrependLaneStates` for lane-independent initial prepend, or `Sync-PWAssociatedSheetMembersToWorkflowState` when legacy sibling sync is enabled. The **Originated** email is sent from the workflow hook when `notifications.events['Originated'].enabled` is true (not deferred when `deferReadyForQcNotification` is false).
 
-Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on `*-qc.pdf` for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`).
+Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on lane QC PDFs for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`). Legacy `*-qc.pdf` filenames are still matched by comment-sync trigger rules.
 
 See `docs/hybrid-polling.md`.
 

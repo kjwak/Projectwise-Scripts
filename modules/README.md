@@ -1,5 +1,7 @@
 # `modules/` — Module documentation
 
+Production QC uses the **TYPSA three-lane model** (`Production` / `Review` / `Check` via `QC_Process_Type`, lane PDFs `*-prod/-rev/-chk.pdf`). See [`docs/qc-workflow-framework.md`](../docs/qc-workflow-framework.md).
+
 All modules primarily communicate via a shared result envelope from `Core.Results.psm1`:
 
 - Result shape: **`IsSuccess`**, **`Code`**, **`Message`**, **`Data`**

@@ -125,7 +125,7 @@ Time-series of state and attribute changes per document. Used by `v_qc_cycle_agi
 ### `transition_events`
 Business-level events (QC stage changes, attribute changes). Links to notifications via `notification_log.transition_id`. `folder_path` uses the same canonical normalization as `document_state_history`.
 
-**Population:** `Write-QCTransitionEvent` from audit workflow triggers and processor telemetry; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on `*-qc.pdf`. When PW already shows the new state before sibling sync runs, `_PWD-InvokeStaleSheetIndexAuditStateTriggers` compares `sheet_index.pw_state_name` to the canonical state and records the transition anyway.
+**Population:** `Write-QCTransitionEvent` from audit workflow triggers and processor telemetry; `notification_sent` updated after a successful `Invoke-QCNotificationForStateChange` on lane QC PDFs. When PW already shows the new state before sync runs, `_PWD-InvokeStaleSheetIndexAuditStateTriggers` compares `sheet_index.pw_state_name` to the canonical state and records the transition anyway.
 
 ### `poll_runs`
 Operational health of the audit poller. One row per watcher tick.
@@ -186,7 +186,7 @@ Indexes all documents in watched `CADD\Sheets` folders. Supports project status 
 
 | View | Purpose |
 |------|---------|
-| `v_qc_cycle_aging` | Documents in QC with duration since `QC Received` state (reads `document_state_history.folder_path`) |
+| `v_qc_cycle_aging` | Documents in QC with duration since **Originated** state (reads `document_state_history.folder_path`) |
 | `v_folder_activity` | Folder event counts and last activity, 7-day window (reads `audit_events.resolved_folder`) |
 
 Fix path inconsistencies in the **base tables**; views reflect those columns automatically.
@@ -226,9 +226,9 @@ Fix path inconsistencies in the **base tables**; views reflect those columns aut
 | `Invoke-QCProcessorWorkflowStateTelemetry` | `QC.Workflow.psm1`, `QC.CommentStatusProcessor.psm1` | Processor state writes (no duplicate email) |
 | `Invoke-QCProcessorWorkflowAttributeTelemetry` | `QC.Workflow.psm1` | Processor attribute writeback rows |
 | `Write-QCSheetIndex` | `Watch-QCTrigger.ps1` | Upsert sheet document to index |
-| `Sync-PWAssociatedSheetWorkflowState` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_STATE`, set associated DGN, sheet PDF, and `*-qc.pdf` to the same workflow state as the changed document |
+| `Sync-PWAssociatedSheetWorkflowState` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_STATE`, set associated DGN, sheet PDF, and lane QC PDFs to the same workflow state when legacy sibling sync is enabled |
 | `Sync-PWSheetIndexOwnership` | `Watch-QCTrigger.ps1` (via audit) | On `DOCUMENT_ATTR`, re-read EM_* and QC_* from PW into `sheet_index` (audit has no old/new values) |
-| `Sync-PWAssociatedSheetReviewTypeAttributes` | `PW.Discovery.psm1` (from `Sync-PWSheetIndexOwnership`) | On `QC_Review_Type` change, align DGN / sheet PDF / `*-qc.pdf` in PW and `sheet_index` |
+| `Sync-PWAssociatedSheetReviewTypeAttributes` | `PW.Discovery.psm1` (from `Sync-PWSheetIndexOwnership`) | On `QC_Process_Type` / `QC_Review_Type` change, align DGN / sheet PDF / lane QC PDFs in PW and `sheet_index` |
 | `Update-QCSheetQcPdf` | `Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1` | Link QC PDF to source document |
 
 ---

@@ -29,7 +29,7 @@ Relevant audit actions monitored:
 | 1003 | `DOCUMENT_ATTR` | Environment attribute change — `sheet_index` refresh + attribute history rows |
 | 1006 | `DOCUMENT_FILE_REP` | File replaced (common after rendition) — STATUS_SET_GEN + QC_PREPEND |
 | 1007 | `DOCUMENT_CIN` | Check-in — STATUS_SET_GEN rebuild |
-| 1012 | `DOCUMENT_STATE` | Workflow state change — sibling sync + `document_state_history` / notifications on `*-qc.pdf` |
+| 1012 | `DOCUMENT_STATE` | Workflow state change — lane state sync + `document_state_history` / notifications on lane QC PDFs (`*-prod/-rev/-chk.pdf`) |
 | 1015 | `DOCUMENT_VERSION` | New version — STATUS_SET_GEN rebuild |
 | 1020 | `DOCUMENT_DELETE` | Document deleted — STATUS_SET_GEN rebuild |
 
@@ -93,7 +93,7 @@ Each tick:
 
 ### QC_PREPEND Trigger
 
-On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`, `DOCUMENT_STATE`), paired sheet PDFs in Sheets folders may enqueue `QC_PREPEND` when workflow state is **QC Initiated** (non-automation actor), or when the description contains `QC_Archivist` and state is QC Initiated. `DOCUMENT_STATE` on DGN/PDF also enqueues via `Sync-PWAssociatedSheetWorkflowState`; `DOCUMENT_ATTR` may enqueue after `Sync-PWSheetIndexOwnership` detects a state change. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips do not block this check.
+On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`, `DOCUMENT_STATE`), paired sheet PDFs in Sheets folders may enqueue `QC_PREPEND` when workflow state is **Initiate Origination** (non-automation actor), or when the description contains `QC_Archivist` and state is **Initiate Origination**. `DOCUMENT_STATE` on DGN/PDF also enqueues via `Sync-PWAssociatedSheetWorkflowState`; `DOCUMENT_ATTR` may enqueue after `Sync-PWSheetIndexOwnership` detects a state change. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips do not block this check.
 
 ### STATUS_SET_GEN Trigger
 
@@ -137,7 +137,7 @@ If lookup fails, a **negative cache** row is written (`resolve_failed = 1`, empt
 
 ## Sheet Index Population
 
-During full-folder reconciliation scans (`auditPoller.reconcileEveryNCycles`, e.g. every 100 watcher passes), paired sheets are batch-upserted via `Write-QCSheetIndexBatch` using `Build-PWSheetIndexRowsForPairedSheets`. That re-reads the same EM_* and QC_* columns as audit `DOCUMENT_ATTR` sync. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events and aligns workflow state across the DGN, sheet PDF, and `*-qc.pdf` that share the same sheet stem.
+During full-folder reconciliation scans, paired sheets are batch-upserted via `Write-QCSheetIndexBatch`. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events; lane-independent behavior is canonical (`QCProcess.EnableLegacySiblingStateSync: false`). Legacy sibling sync, when enabled, aligns DGN, sheet PDF, and lane QC PDFs (`*-prod/-rev/-chk.pdf`; legacy `*-qc.pdf` bridge).
 
 ### Workflow and attribute triggers (`QC.AuditTriggers.psm1`)
 
@@ -145,8 +145,8 @@ When `auditPoller.workflowTriggers.enabled` is true (default):
 
 | Audit action | Runtime behavior |
 |--------------|------------------|
-| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings; history/transitions recorded; `*-qc.pdf` notifications when enabled. Events whose `o_userno` matches `workflowTriggers.automationPwUsernames` skip notify and skip sibling-sync echoes (except the initial `*-qc.pdf` change, so prepend can still propagate Ready for QC once). |
-| `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; per-field diffs write `ATTR_CHANGE` rows to `document_state_history` and `transition_events`; `QC_Review_Type` changes propagate to associated DGN / sheet PDF / `*-qc.pdf` via `Sync-PWAssociatedSheetReviewTypeAttributes`; workflow state change to QC Initiated may enqueue `QC_PREPEND` |
+| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings when legacy sibling sync is enabled; history/transitions recorded; lane QC PDF notifications when enabled. Events from `workflowTriggers.automationPwUsernames` may skip notify/sync echoes per config. |
+| `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; `QC_Process_Type` and `QC_Review_Type` changes propagate to associated documents; workflow state change to **Initiate Origination** may enqueue `QC_PREPEND` |
 
 Configure under `auditPoller.workflowTriggers` in `appsettings.json`. Notifications still require `notifications.enabled` (separate master switch).
 

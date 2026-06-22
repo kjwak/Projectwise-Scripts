@@ -1,6 +1,8 @@
 # QC Package Model
 
-The QC automation framework now treats related ProjectWise artifacts as a single QC Package instead of making workflow and attribute decisions on a single triggering file.
+> **Note (Phase 2):** Production package grouping uses SQL **`sheet_packages`** and **`sheet_package_qc_pdfs`** via `Core.Database.psm1`. The in-memory `QC.Package*` modules described below are **not wired into the production pipeline** (test/documentation only). See Branch 3 decision doc when available: `docs/phase-2-package-model-decision.md`.
+
+The QC automation framework treats related ProjectWise artifacts as a single QC Package instead of making workflow and attribute decisions on a single triggering file.
 
 A QC Package contains:
 

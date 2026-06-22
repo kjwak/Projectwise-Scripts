@@ -16,7 +16,7 @@ Verified against:
 
 | Topic | Finding |
 | --- | --- |
-| Folder workflow | **TYPSA QC** is assigned on `Seg_1` (e.g. In Production, QC Received). |
+| Folder workflow | **TYPSA QC** is assigned on `Seg_1` (e.g. `In Development`, `Originated`). |
 | Folder environment | **Caltrans** (`EnvironmentID` 109 on the folder object from `Get-PWFolders`). |
 | Designer email column | **`EM_Designer_Email`** (Caltrans environment definition). |
 | Reviewer email column | **`EM_Reviewer_Email`** — not `EM_Reveiewer_Email` (typo). |
@@ -106,7 +106,7 @@ At verification time, **2 of 77** PDFs in that folder had both fields populated;
 
 The same search row can expose workflow context when populated, for example:
 
-- `WorkflowState` → e.g. `QC Received`
+- `WorkflowState` → e.g. `Originated` (TYPSA)
 - `Workflow` / `WorkflowId`
 
 Use `Get-PWFolderTreeDocumentStateCount` for folder-level rollups (counts per state under TYPSA QC).
@@ -230,7 +230,11 @@ Run under the same PowerShell host / MTA profile used by QC workers (`pwps_dab`)
 
 The email attribute extraction method documented above is used in:
 
-- **`legacy/prepend_qc.ps1` (QC print)** — After each successful QC prepend (create or update `*-qc.pdf`), `Sync-PWQcPdfEmailAttributesFromSourcePdf` copies `EM_Designer_Email` and `EM_Reviewer_Email` from the **source sheet PDF** to the **QC PDF**. The source `.pdf` is the source of truth; the QC PDF is updated when those attributes are missing or differ.
+### Legacy prepend email sync (`*-qc.pdf` bridge)
+
+**`legacy/prepend_qc.ps1`** (production path when `qcPrepend.mode: legacyPw`) — After each successful QC prepend, `Sync-PWQcPdfEmailAttributesFromSourcePdf` copies `EM_Designer_Email` and `EM_Reviewer_Email` from the **source sheet PDF** to the **lane QC PDF** (or legacy `*-qc.pdf` when lane params are absent). The source `.pdf` is the source of truth; the QC PDF is updated when those attributes are missing or differ.
+
+Lane PDFs (`*-prod/-rev/-chk.pdf`) also receive `QC_Process_Type` via `_PWD-EnsureLaneQcPdfProcessTypeAttribute` during prepend.
 - **`Watch-QCTrigger.ps1`** — During both full reconciliation scans and audit-trail scans, `Get-PWDocumentsBySearchWithReturnColumns` is called with `EM_Designer_Email` and `EM_Reviewer_Email` as return columns. Extracted values are written to the `sheet_index` database table via `Write-QCSheetIndex`.
 - **`Test-SheetIndexAndAuditPoller.ps1`** — Validation script uses the same extraction pattern to populate `sheet_index` during testing.
 - **`QC.Notifications.psm1`** — Uses the `_QCN-GetAttributeValue` helper to read email attributes from document objects for notification routing.
@@ -243,7 +247,7 @@ The `sheet_index` table (`docs/database-telemetry.md`) stores extracted emails i
 | --- | --- |
 | `Get-PWDocumentAttributeMap` | Parse `.Attributes` bags from a search row |
 | `Get-PWDocumentEmailContacts` | Read designer/reviewer emails for one document |
-| `Sync-PWQcPdfEmailAttributesFromSourcePdf` | Copy emails from source PDF to matching `*-qc.pdf` |
+| `Sync-PWQcPdfEmailAttributesFromSourcePdf` | Copy emails from source PDF to matching lane QC PDF (legacy `*-qc.pdf` bridge) |
 
 ### Diagnostic Script
 
