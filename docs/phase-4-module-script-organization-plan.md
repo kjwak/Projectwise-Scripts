@@ -802,6 +802,37 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 
 ---
 
+## Appendix I — Phase 4 module bootstrap restore (complete)
+
+**Branch:** `phase-4/module-bootstrap-restore` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-module-bootstrap-restore-summary.md`](phase-4-module-bootstrap-restore-summary.md)
+
+### PS 5.1 import/export clobber rule
+
+When script A imports foundation modules and feature module B nested-reloads them with `Import-Module -Force`, **session-scoped exports can disappear**. Fix: import feature modules first, then **restore foundation exports** (`Restore-QCFoundationModuleExports`), then `Test-QCRequiredCommands`.
+
+### Helper
+
+`scripts/Restore-QCModuleExports.ps1` — dot-sourced by P0 entrypoints.
+
+### Entrypoints protected
+
+- `Start-QCPipelineDashboard.ps1`
+- `Run-QCProcessor.ps1`
+- `run_prepend_qc.ps1` (`-NoDashboard`)
+
+### Deferred
+
+Diagnostic/maintenance hand-rolled imports; `Combine-StatusSet.ps1` / `Run-CombineStatusSet.ps1`.
+
+### Tests
+
+- `test/test_module_bootstrap_restore.ps1` (new)
+- `test/test_entrypoint_imports.ps1` (strengthened)
+
+---
+
 ## Related documents
 
 - [`docs/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md)

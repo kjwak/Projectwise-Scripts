@@ -39,24 +39,26 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Worker.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
-Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force
-if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
-}
-if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
-}
-if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) {
-    throw "Core.Database.psm1 did not load (Test-QCDatabaseEnabled missing). Repo root: $repoRoot"
-}
+. (Join-Path $PSScriptRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    'Processing\QC.Processors.psm1'
+    'Notifications\QC.Notifications.psm1'
+    'Processing\QC.Rendition.psm1'
+    'Queue\QC.Worker.psm1'
+    'Core\Core.Telemetry.psm1'
+) -RequiredCommands @(
+    'Read-QCAppSettings'
+    'Get-NextQCJob'
+    'Lock-QCJob'
+    'Move-QCJob'
+    'Move-QCJobWithLockRetries'
+    'Invoke-QCPrependProcessor'
+    'Invoke-QCProcessorByType'
+    'Write-QCJsonLog'
+    'Test-QCDatabaseEnabled'
+) -Context 'processor bootstrap'
 
 $script:WorkerLabel = $WorkerLabel
 
