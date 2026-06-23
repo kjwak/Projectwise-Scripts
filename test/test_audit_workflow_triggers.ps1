@@ -121,6 +121,24 @@ Assert-Eq (Get-QCInitiatedWorkflowStateName -Config $cfgDefault) 'QC Initiated' 
 Assert-True (Test-QCWorkflowStateIsQcInitiated -StateName 'QC Initiated' -Config $cfgDefault) 'qc initiated match'
 Assert-True (-not (Test-QCWorkflowStateIsQcInitiated -StateName 'In Production' -Config $cfgDefault)) 'non-initiated state'
 
+$typsaCfg = @{
+    qcWorkflow = @{
+        states = @{
+            qcInitiated = 'Initiate Origination'
+            redlinesReceived = 'Redlines Received'
+            complete = 'Verified'
+            error = 'Error Needs Attention'
+            qcReceived = 'Originated'
+        }
+    }
+}
+Assert-True (Test-QCWorkflowStateIsRestartIntakeTransition -Config $typsaCfg -PreviousState 'Redlines Received' -CurrentState 'Initiate Origination') `
+    'Redlines Received -> Initiate Origination is a cycle restart'
+Assert-True (Test-QCWorkflowStateIsRestartIntakeTransition -Config $typsaCfg -PreviousState 'Originated' -CurrentState 'Initiate Origination') `
+    'Originated -> Initiate Origination is a cycle restart'
+Assert-True (-not (Test-QCWorkflowStateIsRestartIntakeTransition -Config $typsaCfg -PreviousState 'In Development' -CurrentState 'Initiate Origination')) `
+    'In Development -> Initiate Origination is first intake, not restart'
+
 $cfgAuto = @{
     auditPoller = @{
         workflowTriggers = @{

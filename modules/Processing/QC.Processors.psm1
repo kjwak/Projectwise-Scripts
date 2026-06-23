@@ -2175,6 +2175,8 @@ function Test-QCPrependEnqueueBlockedForSheet {
     .DESCRIPTION
     Blocks when another initialQcPdf prepend is pending or running for the same folder + sheet PDF + lane,
     or when one succeeded very recently for the same lane (covers fallback enqueue racing a just-finished audit job).
+    A different StateTransitionKey (for example audit:44209 vs audit:44147) bypasses the recent-succeeded guard
+    so a deliberate new Initiate Origination cycle can overwrite an existing lane PDF.
   #>
     [CmdletBinding()]
     param(
@@ -2183,7 +2185,8 @@ function Test-QCPrependEnqueueBlockedForSheet {
         [Parameter(Mandatory)][string]$SheetPdfName,
         [string]$PrependTrigger = 'initialQcPdf',
         [string]$QcProcessType = '',
-        [int]$SucceededWithinMinutes = 20
+        [int]$SucceededWithinMinutes = 20,
+        [string]$StateTransitionKey = ''
     )
 
     try { _QCP-EnsureQueueModulesLoaded } catch { return @{ blocked = $false } }
@@ -2240,6 +2243,13 @@ function Test-QCPrependEnqueueBlockedForSheet {
                 if ($null -ne $updated) {
                     $age = $now - $updated
                     if ($age.TotalMinutes -le $SucceededWithinMinutes) {
+                        $incomingKey = ([string]$StateTransitionKey).Trim()
+                        $existingKey = ([string]$stKey).Trim()
+                        if ($incomingKey.Length -gt 0 -and $existingKey.Length -gt 0 `
+                                -and (-not $incomingKey.Equals($existingKey, [System.StringComparison]::OrdinalIgnoreCase))) {
+                            $matches += $entry
+                            continue
+                        }
                         $entry['succeededMinutesAgo'] = [math]::Round($age.TotalMinutes, 2)
                         return @{ blocked = $true; reason = 'queue_succeeded_recent'; matches = @($entry) }
                     }
@@ -2338,7 +2348,8 @@ function Add-QCPrependJobForQcInitiatedStateChange {
         -SheetPdfName $sheetPdf -SheetPdfGuid $TriggerDocumentGuid
 
     $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-        -SheetPdfName $sheetPdf -PrependTrigger 'initialQcPdf' -QcProcessType $intendedProcessType
+        -SheetPdfName $sheetPdf -PrependTrigger 'initialQcPdf' -QcProcessType $intendedProcessType `
+        -StateTransitionKey ([string]$stateTransitionKey)
     if ($sheetBlock -and [bool]$sheetBlock.blocked) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `

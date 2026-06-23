@@ -3593,6 +3593,11 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
 
     $prependTrigger = if ($isInitiated) { 'initialQcPdf' } else { 'finalQcComplete' }
 
+    $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+        -ChangedByUser $ChangedByUser -TriggerDocumentGuid $DocumentGuid `
+        -SheetStem $sheetStem -PreviousSheetState $PreviousLaneState -TargetStateName $CanonicalState `
+        -PrependTrigger $prependTrigger
+
     if (-not (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue)) {
         try { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Processors.psm1') -Force -ErrorAction SilentlyContinue } catch { }
     }
@@ -3602,7 +3607,8 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
             $intendedLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $DocumentName
         }
         $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-            -SheetPdfName $sheetPdfName -PrependTrigger $prependTrigger -QcProcessType $intendedLane
+            -SheetPdfName $sheetPdfName -PrependTrigger $prependTrigger -QcProcessType $intendedLane `
+            -StateTransitionKey ([string]$stKey)
         if ($sheetBlock -and [bool]$sheetBlock.blocked) {
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                 Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
@@ -3634,11 +3640,6 @@ function _PWD-TryEnqueueLaneQcPrependFromState {
             return
         }
     }
-
-    $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
-        -ChangedByUser $ChangedByUser -TriggerDocumentGuid $DocumentGuid `
-        -SheetStem $sheetStem -PreviousSheetState $PreviousLaneState -TargetStateName $CanonicalState `
-        -PrependTrigger $prependTrigger
 
     try {
         if ($isInitiated) {
@@ -4117,6 +4118,10 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
                     Import-Module $procPath -Force -ErrorAction SilentlyContinue
                 } catch { }
             }
+            $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
+                -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
+                -SheetStem $sheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $canonical `
+                -PrependTrigger 'initialQcPdf'
             if (Get-Command -Name 'Test-QCPrependEnqueueBlockedForSheet' -ErrorAction SilentlyContinue) {
                 $intendedLane = ''
                 if (Get-Command -Name '_QCP-ResolveIntendedPrependProcessType' -ErrorAction SilentlyContinue) {
@@ -4124,7 +4129,8 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
                         -SheetPdfName $sheetPdfName -SheetPdfGuid $sheetPdfGuid
                 }
                 $sheetBlock = Test-QCPrependEnqueueBlockedForSheet -Config $Config -FolderPath $FolderPath `
-                    -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf' -QcProcessType $intendedLane
+                    -SheetPdfName $sheetPdfName -PrependTrigger 'initialQcPdf' -QcProcessType $intendedLane `
+                    -StateTransitionKey ([string]$stKey)
                 if ($sheetBlock -and [bool]$sheetBlock.blocked) {
                     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
                         Write-QCJsonLog -Flush -Level 'Information' -Code 'QC_PREPEND_SKIPPED_SHEET_ACTIVE' `
@@ -4152,10 +4158,6 @@ function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState {
                     return
                 }
             }
-            $stKey = _PWD-GetPrependEnqueueStateTransitionKey -AuditEventId $AuditEventId -LastAuditEventAt $LastAuditEventAt `
-                -ChangedByUser $ChangedByUser -TriggerDocumentGuid $TriggerDocumentGuid `
-                -SheetStem $sheetStem -PreviousSheetState $PreviousSheetState -TargetStateName $canonical `
-                -PrependTrigger 'initialQcPdf'
             if (Get-Command -Name 'Add-QCPrependJobForQcInitiatedStateChange' -ErrorAction SilentlyContinue) {
                 try {
                     Add-QCPrependJobForQcInitiatedStateChange -Config $Config `

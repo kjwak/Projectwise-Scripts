@@ -94,6 +94,14 @@ try {
         -QcProcessType 'check'
     Assert-True (-not $checkOpen.blocked) 'Check lane should not be blocked by recent production succeeded job'
 
+    $newCycle = Test-QCPrependEnqueueBlockedForSheet -Config $config -FolderPath $folder -SheetPdfName $sheetPdf `
+        -StateTransitionKey 'audit:44209'
+    Assert-True (-not $newCycle.blocked) 'Different audit transition key should bypass recent succeeded guard'
+
+    $sameCycle = Test-QCPrependEnqueueBlockedForSheet -Config $config -FolderPath $folder -SheetPdfName $sheetPdf `
+        -StateTransitionKey 'audit:999'
+    Assert-True $sameCycle.blocked 'Same transition key as recent succeeded job should still block'
+
     Write-Host 'test_qc_prepend_sheet_dedupe.ps1: all assertions passed.'
 }
 finally {
