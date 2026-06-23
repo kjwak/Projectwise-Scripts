@@ -1,4 +1,4 @@
-# Unit/integration tests for Invoke-QCPrependProcessor.
+﻿# Unit/integration tests for Invoke-QCPrependProcessor.
 param(
     # Optional: provide real PDFs for the 3-step overlay progression test.
     # If all three are set, the test uses these files instead of generating PDFs.
@@ -29,7 +29,7 @@ function Assert-NonEmptyPath([object]$Value, [string]$Message) {
     return $s
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force

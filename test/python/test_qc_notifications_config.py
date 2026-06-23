@@ -1,9 +1,9 @@
-import json
+﻿import json
 from pathlib import Path
 
 from module_impl import module_impl_path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 APPSETTINGS = REPO_ROOT / "appsettings.json"
 NOTIFICATIONS = module_impl_path("QC.Notifications.psm1")
 TEMPLATES = module_impl_path("QC.NotificationTemplates.psm1")

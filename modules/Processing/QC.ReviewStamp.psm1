@@ -336,7 +336,7 @@ function Invoke-QCReviewStamp {
             _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--stamp-y-pt' -Value ([string]$StampYPt)
         } else {
             if ($null -ne $StampXPt -and $null -ne $StampYPt -and -not $supportsXY) {
-                return @{ applied = $false; reason = 'Overlay exe is missing --stamp-x-pt/--stamp-y-pt support; copy overlay\qc_review_stamp.py to dist\qc_overlay_prepend\_internal\ or rebuild dist\qc_overlay_prepend.' }
+                return @{ applied = $false; reason = 'Overlay exe is missing --stamp-x-pt/--stamp-y-pt support; copy tools\overlay\qc_review_stamp.py to dist\qc_overlay_prepend\_internal\ or rebuild dist\qc_overlay_prepend.' }
             }
             _QCRS-AppendCliFlagValue -TokenList $stampTokens -Flag '--margin-outside-pt' -Value ([string]$MarginOutsidePt)
         }

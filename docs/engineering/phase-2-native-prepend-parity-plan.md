@@ -4,6 +4,8 @@
 **Date:** 2026-06-22  
 **Scope:** Plan only. No changes to `qcPrepend.mode`, `legacy/prepend_qc.ps1`, or native/legacy prepend implementation.
 
+> **Update (2026-06):** Production PW prepend was promoted to `scripts/processing/Invoke-QCPrependPw.ps1` in Phase 4B. Committed `appsettings.json` now uses `qcPrepend.mode: "projectWise"`. `legacy/prepend_qc.ps1` is a deprecated forwarder. Diagrams and tables below that reference `legacy/prepend_qc.ps1` or `legacyPw` as the production path are **historical** unless noted otherwise.
+
 ---
 
 ## Executive summary

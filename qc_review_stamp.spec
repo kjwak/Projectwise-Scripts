@@ -5,7 +5,9 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 SPECDIR = Path(SPEC).resolve().parent
-OVERLAY = SPECDIR / "overlay"
+OVERLAY = SPECDIR / "tools" / "overlay"
+workpath = str(SPECDIR / "tools" / "overlay" / "build")
+distpath = str(SPECDIR / "dist")
 
 _extra_datas = []
 _extra_binaries = []

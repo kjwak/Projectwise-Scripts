@@ -92,7 +92,7 @@ flowchart TD
 
 ## Tests
 
-SQL package path tests (retained under `test/`):
+SQL package path tests (retained under `test/powershell/`):
 
 - `test_sheet_package_resolution.ps1`, `test_sheet_package_incomplete.ps1`, `test_sheet_package_dual_write.ps1`
 - `test_sheet_package_backfill.ps1`, `test_sheet_package_qc_pdfs_schema.ps1`, `test_sheet_package_phase4.ps1`

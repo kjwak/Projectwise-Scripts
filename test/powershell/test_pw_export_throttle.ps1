@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Regression: Export-StatusSetPdfToFolder must sleep ~400 ms after each PW export
 (matches legacy combine_status_set.ps1 line ~828) so Fortinet can scan the file
@@ -7,7 +7,7 @@ before the next export starts. Configurable via statusSet.pwExportThrottleMs.
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force -DisableNameChecking | Out-Null

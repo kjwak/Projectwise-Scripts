@@ -1,10 +1,10 @@
-# Unit + optional integration tests for automation_events telemetry.
+﻿# Unit + optional integration tests for automation_events telemetry.
 param(
     [string]$AppSettingsPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }

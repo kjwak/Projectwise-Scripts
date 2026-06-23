@@ -1,4 +1,4 @@
-"""Programmatic minimal PDFs for tests."""
+﻿"""Programmatic minimal PDFs for tests."""
 from __future__ import annotations
 
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pymupdf as fitz  # type: ignore
 
-_OVERLAY = Path(__file__).resolve().parent.parent / "overlay"
+_OVERLAY = Path(__file__).resolve().parents[2] / "tools" / "overlay"
 if str(_OVERLAY) not in sys.path:
     sys.path.insert(0, str(_OVERLAY))
 

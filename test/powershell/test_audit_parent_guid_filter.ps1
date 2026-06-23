@@ -1,6 +1,6 @@
-# Unit checks for o_parentguid cache gate (Invoke-QCAuditParentGuidCacheGate).
+﻿# Unit checks for o_parentguid cache gate (Invoke-QCAuditParentGuidCacheGate).
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force

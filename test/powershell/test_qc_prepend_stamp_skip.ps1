@@ -1,6 +1,6 @@
-# Final prepend stamp gating: check/review stamped; production skipped.
+﻿# Final prepend stamp gating: check/review stamped; production skipped.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1') -Force

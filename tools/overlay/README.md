@@ -1,16 +1,17 @@
-# `overlay/` — QC overlay implementation (Python)
+# `tools/overlay/` — QC overlay implementation (Python)
 
 This folder contains the Python implementation used to generate the QC overlay output.
 
-## How it’s used
+## How it's used
 
-- The pipeline can run an overlay step via the packaged executable:
+- Production prepend and review stamps use the packaged executable:
   - `dist/qc_overlay_prepend/qc_overlay_prepend.exe`
-- `modules/Processing/QC.Processors.psm1` builds an argument list and launches the overlay exe when `qcPrepend.enableOverlay = true`.
+- `modules/Processing/QC.Processors.psm1` and `scripts/processing/Invoke-QCPrependPw.ps1` launch that exe when `qcPrepend.enableOverlay = true`.
+- Workers do **not** need Python installed — build the exe once on a dev machine, deploy `dist/qc_overlay_prepend/` to the worker.
 
 ## Build artifacts
 
-- Built outputs and dependencies live under `dist/` (runtime) and `build/` (intermediate).
+- Built outputs live under `dist/` (runtime, repo root) and `tools/overlay/build/` (PyInstaller intermediate).
 - The PyInstaller build definition is `qc_overlay_prepend.spec` in the repo root.
 
 # PDF Overlay – Old/New Comparison Layers
@@ -24,7 +25,7 @@ Creates a PDF with three toggleable layers: **Old** (red), **New** (green), **Cu
 - pikepdf >= 8.0.0
 
 ```bash
-pip install -r overlay/requirements.txt
+pip install -r tools/overlay/requirements.txt
 ```
 
 ## Usage
@@ -32,7 +33,7 @@ pip install -r overlay/requirements.txt
 ### One-command (recommended)
 
 ```bash
-python overlay/run_complete_overlay.py old.pdf new.pdf output.pdf --colors-only
+python tools/overlay/run_complete_overlay.py old.pdf new.pdf output.pdf --colors-only
 ```
 
 ### Options
@@ -47,8 +48,8 @@ python overlay/run_complete_overlay.py old.pdf new.pdf output.pdf --colors-only
 ### Two-step (advanced)
 
 ```bash
-python overlay/overlay_build.py old.pdf new.pdf temp_overlay.pdf --fit
-python overlay/overlay_layerize.py temp_overlay.pdf final.pdf --old-color 255,0,0 --new-color 0,255,0
+python tools/overlay/overlay_build.py old.pdf new.pdf temp_overlay.pdf --fit
+python tools/overlay/overlay_layerize.py temp_overlay.pdf final.pdf --old-color 255,0,0 --new-color 0,255,0
 ```
 
 ## Output layers
@@ -67,10 +68,10 @@ For multi-sheet QC history PDFs, use `qc_overlay_prepend.py` to compare incoming
 
 ```bash
 # Update QC history in place (page 1 of history = Old/red, incoming = New/green + Current/black):
-python overlay/qc_overlay_prepend.py incoming.pdf sheet-qc.pdf
+python tools/overlay/qc_overlay_prepend.py incoming.pdf sheet-qc.pdf
 
 # Write to different output:
-python overlay/qc_overlay_prepend.py incoming.pdf sheet-qc.pdf -o result.pdf
+python tools/overlay/qc_overlay_prepend.py incoming.pdf sheet-qc.pdf -o result.pdf
 ```
 
 Result: overlay page (with 3 layers) becomes new page 1; previous page 1 shifts to page 2, etc.
@@ -79,14 +80,14 @@ Result: overlay page (with 3 layers) becomes new page 1; previous page 1 shifts 
 
 ## Standalone executable (no Python on the machine that runs QC)
 
-Build **once** on a machine that has Python; deploy the **`dist\qc_overlay_prepend\`** folder (exe + `_internal`) next to your scripts, or a single **`dist\qc_overlay_prepend.exe`** if you use a onefile build—`prepend_qc.ps1` picks the onedir exe first when both exist. Override with `-QcOverlayExe` if needed.
+Build **once** on a machine that has Python; deploy the **`dist\qc_overlay_prepend\`** folder (exe + `_internal`) next to your scripts, or a single **`dist\qc_overlay_prepend.exe`** if you use a onefile build. Override with `-QcOverlayExe` if needed.
 
 ```powershell
 # Build (developer / build agent only):
-.\overlay\build_overlay_exe.ps1
+.\tools\overlay\build_overlay_exe.ps1
 ```
 
-This uses [`qc_overlay_prepend.spec`](../qc_overlay_prepend.spec) (portable paths) and writes **`dist\qc_overlay_prepend\`** (one-folder build; that is what `prepend_qc.ps1` prefers). An optional onefile at **`dist\qc_overlay_prepend.exe`** is used only if you add it and the onedir path is missing.
+This uses [`qc_overlay_prepend.spec`](../../qc_overlay_prepend.spec) (portable paths) and writes **`dist\qc_overlay_prepend\`**. An optional onefile at **`dist\qc_overlay_prepend.exe`** is used only if you add it and the onedir path is missing.
 
 **Typical automation (target machine, no Python):** from your trigger script, invoke the exe with full paths:
 
@@ -96,4 +97,4 @@ $exe = "C:\Tools\qc_overlay_prepend.exe"   # wherever you deployed the single fi
 if ($LASTEXITCODE -ne 0) { throw "qc_overlay_prepend failed with exit code $LASTEXITCODE" }
 ```
 
-Arguments match the CLI: `incoming.pdf`, `qc_history.pdf` (path may not exist on first run), optional `-o` output. See `python overlay/qc_overlay_prepend.py --help` for options (`--fit`, `--alpha`, etc.)—the same flags work on the exe.
+Arguments match the CLI: `incoming.pdf`, `qc_history.pdf` (path may not exist on first run), optional `-o` output. See `python tools/overlay/qc_overlay_prepend.py --help` for options (`--fit`, `--alpha`, etc.)—the same flags work on the exe.

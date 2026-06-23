@@ -1,8 +1,8 @@
-# Phase 4 module bootstrap restore: shared helper and clobber-prone import chains.
+﻿# Phase 4 module bootstrap restore: shared helper and clobber-prone import chains.
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $scriptsRoot = Join-Path $repoRoot 'scripts'
 $modulesRoot = Join-Path $repoRoot 'modules'
 $fail = 0

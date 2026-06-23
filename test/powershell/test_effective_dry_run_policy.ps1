@@ -1,6 +1,6 @@
-# Unit tests for Get-QCEffectiveDryRunPolicy (layered dry-run side effects).
+﻿# Unit tests for Get-QCEffectiveDryRunPolicy (layered dry-run side effects).
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules/Core/Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules/Core/Core.Runtime.psm1') -Force

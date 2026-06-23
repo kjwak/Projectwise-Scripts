@@ -2,7 +2,7 @@
 
 Modules own the reusable pipeline logic. Scripts should call these functions instead of duplicating credential parsing, ProjectWise compatibility handling, queue transitions, status-set generation, trigger evaluation, or processor dispatch.
 
-**Inventory sync:** every flat `modules/*.psm1` shim must appear in the table below (41 modules). Implementations live under `modules/<Folder>/`. Run `test/test_module_inventory.ps1` and `test/test_module_folder_shims.ps1` after adding or moving modules.
+**Inventory sync:** every flat `modules/*.psm1` shim must appear in the table below (41 modules). Implementations live under `modules/<Folder>/`. Run `test/powershell/test_module_inventory.ps1` and `test/powershell/test_module_folder_shims.ps1` after adding or moving modules.
 
 ## Folder layout (Phase 4E)
 
@@ -48,7 +48,7 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | File | Purpose |
 | --- | --- |
 | `QC.AuditTriggers.psm1` | Audit-trail-driven trigger helpers and workflow event hooks. |
-| `QC.CommentExtract.psm1` | Invokes `overlay/qc_pdf_comments.py`; normalized PDF comment annotations. |
+| `QC.CommentExtract.psm1` | Invokes `tools/overlay/qc_pdf_comments.py`; normalized PDF comment annotations. |
 | `QC.CommentStatusDecision.psm1` | Pure `Resolve-QCCommentWorkflowState` decision logic (no side effects). |
 | `QC.CommentStatusProcessor.psm1` | Orchestrator for `QC_COMMENT_STATUS_SYNC` jobs. |
 | `QC.CommentSync.Database.psm1` | `qc_comment_*` and related workflow event database writers. |

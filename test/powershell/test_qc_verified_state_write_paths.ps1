@@ -1,6 +1,6 @@
-# Verified workflow state write routing: default production paths require read-back verification.
+﻿# Verified workflow state write routing: default production paths require read-back verification.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.Workflow.psm1') -Force

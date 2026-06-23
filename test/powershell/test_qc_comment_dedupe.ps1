@@ -1,9 +1,9 @@
-# Unit tests for QC_COMMENT_STATUS_SYNC dedupe keys.
+﻿# Unit tests for QC_COMMENT_STATUS_SYNC dedupe keys.
 $ErrorActionPreference = 'Stop'
 
-Import-Module "$PSScriptRoot/../modules/Core/Core.Results.psm1" -Force
-Import-Module "$PSScriptRoot/../modules/Core/Core.Paths.psm1" -Force
-Import-Module "$PSScriptRoot/../modules/Queue/QC.JobFactory.psm1" -Force
+Import-Module "$PSScriptRoot/../../modules/Core/Core.Results.psm1" -Force
+Import-Module "$PSScriptRoot/../../modules/Core/Core.Paths.psm1" -Force
+Import-Module "$PSScriptRoot/../../modules/Queue/QC.JobFactory.psm1" -Force
 
 function Assert-True($Condition, $Message) {
     if (-not $Condition) { throw "ASSERT FAILED: $Message" }

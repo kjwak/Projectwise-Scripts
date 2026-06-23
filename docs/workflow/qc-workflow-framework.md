@@ -6,7 +6,7 @@
 
 This framework adds an optional ProjectWise document-attribute and workflow-state writeback layer on top of the existing `QC_PREPEND` PDF processing flow.
 
-- **`QC_PREPEND`** remains the PDF history, prepend, and overlay engine. Production prepend runs through **`legacy/prepend_qc.ps1`** when `qcPrepend.mode` is `legacyPw` (committed default).
+- **`QC_PREPEND`** remains the PDF history, prepend, and overlay engine. Production prepend runs through **`scripts/processing/Invoke-QCPrependPw.ps1`** when `qcPrepend.mode` is `projectWise` (committed default). `legacy/prepend_qc.ps1` is a deprecated forwarder only.
 - **ProjectWise document state** is the QC lifecycle source of truth (do not duplicate lifecycle in `QC_Stage` or `stageMap`).
 - **`QC_Process_Type`** identifies the active QC lane: `Production`, `Review`, or `Check` (canonical attribute key).
 - **`QC_Review_Type`** mirrors the lane program via `reviewTypes` / `processTypes` config (same three values in TYPSA deployments).
@@ -28,7 +28,7 @@ Lane states are **independent** by default (`QCProcess.EnableLegacySiblingStateS
 
 ### Legacy compatibility (`*-qc.pdf`)
 
-The single-lane `*-qc.pdf` naming pattern is **legacy**. Code still supports it as a bridge (for example standalone `legacy/prepend_qc.ps1` without strict lane params, normalization helpers, and older `sheet_index` rows). **Do not** treat `*-qc.pdf` as the current authoritative lane document. New work should use `*-prod.pdf` / `*-rev.pdf` / `*-chk.pdf`.
+The single-lane `*-qc.pdf` naming pattern is **legacy**. Code still supports it as a bridge (for example standalone `Invoke-QCPrependPw.ps1` without strict lane params, normalization helpers, and older `sheet_index` rows). **Do not** treat `*-qc.pdf` as the current authoritative lane document. New work should use `*-prod.pdf` / `*-rev.pdf` / `*-chk.pdf`.
 
 SQL telemetry registers lane PDFs in `sheet_package_qc_pdfs` (see [`database-telemetry.md`](../data/database-telemetry.md)).
 
@@ -231,5 +231,5 @@ Log codes: `WATCH_AUDIT_BASELINE_STATE_SUPPRESSED`, `WATCH_AUDIT_STATE_SKIPPED_G
 
 ## Tests
 
-- `test/test_qc_workflow.ps1` — settings, assignment, deprecation warnings, attribute mapping
-- `tests/test_qc_workflow_config_defaults.py` — repo defaults and module shape
+- `test/powershell/test_qc_workflow.ps1` — settings, assignment, deprecation warnings, attribute mapping
+- `test/python/test_qc_workflow_config_defaults.py` — repo defaults and module shape

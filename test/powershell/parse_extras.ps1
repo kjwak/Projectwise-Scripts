@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $paths = @(
     'scripts\service\Watch-QCTrigger.ps1'
     'scripts\maintenance\Reconcile-QCStatusSets.ps1'

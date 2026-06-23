@@ -68,7 +68,7 @@ Create an empty database `QC_Pipeline_Test` (or let `Initialize-QCDatabaseSchema
 
 With global `dryRun: true`, SQL writes stay off unless `allowWritesInDryRun` is `true` — useful when you want PW dry run but still fill `audit_events` / `sheet_index` in a test database.
 
-DB integration tests: `.\test\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.test.json` (skips when `database.enabled` is false).
+DB integration tests: `.\test\powershell\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.test.json` (skips when `database.enabled` is false).
 
 The `db\DatabaseProjectQC_Pipeline\` folder is an SSDT schema project for publish/review; the runtime does not read it directly. See `docs/data/database-telemetry.md`.
 
@@ -92,10 +92,10 @@ Example `appsettings.test.local.json`:
 
 ## Python tests
 
-Static tests under `tests/` still read committed `appsettings.json` for default-policy checks. They are not switched by `-AppSettingsPath`. Integration work should use PowerShell tests or discovery scripts with `-AppSettingsPath`.
+Static tests under `test/python/` still read committed `appsettings.json` for default-policy checks. They are not switched by `-AppSettingsPath`. Integration work should use PowerShell tests or discovery scripts with `-AppSettingsPath`.
 
 ## Related
 
 - `docs/reference/appsettings-reference.md` — all sections
 - `docs/data/database-telemetry.md` — schema and tables
-- `test/test_config_profile_merge.ps1` — merge chain unit test
+- `test/powershell/test_config_profile_merge.ps1` — merge chain unit test

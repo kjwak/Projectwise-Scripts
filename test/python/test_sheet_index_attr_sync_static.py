@@ -1,13 +1,13 @@
-"""Static checks for DOCUMENT_ATTR sheet_index sync from ProjectWise."""
+﻿"""Static checks for DOCUMENT_ATTR sheet_index sync from ProjectWise."""
 import json
 from pathlib import Path
 
 from module_impl import module_impl_path, read_module_source
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DISCOVERY = module_impl_path("PW.Discovery.psm1")
 DATABASE = module_impl_path("Core.Database.psm1")
-WATCHER = REPO_ROOT / "scripts" / "Watch-QCTrigger.ps1"
+WATCHER = REPO_ROOT / "scripts" / "service" / "Watch-QCTrigger.ps1"
 TELEMETRY_DOC = REPO_ROOT / "docs" / "data" / "database-telemetry.md"
 
 

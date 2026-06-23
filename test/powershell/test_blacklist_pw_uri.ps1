@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Regression test: a blacklist entry written as a "pw:\\datasource\Documents\..."
 URI must successfully filter a candidate path produced by the watcher in plain
@@ -9,7 +9,7 @@ which silently failed for JSON-encoded entries like "pw:\\\\datasource\\Document
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Paths.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Filters.psm1') -Force -DisableNameChecking | Out-Null

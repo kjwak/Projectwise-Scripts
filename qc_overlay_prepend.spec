@@ -6,7 +6,9 @@ from PyInstaller.utils.hooks import collect_all
 
 # SPECDIR = repo root when this file is qc_overlay_prepend.spec at project root
 SPECDIR = Path(SPEC).resolve().parent
-OVERLAY = SPECDIR / "overlay"
+OVERLAY = SPECDIR / "tools" / "overlay"
+workpath = str(SPECDIR / "tools" / "overlay" / "build")
+distpath = str(SPECDIR / "dist")
 
 # Pull full packages (binaries + data + submodules); hiddenimports alone often misses pikepdf/pymupdf native bits.
 _extra_datas = []

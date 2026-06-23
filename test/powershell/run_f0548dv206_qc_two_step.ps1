@@ -1,4 +1,4 @@
-# run_f0548dv206_qc_two_step.ps1
+﻿# run_f0548dv206_qc_two_step.ps1
 # Two-step QC overlay prepend test for sheet f0548dv206:
 #   Step 1: incoming = Version 01, history = Version 00
 #   Step 2: incoming = Version 02, history = output of step 1
@@ -9,11 +9,11 @@
 # Optional -UseCurrentMaster: old behavior — baseline file for Old (does not exercise PW extract).
 #
 # Usage (from repo root):
-#   .\test\run_f0548dv206_qc_two_step.ps1
+#   .\test\powershell\run_f0548dv206_qc_two_step.ps1
 # Optional:
-#   .\test\run_f0548dv206_qc_two_step.ps1 -ExePath "C:\path\to\qc_overlay_prepend.exe"
-#   .\test\run_f0548dv206_qc_two_step.ps1 -UseCurrentMaster
-#   .\test\run_f0548dv206_qc_two_step.ps1 -VerboseOverlay   # passes -v to qc_overlay_prepend
+#   .\test\powershell\run_f0548dv206_qc_two_step.ps1 -ExePath "C:\path\to\qc_overlay_prepend.exe"
+#   .\test\powershell\run_f0548dv206_qc_two_step.ps1 -UseCurrentMaster
+#   .\test\powershell\run_f0548dv206_qc_two_step.ps1 -VerboseOverlay   # passes -v to qc_overlay_prepend
 
 param(
     [string]$ExePath = "",
@@ -27,7 +27,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $testDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Split-Path -Parent $testDir
+$projectRoot = Split-Path -Parent (Split-Path -Parent $testDir)
 
 . (Join-Path $projectRoot "Resolve-OverlayExe.ps1")
 
@@ -39,7 +39,7 @@ if (-not $ExePath) {
 }
 
 if (-not (Test-Path -LiteralPath $ExePath)) {
-    throw "Executable not found: $ExePath`nBuild with: .\overlay\build_overlay_exe.ps1 (outputs dist\qc_overlay_prepend\ with _internal)"
+    throw "Executable not found: $ExePath`nBuild with: .\tools\overlay\build_overlay_exe.ps1 (outputs dist\qc_overlay_prepend\ with _internal)"
 }
 
 $ExePath = Resolve-OverlayExePath $ExePath

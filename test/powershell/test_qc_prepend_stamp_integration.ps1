@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Local offline test: apply a configured stamp profile to a PDF (copies stamp markup like Bluebeam paste).
 
@@ -44,7 +44,7 @@ function Get-ConfigSection {
     return $null
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1') -Force -DisableNameChecking
 
@@ -97,8 +97,8 @@ if ($layout) {
 }
 $usePopulateTextFields = if ($PopulateTextFields.IsPresent) { $true } else { $populateFromProfile }
 
-$stampPy = Join-Path $repoRoot 'overlay\qc_review_stamp.py'
-Assert-True (Test-Path -LiteralPath $stampPy) 'overlay/qc_review_stamp.py missing'
+$stampPy = Join-Path $repoRoot 'tools\overlay\qc_review_stamp.py'
+Assert-True (Test-Path -LiteralPath $stampPy) 'tools/overlay/qc_review_stamp.py missing'
 
 if ([string]::IsNullOrWhiteSpace($TargetPdf)) {
     $TargetPdf = Join-Path $repoRoot 'test\050_D-02.10_d0847drn-qc.pdf'

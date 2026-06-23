@@ -933,7 +933,7 @@ if ($haveOverlay) {
   Write-Log "Using qpdf (simple merge, no layers)..."
   Invoke-PdfPrependMerge -newPdf $localIncoming -historyPdf $localHistory -outPdf $localMerged
 } else {
-  throw "Neither overlay exe nor qpdf found. Run .\overlay\build_overlay_exe.ps1 (dist\qc_overlay_prepend\...) or place dist\qc_overlay_prepend.exe, or install qpdf."
+  throw "Neither overlay exe nor qpdf found. Run .\tools\overlay\build_overlay_exe.ps1 (dist\qc_overlay_prepend\...) or place dist\qc_overlay_prepend.exe, or install qpdf."
 }
 Write-Log "Merged file created: $localMerged"
 

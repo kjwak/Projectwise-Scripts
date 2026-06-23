@@ -15,7 +15,7 @@ function Get-QCCommentExtractSettings {
     $settings = Get-QCCommentSyncSettings -Config $Config
     if (-not $settings.parserVersion) { $settings['parserVersion'] = '1.0.0' }
     if (-not $settings.pythonExecutable) { $settings['pythonExecutable'] = 'python' }
-    if (-not $settings.commentExtractScript) { $settings['commentExtractScript'] = 'overlay\qc_pdf_comments.py' }
+    if (-not $settings.commentExtractScript) { $settings['commentExtractScript'] = 'tools\overlay\qc_pdf_comments.py' }
     return $settings
 }
 

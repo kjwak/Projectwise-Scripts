@@ -1,7 +1,7 @@
-# Maps queue job types to processing_jobs.job_type for telemetry.
+﻿# Maps queue job types to processing_jobs.job_type for telemetry.
 $ErrorActionPreference = 'Stop'
 
-Import-Module "$PSScriptRoot/../modules/Database/Core.Database.psm1" -Force
+Import-Module "$PSScriptRoot/../../modules/Database/Core.Database.psm1" -Force
 
 function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }

@@ -13,7 +13,7 @@ Comment-sync trigger rules still match legacy `*-qc.pdf` filenames for backward 
 | Module | Role |
 |--------|------|
 | `QC.PdfExport.psm1` | PW export to staging only |
-| `QC.CommentExtract.psm1` + `overlay/qc_pdf_comments.py` | Parser adapter (Bluebeam logic isolated in Python) |
+| `QC.CommentExtract.psm1` + `tools/overlay/qc_pdf_comments.py` | Parser adapter (Bluebeam logic isolated in Python) |
 | `QC.CommentStatusDecision.psm1` | **Pure** `Resolve-QCCommentWorkflowState` |
 | `QC.CommentSync.Database.psm1` | SQL persistence + `qc_workflow_events` |
 | `QC.CommentSync.State.psm1` | Thin wrapper over `Set-PWQCWorkflowState` |
@@ -65,9 +65,9 @@ Standard PyMuPDF `annot.info` does not expose all Bluebeam review statuses. The 
 
 ## Tests
 
-- `test/test_qc_comment_trigger.ps1`
-- `test/test_qc_comment_dedupe.ps1`
-- `test/test_qc_comment_status_decision.ps1`
-- `test/test_qc_comment_notification_routing.ps1`
-- `test/test_qc_comment_sync_orchestrator.ps1`
-- `tests/test_qc_pdf_comments.py`
+- `test/powershell/test_qc_comment_trigger.ps1`
+- `test/powershell/test_qc_comment_dedupe.ps1`
+- `test/powershell/test_qc_comment_status_decision.ps1`
+- `test/powershell/test_qc_comment_notification_routing.ps1`
+- `test/powershell/test_qc_comment_sync_orchestrator.ps1`
+- `test/python/test_qc_pdf_comments.py`

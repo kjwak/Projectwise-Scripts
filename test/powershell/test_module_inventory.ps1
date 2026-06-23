@@ -1,6 +1,6 @@
-# Ensures modules/FILES.md lists every *.psm1 (and no extras).
+﻿# Ensures modules/FILES.md lists every *.psm1 (and no extras).
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesDir = Join-Path $repoRoot 'modules'
 $filesMd = Join-Path $modulesDir 'FILES.md'
 

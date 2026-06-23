@@ -1,10 +1,10 @@
-import json
+﻿import json
 import subprocess
 from pathlib import Path
 
 from module_impl import module_impl_path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 APPSETTINGS = REPO_ROOT / "appsettings.json"
 WORKFLOW = module_impl_path("QC.Workflow.psm1")
 PROCESSORS = module_impl_path("QC.Processors.psm1")

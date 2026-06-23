@@ -1,7 +1,7 @@
-# Regression tests from comment-sync validation review.
+﻿# Regression tests from comment-sync validation review.
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Database/Core.Database.psm1" -Force
 

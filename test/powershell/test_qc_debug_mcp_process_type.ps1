@@ -1,6 +1,6 @@
-# QC.DebugMcp qc_process_type diagnostics (filename lane suffix vs DB/PW).
+﻿# QC.DebugMcp qc_process_type diagnostics (filename lane suffix vs DB/PW).
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force

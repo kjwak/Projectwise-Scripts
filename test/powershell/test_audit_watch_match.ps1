@@ -1,6 +1,6 @@
-# Unit checks for watch-root prefix matching and pw_batch action code resolution.
+﻿# Unit checks for watch-root prefix matching and pw_batch action code resolution.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 function _Assert($cond, $msg) {
     if (-not $cond) { throw "ASSERT FAILED: $msg" }

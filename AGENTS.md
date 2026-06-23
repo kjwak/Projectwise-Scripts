@@ -5,7 +5,7 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 ## Production constraints
 
 - **Windows + PowerShell** is the production runtime. Service entrypoints live under `scripts/service/`.
-- **Do not assume Python is installed** on production worker hosts. Python is used for overlay **build** (`overlay/`, PyInstaller → `dist/qc_overlay_prepend/`) and **developer tests** (`tests/`). Production `QC_PREPEND` invokes the built overlay executable or legacy PowerShell prepend — not `python` on the worker.
+- **Do not assume Python is installed** on production worker hosts. Python is used for overlay **build** (`tools/overlay/`, PyInstaller → `dist/qc_overlay_prepend/`) and **developer tests** (`test/python/`). Production `QC_PREPEND` invokes the built overlay executable — not `python` on the worker.
 - **ProjectWise** (`pwps`, `pwps_dab`) is required for live PW operations. Cloud sandboxes cannot validate PW connectivity without the Bentley stack and TYPSA network.
 - **Secrets** live in gitignored files (`appsettings.secrets.json`, `pw_cred.txt`, `appsettings.local.json`) — never commit them.
 
@@ -59,7 +59,9 @@ Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full
 
 ### Prepend mode
 
-Committed production uses `qcPrepend.mode: "legacyPw"` (`legacy/prepend_qc.ps1`). Native prepend exists in `modules/Processing/QC.Processors.psm1` but is not production-default until parity is proven (`docs/engineering/phase-2-native-prepend-parity-plan.md`).
+Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are orchestrated by `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1`, which spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
+
+`qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 
 ## Documentation map
 

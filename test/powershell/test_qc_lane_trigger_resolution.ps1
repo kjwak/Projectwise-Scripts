@@ -1,6 +1,6 @@
-# Lane trigger resolution: source PDF + QC_Process_Type and direct lane PDF triggers.
+﻿# Lane trigger resolution: source PDF + QC_Process_Type and direct lane PDF triggers.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force

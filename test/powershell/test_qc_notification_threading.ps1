@@ -1,4 +1,4 @@
-# Tests for durable QC notification email threading (sheet_package_id + review_type).
+﻿# Tests for durable QC notification email threading (sheet_package_id + review_type).
 $ErrorActionPreference = 'Stop'
 
 function Assert-True($Condition, $Message) {
@@ -8,7 +8,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Core/Core.Runtime.psm1" -Force
 Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationThreads.psm1') -Force -Global

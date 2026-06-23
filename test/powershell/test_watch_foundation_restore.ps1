@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesRoot = Join-Path $repoRoot 'modules'
 
 $restoreOrder = @(

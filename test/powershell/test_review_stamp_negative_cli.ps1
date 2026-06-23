@@ -1,11 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
 Regression: negative stamp coordinates must be quoted on the overlay CLI command line.
 #>
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1') -Force -DisableNameChecking | Out-Null
 
 function Assert-True($Cond, $Msg) {

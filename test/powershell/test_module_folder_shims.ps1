@@ -1,7 +1,7 @@
-# Assert Phase 4E folder module implementations exist; flat compatibility shims removed (Phase 4H).
+﻿# Assert Phase 4E folder module implementations exist; flat compatibility shims removed (Phase 4H).
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesDir = Join-Path $repoRoot 'modules'
 
 $folderMap = @{

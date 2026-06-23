@@ -1,6 +1,6 @@
-# Lane-independent workflow state: sibling sync gated off by default.
+﻿# Lane-independent workflow state: sibling sync gated off by default.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force

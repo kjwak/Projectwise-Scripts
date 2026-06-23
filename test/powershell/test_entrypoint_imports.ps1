@@ -1,8 +1,8 @@
-# Phase 4F/4G/4H: production entrypoints resolve folder implementation paths; flat shims removed.
+﻿# Phase 4F/4G/4H: production entrypoints resolve folder implementation paths; flat shims removed.
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $scriptsRoot = Join-Path $repoRoot 'scripts'
 $modulesRoot = Join-Path $repoRoot 'modules'
 $fail = 0

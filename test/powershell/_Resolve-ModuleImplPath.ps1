@@ -12,7 +12,7 @@ function Resolve-ModuleImplPath {
     )
 
     if (-not $ModulesDir) {
-        $ModulesDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'modules'
+        $ModulesDir = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'modules'
     }
 
     $rel = ($ModuleName -replace '/', '\').Trim()

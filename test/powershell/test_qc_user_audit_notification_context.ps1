@@ -1,6 +1,6 @@
-# User-initiated workflow notifications must target the lane QC PDF with qcProcessType set.
+﻿# User-initiated workflow notifications must target the lane QC PDF with qcProcessType set.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 

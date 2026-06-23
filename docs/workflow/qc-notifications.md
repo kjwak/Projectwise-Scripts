@@ -161,5 +161,5 @@ The HTML field **Submitted By** (`{SubmittedBy}`) is resolved from the same acto
 
 ## Tests
 
-- PowerShell: `test/test_qc_notifications.ps1`, `test/test_qc_email_templates.ps1`
-- Python config guards: `tests/test_qc_notifications_config.py`
+- PowerShell: `test/powershell/test_qc_notifications.ps1`, `test/powershell/test_qc_email_templates.ps1`
+- Python config guards: `test/python/test_qc_notifications_config.py`

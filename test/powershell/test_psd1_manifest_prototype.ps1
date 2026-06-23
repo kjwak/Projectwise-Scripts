@@ -1,7 +1,7 @@
-# Phase 4G prototype: QC.Core.psd1 and QC.Queue.psd1 manifest smoke tests (test-only; not production).
+﻿# Phase 4G prototype: QC.Core.psd1 and QC.Queue.psd1 manifest smoke tests (test-only; not production).
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesRoot = Join-Path $repoRoot 'modules'
 $coreManifest = Join-Path $modulesRoot 'Core\QC.Core.psd1'
 $queueManifest = Join-Path $modulesRoot 'Queue\QC.Queue.psd1'

@@ -1,7 +1,7 @@
 # Shared helpers: validate qc_overlay_prepend.exe and optionally copy to TEMP when the source path reads as zeros (cloud/AV quirks).
 # Dot-source from prepend_qc.ps1 or test scripts: . "$PSScriptRoot\Resolve-OverlayExe.ps1"
 
-# PyInstaller spec (overlay\build_overlay_exe.ps1) produces onedir: dist\qc_overlay_prepend\qc_overlay_prepend.exe (+ _internal). Optional onefile: dist\qc_overlay_prepend.exe
+# PyInstaller spec (tools\overlay\build_overlay_exe.ps1) produces onedir: dist\qc_overlay_prepend\qc_overlay_prepend.exe (+ _internal). Optional onefile: dist\qc_overlay_prepend.exe
 function Get-DefaultOverlayExeCandidates([string]$scriptRoot) {
   return @(
     (Join-Path $scriptRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe")
@@ -51,7 +51,7 @@ function Test-OverlayHeaderBytes([byte[]]$buf, [int]$read, [long]$len, [string]$
     return @{ Ok = $false; Err = "Overlay exe is a Git LFS pointer, not the real binary. Run 'git lfs pull' or copy qc_overlay_prepend.exe from a build machine. Path: $path" }
   }
   if ($read -ge 4 -and $buf[0] -eq 0x7F -and $buf[1] -eq 0x45 -and $buf[2] -eq 0x4C -and $buf[3] -eq 0x46) {
-    return @{ Ok = $false; Err = "Overlay exe is ELF (Linux), not Windows. Run overlay\build_overlay_exe.ps1 on a Windows machine and copy that qc_overlay_prepend.exe. First bytes: $hex Path: $path" }
+    return @{ Ok = $false; Err = "Overlay exe is ELF (Linux), not Windows. Run tools\overlay\build_overlay_exe.ps1 on a Windows machine and copy that qc_overlay_prepend.exe. First bytes: $hex Path: $path" }
   }
   if ($read -ge 4 -and $buf[0] -eq 0xCF -and $buf[1] -eq 0xFA -and $buf[2] -eq 0xED -and $buf[3] -eq 0xFE) {
     return @{ Ok = $false; Err = "Overlay exe is Mach-O (macOS), not Windows. Build with PyInstaller on Windows and deploy that .exe. First bytes: $hex Path: $path" }
@@ -65,7 +65,7 @@ function Test-OverlayHeaderBytes([byte[]]$buf, [int]$read, [long]$len, [string]$
   if ($nonZero -eq 0) {
     return @{ Ok = $false; AllZeros = $true; Hex = $hex; Len = $len }
   }
-  return @{ Ok = $false; Err = "Overlay exe does not look like a Windows PE (expected MZ at start). First bytes: $hex size=$len bytes Path: $path Rebuild with .\overlay\build_overlay_exe.ps1 on Windows, or copy a Windows-built qc_overlay_prepend.exe." }
+  return @{ Ok = $false; Err = "Overlay exe does not look like a Windows PE (expected MZ at start). First bytes: $hex size=$len bytes Path: $path Rebuild with .\tools\overlay\build_overlay_exe.ps1 on Windows, or copy a Windows-built qc_overlay_prepend.exe." }
 }
 
 function Write-OverlayResolveLog([string]$message) {
@@ -108,7 +108,7 @@ function Resolve-OverlayExePath([string]$path) {
     if ($v2.AllZeros) {
       $hz = $v2.Hex
       throw @"
-Overlay exe reads as all zeros (first bytes: $hz) but reports size $($s.Len) bytes - file is not a valid PE (sparse placeholder, bad copy, or corrupt). Delete dist\qc_overlay_prepend.exe if it is wrong, then run .\overlay\build_overlay_exe.ps1 on Windows; it builds dist\qc_overlay_prepend\qc_overlay_prepend.exe (keep the whole dist\qc_overlay_prepend folder with _internal). Or pass -QcOverlayExe to a known-good exe under e.g. C:\Tools\.
+Overlay exe reads as all zeros (first bytes: $hz) but reports size $($s.Len) bytes - file is not a valid PE (sparse placeholder, bad copy, or corrupt). Delete dist\qc_overlay_prepend.exe if it is wrong, then run .\tools\overlay\build_overlay_exe.ps1 on Windows; it builds dist\qc_overlay_prepend\qc_overlay_prepend.exe (keep the whole dist\qc_overlay_prepend folder with _internal). Or pass -QcOverlayExe to a known-good exe under e.g. C:\Tools\.
 Source: $path
 "@
     }

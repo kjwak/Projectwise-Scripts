@@ -1,6 +1,6 @@
-# QC PDF GUID resolution prefers authoritative sheet_packages over stale sheet_documents.
+﻿# QC PDF GUID resolution prefers authoritative sheet_packages over stale sheet_documents.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules/Core/Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules/ProjectWise/PW.Discovery.psm1') -Force

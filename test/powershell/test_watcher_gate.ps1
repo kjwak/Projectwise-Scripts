@@ -1,4 +1,4 @@
-# Unit test: STATUS_SET_GEN is gated while the watcher-active flag is set;
+﻿# Unit test: STATUS_SET_GEN is gated while the watcher-active flag is set;
 # QC_PREPEND remains immediately eligible.
 $ErrorActionPreference = 'Stop'
 
@@ -9,7 +9,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Queue/QC.Queue.Json.psm1" -Force
 

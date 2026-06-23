@@ -1,6 +1,6 @@
-# Lane QC PDF GUID: live PW search wins over stale DB telemetry.
+﻿# Lane QC PDF GUID: live PW search wins over stale DB telemetry.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules/Core/Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules/ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue

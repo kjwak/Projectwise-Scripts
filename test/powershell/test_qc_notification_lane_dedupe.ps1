@@ -1,6 +1,6 @@
-# Notification dedupe keys include qc_process_type so lanes do not collide.
+﻿# Notification dedupe keys include qc_process_type so lanes do not collide.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force

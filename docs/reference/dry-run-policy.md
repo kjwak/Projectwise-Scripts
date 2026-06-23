@@ -68,5 +68,5 @@ Confirms discovery and trigger evaluation without queue writes.
 
 - [`testing-config.md`](testing-config.md) — test profile merge
 - [`appsettings-reference.md`](appsettings-reference.md) — all config sections
-- `test/test_effective_dry_run_policy.ps1` — policy resolution unit tests
-- `test/test_qc_comment_trigger.ps1` — lane PDF trigger rule tests
+- `test/powershell/test_effective_dry_run_policy.ps1` — policy resolution unit tests
+- `test/powershell/test_qc_comment_trigger.ps1` — lane PDF trigger rule tests

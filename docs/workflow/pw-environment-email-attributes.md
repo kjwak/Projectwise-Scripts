@@ -232,7 +232,7 @@ The email attribute extraction method documented above is used in:
 
 ### Legacy prepend email sync (`*-qc.pdf` bridge)
 
-**`legacy/prepend_qc.ps1`** (production path when `qcPrepend.mode: legacyPw`) — After each successful QC prepend, `Sync-PWQcPdfEmailAttributesFromSourcePdf` copies `EM_Designer_Email` and `EM_Reviewer_Email` from the **source sheet PDF** to the **lane QC PDF** (or legacy `*-qc.pdf` when lane params are absent). The source `.pdf` is the source of truth; the QC PDF is updated when those attributes are missing or differ.
+**`scripts/processing/Invoke-QCPrependPw.ps1`** (production path when `qcPrepend.mode: projectWise`) — After each successful QC prepend, `Sync-PWQcPdfEmailAttributesFromSourcePdf` copies `EM_Designer_Email` and `EM_Reviewer_Email` from the **source sheet PDF** to the **lane QC PDF** (or legacy `*-qc.pdf` when lane params are absent). The source `.pdf` is the source of truth; the QC PDF is updated when those attributes are missing or differ.
 
 Lane PDFs (`*-prod/-rev/-chk.pdf`) also receive `QC_Process_Type` via `_PWD-EnsureLaneQcPdfProcessTypeAttribute` during prepend.
 - **`Watch-QCTrigger.ps1`** — During both full reconciliation scans and audit-trail scans, `Get-PWDocumentsBySearchWithReturnColumns` is called with `EM_Designer_Email` and `EM_Reviewer_Email` as return columns. Extracted values are written to the `sheet_index` database table via `Write-QCSheetIndex`.

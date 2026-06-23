@@ -1,7 +1,7 @@
-# test_qc_rendition.ps1 — profile resolution, readiness gate, notification deferral.
+﻿# test_qc_rendition.ps1 — profile resolution, readiness gate, notification deferral.
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force

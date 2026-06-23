@@ -79,7 +79,7 @@ Status-set processing scripts live under `scripts/processing/`. Deployment helpe
 - **Purpose**: promote `dev` to `main` and push (git workflow helper).
 
 ### `deployment/Sync-OverlayReviewStamp.ps1` (wrapper: `Sync-OverlayReviewStamp.ps1`)
-- **Purpose**: sync `overlay/qc_review_stamp.py` into the PyInstaller onedir bundle.
+- **Purpose**: sync `tools/overlay/qc_review_stamp.py` into the PyInstaller onedir bundle.
 
 ### `Publish-QCPipelineCode.ps1`
 - **Purpose**: copy `modules/` and key scripts to the production worker root; optional `-ConfirmRestart`.

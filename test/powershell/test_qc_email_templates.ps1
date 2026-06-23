@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 function Assert-True($Condition, $Message) {
     if (-not $Condition) { throw "ASSERT FAILED: $Message" }
@@ -17,7 +17,7 @@ function Assert-Throws($ScriptBlock, $Message) {
     if (-not $threw) { throw "ASSERT FAILED: $Message" }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Runtime.psm1" -Force
 Import-Module "$repoRoot/modules/Core/Core.Config.psm1" -Force
 Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force

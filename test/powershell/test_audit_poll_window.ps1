@@ -1,6 +1,6 @@
-# Unit-style checks for audit capture watermark / poll window (no PW connection).
+﻿# Unit-style checks for audit capture watermark / poll window (no PW connection).
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force

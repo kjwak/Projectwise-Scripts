@@ -24,16 +24,16 @@ Most logic is in `modules/`. Most runnable entrypoints are in `scripts/`.
 
 - **`appsettings.json`**: primary configuration (ProjectWise watch list, filters, triggers, queue root, worker pool, processor modes).
 - **`qc_overlay_prepend.spec`**: PyInstaller spec for building the overlay executable (`dist/qc_overlay_prepend/...`).
-- **`pytest.ini`**: Python test configuration (used by overlay/build/test tooling).
+- **`pytest.ini`**: Python test configuration (`test/python/`).
 
 ## Root directories (high level)
 
 - **`modules/`**: PowerShell modules implementing config/path normalization, filtering, triggers, job factory, JSON queue, processors, and native status set generation.
 - **`scripts/`**: operational scripts (watcher, worker, dashboard, diagnostics, maintenance).
 - **`legacy/`**: legacy monolith scripts kept for compatibility (`prepend_qc*.ps1`, `combine_status_set.ps1`).
-- **`overlay/`**: Python sources for the QC overlay tool (built into an exe under `dist/`).
-- **`tools/`**: third-party utilities (notably `qpdf.exe` used for PDF merges).
+- **`tools/`**: third-party utilities (`qpdf`) and overlay Python sources (`tools/overlay/`, built to `dist/qc_overlay_prepend/`).
 - **`docs/`**: documentation — start at [`docs/README.md`](docs/README.md); agent guidance in [`AGENTS.md`](AGENTS.md).
-- **`test/`** and **`tests/`**: test harnesses (PowerShell and/or Python; both exist in this repo).
-- **`build/`** and **`dist/`**: generated build artifacts.
+- **`test/`**: unified tests — `test/powershell/` (PowerShell) and `test/python/` (pytest).
+- **`dist/`**: packaged overlay exe (`dist/qc_overlay_prepend/`) used by production prepend and review stamps.
+- **`tools/overlay/build/`**: PyInstaller intermediate output (gitignored); produced by `.\tools\overlay\build_overlay_exe.ps1`.
 

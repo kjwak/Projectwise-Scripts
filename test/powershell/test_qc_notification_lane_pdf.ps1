@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.Notifications.psm1') -Force

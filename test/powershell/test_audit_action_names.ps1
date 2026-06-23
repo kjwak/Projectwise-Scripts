@@ -1,6 +1,6 @@
-# Regression: full ProjectWise audit action name map in PW.AuditPoller.psm1
+﻿# Regression: full ProjectWise audit action name map in PW.AuditPoller.psm1
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force
 
 if ((Get-PWAuditTrailActionName -ActionCode 1012) -ne 'DOCUMENT_STATE') {

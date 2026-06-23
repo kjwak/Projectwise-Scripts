@@ -1,4 +1,4 @@
-"""Tests for overlay/qc_pdf_comments.py (isolated parser)."""
+﻿"""Tests for tools/overlay/qc_pdf_comments.py (isolated parser)."""
 from __future__ import annotations
 
 import json
@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "overlay"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "overlay"))
 
 from qc_pdf_comments import extract_comments  # noqa: E402
-from tests.pdf_utils import make_minimal_pdf, make_pdf_with_text_annot  # noqa: E402
+from pdf_utils import make_minimal_pdf, make_pdf_with_text_annot  # noqa: E402
 
 
 def test_extract_empty_pdf_has_empty_or_ok_status(tmp_path: Path) -> None:

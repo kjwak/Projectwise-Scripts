@@ -1,6 +1,6 @@
-# Incomplete packages (PDF only, no DGN/QC PDF) still create a sheet_packages row.
+﻿# Incomplete packages (PDF only, no DGN/QC PDF) still create a sheet_packages row.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force

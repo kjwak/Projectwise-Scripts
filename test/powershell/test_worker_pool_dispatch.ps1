@@ -1,4 +1,4 @@
-# Integration test: parallel workers drain the queue without duplicate processing.
+﻿# Integration test: parallel workers drain the queue without duplicate processing.
 # Spawns 3 workers in parallel against a queue of 6 STATUS_SET_GEN stub jobs and
 # verifies all reach 'succeeded' exactly once with no leftover lock files.
 $ErrorActionPreference = 'Stop'
@@ -10,7 +10,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Queue/QC.Queue.Json.psm1" -Force
 

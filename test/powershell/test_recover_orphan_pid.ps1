@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Test: Recover-QCStaleJobs reclaims orphaned running\ jobs whose lock-owner PID is dead,
 even when the job's startedAtUtc is younger than queue.recover.staleSeconds.
@@ -6,7 +6,7 @@ even when the job's startedAtUtc is younger than queue.recover.staleSeconds.
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null
 

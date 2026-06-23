@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $files = @(
     'modules\Queue\QC.Queue.Json.psm1',
     'modules\Processing\QC.StatusSet.psm1',

@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "overlay") not in sys.path:
-    sys.path.insert(0, str(ROOT / "overlay"))
+if str(ROOT / "tools" / "overlay") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tools" / "overlay"))
 
 import qc_review_stamp  # noqa: E402
 

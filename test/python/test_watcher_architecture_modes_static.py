@@ -1,9 +1,9 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from module_impl import read_module_source
 
-REPO = Path(__file__).resolve().parents[1]
-WATCHER = (REPO / 'scripts' / 'Watch-QCTrigger.ps1').read_text(encoding='utf-8')
+REPO = Path(__file__).resolve().parents[2]
+WATCHER = (REPO / 'scripts' / 'service' / 'Watch-QCTrigger.ps1').read_text(encoding='utf-8')
 DB = read_module_source('Core.Database.psm1')
 ORCH = read_module_source('QC.WatcherOrchestration.psm1')
 

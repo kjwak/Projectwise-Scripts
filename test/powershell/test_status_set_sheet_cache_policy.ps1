@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force
 
 function Assert([bool]$Cond, [string]$Msg) {

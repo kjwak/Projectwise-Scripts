@@ -1,7 +1,7 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $root 'modules\Core\Core.Paths.psm1') -Force

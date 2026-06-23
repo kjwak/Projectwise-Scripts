@@ -1,7 +1,7 @@
-from pathlib import Path
+﻿from pathlib import Path
 
-DASHBOARD = (Path(__file__).resolve().parents[1] / "scripts" / "Start-QCPipelineDashboard.ps1").read_text(encoding="utf-8")
-README = (Path(__file__).resolve().parents[1] / "scripts" / "README.md").read_text(encoding="utf-8")
+DASHBOARD = (Path(__file__).resolve().parents[2] / "scripts" / "service" / "Start-QCPipelineDashboard.ps1").read_text(encoding="utf-8")
+README = (Path(__file__).resolve().parents[2] / "scripts" / "README.md").read_text(encoding="utf-8")
 
 
 def test_dashboard_defaults_to_production_view() -> None:

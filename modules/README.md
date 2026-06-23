@@ -109,7 +109,7 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
 ### Comment-status sync (`QC_COMMENT_STATUS_SYNC`)
 
 - **`QC.PdfExport.psm1`**: `Export-QCPdfToStaging` — PW PDF download to staging.
-- **`QC.CommentExtract.psm1`**: invokes `overlay/qc_pdf_comments.py`; normalized annotations only.
+- **`QC.CommentExtract.psm1`**: invokes `tools/overlay/qc_pdf_comments.py`; normalized annotations only.
 - **`QC.CommentStatusDecision.psm1`**: pure `Resolve-QCCommentWorkflowState` (no side effects).
 - **`QC.CommentSync.Database.psm1`**: `qc_comment_*` + `qc_workflow_events` writers.
 - **`QC.CommentSync.State.psm1`**: thin `Set-PWQCWorkflowState` wrapper.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Regression: _QCQJ-AcquireLockFile must steal a stale lock file whose owner PID
 is dead. Without this, _queue_write.lock or per-job .lock files left by
@@ -8,7 +8,7 @@ TimeoutMs on QUEUE_LOCK_TIMEOUT until a dashboard restart.
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force -DisableNameChecking | Out-Null

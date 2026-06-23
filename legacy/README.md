@@ -1,19 +1,24 @@
 # `legacy/` — Compatibility scripts
 
-This folder contains scripts retained for **production prepend** and parity fallback while native paths are validated.
+This folder contains **compatibility shims and shared helpers** — not the production QC prepend implementation.
 
-## Production relevance
+## Production prepend (not in this folder)
 
-Committed `appsettings.json` sets **`qcPrepend.mode: "legacyPw"`**. `QC_PREPEND` jobs therefore route through **`legacy/prepend_qc.ps1`** for ProjectWise export, overlay merge, lane PDF upload, and attribute sync. **Do not remove this folder** while that mode remains in use.
+Committed `appsettings.json` sets **`qcPrepend.mode: "projectWise"`**. `QC_PREPEND` jobs run through:
 
-Native prepend logic exists in `modules/Processing/QC.Processors.psm1` (`mode` other than `legacyPw`) but is not the production default. See [`docs/engineering/phase-2-native-prepend-parity-plan.md`](../docs/engineering/phase-2-native-prepend-parity-plan.md).
+1. `Invoke-QCPrependProcessor` — `modules/Processing/QC.Processors.psm1`
+2. `scripts/processing/Invoke-QCPrependPw.ps1` — PW export, overlay merge, lane PDF upload
+
+`legacy/prepend_qc.ps1` forwards to that script with a deprecation warning. Do not point new automation at it.
+
+Disk-only prepend (`qcPrepend.mode: "local"`) lives in `QC.Processors.psm1` and is for tests — not production. See [`docs/engineering/phase-2-native-prepend-parity-plan.md`](../docs/engineering/phase-2-native-prepend-parity-plan.md).
 
 ## What's in here
 
-- **`prepend_qc.ps1`**: production QC prepend (PW export + overlay + lane PDF history upload).
-- **`prepend_qc_on_trigger.ps1`**: alternate entry used by `run_prepend_qc.ps1 -Legacy`.
+- **`prepend_qc.ps1`**: deprecated shim → `scripts/processing/Invoke-QCPrependPw.ps1`.
+- **`prepend_qc_on_trigger.ps1`**: pre-queue monolith; used only by `run_prepend_qc.ps1 -Legacy`.
 - **`combine_status_set.ps1`**: legacy Status Set generation when `statusSet.mode = "legacy"`.
-- **`Resolve-OverlayExe.ps1`**: overlay executable resolution (still referenced).
+- **`Logging.ps1`**, **`StaMtaRelaunch.ps1`**, **`Resolve-OverlayExe.ps1`**: dot-sourced by `Invoke-QCPrependPw.ps1` and related tools.
 - **`watchlist.json`** (if present): legacy watch configuration.
 
 ## How it relates to the modular pipeline
@@ -24,11 +29,11 @@ The modern pipeline is modular (`modules/`) and queue-based (`modules/Queue/QC.Q
 - `scripts/service/Run-QCProcessor.ps1` (dequeue/process)
 - `scripts/Start-QCPipelineDashboard.ps1` (orchestrated dashboard run)
 
-Processor legacy modes:
+Processor paths:
 
-| Job type | Config key | Legacy script |
-|----------|------------|---------------|
-| `QC_PREPEND` | `qcPrepend.mode = "legacyPw"` | `legacy/prepend_qc.ps1` |
+| Job type | Config key | Script |
+|----------|------------|--------|
+| `QC_PREPEND` | `qcPrepend.mode = "projectWise"` | `scripts/processing/Invoke-QCPrependPw.ps1` |
 | `STATUS_SET_GEN` | `statusSet.mode = "legacy"` | `legacy/combine_status_set.ps1` |
 
 Compatibility wrappers under `scripts/` may forward to `scripts/service/`. Canonical entrypoints are `scripts/service/Watch-QCTrigger.ps1`, `scripts/service/Run-QCProcessor.ps1`, and `scripts/service/run_prepend_qc.ps1`. See [`AGENTS.md`](../AGENTS.md).

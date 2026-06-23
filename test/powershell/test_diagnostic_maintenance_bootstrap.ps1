@@ -1,8 +1,8 @@
-# Phase 4 diagnostic/maintenance bootstrap: shared restore helper usage and clobber-prone chains.
+﻿# Phase 4 diagnostic/maintenance bootstrap: shared restore helper usage and clobber-prone chains.
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $scriptsRoot = Join-Path $repoRoot 'scripts'
 $fail = 0
 

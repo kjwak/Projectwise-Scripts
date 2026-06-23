@@ -1,6 +1,6 @@
-# Verifies Watch-QCTrigger module import chain exposes Test-QCDatabaseEnabled.
+﻿# Verifies Watch-QCTrigger module import chain exposes Test-QCDatabaseEnabled.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 $imports = @(
     'modules\Core\Core.Results.psm1',

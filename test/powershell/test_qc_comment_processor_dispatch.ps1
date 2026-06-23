@@ -1,7 +1,7 @@
-# Verify QC_COMMENT_STATUS_SYNC maps to orchestrator handler.
+﻿# Verify QC_COMMENT_STATUS_SYNC maps to orchestrator handler.
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Processing/QC.Processors.psm1" -Force
 

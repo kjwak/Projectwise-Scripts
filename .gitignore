@@ -11,6 +11,7 @@ env/
 .env.*
 
 # --- PyInstaller (keep *.spec in git for reproducible builds) ---
+# workpath: tools/overlay/build/  distpath: dist/  (set in qc_overlay_prepend.spec)
 
 db/
 
@@ -28,5 +29,10 @@ appsettings.*.local.json
 !appsettings.secrets.json.example
 tools/pw-qc-mcp/
 reports/
+tools/overlay/build/
 build/
 test/output/
+
+# Local archive of superseded repo snapshot (nested .git; not part of this project)
+archive/old files/
+old files/

@@ -1,4 +1,4 @@
-# Minimal integration test for Watch-QCTrigger.ps1 dry-run logging semantics.
+﻿# Minimal integration test for Watch-QCTrigger.ps1 dry-run logging semantics.
 $ErrorActionPreference = 'Stop'
 
 function Assert-True($Condition, $Message) {
@@ -9,7 +9,7 @@ function Assert-Eq($Actual, $Expected, $Message) {
     if ($Actual -ne $Expected) { throw "ASSERT FAILED: $Message`nExpected: $Expected`nActual:   $Actual" }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module "$repoRoot/modules/Core/Core.Results.psm1" -Force
 Import-Module "$repoRoot/modules/Core/Core.Paths.psm1" -Force

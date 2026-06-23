@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Integration test for audit_events ingestion (Write-QCAuditEventRows).
 
@@ -7,8 +7,8 @@ Requires appsettings database.enabled=true and a reachable SQL Server.
 Skips with exit 0 when database is disabled (CI-friendly).
 
 .EXAMPLE
-.\test\test_audit_events_db.ps1
-.\test\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.json
+.\test\powershell\test_audit_events_db.ps1
+.\test\powershell\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.json
 #>
 [CmdletBinding()]
 param(
@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
     $AppSettingsPath = Join-Path $repoRoot 'appsettings.json'
 }

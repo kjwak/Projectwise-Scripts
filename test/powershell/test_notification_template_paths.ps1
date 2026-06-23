@@ -1,7 +1,7 @@
-# Parse-only: worker publish must include email/ assets at repo root for Graph HTML notifications.
+﻿# Parse-only: worker publish must include email/ assets at repo root for Graph HTML notifications.
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $publishScript = Join-Path $repoRoot 'scripts\Publish-QCPipelineCode.ps1'
 $templateRel = 'email\templates\qc_notification.html'
 $logoRel = 'email\typsalogo.png.webp'

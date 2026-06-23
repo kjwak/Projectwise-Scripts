@@ -1,7 +1,7 @@
-# Phase 4H: canonical script/module paths exist; compatibility wrappers and flat shims are removed.
+﻿# Phase 4H: canonical script/module paths exist; compatibility wrappers and flat shims are removed.
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $scriptsDir = Join-Path $repoRoot 'scripts'
 $modulesDir = Join-Path $repoRoot 'modules'
 $fail = 0

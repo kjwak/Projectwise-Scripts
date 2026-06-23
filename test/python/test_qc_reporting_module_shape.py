@@ -1,8 +1,8 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from module_impl import module_impl_path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 REPORTING = module_impl_path("QC.Reporting.psm1")
 PROCESSORS = module_impl_path("QC.Processors.psm1")
 

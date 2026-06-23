@@ -1,4 +1,4 @@
-"""Tests for qc_review_stamp placement and field mapping."""
+﻿"""Tests for qc_review_stamp placement and field mapping."""
 from __future__ import annotations
 
 import sys
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-OVERLAY = Path(__file__).resolve().parents[1] / "overlay"
-ROOT = Path(__file__).resolve().parents[1]
+OVERLAY = Path(__file__).resolve().parents[2] / "tools" / "overlay"
+ROOT = Path(__file__).resolve().parents[2]
 if str(OVERLAY) not in sys.path:
     sys.path.insert(0, str(OVERLAY))
 
@@ -168,7 +168,7 @@ def test_build_peer_review_field_values_updater_matches_originator() -> None:
 
 def test_apply_ic_stamp_copies_all_markup(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
-    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "IC_Stamp.pdf"
+    stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "IC_Stamp.pdf"
     if not stamp_src.is_file():
         pytest.skip("IC_Stamp.pdf not in repo")
 
@@ -200,7 +200,7 @@ def test_apply_ic_stamp_copies_all_markup(tmp_path: Path) -> None:
 
 def test_apply_review_stamp_without_field_population(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
-    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"
+    stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "Peer_Review_Stamp.pdf"
     if not stamp_src.is_file():
         pytest.skip("Peer_Review_Stamp.pdf not in repo")
 
@@ -233,7 +233,7 @@ def test_apply_review_stamp_without_field_population(tmp_path: Path) -> None:
 
 def test_apply_review_stamp_flatten_single_annotation(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
-    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "Peer_Review_Stamp.pdf"
+    stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "Peer_Review_Stamp.pdf"
     if not stamp_src.is_file():
         pytest.skip("Peer_Review_Stamp.pdf not in repo")
 
@@ -277,8 +277,8 @@ def test_apply_review_stamp_flatten_single_annotation(tmp_path: Path) -> None:
 
 def test_apply_i15_stamp_on_rotated_page_visual_placement(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
-    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "I-15_DR_Stamp.pdf"
-    target_src = Path(__file__).resolve().parents[1] / "test" / "050_D-02.10_d0847drn-qc.pdf"
+    stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "I-15_DR_Stamp.pdf"
+    target_src = Path(__file__).resolve().parents[2] / "test" / "powershell" / "050_D-02.10_d0847drn-qc.pdf"
     if not stamp_src.is_file() or not target_src.is_file():
         pytest.skip("I-15 stamp or rotated sample sheet not in repo")
 
@@ -312,7 +312,7 @@ def test_apply_i15_stamp_on_rotated_page_visual_placement(tmp_path: Path) -> Non
 
 def test_apply_i15_stamp_copies_markup_with_colors(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
-    stamp_src = Path(__file__).resolve().parents[1] / "stamps" / "I-15_DR_Stamp.pdf"
+    stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "I-15_DR_Stamp.pdf"
     if not stamp_src.is_file():
         pytest.skip("I-15_DR_Stamp.pdf not in repo")
 

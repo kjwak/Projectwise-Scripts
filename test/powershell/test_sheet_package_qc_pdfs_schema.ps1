@@ -1,6 +1,6 @@
-# Schema v1.19: sheet_package_qc_pdfs table and reporting views.
+﻿# Schema v1.19: sheet_package_qc_pdfs table and reporting views.
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot '_Resolve-ModuleImplPath.ps1')
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force

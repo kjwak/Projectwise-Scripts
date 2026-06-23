@@ -10,12 +10,13 @@
 # Your ProjectWise / trigger PowerShell should invoke the exe directly, for example:
 #   & "C:\Path\to\qc_overlay_prepend\qc_overlay_prepend.exe" $incomingPdf $qcHistoryPdf -o $outputPdf
 #
-# Usage (from repo): .\overlay\build_overlay_exe.ps1
+# Usage (from repo): .\tools\overlay\build_overlay_exe.ps1
 # Output: dist\qc_overlay_prepend\qc_overlay_prepend.exe
+# Intermediate: tools\overlay\build\ (see workpath in qc_overlay_prepend.spec)
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Split-Path -Parent $scriptDir
+$projectRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 $venvPath = Join-Path $projectRoot ".venv_overlay_build"
 $specFile = Join-Path $projectRoot "qc_overlay_prepend.spec"
 
@@ -39,7 +40,7 @@ try {
     $pythonExe = Join-Path $venvPath "Scripts\python.exe"
     $pipExe = Join-Path $venvPath "Scripts\pip.exe"
 
-    Write-Host "Installing PyInstaller and overlay dependencies (overlay/requirements.txt)..."
+    Write-Host "Installing PyInstaller and overlay dependencies (tools/overlay/requirements.txt)..."
     & $pipExe install -r (Join-Path $scriptDir "requirements.txt") pyinstaller --quiet
     if ($LASTEXITCODE -ne 0) {
       throw @"
@@ -62,7 +63,7 @@ Common causes: WinError 10013 = outbound HTTPS to pypi.org blocked (firewall/pro
     $stampDst = Join-Path $projectRoot "dist\qc_overlay_prepend\_internal\qc_review_stamp.py"
     if ((Test-Path $stampSrc) -and (Test-Path (Split-Path -Parent $stampDst))) {
         Copy-Item -LiteralPath $stampSrc -Destination $stampDst -Force
-        Write-Host "Synced overlay\qc_review_stamp.py -> dist\qc_overlay_prepend\_internal\ (onedir loads this at runtime)."
+        Write-Host "Synced tools\overlay\qc_review_stamp.py -> dist\qc_overlay_prepend\_internal\ (onedir loads this at runtime)."
     }
 
     $exe = Join-Path $projectRoot "dist\qc_overlay_prepend\qc_overlay_prepend.exe"

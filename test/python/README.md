@@ -1,9 +1,11 @@
-# `tests/`
+# `test/python/`
 
-Additional test suite(s) for this repository.
+Pytest suite for static config guards, overlay tooling, and module shape checks.
 
-This repo also contains `test/`; both folders are present and may be used by different harnesses. For a queue/lock health inspection without running full tests, see:
+Run from repo root:
 
-- `scripts/Show-QCStatus.ps1`
-- `scripts/Show-QCQueueDiag.ps1`
+```bash
+python -m pytest -q
+```
 
+Configuration: root [`pytest.ini`](../../pytest.ini) (`testpaths = test/python`).

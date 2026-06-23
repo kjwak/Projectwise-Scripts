@@ -1,8 +1,8 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from module_impl import read_module_source
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 DB = read_module_source("Core.Database.psm1")
 POLLER = read_module_source("PW.AuditPoller.psm1")
 

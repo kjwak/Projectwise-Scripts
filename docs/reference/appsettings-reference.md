@@ -183,9 +183,13 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 
 | Key | Description |
 |-----|-------------|
-| `historyRoot` / `outputRoot` / `tempRoot` | Overlay working directories. |
-| `mode` | `legacyPw` = production prepend via `legacy\prepend_qc.ps1` (PW export/overlay/upload). `local` = native path in `QC.Processors.psm1` (no PW file I/O; not production default). |
+| `historyRoot` / `outputRoot` / `tempRoot` | Overlay working directories (used by `local` mode and overlay staging). |
+| `mode` | **`projectWise`** (production): `Invoke-QCPrependProcessor` spawns `scripts\processing\Invoke-QCPrependPw.ps1` for PW export, overlay merge, and lane PDF upload. **`local`**: disk-only path in `QC.Processors.psm1` (tests/staging; no PW file I/O). **`legacyPw`** / **`pw`**: deprecated aliases for `projectWise`. |
+| `projectWiseScriptPath` | Optional override for the ProjectWise prepend script (default `scripts\processing\Invoke-QCPrependPw.ps1`). |
+| `legacyScriptPath` | Deprecated alias for `projectWiseScriptPath`. |
+| `enableOverlay` | Use `qc_overlay_prepend.exe` when available. |
 | `qpdfExePath` | Path to qpdf binary. |
+| `overlayExePath` | Path to `qc_overlay_prepend.exe` (default `dist\qc_overlay_prepend\qc_overlay_prepend.exe`). |
 
 ---
 

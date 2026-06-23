@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 
 $tmpdir = Join-Path $env:TEMP ('qc_log_test_' + [guid]::NewGuid().ToString('N'))

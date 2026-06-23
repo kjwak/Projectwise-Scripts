@@ -1,6 +1,6 @@
-$qroot = 'C:\QC_E2E_RealRun\queue'
+﻿$qroot = 'C:\QC_E2E_RealRun\queue'
 $locksDir = Join-Path $qroot 'locks'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $root 'modules\Queue\QC.Queue.Json.psm1') -Force
 

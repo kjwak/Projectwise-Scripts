@@ -1691,7 +1691,7 @@ function Invoke-QCPrependProcessor {
 
         # 1) If overlay enabled, build QC output first:
         #    qc.pdf = overlay(source vs page1(history)) + history tail pages
-        #    Use overlay/qc_overlay_prepend's contract directly: incoming + qc_history -> merged QC output.
+        #    Use tools/overlay/qc_overlay_prepend's contract directly: incoming + qc_history -> merged QC output.
         if ($enableOverlay) {
             if (-not (Test-Path -LiteralPath $overlayExePath)) {
                 return New-QCFailureResult -Code 'QC_OVERLAY_EXE_MISSING' -Message "Overlay exe missing: $overlayExePath" -Data @{ overlayExePath = $overlayExePath }
@@ -1708,7 +1708,7 @@ function Invoke-QCPrependProcessor {
             )
 
             # Pass through selected overlay engine options if present in config.
-            # Mirrors overlay/qc_overlay_prepend.py CLI.
+            # Mirrors tools/overlay/qc_overlay_prepend.py CLI.
             if ($qc.ContainsKey('overlayAlpha') -and $qc.overlayAlpha -ne $null -and ([string]$qc.overlayAlpha).Trim().Length -gt 0) {
                 $overlayArgs += @('--alpha', [string]$qc.overlayAlpha)
             }

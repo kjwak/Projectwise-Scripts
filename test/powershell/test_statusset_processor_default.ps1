@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Regression: Invoke-StatusSetProcessor must NOT silently succeed when statusSet
 config is missing or contains an unrecognized mode. The previous default
@@ -7,7 +7,7 @@ config is missing or contains an unrecognized mode. The previous default
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force -DisableNameChecking | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Force -DisableNameChecking | Out-Null
 

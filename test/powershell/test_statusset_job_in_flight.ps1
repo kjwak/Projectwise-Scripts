@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Queue\QC.Queue.Json.psm1') -Force
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('qc_inflight_' + [guid]::NewGuid().ToString('n'))

@@ -1,8 +1,8 @@
-# Static in-repo inventory for Phase 4 server path audit.
+﻿# Static in-repo inventory for Phase 4 server path audit.
 # Does not contact production servers — validates documented path surfaces exist in the repo.
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $fail = 0
 
 function Assert-True($Cond, $Msg) {

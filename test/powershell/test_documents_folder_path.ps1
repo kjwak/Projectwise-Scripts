@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $root 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $root 'modules\Core\Core.Paths.psm1') -Force
 
