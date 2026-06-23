@@ -904,7 +904,8 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 ### Still pending (production)
 
-- Run Section 9–10 checklist on each worker / automation host before `phase-4/service-scripts` or `phase-4/shim-removal`
+- Run `scripts/Invoke-QCWorkerPathSignoff.ps1` on each **production pipeline host**; complete §10 table and §9.4 Rules Engine review
+- **Do not start `phase-4/service-scripts` until production sign-off row(s) are complete**
 
 ---
 

@@ -2,7 +2,16 @@
 
 **Branch:** `phase-4/server-path-audit`  
 **Base branch:** `phase-4/integration`  
-**Status:** In-repo inventory complete — production server sign-off pending
+**Status:** In-repo inventory complete — **production sign-off pending** (see §10)
+
+### Sign-off gate
+
+| Gate | Status |
+|------|--------|
+| In-repo static inventory (§11) | **Complete** |
+| Production worker checklist (§9 on worker host) | **Pending** — run `scripts/Invoke-QCWorkerPathSignoff.ps1` on each pipeline host |
+| ProjectWise Rules Engine manual review (§9.4) | **Pending** |
+| Approved to start `phase-4/service-scripts` | **No** — until §10 production row(s) signed |
 
 ## Purpose
 
@@ -166,6 +175,16 @@ Searched the repository for `Register-ScheduledTask`, `schtasks`, and Rules Engi
 
 Run on each machine that runs QC pipeline or invokes QC scripts. Record results in the sign-off table (Section 10).
 
+### 9.0 Automated checklist (run on each worker host)
+
+From the worker root (or pass `-WorkerRoot`):
+
+```powershell
+.\scripts\Invoke-QCWorkerPathSignoff.ps1 -WorkerRoot 'D:\QC_Pipeline\Prepend PDF QC'
+```
+
+Prints §9.1–9.5 results and a markdown table row for §10. §9.4 Rules Engine still requires manual PW Administrator review.
+
 ### 9.1 Running processes (reveals actual script paths in use)
 
 ```powershell
@@ -249,13 +268,20 @@ Search shared runbooks / desktop shortcuts for:
 
 ---
 
-## 10. Production sign-off (fill in manually)
+## 10. Production sign-off
 
-| Site / host | Worker root path | Task Scheduler paths found | Rules Engine rules found | `appsettings.local` path overrides | Running process paths | Reviewer | Date |
-|-------------|------------------|----------------------------|--------------------------|-----------------------------------|----------------------|----------|------|
-| *(example)* | `D:\QC_Pipeline\Prepend PDF QC` | | | | | | |
+**Gate:** `phase-4/service-scripts` and `phase-4/shim-removal` require every **production pipeline host** row below to show no unexpected hardcoded paths (or a documented migration plan), plus §9.4 Rules Engine checked.
 
-**4H shim removal** requires every row populated with “no unexpected hardcoded paths” or documented migration plan.
+| Site / host | Worker root path | Task Scheduler paths found | Rules Engine rules found | `appsettings.local` path overrides | Running process paths | Reviewer | Date | Notes |
+|-------------|------------------|----------------------------|--------------------------|-----------------------------------|----------------------|----------|------|-------|
+| AZTEC003028 | `C:\Users\jflint\OneDrive - TYPSA\Documentos\github\Prepend PDF QC` | none | not checked | relative `notifications.email.templatePath` only in committed `appsettings.json` | dev/test only (`Watch-QCTrigger` dry-run) | — | 2026-06-22 | **Dev workstation — not production sign-off** |
+| *(production worker)* | `D:\QC_Pipeline\Prepend PDF QC` | **PENDING** | **PENDING** | **PENDING** | **PENDING** | | | Run `Invoke-QCWorkerPathSignoff.ps1` on host; fill row from script output |
+
+### In-repo operator doc review (§9.6 — complete 2026-06-22)
+
+Committed docs reference `scripts\Start-QCPipelineDashboard.ps1`, root shims, and wrapper paths — all valid Phase 4 surfaces. No doc references found that bypass current wrappers for moved diagnostics/maintenance scripts.
+
+**4H shim removal** requires every production row populated with “no unexpected hardcoded paths” or documented migration plan.
 
 ---
 
