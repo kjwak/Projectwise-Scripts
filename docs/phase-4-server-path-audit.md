@@ -22,7 +22,7 @@ No repo behavior changes. Production commands are not run from this branch.
 |-------------|---------------|
 | `phase-4/service-scripts` | Publish copy list updated for any moved service paths; worker sign-off below |
 | `phase-4/shim-removal` (4H) | 1-week production soak **and** all external callers confirmed on shim or new paths |
-| `phase-4/publish-email-assets` | Independent — closes documented `email/` publish gap |
+| `phase-4/publish-email-assets` | **Complete** — `email/` added to publish copy plan |
 
 ---
 
@@ -53,6 +53,7 @@ D:\QC_Pipeline\Prepend PDF QC\
 | Source | Destination on worker |
 |--------|------------------------|
 | `modules/` (recursive) | `modules/` |
+| `email/` (recursive) | `email/` — template `templates/qc_notification.html`, logo `typsalogo.png.webp` |
 | `scripts/Watch-QCTrigger.ps1` | same relative path |
 | `scripts/Run-QCProcessor.ps1` | same |
 | `scripts/Import-QCScriptModules.ps1` | same |
@@ -63,8 +64,7 @@ D:\QC_Pipeline\Prepend PDF QC\
 
 | Path | Why it matters |
 |------|----------------|
-| `email/` | `notifications.email.templatePath` → `email/templates/qc_notification.html` |
-| `appsettings.json` (+ local/secrets) | All runtime config |
+| `appsettings.json` (+ local/secrets) | All runtime config — **never** copied by publish |
 | `dist/qc_overlay_prepend/` | Default `qcPrepend.overlayExePath` / review stamp |
 | `legacy/` | `run_prepend_qc -Legacy`, `statusSet.mode=legacy`, deprecated prepend shim |
 | `scripts/Stop-QCPipeline.ps1` | Used by publish `-ConfirmRestart` only |
@@ -276,9 +276,8 @@ Search shared runbooks / desktop shortcuts for:
 | Priority | Branch | Rationale |
 |----------|--------|-----------|
 | 1 | Complete Section 10 on production hosts | Only gap blocking 4H / service moves |
-| 2 | `phase-4/publish-email-assets` | Close `email/` publish gap (independent, low risk) |
-| 3 | `phase-4/service-scripts` | Move service entrypoints to `scripts/service/` after sign-off + publish update |
-| 4 | `phase-4/shim-removal` | After soak + sign-off |
+| 2 | `phase-4/service-scripts` | Move service entrypoints to `scripts/service/` after sign-off + publish update |
+| 3 | `phase-4/shim-removal` | After soak + sign-off |
 
 ---
 
