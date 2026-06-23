@@ -1,13 +1,16 @@
 <#
 .SYNOPSIS
-Resets ProjectWise workflow state for all documents in a folder and clears QC telemetry in SQL.
+Resets ProjectWise workflow state and/or clears QC telemetry in SQL by folder, stem PDF path, or QC PDF path.
 
 .DESCRIPTION
-For a single Sheets (or any) folder:
+For a Sheets folder, one stem PDF/DGN path, or one lane QC PDF path (*-prod/-chk/-rev.pdf):
 
-1. ProjectWise - sets workflow state on every document in the folder to the target state
+1. ProjectWise - sets workflow state on documents in scope to the target state
    (default: qcWorkflow.states.production, usually "In Production").
-2. Database - deletes folder-scoped rows from QC telemetry tables (not sheet_index, sheet_packages, or sheet_documents).
+2. Database - deletes scoped rows from QC telemetry tables (not sheet_index, sheet_packages, or sheet_documents).
+
+Double-click the script (or run with no path parameters) for an interactive menu. Interactive mode always
+skips ProjectWise and applies database changes only after you confirm.
 
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
@@ -37,16 +40,30 @@ Recommended lane-PDF recycle workflow:
 .EXAMPLE
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath 'AZFWY1704-FD02-SR202\CADD\Sheets' -ConfirmReset
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -StemPath 'Documents\...\Sheets\Seg_1\080j082001ab001.pdf' -ConfirmReset -SkipProjectWise
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -QcPdfPath 'Documents\...\Sheets\Seg_1\080j082001ab001-prod.pdf' -ConfirmReset -SkipProjectWise
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -KeepLanePdfRegistry
 .\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipPreviewCounts -QueryTimeoutSeconds 600
+
+Double-click (or run with no path parameters) for an interactive menu: folder, stem PDF path, or QC PDF path.
+Interactive mode always skips ProjectWise and applies database reset only after confirmation.
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'Folder')]
 param(
-    [Parameter(Mandatory)]
-    [string]$FolderPath,
+    [Parameter(ParameterSetName = 'Folder')]
+    [string]$FolderPath = '',
+
+    [Parameter(ParameterSetName = 'Stem')]
+    [string]$StemPath = '',
+
+    [Parameter(ParameterSetName = 'QcPdf')]
+    [string]$QcPdfPath = '',
+
+    [ValidateSet('Folder', 'Stem', 'QcPdf')]
+    [string]$ScopeMode = '',
 
     [string]$AppSettingsPath = '',
     [string]$TargetState = '',
@@ -61,7 +78,8 @@ param(
     [int]$BatchSize = 5000,
     [int]$QueryTimeoutSeconds = 300,
     [switch]$SkipPreviewCounts,
-    [switch]$Pretty
+    [switch]$Pretty,
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,9 +99,146 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'New-QCDatabaseSession'
 ) -Context 'Reset-QCFolderWorkflow bootstrap'
 Import-QCModuleGlobal -RelativePath 'Core\Core.Paths.psm1'
-Test-QCRequiredCommands -Names @('Normalize-QCDocumentsFolderPath') -Context 'Reset-QCFolderWorkflow paths post-restore'
+Test-QCRequiredCommands -Names @('Normalize-QCDocumentsFolderPath', 'Split-QCPathParts') -Context 'Reset-QCFolderWorkflow paths post-restore'
+
+function _RQCF-PauseIfInteractiveConsole {
+    if ($Host.Name -ne 'ConsoleHost') { return }
+    try {
+        Write-Host ''
+        Write-Host 'Press Enter to close this window...' -ForegroundColor Yellow
+        $null = Read-Host
+    } catch { }
+}
+
+function _RQCF-PromptInteractiveScope {
+    Write-Host ''
+    Write-Host '=== QC Database Reset ===' -ForegroundColor Cyan
+    Write-Host 'ProjectWise is skipped in interactive mode (database edits only).' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  1) Reset by folder path'
+    Write-Host '  2) Reset by stem PDF path (sheet stem + DGN + lane PDFs for one sheet)'
+    Write-Host '  3) Reset by QC PDF path (one lane PDF: *-prod/-chk/-rev.pdf)'
+    Write-Host ''
+    do {
+        $choice = (Read-Host 'Select reset scope (1/2/3)').Trim()
+    } while ($choice -notin @('1', '2', '3'))
+
+    $prompt = switch ($choice) {
+        '1' { @('Enter folder path (Documents\...\Sheets\...)', 'Folder') }
+        '2' { @('Enter stem PDF path (Documents\...\sheetstem.pdf or .dgn)', 'Stem') }
+        '3' { @('Enter QC PDF path (Documents\...\sheetstem-prod.pdf)', 'QcPdf') }
+    }
+    $label = $prompt[1]
+    $path = ''
+    do {
+        $path = (Read-Host $prompt[0]).Trim()
+    } while ([string]::IsNullOrWhiteSpace($path))
+    return @{ scopeMode = $label; inputPath = $path }
+}
+
+function _RQCF-ParsePwDocumentPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $splitRes = Split-QCPathParts -Path $Path
+    if (-not $splitRes.IsSuccess) { throw $splitRes.Message }
+    $full = [string]$splitRes.Data.normalizedPath
+    $leaf = [string]$splitRes.Data.leaf
+    if ([string]::IsNullOrWhiteSpace($leaf)) { throw 'Path must include a document file name.' }
+    $parent = if ($full.Length -gt $leaf.Length) { $full.Substring(0, $full.Length - $leaf.Length).TrimEnd('\') } else { '' }
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw 'Path must include a folder and document file name.' }
+    $folderRes = Normalize-QCDocumentsFolderPath -Path $parent
+    if (-not $folderRes.IsSuccess) { throw $folderRes.Message }
+    return @{
+        folderPath   = [string]$folderRes.Data.path
+        documentName = $leaf
+        fullPath     = $full
+    }
+}
+
+function _RQCF-ResolveSheetStemFromDocumentName {
+    param([Parameter(Mandatory)][string]$DocumentName)
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
+        if (-not [string]::IsNullOrWhiteSpace($stem)) { return $stem }
+    }
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
+    return $stem
+}
+
+function _RQCF-GetLaneTypeFromDocumentName {
+    param([Parameter(Mandatory)][string]$DocumentName)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($DocumentName)
+    if ($base -match '(?i)-(prod)$') { return 'production' }
+    if ($base -match '(?i)-(chk)$') { return 'check' }
+    if ($base -match '(?i)-(rev)$') { return 'review' }
+    return ''
+}
+
+$script:_rqcfInteractiveLaunch = $false
+if ($Interactive.IsPresent) {
+    $script:_rqcfInteractiveLaunch = $true
+} elseif ($Host.Name -eq 'ConsoleHost' -and
+    [string]::IsNullOrWhiteSpace($FolderPath) -and
+    [string]::IsNullOrWhiteSpace($StemPath) -and
+    [string]::IsNullOrWhiteSpace($QcPdfPath)) {
+    $script:_rqcfInteractiveLaunch = $true
+}
+
+if ($script:_rqcfInteractiveLaunch) {
+    $prompted = _RQCF-PromptInteractiveScope
+    $ScopeMode = [string]$prompted.scopeMode
+    switch ($ScopeMode) {
+        'Folder' { $FolderPath = [string]$prompted.inputPath }
+        'Stem' { $StemPath = [string]$prompted.inputPath }
+        'QcPdf' { $QcPdfPath = [string]$prompted.inputPath }
+    }
+    $SkipProjectWise = $true
+}
+
+if ([string]::IsNullOrWhiteSpace($ScopeMode)) {
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath)) { $ScopeMode = 'Folder' }
+    elseif (-not [string]::IsNullOrWhiteSpace($StemPath)) { $ScopeMode = 'Stem' }
+    elseif (-not [string]::IsNullOrWhiteSpace($QcPdfPath)) { $ScopeMode = 'QcPdf' }
+    else { throw 'Pass -FolderPath, -StemPath, -QcPdfPath, or double-click for interactive mode.' }
+}
+
+$scopeInputPath = switch ($ScopeMode) {
+    'Folder' { $FolderPath }
+    'Stem' { $StemPath }
+    'QcPdf' { $QcPdfPath }
+    default { throw "Unsupported ScopeMode: $ScopeMode" }
+}
+if ([string]::IsNullOrWhiteSpace($scopeInputPath)) {
+    throw "ScopeMode '$ScopeMode' requires a path parameter."
+}
+
+$scopeUsesFolder = ($ScopeMode -eq 'Folder')
+$scopeStem = ''
+$scopeDocName = ''
+$scopeDocPathLike = ''
+$normFolder = ''
+
+if ($scopeUsesFolder) {
+    $normRes = Normalize-QCDocumentsFolderPath -Path $scopeInputPath
+    if (-not $normRes.IsSuccess) { throw $normRes.Message }
+    $normFolder = [string]$normRes.Data.path
+} else {
+    $parsed = _RQCF-ParsePwDocumentPath -Path $scopeInputPath
+    $normFolder = [string]$parsed.folderPath
+    $scopeDocName = [string]$parsed.documentName
+    if ($ScopeMode -eq 'Stem') {
+        $scopeStem = _RQCF-ResolveSheetStemFromDocumentName -DocumentName $scopeDocName
+        if ([string]::IsNullOrWhiteSpace($scopeStem)) { throw "Could not derive sheet stem from path: $scopeInputPath" }
+    } elseif ($ScopeMode -eq 'QcPdf') {
+        if ($scopeDocName -notmatch '(?i)-(prod|chk|rev)\.pdf$') {
+            throw 'QC PDF path must end with -prod.pdf, -chk.pdf, or -rev.pdf.'
+        }
+        $scopeStem = _RQCF-ResolveSheetStemFromDocumentName -DocumentName $scopeDocName
+    }
+}
 
 foreach ($moduleName in @('pwps', 'pwps_dab')) {
+    if ($SkipProjectWise.IsPresent) { break }
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {
         $available = Get-Module -ListAvailable -Name $moduleName -ErrorAction SilentlyContinue |
             Sort-Object Version -Descending | Select-Object -First 1
@@ -96,13 +251,13 @@ if ($DryRun.IsPresent -and $ConfirmReset.IsPresent) {
 }
 $doApply = $ConfirmReset.IsPresent
 if (-not $DryRun.IsPresent -and -not $ConfirmReset.IsPresent) {
-    Write-Host 'Preview only: pass -ConfirmReset to apply PW + database reset, or -DryRun explicitly.' -ForegroundColor Yellow
+    if ($script:_rqcfInteractiveLaunch) {
+        Write-Host 'Preview only (database). You will be asked to confirm before applying.' -ForegroundColor Yellow
+    } else {
+        Write-Host 'Preview only: pass -ConfirmReset to apply PW + database reset, or -DryRun explicitly.' -ForegroundColor Yellow
+    }
     $DryRun = $true
 }
-
-$normRes = Normalize-QCDocumentsFolderPath -Path $FolderPath
-if (-not $normRes.IsSuccess) { throw $normRes.Message }
-$normFolder = [string]$normRes.Data.path
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
@@ -175,6 +330,28 @@ function _RQCF-InDocumentScope {
         SELECT 1 FROM sheet_index si
         WHERE ($SheetIndexFolderClause)
           AND LTRIM(RTRIM(si.qc_pdf_guid)) = LTRIM(RTRIM($DocumentGuidColumn))
+    )
+)
+"@
+}
+
+function _RQCF-InStemSheetIndexScope {
+    return @"
+(
+    EXISTS (
+        SELECT 1 FROM sheet_packages sp0
+        WHERE sp0.folder_path = @scopeFolder AND sp0.sheet_stem = @scopeStem
+          AND si.sheet_package_id = sp0.sheet_package_id
+    )
+    OR (
+        si.folder_path = @scopeFolder
+        AND (
+            LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemPdfName)))
+            OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemDgnName)))
+            OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemProdName)))
+            OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemChkName)))
+            OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemRevName)))
+        )
     )
 )
 "@
@@ -299,17 +476,55 @@ function _RQCF-SetPwDocumentState {
 $params = @{
     batchSize   = $BatchSize
     targetState = $TargetState
-    folderLike  = _RQCF-NormalizePathPattern -Pattern $normFolder
 }
-$siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
-$siLaneNameClause = _RQCF-GetLanePdfNameClause -DocumentNameColumn 'si.document_name'
-$spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
-$nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
-$histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
-$trFolderClause = _RQCF-PathLikeClause -ColumnSql 't.folder_path' -Params $params -ParamName 'folderLike'
-$actFolderClause = _RQCF-PathLikeClause -ColumnSql 'd.folder_path' -Params $params -ParamName 'folderLike'
-$auditFolderClause = _RQCF-PathLikeClause -ColumnSql 'a.resolved_folder' -Params $params -ParamName 'folderLike'
-$jobFolderClause = _RQCF-PathLikeClause -ColumnSql 'j.source_folder' -Params $params -ParamName 'folderLike'
+$scopeIsQcPdfOnly = ($ScopeMode -eq 'QcPdf')
+
+if ($scopeUsesFolder) {
+    $params.folderLike = _RQCF-NormalizePathPattern -Pattern $normFolder
+    $siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
+    $siLaneNameClause = _RQCF-GetLanePdfNameClause -DocumentNameColumn 'si.document_name'
+    $spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
+    $nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
+    $histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
+    $trFolderClause = _RQCF-PathLikeClause -ColumnSql 't.folder_path' -Params $params -ParamName 'folderLike'
+    $actFolderClause = _RQCF-PathLikeClause -ColumnSql 'd.folder_path' -Params $params -ParamName 'folderLike'
+    $auditFolderClause = _RQCF-PathLikeClause -ColumnSql 'a.resolved_folder' -Params $params -ParamName 'folderLike'
+    $jobFolderClause = _RQCF-PathLikeClause -ColumnSql 'j.source_folder' -Params $params -ParamName 'folderLike'
+} else {
+    $parsedFullPath = if ($parsed) { [string]$parsed.fullPath } else { _RQCF-ParsePwDocumentPath -Path $scopeInputPath | ForEach-Object { $_.fullPath } }
+    $params.scopeFolder = $normFolder
+    $params.scopeStem = $scopeStem
+    $params.scopeDocName = $scopeDocName
+    $params.stemPdfName = "$scopeStem.pdf"
+    $params.stemDgnName = "$scopeStem.dgn"
+    $params.stemProdName = "$scopeStem-prod.pdf"
+    $params.stemChkName = "$scopeStem-chk.pdf"
+    $params.stemRevName = "$scopeStem-rev.pdf"
+    $params.docPathLike = _RQCF-NormalizePathPattern -Pattern $parsedFullPath
+    $scopeDocPathLike = [string]$params.docPathLike
+
+    $spFolderClause = 'sp.folder_path = @scopeFolder AND sp.sheet_stem = @scopeStem'
+    if ($scopeIsQcPdfOnly) {
+        $siFolderClause = 'si.folder_path = @scopeFolder AND LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@scopeDocName)))'
+        $siLaneNameClause = 'LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@scopeDocName)))'
+    } else {
+        $siFolderClause = _RQCF-InStemSheetIndexScope
+        $siLaneNameClause = @"
+(
+    LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemProdName)))
+    OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemChkName)))
+    OR LOWER(LTRIM(RTRIM(si.document_name))) = LOWER(LTRIM(RTRIM(@stemRevName)))
+)
+"@
+    }
+    $nlFolderClause = ''
+    $histFolderClause = ''
+    $trFolderClause = ''
+    $actFolderClause = ''
+    $auditFolderClause = ''
+    $jobFolderClause = ''
+}
+
 $scopeArgs = @{
     SheetIndexFolderClause = $siFolderClause
     SheetPackageFolderClause = $spFolderClause
@@ -320,18 +535,41 @@ $whereTransition = _RQCF-TelemetryScopeClause -FolderClause $trFolderClause -Pac
 $whereActivity = _RQCF-TelemetryScopeClause -FolderClause $actFolderClause -DocumentGuidColumn 'd.document_guid' @scopeArgs
 $whereWorkflow = _RQCF-TelemetryScopeClause -PackageIdColumn 'w.sheet_package_id' -DocumentGuidColumn 'w.document_id' @scopeArgs
 $whereCompletion = _RQCF-TelemetryScopeClause -PackageIdColumn 'c.sheet_package_id' -DocumentGuidColumn 'CAST(c.document_guid AS NVARCHAR(50))' @scopeArgs
-$whereAudit = "($auditFolderClause) OR " + (_RQCF-InDocumentScope -DocumentGuidColumn 'a.pw_objguid' @scopeArgs)
+if ($scopeUsesFolder) {
+    $whereAudit = "($auditFolderClause) OR " + (_RQCF-InDocumentScope -DocumentGuidColumn 'a.pw_objguid' @scopeArgs)
+} else {
+    $whereAudit = _RQCF-InDocumentScope -DocumentGuidColumn 'a.pw_objguid' @scopeArgs
+}
 $whereJobs = _RQCF-TelemetryScopeClause -FolderClause $jobFolderClause -PackageIdColumn 'j.sheet_package_id' @scopeArgs
 $whereCommentDoc = _RQCF-InDocumentScope -DocumentGuidColumn 'r.document_id' @scopeArgs
-$commentRunSub = @"
+if ($scopeUsesFolder) {
+    $commentRunSub = @"
 SELECT r.run_id FROM qc_comment_runs r
 WHERE ($whereCommentDoc)
    OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
 "@
+} else {
+    $commentRunSub = @"
+SELECT r.run_id FROM qc_comment_runs r
+WHERE ($whereCommentDoc)
+   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @docPathLike
+"@
+}
+
+$scopeLabel = switch ($ScopeMode) {
+    'Folder' { "folder: $normFolder" }
+    'Stem' { "stem: $normFolder\$scopeStem" }
+    'QcPdf' { "qc pdf: $normFolder\$scopeDocName" }
+}
+Write-Host ("[Reset scope] {0} ({1})" -f $ScopeMode, $scopeLabel) -ForegroundColor Cyan
 
 $summary = [ordered]@{
     dryRun            = $DryRun.IsPresent
+    scopeMode         = $ScopeMode
     folderPath        = $normFolder
+    inputPath         = $scopeInputPath
+    sheetStem         = $scopeStem
+    documentName      = $scopeDocName
     targetState       = $TargetState
     projectWise       = $null
     database          = $null
@@ -596,6 +834,16 @@ WHERE ($spFolderClause)
             Write-Host ('  sheet_package_qc_pdfs: {0} row(s) matched - DELETE on confirm.' -f $sheetPackageQcPdfsMatched) -ForegroundColor DarkGray
         }
 
+        if ($script:_rqcfInteractiveLaunch -and -not $doApply) {
+            Write-Host ''
+            $confirmAnswer = (Read-Host 'Apply database reset? (y/N)').Trim()
+            if ($confirmAnswer -match '^[yY]') {
+                $doApply = $true
+                $DryRun = $false
+                $summary.dryRun = $false
+            }
+        }
+
         if ($doApply) {
             Write-Host '[Database] Deleting telemetry rows...' -ForegroundColor Cyan
             $deleted = $summary.database.deleted
@@ -671,13 +919,14 @@ WHERE id IN (
             }
 
             if (-not $SkipSheetIndexUpdate.IsPresent) {
-                if (-not $KeepLanePdfRegistry.IsPresent) {
+                $purgeLaneRegistry = (-not $KeepLanePdfRegistry.IsPresent) -or $scopeIsQcPdfOnly
+                if ($purgeLaneRegistry) {
                     try {
                         $deleted.sheet_index_lane = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'sheet_index_lane_pdfs' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM sheet_index
 WHERE document_guid IN (
   SELECT si.document_guid FROM sheet_index si
-  WHERE ($siFolderClause) AND ($siLaneNameClause)
+  WHERE ($siFolderClause)$(if (-not $scopeIsQcPdfOnly) { " AND ($siLaneNameClause)" } else { '' })
 )
 "@
                         $summary.sheetIndexLaneRowsDeleted = [long]$deleted['sheet_index_lane']
@@ -685,12 +934,17 @@ WHERE document_guid IN (
                         Write-Host ("  [sheet_index lane PDF rows] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
                     }
                     try {
+                        $sdQcPdfWhere = if ($scopeIsQcPdfOnly) {
+                            "($spFolderClause) AND sd.document_role = 'qc_pdf' AND LOWER(LTRIM(RTRIM(sd.document_name))) = LOWER(LTRIM(RTRIM(@scopeDocName)))"
+                        } else {
+                            "($spFolderClause) AND sd.document_role = 'qc_pdf'"
+                        }
                         $deleted.sheet_documents_qc_pdf = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'sheet_documents_qc_pdf' -CommandTimeout $QueryTimeoutSeconds -Sql @"
 DELETE TOP (@batchSize) FROM sheet_documents
 WHERE document_guid IN (
   SELECT sd.document_guid FROM sheet_documents sd
   INNER JOIN sheet_packages sp ON sp.sheet_package_id = sd.sheet_package_id
-  WHERE ($spFolderClause) AND sd.document_role = 'qc_pdf'
+  WHERE $sdQcPdfWhere
 )
 "@
                         $summary.sheetDocumentsQcPdfDeleted = [long]$deleted['sheet_documents_qc_pdf']
@@ -698,6 +952,40 @@ WHERE document_guid IN (
                         Write-Host ("  [sheet_documents qc_pdf] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
                     }
                 }
+
+                if ($scopeIsQcPdfOnly) {
+                    $laneType = _RQCF-GetLaneTypeFromDocumentName -DocumentName $scopeDocName
+                    $packageLaneClearSql = switch ($laneType) {
+                        'production' { "qc_pdf_guid = NULL, qc_pdf_name = NULL," }
+                        'check' { "qc_chk_pdf_guid = NULL, qc_chk_pdf_name = NULL," }
+                        'review' { "qc_rev_pdf_guid = NULL, qc_rev_pdf_name = NULL," }
+                        default { '' }
+                    }
+                    if ($packageLaneClearSql) {
+                        $packageSql = @"
+UPDATE sp
+SET last_updated_at = SYSDATETIMEOFFSET(),
+$packageLaneClearSql
+    qc_process_type = NULL
+FROM sheet_packages sp
+WHERE ($spFolderClause)
+"@
+                        if ($PSCmdlet.ShouldProcess('sheet_packages', 'CLEAR lane QC PDF pairing')) {
+                            try {
+                                $summary.sheetPackagesUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $packageSql -Params $params -CommandTimeout $QueryTimeoutSeconds
+                                Write-Host ('  [sheet_packages] cleared {0} lane pairing on {1} row(s).' -f $laneType, $summary.sheetPackagesUpdated) -ForegroundColor Green
+                            } catch {
+                                Write-Host ("  [sheet_packages] lane clear failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                            }
+                        }
+                    }
+                    if ($summary.sheetIndexLaneRowsDeleted -gt 0) {
+                        Write-Host ('  [sheet_index] deleted {0} lane PDF row(s).' -f $summary.sheetIndexLaneRowsDeleted) -ForegroundColor Green
+                    }
+                    if ($summary.sheetDocumentsQcPdfDeleted -gt 0) {
+                        Write-Host ('  [sheet_documents] deleted {0} qc_pdf role row(s).' -f $summary.sheetDocumentsQcPdfDeleted) -ForegroundColor Green
+                    }
+                } else {
 
                 $completionResetSql = @"
     production_qc_completed_count = 0,
@@ -855,13 +1143,19 @@ WHERE ($spFolderClause)
                     $summary.sheetDocumentsUpdated = _RQCF-RunNonQueryConn -Connection $dbConn -Sql $docSql -Params $params -CommandTimeout $QueryTimeoutSeconds
                     Write-Host ('  [sheet_documents] updated {0} row(s): pw_state_name reset (not deleted).' -f $summary.sheetDocumentsUpdated) -ForegroundColor Green
                 }
+                }
+
             } else {
                 Write-Host '  [sheet_index / sheet_packages / sheet_documents] skipped (-SkipSheetIndexUpdate).' -ForegroundColor DarkGray
             }
 
             Write-Host ("Done. Deleted {0} telemetry row(s)." -f $summary.totalRowsDeleted) -ForegroundColor Green
         } else {
-            Write-Host 'Dry run: no database rows deleted. Pass -ConfirmReset to apply.' -ForegroundColor Yellow
+            if ($script:_rqcfInteractiveLaunch) {
+                Write-Host 'Database reset cancelled.' -ForegroundColor Yellow
+            } else {
+                Write-Host 'Dry run: no database rows deleted. Pass -ConfirmReset to apply.' -ForegroundColor Yellow
+            }
         }
     } finally {
         try { $sessionRes.Data.session.Dispose() } catch { }
@@ -872,3 +1166,7 @@ WHERE ($spFolderClause)
 }
 
 if ($Pretty) { $summary | ConvertTo-Json -Depth 6 }
+
+if ($script:_rqcfInteractiveLaunch) {
+    _RQCF-PauseIfInteractiveConsole
+}
