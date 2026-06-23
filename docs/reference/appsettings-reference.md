@@ -12,7 +12,7 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 | `$schema` in JSON | IDE only; ignored at runtime. |
 | Profile merge | `appsettings.test.json` loads `appsettings.json` then the profile then `appsettings.test.local.json` then `appsettings.secrets.json`. `appsettings.json` also merges `appsettings.local.json` and `appsettings.secrets.json`. |
 
-**Testing / local overlays:** see [`docs/testing-config.md`](testing-config.md). Copy `appsettings.test.json.example` → `appsettings.test.json` (gitignored).
+**Testing / local overlays:** see [`docs/reference/testing-config.md`](testing-config.md). Copy `appsettings.test.json.example` → `appsettings.test.json` (gitignored).
 
 **Graph credentials:** copy `appsettings.secrets.json.example` → `appsettings.secrets.json` (gitignored). Do not commit Entra client secrets.
 
@@ -74,7 +74,7 @@ Each entry discovers every `…/{sheetsPathFromProject}` folder under `path`:
 | `enableStatusSet` | Folder-level `STATUS_SET_GEN` (paired PDF + DGN). |
 | `qcRendition` | Per-root rendition profile for `QC_RENDITION` (see below). |
 
-Optional: `environmentEmailAttributes` — see `docs/pw-environment-email-attributes.md`.
+Optional: `environmentEmailAttributes` — see `docs/workflow/pw-environment-email-attributes.md`.
 
 ### watchList.roots[].qcRendition
 
@@ -208,9 +208,9 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 
 Optional ProjectWise **document attribute** writeback (and optional **workflow state** changes) after a successful `QC_PREPEND`. Implemented in `modules/Workflow/QC.Workflow.psm1`; invoked from `QC.Processors.psm1` when prepend completes.
 
-**Full guide (lifecycle states, review types, assignment, PW admin setup, discovery scripts, rollout):** [`docs/qc-workflow-framework.md`](qc-workflow-framework.md)
+**Full guide (lifecycle states, review types, assignment, PW admin setup, discovery scripts, rollout):** [`docs/workflow/qc-workflow-framework.md`](../workflow/qc-workflow-framework.md)
 
-**Related:** comment-driven state uses the same PW helpers via `qcCommentSync` — see [`docs/qc-comment-status-sync.md`](qc-comment-status-sync.md). SQL audit rows: `qc_workflow_events` in [`docs/database-telemetry.md`](database-telemetry.md).
+**Related:** comment-driven state uses the same PW helpers via `qcCommentSync` — see [`docs/workflow/qc-comment-status-sync.md`](../workflow/qc-comment-status-sync.md). SQL audit rows: `qc_workflow_events` in [`docs/data/database-telemetry.md`](../data/database-telemetry.md).
 
 ### When `enabled` is false
 
@@ -341,9 +341,9 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 
 After successful prepend, `QC.Workflow` may call `Sync-PWPostInitialPrependLaneStates` for lane-independent initial prepend, or `Sync-PWAssociatedSheetMembersToWorkflowState` when legacy sibling sync is enabled. The **Originated** email is sent from the workflow hook when `notifications.events['Originated'].enabled` is true (not deferred when `deferReadyForQcNotification` is false).
 
-Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on lane QC PDFs for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions`). Legacy `*-qc.pdf` filenames are still matched by comment-sync trigger rules.
+Enable `qcCommentSync.enabled` and `enableQcCommentSync` on watch roots to enqueue `QC_COMMENT_STATUS_SYNC` on lane QC PDFs (`*-prod.pdf`, `*-rev.pdf`, `*-chk.pdf`) for `DOCUMENT_ATTR` / `DOCUMENT_STATE` (see `qcCommentSync.auditActions` and `triggers.rules`). Legacy `*-qc.pdf` is a compatibility bridge in code paths, not the primary trigger pattern in committed config.
 
-See `docs/hybrid-polling.md`.
+See `docs/architecture/hybrid-polling.md`.
 
 ---
 
@@ -355,7 +355,7 @@ See `docs/hybrid-polling.md`.
 | `connectionString` | SQL Server. |
 | `allowWritesInDryRun` | Usually false. |
 
-Tables: `poll_runs`, `sheet_index`, `audit_events`, etc. — `docs/database-telemetry.md`.
+Tables: `poll_runs`, `sheet_index`, `audit_events`, etc. — `docs/data/database-telemetry.md`.
 
 ---
 
@@ -392,7 +392,7 @@ Store in `appsettings.secrets.json`: `tenantId`, `clientId`, `clientSecret`, `se
 
 ## Related docs
 
-- `docs/qc-workflow-framework.md` — QC workflow writeback (companion to **qcWorkflow** above)
-- `docs/hybrid-polling.md` — audit vs n=20 reconcile
-- `docs/watcher-architecture-refactor-summary.md` — watcher modes
-- `docs/pw-environment-email-attributes.md` — EM_Designer_Email columns
+- `docs/workflow/qc-workflow-framework.md` — QC workflow writeback (companion to **qcWorkflow** above)
+- `docs/architecture/hybrid-polling.md` — audit-driven watcher and scheduled reconciliation
+- `docs/architecture/watcher-architecture-refactor-summary.md` — watcher modes
+- `docs/workflow/pw-environment-email-attributes.md` — EM_Designer_Email columns

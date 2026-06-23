@@ -49,7 +49,7 @@ Silent wrappers at all four former `scripts/*.ps1` paths forward `@args` and `ex
 
 - `scripts/README.md`
 - `scripts/FILES.md`
-- `docs/phase-4-module-script-organization-plan.md` (Appendix J)
+- `docs/archive/phase/phase-4-module-script-organization-plan.md` (Appendix J)
 
 No changes to `Publish-QCPipelineCode.ps1` (does not copy moved scripts).
 

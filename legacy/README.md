@@ -6,7 +6,7 @@ This folder contains scripts retained for **production prepend** and parity fall
 
 Committed `appsettings.json` sets **`qcPrepend.mode: "legacyPw"`**. `QC_PREPEND` jobs therefore route through **`legacy/prepend_qc.ps1`** for ProjectWise export, overlay merge, lane PDF upload, and attribute sync. **Do not remove this folder** while that mode remains in use.
 
-Native prepend logic exists in `modules/Processing/QC.Processors.psm1` (`mode` other than `legacyPw`) but is not the production default. See [`docs/phase-2-native-prepend-parity-plan.md`](../docs/phase-2-native-prepend-parity-plan.md).
+Native prepend logic exists in `modules/Processing/QC.Processors.psm1` (`mode` other than `legacyPw`) but is not the production default. See [`docs/engineering/phase-2-native-prepend-parity-plan.md`](../docs/engineering/phase-2-native-prepend-parity-plan.md).
 
 ## What's in here
 
@@ -20,8 +20,8 @@ Native prepend logic exists in `modules/Processing/QC.Processors.psm1` (`mode` o
 
 The modern pipeline is modular (`modules/`) and queue-based (`modules/Queue/QC.Queue.Json.psm1`), driven by:
 
-- `scripts/Watch-QCTrigger.ps1` (enqueue)
-- `scripts/Run-QCProcessor.ps1` (dequeue/process)
+- `scripts/service/Watch-QCTrigger.ps1` (enqueue)
+- `scripts/service/Run-QCProcessor.ps1` (dequeue/process)
 - `scripts/Start-QCPipelineDashboard.ps1` (orchestrated dashboard run)
 
 Processor legacy modes:
@@ -31,14 +31,14 @@ Processor legacy modes:
 | `QC_PREPEND` | `qcPrepend.mode = "legacyPw"` | `legacy/prepend_qc.ps1` |
 | `STATUS_SET_GEN` | `statusSet.mode = "legacy"` | `legacy/combine_status_set.ps1` |
 
-Root shims (`Watch-QCTrigger.ps1`, `Run-QCProcessor.ps1`, `run_prepend_qc.ps1`) forward to `scripts/`.
+Compatibility wrappers under `scripts/` may forward to `scripts/service/`. Canonical entrypoints are `scripts/service/Watch-QCTrigger.ps1`, `scripts/service/Run-QCProcessor.ps1`, and `scripts/service/run_prepend_qc.ps1`. See [`AGENTS.md`](../AGENTS.md).
 
 ## Lane PDF naming
 
 When invoked from `Invoke-QCPrependProcessor` with strict lane params, prepend targets **`{stem}-prod.pdf`**, **`{stem}-rev.pdf`**, or **`{stem}-chk.pdf`** per `QC_Process_Type`.
 
-Standalone legacy invocation without lane params may still create **`{stem}-qc.pdf`** (deprecated bridge). See `docs/qc-workflow-framework.md`.
+Standalone legacy invocation without lane params may still create **`{stem}-qc.pdf`** (deprecated bridge). See `docs/workflow/qc-workflow-framework.md`.
 
 ## Three-lane workflow
 
-Current TYPSA workflow states and process types are documented in [`docs/qc-workflow-framework.md`](../docs/qc-workflow-framework.md).
+Current TYPSA workflow states and process types are documented in [`docs/workflow/qc-workflow-framework.md`](../docs/workflow/qc-workflow-framework.md).

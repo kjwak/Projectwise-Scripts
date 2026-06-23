@@ -109,7 +109,7 @@ flowchart TD
 | `archive/package-model-v1/test/test_qc_package_model.ps1` | Removed package dedupe assertions; removed unused `QC.JobFactory` import |
 | `archive/package-model-v1/README.md` | Updated deferred note |
 | `test/test_job_factory.ps1` | Assert production jobs do not use `dq_pkg_` prefix |
-| `docs/phase-3-jobfactory-package-dedupe-decision.md` | This document |
+| `docs/archive/phase/phase-3-jobfactory-package-dedupe-decision.md` | This document |
 
 **Not modified:** `Core.Database.psm1`, SQL schema, watcher, processor, notification, ProjectWise, Graph, MCP, prepend, `appsettings.json`, native prepend.
 

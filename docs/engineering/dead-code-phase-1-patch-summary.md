@@ -1,7 +1,7 @@
 # Phase 1 Dead Code Cleanup — Patch Summary
 
 **Date:** 2026-06-22  
-**Basis:** `docs/dead-code-and-deprecation-audit.md` §9 (Phase 1 patch candidates only)  
+**Basis:** `docs/engineering/dead-code-and-deprecation-audit.md` §9 (Phase 1 patch candidates only)  
 **Branch:** `cleanup/dead-code-phase-1` (create from current working tree if not already checked out)
 
 ---
@@ -147,7 +147,7 @@ git checkout dev -- modules/Orchestrator.Pipeline.psm1 modules/Core.Metrics.psm1
 | Disabled notification event keys (`QC Received`, etc.) | Forbidden — code may still enumerate |
 | `qc_pdf_name` / `qc_review_type` DB columns | Forbidden — still referenced |
 | `QC.Package*` modules | Phase 2 — product decision required |
-| `docs/qc-workflow-framework.md` full rewrite | Beyond comment-only scope; large doc drift |
+| `docs/workflow/qc-workflow-framework.md` full rewrite | Beyond comment-only scope; large doc drift |
 | `Read-AppConfig` → `Read-QCAppSettings` consolidation | Phase 2 |
 | `test/test_qc_workflow.ps1` updates | Runtime module defaults still emit `Ready for QC` for empty config merge — fixing requires production code change (forbidden) |
 

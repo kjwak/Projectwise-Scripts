@@ -30,7 +30,7 @@ Lane states are **independent** by default (`QCProcess.EnableLegacySiblingStateS
 
 The single-lane `*-qc.pdf` naming pattern is **legacy**. Code still supports it as a bridge (for example standalone `legacy/prepend_qc.ps1` without strict lane params, normalization helpers, and older `sheet_index` rows). **Do not** treat `*-qc.pdf` as the current authoritative lane document. New work should use `*-prod.pdf` / `*-rev.pdf` / `*-chk.pdf`.
 
-SQL telemetry registers lane PDFs in `sheet_package_qc_pdfs` (see [`database-telemetry.md`](database-telemetry.md)).
+SQL telemetry registers lane PDFs in `sheet_package_qc_pdfs` (see [`database-telemetry.md`](../data/database-telemetry.md)).
 
 ## TYPSA QC lifecycle states
 

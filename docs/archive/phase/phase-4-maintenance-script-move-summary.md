@@ -69,7 +69,7 @@ exit $LASTEXITCODE
 |------|--------|
 | [`scripts/README.md`](../scripts/README.md) | Maintenance folder section |
 | [`scripts/FILES.md`](../scripts/FILES.md) | Maintenance folder table; wrapper notes |
-| [`docs/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4D marked complete; Appendix E added |
+| [`docs/archive/phase/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4D marked complete; Appendix E added |
 | [`test/test_maintenance_script_wrappers.ps1`](../test/test_maintenance_script_wrappers.ps1) | **New** — wrapper/target checks + parse only |
 
 Operator docs citing `scripts/Reset-*`, `scripts/Purge-*`, etc. remain valid via wrappers.

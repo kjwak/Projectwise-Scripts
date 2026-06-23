@@ -41,7 +41,7 @@
 | File | Purpose |
 |------|---------|
 | `archive/package-model-v1/README.md` | Archive rationale, SQL canonical pointers, restore steps |
-| `docs/phase-3-package-model-archive-summary.md` | This document |
+| `docs/archive/phase/phase-3-package-model-archive-summary.md` | This document |
 
 ## Files edited
 
@@ -49,8 +49,8 @@
 |------|--------|
 | `modules/FILES.md` | Removed 5 archived module rows (46 → 41 modules) |
 | `modules/README.md` | Added "Sheet package model (production)" section + archive pointer |
-| `docs/qc-package-model.md` | Rewritten for SQL-backed production model |
-| `docs/phase-2-package-model-decision.md` | Added "Implemented in Phase 3" section |
+| `docs/architecture/qc-package-model.md` | Rewritten for SQL-backed production model |
+| `docs/archive/phase/phase-2-package-model-decision.md` | Added "Implemented in Phase 3" section |
 | `archive/package-model-v1/test/test_qc_package_model.ps1` | Patched import paths for archive layout (`-Global` imports) |
 | `archive/package-model-v1/modules/*.psm1` | Added `$script:_QCPkgV1RepoModules` for `Core.*`/`PW.*`; nested cluster imports use `-Global`; `QC.PackageResolver` adds `[hashtable]` guard on `$CachedPackage` |
 
@@ -77,8 +77,8 @@
 | `New-QCPackage` | not found in repo | N/A |
 | `New-QCPackageJobDedupeKey`, `metadata.package` in `QC.JobFactory.psm1` | production module, dead branch | **Unchanged** (deferred) |
 | `New-QCPackageReportingMetrics`, `Get-QCPackageReportingRows` in `QC.Reporting.psm1` | production (SQL views) | **Unchanged** |
-| `docs/qc-package-model.md` | documentation | Rewritten for SQL |
-| `docs/dead-code-and-deprecation-audit.md` | documentation | Unchanged |
+| `docs/architecture/qc-package-model.md` | documentation | Rewritten for SQL |
+| `docs/engineering/dead-code-and-deprecation-audit.md` | documentation | Unchanged |
 
 **Production import chain:** `test/test_watcher_module_bootstrap.ps1` does not import any archived module. No production script or module imported `QC.Package*` before archive.
 
@@ -103,7 +103,7 @@ All SQL-backed tests under `test/` remain in place, including:
 - `test_sheet_package_qc_pdfs_schema.ps1`, `test_sheet_package_phase4.ps1`
 - `test_qc_lane_state_independence.ps1`, `test_qc_lane_pdf_guid_sync.ps1`
 - `test_qc_notification_guid_resolve.ps1`
-- Additional lane/trigger/completion tests listed in `docs/phase-2-package-model-decision.md`
+- Additional lane/trigger/completion tests listed in `docs/archive/phase/phase-2-package-model-decision.md`
 
 `test/test_qc_package_model.ps1` was **not** in `test/run_focus_tests.ps1`; no runner update required.
 
@@ -147,11 +147,11 @@ git checkout dev -- `
   test/test_qc_package_model.ps1 `
   modules/FILES.md `
   modules/README.md `
-  docs/qc-package-model.md `
-  docs/phase-2-package-model-decision.md
+  docs/architecture/qc-package-model.md `
+  docs/archive/phase/phase-2-package-model-decision.md
 ```
 
-Then remove `archive/package-model-v1/` and `docs/phase-3-package-model-archive-summary.md` if no longer wanted.
+Then remove `archive/package-model-v1/` and `docs/archive/phase/phase-3-package-model-archive-summary.md` if no longer wanted.
 
 Re-run baseline validation after rollback.
 

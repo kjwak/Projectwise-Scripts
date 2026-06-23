@@ -35,7 +35,7 @@ Set `enabled: false` to suppress all sends (workers and tests remain safe).
 
 ## Recipients (ProjectWise attributes)
 
-Recipients are resolved from the **lane QC PDF document** attribute bags (see `docs/pw-environment-email-attributes.md`). Default column names:
+Recipients are resolved from the **lane QC PDF document** attribute bags (see `docs/workflow/pw-environment-email-attributes.md`). Default column names:
 
 - `EM_Reviewer_Email` → reviewers (Production and Review lanes)
 - `EM_Designer_Email` → designers

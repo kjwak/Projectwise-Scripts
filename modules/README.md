@@ -1,6 +1,6 @@
 # `modules/` — Module documentation
 
-Production QC uses the **TYPSA three-lane model** (`Production` / `Review` / `Check` via `QC_Process_Type`, lane PDFs `*-prod/-rev/-chk.pdf`). See [`docs/qc-workflow-framework.md`](../docs/qc-workflow-framework.md).
+Production QC uses the **TYPSA three-lane model** (`Production` / `Review` / `Check` via `QC_Process_Type`, lane PDFs `*-prod/-rev/-chk.pdf`). See [`docs/workflow/qc-workflow-framework.md`](../docs/workflow/qc-workflow-framework.md).
 
 ## Folder layout (Phase 4E+)
 
@@ -66,7 +66,7 @@ All modules primarily communicate via a shared result envelope from `Core.Result
 
 ### Sheet package model (production)
 
-Production package grouping is **SQL-backed** via `Core.Database.psm1` (`sheet_packages`, `sheet_documents`, `sheet_package_qc_pdfs`). See [`docs/qc-package-model.md`](../docs/qc-package-model.md).
+Production package grouping is **SQL-backed** via `Core.Database.psm1` (`sheet_packages`, `sheet_documents`, `sheet_package_qc_pdfs`). See [`docs/architecture/qc-package-model.md`](../docs/architecture/qc-package-model.md).
 
 An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under [`archive/package-model-v1/`](../archive/package-model-v1/) and is not wired into the watcher, processor, or notification paths.
 
@@ -116,12 +116,12 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
 - **`QC.CommentSync.Notifications.psm1`**: state-based notification routing.
 - **`QC.CommentStatusProcessor.psm1`**: thin orchestrator (`Invoke-QCCommentStatusSyncProcessor`).
 - **`QC.CommentSync.Job.psm1`**: job metadata + `Get-QCCommentSyncPwDocument`.
-- See `docs/qc-comment-status-sync.md`.
+- See `docs/workflow/qc-comment-status-sync.md`.
 
 ### `QC.Notifications.psm1`
 - **Purpose**: configurable QC workflow email notifications (Mock + Microsoft Graph).
 - **Exports**: `Invoke-QCNotificationForStateChange`, `Send-QCNotification`, `Resolve-QCNotificationRecipients`, `Resolve-QCNotificationQcPdfUrl`, and related helpers.
-- **Related**: `QC.NotificationTemplates.psm1` (`ConvertTo-QCEmailHtml`), `QC.NotificationMock.psm1`, `QC.NotificationGraph.psm1` (`New-QCGraphEmailMessage`). See `docs/qc-notifications.md`.
+- **Related**: `QC.NotificationTemplates.psm1` (`ConvertTo-QCEmailHtml`), `QC.NotificationMock.psm1`, `QC.NotificationGraph.psm1` (`New-QCGraphEmailMessage`). See `docs/workflow/qc-notifications.md`.
 
 ### `QC.Worker.psm1`
 - **Purpose**: reusable worker retry/transition policy.

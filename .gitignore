@@ -19,7 +19,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Local / test appsettings (merged at runtime; see docs/testing-config.md)
+# Local / test appsettings (merged at runtime; see docs/reference/testing-config.md)
 appsettings.local.json
 appsettings.secrets.json
 appsettings.test.json

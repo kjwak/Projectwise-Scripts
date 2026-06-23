@@ -209,7 +209,7 @@ Old implementations **still present** alongside replacements.
 |---|----------------------|----------------------------------|
 | **Modules** | `QC.PackageResolver`, `QC.PackageSync`, `QC.Package.Database`, `QC.AttributePolicy`, `QC.StatePolicy` | `Ensure-SheetPackage`, `Resolve-SheetPackageFromDocument`, `sheet_package_qc_pdfs` |
 | **Production use** | **None** — only `test/test_qc_package_model.ps1`, `test/test_sheet_package_phase4.ps1` | Watcher, notifications, MCP, lane resolution |
-| **Docs** | `docs/qc-package-model.md` describes in-memory model as current | `docs/database-telemetry.md` describes SQL model |
+| **Docs** | `docs/architecture/qc-package-model.md` describes in-memory model as current | `docs/data/database-telemetry.md` describes SQL model |
 | **Action** | **Likely obsolete** as runtime code; **consolidate** docs to SQL model or wire modules to DB |
 | **Risk** | Medium — docs mislead maintainers |
 
@@ -309,7 +309,7 @@ Lines 1495 and 3239 each export a overlapping function set. PowerShell uses the 
 
 ### 5.6 Watcher script-local helpers
 
-`Watch-QCTrigger.ps1` still contains ~20 `_Watch-*` / cache helpers that `docs/scripts-organization-review.md` flagged for module extraction (Priority 2). Partially addressed by `PW.AuditPoller.psm1`.
+`Watch-QCTrigger.ps1` still contains ~20 `_Watch-*` / cache helpers that `docs/engineering/scripts-organization-review.md` flagged for module extraction (Priority 2). Partially addressed by `PW.AuditPoller.psm1`.
 
 ---
 
@@ -424,12 +424,12 @@ No standalone env-var dispatch layer found; configuration is file-driven via `Re
 
 | Document | Issue |
 |----------|-------|
-| `docs/qc-workflow-framework.md` | States `In Production`, `QC Initiated`, `QC Received`, `QC Complete`, `stageMap` era |
-| `docs/qc-notifications.md` | `*-qc.pdf` as authoritative |
-| `docs/hybrid-polling.md` | Old state names, single-lane sibling sync |
-| `docs/appsettings-reference.md` | Defaults list `In Production`, `Ready for QC` |
-| `docs/database-telemetry.md` | `*-qc.pdf` references |
-| `docs/qc-package-model.md` | Describes in-memory `Resolve-QCPackage` as current; production uses SQL |
+| `docs/workflow/qc-workflow-framework.md` | States `In Production`, `QC Initiated`, `QC Received`, `QC Complete`, `stageMap` era |
+| `docs/workflow/qc-notifications.md` | `*-qc.pdf` as authoritative |
+| `docs/architecture/hybrid-polling.md` | Old state names, single-lane sibling sync |
+| `docs/reference/appsettings-reference.md` | Defaults list `In Production`, `Ready for QC` |
+| `docs/data/database-telemetry.md` | `*-qc.pdf` references |
+| `docs/architecture/qc-package-model.md` | Describes in-memory `Resolve-QCPackage` as current; production uses SQL |
 | `modules/README.md` | Lists `Orchestrator.Pipeline` as active module |
 | `legacy/README.md` | Correctly notes legacy role but understates that `legacyPw` is production default |
 

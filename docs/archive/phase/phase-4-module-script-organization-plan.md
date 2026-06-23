@@ -10,7 +10,7 @@
 Phases 1–3 cleanup is merged into `dev`:
 
 - Obsolete in-memory `QC.Package*` model archived under `archive/package-model-v1/`.
-- Dead `JobFactory` `metadata.package` dedupe branch removed ([`docs/phase-3-jobfactory-package-dedupe-decision.md`](phase-3-jobfactory-package-dedupe-decision.md)).
+- Dead `JobFactory` `metadata.package` dedupe branch removed ([`docs/archive/phase/phase-3-jobfactory-package-dedupe-decision.md`](phase-3-jobfactory-package-dedupe-decision.md)).
 - SQL `sheet_packages` / `sheet_package_qc_pdfs` is the production-canonical package model.
 - [`legacy/prepend_qc.ps1`](../legacy/prepend_qc.ps1) remains **production-relevant** while `qcPrepend.mode` is `legacyPw`.
 - Native prepend in [`modules/Processing/QC.Processors.psm1`](../modules/Processing/QC.Processors.psm1) (`mode` = `local`) is local-file-only and has never been used in production.
@@ -160,7 +160,7 @@ MCP tools: `search_sheet`, `get_sheet_identity`, `get_sheet_package_members`, `g
 
 ### Scheduled tasks and Rules Engine
 
-No `Register-ScheduledTask` or `schtasks` references exist in-repo. **In-repo path inventory:** [`docs/phase-4-server-path-audit.md`](phase-4-server-path-audit.md) (Appendix L). **Production sign-off** on worker servers and ProjectWise Rules Engine still required before 4H shim removal (Section 8).
+No `Register-ScheduledTask` or `schtasks` references exist in-repo. **In-repo path inventory:** [`docs/archive/phase/phase-4-server-path-audit.md`](phase-4-server-path-audit.md) (Appendix L). **Production sign-off** on worker servers and ProjectWise Rules Engine still required before 4H shim removal (Section 8).
 
 ### Architecture diagram
 
@@ -200,7 +200,7 @@ flowchart TD
 |-----------|--------|
 | **`legacy/prepend_qc.ps1` is production PW prepend** | Full PW export → overlay/qpdf merge → lane PDF upload → attribute sync. Not dead code. |
 | **`qcPrepend.mode: legacyPw` routes production jobs** | Committed [`appsettings.json`](../appsettings.json) line 229. `Invoke-QCPrependProcessor` compares mode case-insensitively to `legacypw`. |
-| **Native/local prepend is not production-ready** | `mode` = `local` (code default if absent) runs in-process file I/O only — no PW export/import. See [`docs/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md). |
+| **Native/local prepend is not production-ready** | `mode` = `local` (code default if absent) runs in-process file I/O only — no PW export/import. See [`docs/engineering/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md). |
 
 ### Routing chain
 
@@ -226,9 +226,9 @@ $legacyPrepend = if ($qc.legacyScriptPath) { $qc.legacyScriptPath } else { Join-
 | Search term | Key locations |
 |-------------|---------------|
 | `legacy/prepend_qc.ps1` | `QC.Processors.psm1:1344-1568`, [`legacy/README.md`](../legacy/README.md), `test/test_qc_prepend_processor.ps1`, `test/test_qc_prepend_lane_resolution.ps1` |
-| `qcPrepend.mode` | `appsettings.json:229`, `QC.Processors.psm1:1338-1345`, `docs/appsettings-reference.md` |
+| `qcPrepend.mode` | `appsettings.json:229`, `QC.Processors.psm1:1338-1345`, `docs/reference/appsettings-reference.md` |
 | `legacyPw` | `if ($mode -eq 'legacypw')` in `QC.Processors.psm1` |
-| Native prepend | `QC.Processors.psm1:1571+`, `docs/phase-2-native-prepend-parity-plan.md` |
+| Native prepend | `QC.Processors.psm1:1571+`, `docs/engineering/phase-2-native-prepend-parity-plan.md` |
 | `local` mode | Code default `$mode = 'local'`; phrase "local prepend" not used in repo |
 | `legacyScriptPath` | `qcPrepend.legacyScriptPath` override in processor |
 | Alternate entry | `scripts/run_prepend_qc.ps1 -Legacy` → `legacy/prepend_qc_on_trigger.ps1` |
@@ -639,7 +639,7 @@ Set `qcPrepend.legacyScriptPath` to a saved copy of the pre-4B script, or revert
 
 **Branch:** `phase-4/diagnostics-scripts` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-diagnostics-script-move-summary.md`](phase-4-diagnostics-script-move-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-diagnostics-script-move-summary.md`](phase-4-diagnostics-script-move-summary.md)
 
 ### Moved to `scripts/diagnostics/` (23 scripts)
 
@@ -670,7 +670,7 @@ Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@arg
 
 **Branch:** `phase-4/maintenance-scripts` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-maintenance-script-move-summary.md`](phase-4-maintenance-script-move-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-maintenance-script-move-summary.md`](phase-4-maintenance-script-move-summary.md)
 
 ### Moved to `scripts/maintenance/` (16 scripts)
 
@@ -703,7 +703,7 @@ Silent compatibility wrappers at former `scripts/<name>.ps1` paths forward `@arg
 
 **Branch:** `phase-4/module-folders` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-module-folder-move-summary.md`](phase-4-module-folder-move-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-module-folder-move-summary.md`](phase-4-module-folder-move-summary.md)
 
 ### Moved modules (41)
 
@@ -735,7 +735,7 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 
 **Branch:** `phase-4/import-updates` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-import-update-summary.md`](phase-4-import-update-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-import-update-summary.md`](phase-4-import-update-summary.md)
 
 ### Strategy
 
@@ -777,7 +777,7 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 
 **Branch:** `phase-4/psd1-manifest-prototype` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-psd1-manifest-prototype-summary.md`](phase-4-psd1-manifest-prototype-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-psd1-manifest-prototype-summary.md`](phase-4-psd1-manifest-prototype-summary.md)
 
 **Not full Phase 4G** — only Core + Queue prototype manifests; production entrypoints unchanged.
 
@@ -812,7 +812,7 @@ Moved implementations import sibling modules via flat shim paths: `Join-Path (Sp
 
 **Branch:** `phase-4/module-bootstrap-restore` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-module-bootstrap-restore-summary.md`](phase-4-module-bootstrap-restore-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-module-bootstrap-restore-summary.md`](phase-4-module-bootstrap-restore-summary.md)
 
 ### PS 5.1 import/export clobber rule
 
@@ -847,7 +847,7 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 **Branch:** `phase-4/processing-deployment-scripts` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-processing-deployment-script-move-summary.md`](phase-4-processing-deployment-script-move-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-processing-deployment-script-move-summary.md`](phase-4-processing-deployment-script-move-summary.md)
 
 ### Moved
 
@@ -872,7 +872,7 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 **Branch:** `phase-4/diagnostic-maintenance-bootstrap` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md)
+**Summary doc:** [`docs/archive/phase/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md)
 
 ### Scope
 
@@ -891,7 +891,7 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 **Branch:** `phase-4/server-path-audit` → merge into `phase-4/integration` after review.
 
-**Summary doc:** [`docs/phase-4-server-path-audit.md`](phase-4-server-path-audit.md)
+**Summary doc:** [`docs/archive/phase/phase-4-server-path-audit.md`](phase-4-server-path-audit.md)
 
 ### Delivered
 
@@ -956,9 +956,9 @@ Copies `scripts/service/`, `scripts/Restore-QCModuleExports.ps1`, `scripts/Impor
 
 ## Related documents
 
-- [`docs/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md)
-- [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md)
-- [`docs/phase-3-jobfactory-package-dedupe-decision.md`](phase-3-jobfactory-package-dedupe-decision.md)
+- [`docs/engineering/phase-2-native-prepend-parity-plan.md`](phase-2-native-prepend-parity-plan.md)
+- [`docs/archive/phase/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md)
+- [`docs/archive/phase/phase-3-jobfactory-package-dedupe-decision.md`](phase-3-jobfactory-package-dedupe-decision.md)
 - [`legacy/README.md`](../legacy/README.md)
 - [`modules/FILES.md`](../modules/FILES.md)
 - [`.cursor/rules/module-imports.mdc`](../.cursor/rules/module-imports.mdc)

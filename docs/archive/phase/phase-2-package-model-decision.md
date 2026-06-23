@@ -8,11 +8,11 @@
 
 ## Executive summary
 
-**Production package grouping is SQL-backed** via `sheet_packages`, `sheet_documents`, and `sheet_package_qc_pdfs` in [`modules/Database/Core.Database.psm1`](../modules/Database/Core.Database.psm1).
+**Production package grouping is SQL-backed** via `sheet_packages`, `sheet_documents`, and `sheet_package_qc_pdfs` in [`modules/Database/Core.Database.psm1`](../../../modules/Database/Core.Database.psm1).
 
-The in-memory **`QC.Package*` module cluster** (`QC.PackageResolver`, `QC.AttributePolicy`, `QC.StatePolicy`, `QC.PackageSync`, `QC.Package.Database`) has **zero production callers**. It is exercised only by [`test/test_qc_package_model.ps1`](../test/test_qc_package_model.ps1) and referenced in [`docs/qc-package-model.md`](qc-package-model.md).
+The in-memory **`QC.Package*` module cluster** (`QC.PackageResolver`, `QC.AttributePolicy`, `QC.StatePolicy`, `QC.PackageSync`, `QC.Package.Database`) has **zero production callers**. It is exercised only by [`test/test_qc_package_model.ps1`](../../../test/test_qc_package_model.ps1) and referenced in [`docs/architecture/qc-package-model.md`](../../architecture/qc-package-model.md).
 
-**Recommendation:** **Archive** the in-memory modules (or mark deprecated); **keep** the SQL path; **rewrite** `docs/qc-package-model.md` in Phase 3 to document SQL; **decide** whether to wire or remove the unwired `QC.JobFactory` package dedupe branch.
+**Recommendation:** **Archive** the in-memory modules (or mark deprecated); **keep** the SQL path; **rewrite** `docs/architecture/qc-package-model.md` in Phase 3 to document SQL; **decide** whether to wire or remove the unwired `QC.JobFactory` package dedupe branch.
 
 ---
 
@@ -174,7 +174,7 @@ This design predates or parallels the SQL model but was **never wired** into wat
 | `Core.Database` SQL stack | **Keep** | Canonical production path |
 | `QC.PackageResolver`, `AttributePolicy`, `StatePolicy`, `PackageSync` | **Archive** to `archive/package-model-v1/` or mark `@deprecated` in `FILES.md` | Zero production callers; divergent naming |
 | `QC.Package.Database.psm1` | **Delete later** (highest priority) | Stub SQL; references non-existent `Invoke-QCSqlQuery` / `QCPackageCache` |
-| `docs/qc-package-model.md` | **Rewrite** for SQL model | Currently describes unwired in-memory design |
+| `docs/architecture/qc-package-model.md` | **Rewrite** for SQL model | Currently describes unwired in-memory design |
 | `test/test_qc_package_model.ps1` | **Archive with modules** or repoint to SQL fixtures | Tests obsolete abstraction |
 | `QC.JobFactory` package dedupe | **Wire** to `sheet_package_id` **or** **remove dead branch** | Product decision; avoids false confidence |
 
@@ -186,7 +186,7 @@ This design predates or parallels the SQL model but was **never wired** into wat
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Maintainers implement against `docs/qc-package-model.md` | Medium | Rewrite doc in Phase 3; banner already added in Branch 1 |
+| Maintainers implement against `docs/architecture/qc-package-model.md` | Medium | Rewrite doc in Phase 3; banner already added in Branch 1 |
 | `test_qc_package_model.ps1` passes while production uses different model | Low | Archive test with modules |
 | `metadata.package` dedupe branch confuses job identity | Low | Wire to SQL or remove in Phase 3 |
 | Deleting modules before doc rewrite | Medium | Archive first; keep git history |
@@ -196,7 +196,7 @@ This design predates or parallels the SQL model but was **never wired** into wat
 ## Proposed Phase 3 action
 
 1. Mark `QC.Package*` deprecated in `modules/FILES.md` and `modules/README.md`.
-2. Rewrite `docs/qc-package-model.md` around `sheet_packages` / `sheet_package_qc_pdfs` / views.
+2. Rewrite `docs/architecture/qc-package-model.md` around `sheet_packages` / `sheet_package_qc_pdfs` / views.
 3. Move `QC.Package*` + `test_qc_package_model.ps1` to `archive/package-model-v1/` (or delete `QC.Package.Database.psm1` first after archive).
 4. Product decision: wire `Get-QCDedupeKey` package branch to `sheet_package_id` at job creation, or delete `New-QCPackageJobDedupeKey`.
 5. **Do not** drop `sheet_index.qc_pdf_name` / `qc_pdf_guid` columns until a separate approved migration branch proves safe.
@@ -205,7 +205,7 @@ This design predates or parallels the SQL model but was **never wired** into wat
 
 ## Implemented in Phase 3
 
-Branch `phase-3/package-model-archive` archived the in-memory `QC.Package*` modules and `test/test_qc_package_model.ps1` to [`archive/package-model-v1/`](../archive/package-model-v1/), rewrote [`docs/qc-package-model.md`](qc-package-model.md) for the SQL model, and updated module inventory docs. See [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
+Branch `phase-3/package-model-archive` archived the in-memory `QC.Package*` modules and `test/test_qc_package_model.ps1` to [`archive/package-model-v1/`](../../../archive/package-model-v1/), rewrote [`docs/architecture/qc-package-model.md`](../../architecture/qc-package-model.md) for the SQL model, and updated module inventory docs. See [`docs/archive/phase/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
 
 ---
 

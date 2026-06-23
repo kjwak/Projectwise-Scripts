@@ -56,7 +56,7 @@ No module function bodies refactored beyond path resolution.
 |------|--------|
 | [`modules/FILES.md`](../modules/FILES.md) | Folder layout table; shim note |
 | [`modules/README.md`](../modules/README.md) | Phase 4E folder structure section |
-| [`docs/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4E complete; Appendix F |
+| [`docs/archive/phase/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4E complete; Appendix F |
 | [`test/test_module_folder_shims.ps1`](../test/test_module_folder_shims.ps1) | **New** — 41 shim/layout checks + 11 flat-path import probes |
 | [`tests/module_impl.py`](../tests/module_impl.py) | **New** — static pytest helper follows shims to implementation source |
 | [`test/_Resolve-ModuleImplPath.ps1`](../test/_Resolve-ModuleImplPath.ps1) | **New** — resolve shim → implementation; helpers for tests needing impl module scope |

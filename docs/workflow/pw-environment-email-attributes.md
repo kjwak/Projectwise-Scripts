@@ -220,7 +220,7 @@ Run under the same PowerShell host / MTA profile used by QC workers (`pwps_dab`)
 
 ## Related documentation
 
-- QC workflow states: `docs/qc-workflow-framework.md` (when present on branch)
+- QC workflow states: `docs/workflow/qc-workflow-framework.md` (when present on branch)
 - ProjectWise cmdlet conventions: `.cursor/rules/projectwise-powershell.mdc`
 - Path normalization (`pw:\...` URIs): `modules/Core/Core.Paths.psm1`
 
@@ -239,7 +239,7 @@ Lane PDFs (`*-prod/-rev/-chk.pdf`) also receive `QC_Process_Type` via `_PWD-Ensu
 - **`Test-SheetIndexAndAuditPoller.ps1`** — Validation script uses the same extraction pattern to populate `sheet_index` during testing.
 - **`QC.Notifications.psm1`** — Uses the `_QCN-GetAttributeValue` helper to read email attributes from document objects for notification routing.
 
-The `sheet_index` table (`docs/database-telemetry.md`) stores extracted emails in `designer_email` and `reviewer_email` columns, and workflow state in `pw_state_name`.
+The `sheet_index` table (`docs/data/database-telemetry.md`) stores extracted emails in `designer_email` and `reviewer_email` columns, and workflow state in `pw_state_name`.
 
 ### Module helpers (`PW.Discovery.psm1`)
 

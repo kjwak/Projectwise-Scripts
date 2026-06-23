@@ -20,7 +20,7 @@ Use a **test profile** so queue folders, dry-run behavior, and optional SQL tele
    .\scripts\service\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.test.json
    ```
 
-The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/database-telemetry.md`.
+The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/data/database-telemetry.md`.
 
 `appsettings.test.json`, `appsettings.local.json`, and `appsettings.secrets.json` are **gitignored**. Only `*.example` templates are committed.
 
@@ -70,7 +70,7 @@ With global `dryRun: true`, SQL writes stay off unless `allowWritesInDryRun` is 
 
 DB integration tests: `.\test\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.test.json` (skips when `database.enabled` is false).
 
-The `db\DatabaseProjectQC_Pipeline\` folder is an SSDT schema project for publish/review; the runtime does not read it directly. See `docs/database-telemetry.md`.
+The `db\DatabaseProjectQC_Pipeline\` folder is an SSDT schema project for publish/review; the runtime does not read it directly. See `docs/data/database-telemetry.md`.
 
 ## Machine-specific overrides
 
@@ -96,6 +96,6 @@ Static tests under `tests/` still read committed `appsettings.json` for default-
 
 ## Related
 
-- `docs/appsettings-reference.md` — all sections
-- `docs/database-telemetry.md` — schema and tables
+- `docs/reference/appsettings-reference.md` — all sections
+- `docs/data/database-telemetry.md` — schema and tables
 - `test/test_config_profile_merge.ps1` — merge chain unit test

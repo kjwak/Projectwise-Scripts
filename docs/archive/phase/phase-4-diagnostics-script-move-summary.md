@@ -67,7 +67,7 @@ Operators, docs, and command history can continue using `.\scripts\Show-QCStatus
 |------|--------|
 | [`scripts/README.md`](../scripts/README.md) | Diagnostics section points to `scripts/diagnostics/` + wrappers |
 | [`scripts/FILES.md`](../scripts/FILES.md) | Diagnostics folder table; wrapper notes for moved scripts |
-| [`docs/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4C marked complete; Appendix D added |
+| [`docs/archive/phase/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) | Phase 4C marked complete; Appendix D added |
 | [`test/test_diagnostic_script_wrappers.ps1`](../test/test_diagnostic_script_wrappers.ps1) | **New** — wrapper/target existence and path resolution (no live PW) |
 
 Docs that cite `scripts/Test-*` or `scripts/Show-*` paths remain valid via wrappers. No doc path churn required for operator commands.

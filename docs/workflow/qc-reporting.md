@@ -30,11 +30,11 @@ Lane QC PDFs use `*-prod.pdf`, `*-rev.pdf`, and `*-chk.pdf` suffixes keyed by `Q
 
 The `sheet_index` table indexes documents in watched `CADD\Sheets` folders. Lane registry rows live in `sheet_package_qc_pdfs` (canonical for new logic). Legacy columns `qc_pdf_guid` / `qc_pdf_name` on `sheet_index` may still be populated for backward compatibility.
 
-The `v_sheet_status` and `v_sheet_package_status` views provide project status overviews. See `docs/database-telemetry.md`.
+The `v_sheet_status` and `v_sheet_package_status` views provide project status overviews. See `docs/data/database-telemetry.md`.
 
 **Database — `processing_jobs`:**
 
-Job outcomes are written by `Write-QCJobTelemetry`. See `v_job_summary` in `docs/database-telemetry.md`.
+Job outcomes are written by `Write-QCJobTelemetry`. See `v_job_summary` in `docs/data/database-telemetry.md`.
 
 **Power BI:**
 
@@ -76,6 +76,6 @@ Power BI connects to the `QC_Pipeline` database via SQL Server connector.
 
 ## Related Documentation
 
-- `docs/database-telemetry.md` — SQL Server schema, tables, views
-- `docs/hybrid-polling.md` — how sheet_index is populated during watcher ticks
-- `docs/pw-environment-email-attributes.md` — email attribute extraction details
+- `docs/data/database-telemetry.md` — SQL Server schema, tables, views
+- `docs/architecture/hybrid-polling.md` — how sheet_index is populated during watcher ticks
+- `docs/workflow/pw-environment-email-attributes.md` — email attribute extraction details

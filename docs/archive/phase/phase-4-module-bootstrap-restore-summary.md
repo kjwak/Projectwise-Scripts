@@ -64,7 +64,7 @@ Core.Results → Core.Paths → Core.Runtime → Core.Config → Core.Logging �
 
 ## Intentionally deferred (P2/P3) — superseded
 
-Diagnostic/maintenance/`Combine-StatusSet` bootstrap completed on `phase-4/diagnostic-maintenance-bootstrap`. See [`docs/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md).
+Diagnostic/maintenance/`Combine-StatusSet` bootstrap completed on `phase-4/diagnostic-maintenance-bootstrap`. See [`docs/archive/phase/phase-4-diagnostic-maintenance-bootstrap-summary.md`](phase-4-diagnostic-maintenance-bootstrap-summary.md).
 
 Remaining deferred:
 

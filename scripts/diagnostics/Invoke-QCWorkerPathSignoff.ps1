@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Run Phase 4 server path audit checklist (docs/phase-4-server-path-audit.md §9) on a worker host.
+Run Phase 4 server path audit checklist (docs/archive/phase/phase-4-server-path-audit.md §9) on a worker host.
 
 .DESCRIPTION
 Read-only inspection: running QC processes, Task Scheduler actions, appsettings path overrides,
@@ -133,7 +133,7 @@ $drift = foreach ($rel in $driftPaths) {
 }
 $drift | Format-Table -AutoSize | Out-String | Write-Host
 
-Write-Host '--- 10 Sign-off row (paste into docs/phase-4-server-path-audit.md) ---' -ForegroundColor Cyan
+Write-Host '--- 10 Sign-off row (paste into docs/archive/phase/phase-4-server-path-audit.md) ---' -ForegroundColor Cyan
 $date = Get-Date -Format 'yyyy-MM-dd'
 $row = "| $hostName | ``$workerResolved`` | $taskSummary | $rulesSummary | $configSummary | $processSummary | | $date |"
 Write-Host $row

@@ -30,6 +30,22 @@ Set `enabled: false` to disable all database writes. The pipeline continues to f
 
 ---
 
+## Execution source of truth (invariants)
+
+| Layer | Role | Canonical for |
+|-------|------|----------------|
+| **JSON queue** (`modules/Queue/QC.Queue.Json.psm1`) | Job scheduling and worker dispatch | `pending/` → `running/` → `succeeded/` / `failed/` |
+| **SQL** (`QC_Pipeline`) | Telemetry, audit ingest, package index, mirrors | Reporting, `sheet_index`, `audit_events`, `sheet_packages` |
+
+**Rules:**
+
+1. Workers dequeue and transition jobs **only** from the JSON queue.
+2. `processing_jobs` mirrors queue outcomes for dashboards — it is **not** a second scheduler.
+3. `sheet_packages` / `sheet_package_qc_pdfs` are canonical for lane/document relationships, not for job execution state.
+4. When `database.enabled` is true, the audit capture watermark is **DB-primary** (`watcher_state`) with `queue/_watcher/audit-capture-watermark.txt` as mirror/fallback. See `docs/architecture/hybrid-polling.md`.
+
+---
+
 ## Fire-and-Forget Pattern
 
 All telemetry writes use the `_QDB-SafeWrite` internal helper, which silently no-ops when the database is disabled or unreachable. **Pipeline execution never fails because telemetry fails.** This is critical: the JSON queue is the execution backbone, and database availability must not block job processing.
@@ -52,7 +68,7 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | 1.5.0 | `sheet_index` QC attribute columns (`checker_email`, `qc_review_type`, `qc_assigned_to`) |
 | 1.14.0 | `qc_workflow_events.transition_event_id` FK to `transition_events.id` |
 
-### Schema 1.2.0 — comment sync (see `docs/qc-comment-status-sync.md`)
+### Schema 1.2.0 — comment sync (see `docs/workflow/qc-comment-status-sync.md`)
 
 | Table | Purpose |
 |-------|---------|

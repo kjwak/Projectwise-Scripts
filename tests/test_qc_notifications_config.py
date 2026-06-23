@@ -9,7 +9,7 @@ NOTIFICATIONS = module_impl_path("QC.Notifications.psm1")
 TEMPLATES = module_impl_path("QC.NotificationTemplates.psm1")
 GRAPH = module_impl_path("QC.NotificationGraph.psm1")
 EMAIL_TEMPLATE = REPO_ROOT / "email" / "templates" / "qc_notification.html"
-DOC = REPO_ROOT / "docs" / "qc-notifications.md"
+DOC = REPO_ROOT / "docs" / "workflow" / "qc-notifications.md"
 
 
 def test_appsettings_notifications_production_delivery_defaults():

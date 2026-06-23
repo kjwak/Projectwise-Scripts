@@ -55,7 +55,7 @@ Recommendation for implementation phase:
 - Pipeline execution must never fail because telemetry fails.
 - Database availability is checked via `Test-QCDatabaseEnabled` before attempting writes.
 - Schema initialization is idempotent and version-tracked via `schema_version` table.
-- See `docs/database-telemetry.md` for the full schema and API reference.
+- See `docs/data/database-telemetry.md` for the full schema and API reference.
 
 ## Timestamp Convention
 - All timestamps are stored internally as UTC (`DATETIMEOFFSET` in SQL Server, ISO 8601 in JSON).

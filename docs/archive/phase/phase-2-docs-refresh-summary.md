@@ -10,19 +10,19 @@
 
 | File | Change summary |
 |------|----------------|
-| `docs/qc-workflow-framework.md` | Full rewrite to TYPSA three-lane model, lifecycle states, `QC_Process_Type`, legacy section |
-| `docs/appsettings-reference.md` | TYPSA defaults for `qcWorkflow`, `auditPoller`, `qcRendition`, `qcPrepend`; lane PDF wording |
-| `docs/qc-notifications.md` | Lane QC PDF authority, TYPSA event keys, legacy disabled events, Graph integration |
-| `docs/qc-reporting.md` | TYPSA reporting buckets, `sheet_package_qc_pdfs`, legacy label note |
-| `docs/hybrid-polling.md` | `Initiate Origination` prepend trigger, lane PDF sync, process-type attr propagation |
-| `docs/database-telemetry.md` | Lane QC PDF references, `Originated` in aging view |
-| `docs/audit-trail-architecture.md` | “As built” notifications row updated for lane PDFs |
-| `docs/qc-comment-status-sync.md` | Lane PDF targets, legacy `*-qc.pdf` trigger note |
-| `docs/pw-environment-email-attributes.md` | TYPSA state examples, legacy prepend sync section |
-| `docs/qc-package-model.md` | Banner: SQL `sheet_packages` is canonical; in-memory modules unwired |
+| `docs/workflow/qc-workflow-framework.md` | Full rewrite to TYPSA three-lane model, lifecycle states, `QC_Process_Type`, legacy section |
+| `docs/reference/appsettings-reference.md` | TYPSA defaults for `qcWorkflow`, `auditPoller`, `qcRendition`, `qcPrepend`; lane PDF wording |
+| `docs/workflow/qc-notifications.md` | Lane QC PDF authority, TYPSA event keys, legacy disabled events, Graph integration |
+| `docs/workflow/qc-reporting.md` | TYPSA reporting buckets, `sheet_package_qc_pdfs`, legacy label note |
+| `docs/architecture/hybrid-polling.md` | `Initiate Origination` prepend trigger, lane PDF sync, process-type attr propagation |
+| `docs/data/database-telemetry.md` | Lane QC PDF references, `Originated` in aging view |
+| `docs/architecture/audit-trail-architecture.md` | “As built” notifications row updated for lane PDFs |
+| `docs/workflow/qc-comment-status-sync.md` | Lane PDF targets, legacy `*-qc.pdf` trigger note |
+| `docs/workflow/pw-environment-email-attributes.md` | TYPSA state examples, legacy prepend sync section |
+| `docs/architecture/qc-package-model.md` | Banner: SQL `sheet_packages` is canonical; in-memory modules unwired |
 | `legacy/README.md` | `legacyPw` production default, lane naming, prepend relevance |
 | `modules/README.md` | TYPSA three-lane pointer to workflow framework doc |
-| `docs/phase-2-docs-refresh-summary.md` | This deliverable |
+| `docs/archive/phase/phase-2-docs-refresh-summary.md` | This deliverable |
 
 ---
 
@@ -67,13 +67,13 @@
 
 | Doc | Reason |
 |-----|--------|
-| `docs/dead-code-and-deprecation-audit.md` | Intentional drift inventory; not rewritten |
-| `docs/dead-code-phase-1-patch-summary.md` | Phase 1 changelog; historical |
-| `docs/status-set-av-refactor.md` | Historical refactor notes |
-| `docs/watcher-architecture-refactor-summary.md` | Historical refactor notes |
-| `docs/scripts-organization-review.md` | Historical review |
-| `docs/audit-trail-architecture.md` (body) | Design history; only “as built” table row updated |
-| `docs/qc-package-model.md` (body) | Full SQL rewrite deferred to Branch 3 |
+| `docs/engineering/dead-code-and-deprecation-audit.md` | Intentional drift inventory; not rewritten |
+| `docs/engineering/dead-code-phase-1-patch-summary.md` | Phase 1 changelog; historical |
+| `docs/engineering/status-set-av-refactor.md` | Historical refactor notes |
+| `docs/architecture/watcher-architecture-refactor-summary.md` | Historical refactor notes |
+| `docs/engineering/scripts-organization-review.md` | Historical review |
+| `docs/architecture/audit-trail-architecture.md` (body) | Design history; only “as built” table row updated |
+| `docs/architecture/qc-package-model.md` (body) | Full SQL rewrite deferred to Branch 3 |
 
 ---
 
@@ -86,7 +86,7 @@
 | `test/test_module_inventory.ps1` | **PASS** (46 modules) |
 | `test/test_watcher_module_bootstrap.ps1` | **PASS** |
 
-**Note:** One pytest failure on first pass (`test_notifications_doc_covers_qc_pdf_authority_and_graph`) was resolved by restoring the phrase “not synchronized” in `docs/qc-notifications.md` (static doc guard; no test file edits).
+**Note:** One pytest failure on first pass (`test_notifications_doc_covers_qc_pdf_authority_and_graph`) was resolved by restoring the phrase “not synchronized” in `docs/workflow/qc-notifications.md` (static doc guard; no test file edits).
 
 ---
 

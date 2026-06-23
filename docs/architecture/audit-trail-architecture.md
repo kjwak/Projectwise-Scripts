@@ -12,9 +12,9 @@
 
 **Read this document as design history and rationale.** For day-to-day operation, prefer:
 
-- `docs/hybrid-polling.md` — watcher modes, audit actions, job triggers
-- `docs/database-telemetry.md` — SQL schema and write APIs
-- `docs/qc-notifications.md` — email notifications (Mock / future Graph)
+- `docs/architecture/hybrid-polling.md` — watcher modes, audit actions, job triggers
+- `docs/data/database-telemetry.md` — SQL schema and write APIs
+- `docs/workflow/qc-notifications.md` — email notifications (Mock / future Graph)
 
 Key differences from the original proposal below:
 
@@ -478,7 +478,7 @@ Compare-QCAuditVsDirectoryScan  # Diff detected events vs full scan results
 }
 ```
 
-See `docs/appsettings-reference.md` and production `appsettings.json` for full keys.
+See `docs/reference/appsettings-reference.md` and production `appsettings.json` for full keys.
 
 ---
 
@@ -486,7 +486,7 @@ See `docs/appsettings-reference.md` and production `appsettings.json` for full k
 
 ### 6.1 Original SQLite Schema (Phase 1 proposal)
 
-**Implemented in SQL Server** — same logical tables with SQL Server types. See `Core.Database.psm1` and `docs/database-telemetry.md`.
+**Implemented in SQL Server** — same logical tables with SQL Server types. See `Core.Database.psm1` and `docs/data/database-telemetry.md`.
 
 ```sql
 -- Raw audit events captured from dms_audt

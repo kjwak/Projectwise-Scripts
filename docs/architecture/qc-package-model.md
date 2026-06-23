@@ -1,8 +1,8 @@
 # QC Package Model (SQL-backed)
 
-Production QC treats related ProjectWise sheet artifacts as a single **sheet package** persisted in SQL. Package identity, document membership, and per-lane QC PDF registry are owned by [`modules/Database/Core.Database.psm1`](../modules/Database/Core.Database.psm1).
+Production QC treats related ProjectWise sheet artifacts as a single **sheet package** persisted in SQL. Package identity, document membership, and per-lane QC PDF registry are owned by [`modules/Database/Core.Database.psm1`](../../modules/Database/Core.Database.psm1).
 
-> **Archived v1:** An earlier in-memory `QC.Package*` module cluster (`Resolve-QCPackage`, attribute/state sync, fictional `QCPackageCache`) lived under `modules/` and was never wired into production. It was archived in Phase 3 to [`archive/package-model-v1/`](../archive/package-model-v1/). See [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md) and [`docs/phase-3-package-model-archive-summary.md`](phase-3-package-model-archive-summary.md).
+> **Archived v1:** An earlier in-memory `QC.Package*` module cluster (`Resolve-QCPackage`, attribute/state sync, fictional `QCPackageCache`) lived under `modules/` and was never wired into production. It was archived in Phase 3 to [`archive/package-model-v1/`](../../archive/package-model-v1/). See [`docs/archive/phase/phase-2-package-model-decision.md`](../archive/phase/phase-2-package-model-decision.md) and [`docs/archive/phase/phase-3-package-model-archive-summary.md`](../archive/phase/phase-3-package-model-archive-summary.md).
 
 ## Package identity
 
@@ -23,7 +23,7 @@ Package primary key: `sheet_package_id` (`UNIQUEIDENTIFIER`) in `sheet_packages`
 | `sheet_package_qc_pdfs` | Lane QC PDF registry (`production` / `review` / `check`); canonical for lane GUID and PW state mirror |
 | `sheet_index` | Operational index; dual-writes `sheet_package_id`; legacy `qc_pdf_name` / `qc_pdf_guid` columns remain |
 
-Schema details and migrations: see `docs/database-telemetry.md` and `sql/` migrations (v1.15+ package tables, v1.19 lane registry).
+Schema details and migrations: see `docs/data/database-telemetry.md` and `sql/` migrations (v1.15+ package tables, v1.19 lane registry).
 
 ## Key functions (`Core.Database.psm1`)
 
@@ -86,9 +86,9 @@ flowchart TD
 
 ## Workflow and metadata
 
-- **Lane workflow** — prepend, notifications, and per-lane state use `sheet_package_qc_pdfs` and TYPSA three-lane naming (`-prod`, `-rev`, `-chk`). See [`docs/qc-workflow-framework.md`](qc-workflow-framework.md).
+- **Lane workflow** — prepend, notifications, and per-lane state use `sheet_package_qc_pdfs` and TYPSA three-lane naming (`-prod`, `-rev`, `-chk`). See [`docs/workflow/qc-workflow-framework.md`](../workflow/qc-workflow-framework.md).
 - **Reporting** — `QC.Reporting.psm1` aggregates package status from `v_sheet_package_status`; this is separate from the archived in-memory package resolver.
-- **Job dedupe** — queue dedupe keys are computed in `QC.JobFactory.psm1` without requiring the archived package modules. The former `metadata.package` branch was removed in Phase 3 (`docs/phase-3-jobfactory-package-dedupe-decision.md`); production paths use file/folder dedupe only.
+- **Job dedupe** — queue dedupe keys are computed in `QC.JobFactory.psm1` without requiring the archived package modules. The former `metadata.package` branch was removed in Phase 3 (`docs/archive/phase/phase-3-jobfactory-package-dedupe-decision.md`); production paths use file/folder dedupe only.
 
 ## Tests
 
@@ -97,4 +97,4 @@ SQL package path tests (retained under `test/`):
 - `test_sheet_package_resolution.ps1`, `test_sheet_package_incomplete.ps1`, `test_sheet_package_dual_write.ps1`
 - `test_sheet_package_backfill.ps1`, `test_sheet_package_qc_pdfs_schema.ps1`, `test_sheet_package_phase4.ps1`
 - `test_qc_lane_state_independence.ps1`, `test_qc_lane_pdf_guid_sync.ps1`, `test_qc_notification_guid_resolve.ps1`
-- Additional lane/trigger/completion tests listed in [`docs/phase-2-package-model-decision.md`](phase-2-package-model-decision.md)
+- Additional lane/trigger/completion tests listed in [`docs/archive/phase/phase-2-package-model-decision.md`](../archive/phase/phase-2-package-model-decision.md)

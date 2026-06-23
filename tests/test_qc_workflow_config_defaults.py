@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APPSETTINGS = REPO_ROOT / "appsettings.json"
 WORKFLOW = module_impl_path("QC.Workflow.psm1")
 PROCESSORS = module_impl_path("QC.Processors.psm1")
-REPORTING_DOC = REPO_ROOT / "docs" / "qc-reporting.md"
+REPORTING_DOC = REPO_ROOT / "docs" / "workflow" / "qc-reporting.md"
 
 
 def test_appsettings_qc_workflow_defaults_remain_disabled_and_attribute_first():

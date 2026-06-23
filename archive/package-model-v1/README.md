@@ -5,7 +5,7 @@
 
 ## Why this was archived
 
-Phase 2 investigation ([`docs/phase-2-package-model-decision.md`](../../docs/phase-2-package-model-decision.md)) found that this in-memory `QC.Package*` cluster had **zero production callers**. Production package grouping already runs through SQL tables in [`modules/Core.Database.psm1`](../../modules/Core.Database.psm1).
+Phase 2 investigation ([`docs/archive/phase/phase-2-package-model-decision.md`](../../docs/archive/phase/phase-2-package-model-decision.md)) found that this in-memory `QC.Package*` cluster had **zero production callers**. Production package grouping already runs through SQL tables in [`modules/Core.Database.psm1`](../../modules/Core.Database.psm1).
 
 The archived design diverged from production in important ways:
 
@@ -18,7 +18,7 @@ The archived design diverged from production in important ways:
 
 ## Production-canonical implementation
 
-See [`docs/qc-package-model.md`](../../docs/qc-package-model.md) for the current SQL-backed model:
+See [`docs/architecture/qc-package-model.md`](../../docs/architecture/qc-package-model.md) for the current SQL-backed model:
 
 - **Tables:** `sheet_packages`, `sheet_documents`, `sheet_package_qc_pdfs`, `sheet_index` (dual-write)
 - **Module:** `Core.Database.psm1` — `Ensure-SheetPackage`, `Resolve-SheetPackageFromDocument`, `Get-SheetPackageIdForDocument`, lane registry sync, etc.
@@ -74,4 +74,4 @@ Then re-add the five module rows to `modules/FILES.md` and remove or relocate th
 
 ## Deferred follow-up
 
-`QC.JobFactory.psm1` no longer contains the unwired `metadata.package` dedupe branch (`New-QCPackageJobDedupeKey`). Phase 3 decision branch `phase-3/jobfactory-package-dedupe-decision` removed it — see `docs/phase-3-jobfactory-package-dedupe-decision.md`.
+`QC.JobFactory.psm1` no longer contains the unwired `metadata.package` dedupe branch (`New-QCPackageJobDedupeKey`). Phase 3 decision branch `phase-3/jobfactory-package-dedupe-decision` removed it — see `docs/archive/phase/phase-3-jobfactory-package-dedupe-decision.md`.

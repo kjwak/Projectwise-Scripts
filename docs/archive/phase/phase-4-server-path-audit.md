@@ -318,6 +318,6 @@ Committed docs and README reference canonical paths under `scripts\service\`, `s
 
 ## Related documents
 
-- [`docs/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) — Section 8 external checklist, Appendix L
-- [`docs/dead-code-and-deprecation-audit.md`](dead-code-and-deprecation-audit.md) — Rules Engine open question
+- [`docs/archive/phase/phase-4-module-script-organization-plan.md`](phase-4-module-script-organization-plan.md) — Section 8 external checklist, Appendix L
+- [`docs/engineering/dead-code-and-deprecation-audit.md`](dead-code-and-deprecation-audit.md) — Rules Engine open question
 - [`scripts/Publish-QCPipelineCode.ps1`](../scripts/Publish-QCPipelineCode.ps1)

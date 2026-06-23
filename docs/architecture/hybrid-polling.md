@@ -12,9 +12,9 @@ The pipeline is **audit-driven**: incremental `dms_audt` ingest into SQL, trigge
 
 On each watcher tick, `Invoke-AuditTrailScan` (from `PW.AuditPoller.psm1`) queries the `dms_audt` table via `Select-PWSQL`:
 
-1. Read the capture watermark from `queue/_watcher/audit-capture-watermark.txt` and/or `poll_runs.watermark_after` (whichever is latest when the file exists). On first run, look back `initialLookbackSeconds`.
+1. Read the capture watermark: **`watcher_state`** in SQL when `database.enabled` is true (primary); then `queue/_watcher/audit-capture-watermark.txt` and/or `poll_runs.watermark_after` (mirror/fallback — whichever is latest when the file exists). On first run, look back `initialLookbackSeconds`.
 2. Query `dms_audt` with `o_acttime` **newer than the watermark** (`overlapSeconds` optional, default 0). Paginated ASC; rows are ingested to `audit_events`; triggers evaluate **only** `audit_events` rows with `processed = 0`.
-3. After a successful scan, persist the **latest ingested `o_acttime`** (or poll end when no rows) to `audit-capture-watermark.txt`. Mark evaluated `audit_events` rows `processed = 1`. Document folder paths are cached in `document_activity` and an in-process GUID cache to avoid repeated `Get-PWDocumentsByGUIDs` calls for missing documents.
+3. After a successful scan, persist the **latest ingested `o_acttime`** (or poll end when no rows) to `watcher_state` and `audit-capture-watermark.txt`. Mark evaluated `audit_events` rows `processed = 1`. Document folder paths are cached in `document_activity` and an in-process GUID cache to avoid repeated `Get-PWDocumentsByGUIDs` calls for missing documents.
 4. **Timezone:** SQL bounds and the capture file use the **watcher machine clock**. `pw_acttime` in the DB is whatever PW/SQL returns—run the watcher in the **same timezone as the PW datasource/SQL Server** so string comparisons on `o_acttime` match. `maxPwActTime` in logs is informational only and does not advance the capture file.
 5. Resolve document GUIDs to folder paths via batched `Get-PWDocumentsByGUIDs` (chunks of 200).
 6. Match resolved folders against configured watch roots.
@@ -73,23 +73,19 @@ If `Invoke-AuditTrailScan` fails (database unreachable, PW SQL error, etc.) and 
 
 ## Integration in `Watch-QCTrigger.ps1`
 
-The watcher orchestrates both modes:
+The watcher orchestrates audit scanning and scheduled reconciliation (`QC.WatcherOrchestration.psm1`):
 
 ```
-Each tick:
-  1. Increment cycle counter
-  2. If (counter >= reconcileEveryNCycles AND counter % reconcileEveryNCycles == 0):
-       → Full folder scan (reconciliation)
-     First dashboard tick uses audit scan only (status-set reconcile is separate via `-ReconcileStatusSetsFirst`).
-       → Populate sheet_index from paired sheets
-       → Link QC PDFs to source documents
-     Else:
-       → Invoke-AuditTrailScan
-       → Process candidates (STATUS_SET_GEN, QC_PREPEND)
-       → Populate sheet_index for sheets found in audit events
-  3. `Invoke-QCQueueStartupCheck` — queue stats + stale/orphan `running\` recovery (also in `run_prepend_qc -NoDashboard`)
-  4. Write poll_runs telemetry to database
+Each tick (typical production config):
+  1. Invoke-AuditTrailScan (primary steady-state path)
+  2. Process candidates (STATUS_SET_GEN, QC_PREPEND, QC_COMMENT_STATUS_SYNC, etc.)
+  3. At configured wall-clock times (auditPoller.fullScanSchedule.times):
+       → Full folder scan (reconciliation only — once per slot per calendar day)
+  4. Invoke-QCQueueStartupCheck — queue stats + stale/orphan running\ recovery
+  5. Write poll_runs telemetry to database
 ```
+
+**Legacy fallback:** when `fullScanSchedule.times` is empty, `reconcileEveryNCycles` can still trigger full scans every N ticks (`QC.WatcherOrchestration.psm1`). Committed `appsettings.json` uses scheduled times (`06:00`, `18:00`), not cycle-based reconciliation.
 
 ### QC_PREPEND Trigger
 
@@ -105,21 +101,24 @@ Check-in, version, and content-change events on documents in watched Sheets fold
 
 ## Configuration (`appsettings.json`)
 
+Committed production excerpt (see `appsettings.json` for full `auditPoller` block):
+
 ```json
 {
   "auditPoller": {
     "lookbackSeconds": 120,
-    "reconcileEveryNCycles": 20,
-    "fallbackToFullScan": true
+    "fullScanSchedule": { "times": ["06:00", "18:00"] },
+    "fallbackToFullScan": false
   }
 }
 ```
 
-| Key | Default | Description |
-|-----|---------|-------------|
+| Key | Committed | Description |
+|-----|-----------|-------------|
 | `lookbackSeconds` | 120 | How far back to look on first poll when no watermark exists |
-| `reconcileEveryNCycles` | 20 | Run full reconciliation scan every N watcher ticks |
-| `fallbackToFullScan` | true | Fall back to full scan if audit trail query fails |
+| `fullScanSchedule.times` | `06:00`, `18:00` | Wall-clock full reconciliation (preferred over `reconcileEveryNCycles`) |
+| `reconcileEveryNCycles` | (unset) | **Legacy:** full scan every N ticks when `fullScanSchedule.times` is empty |
+| `fallbackToFullScan` | **false** | When **true**, fall back to full folder scan if audit trail query fails for that tick |
 
 ---
 
@@ -157,12 +156,12 @@ Each row includes:
 - Workflow state (from `WorkflowState` or `StateName` property)
 - QC PDF pairing (linked via `Update-QCSheetQcPdf` to both PDF and DGN entries sharing the same stem)
 
-See `docs/database-telemetry.md` for the `sheet_index` schema.
+See `docs/data/database-telemetry.md` for the `sheet_index` schema.
 
 ---
 
 ## Related Documentation
 
-- `docs/audit-trail-architecture.md` — original analysis and design rationale
-- `docs/database-telemetry.md` — SQL Server schema including `poll_runs` and `sheet_index`
-- `docs/pw-environment-email-attributes.md` — how email attributes are read from ProjectWise
+- `docs/architecture/audit-trail-architecture.md` — original analysis and design rationale
+- `docs/data/database-telemetry.md` — SQL Server schema including `poll_runs`, `watcher_state`, and `sheet_index`
+- `docs/workflow/pw-environment-email-attributes.md` — how email attributes are read from ProjectWise

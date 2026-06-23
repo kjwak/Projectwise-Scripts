@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DISCOVERY = module_impl_path("PW.Discovery.psm1")
 DATABASE = module_impl_path("Core.Database.psm1")
 WATCHER = REPO_ROOT / "scripts" / "Watch-QCTrigger.ps1"
-TELEMETRY_DOC = REPO_ROOT / "docs" / "database-telemetry.md"
+TELEMETRY_DOC = REPO_ROOT / "docs" / "data" / "database-telemetry.md"
 
 
 def test_discovery_exposes_sheet_index_sync_helpers():
