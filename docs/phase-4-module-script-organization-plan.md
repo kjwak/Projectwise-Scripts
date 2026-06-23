@@ -906,33 +906,33 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 ### Still pending (production)
 
-- Production sign-off (§9–10) **deferred** — required for **4H shim removal only**; wrappers mitigate path risk after `phase-4/service-scripts`
+- Production sign-off (§9–10) **deferred** on pipeline hosts — run `scripts\diagnostics\Invoke-QCWorkerPathSignoff.ps1` on each worker when ready; complete §9.4 Rules Engine review
+
+### Phase 4H (complete on integration)
+
+Compatibility shims removed. Canonical entrypoints: `scripts\service\`, `scripts\diagnostics\`, folder modules. Validated by `test/test_phase4_canonical_paths.ps1`.
 
 ---
 
 ## Appendix N — Phase 4 service script move (complete)
 
-**Branch:** `phase-4/service-scripts` → merge into `phase-4/integration` after review.
+**Branch:** `phase-4/service-scripts` → merged into `phase-4/integration`.
 
-### Moved (implementations)
+### Canonical paths (post-4H)
 
-| Wrapper (retained at `scripts/`) | Implementation |
-|----------------------------------|----------------|
-| `scripts/Start-QCPipelineDashboard.ps1` | `scripts/service/Start-QCPipelineDashboard.ps1` |
-| `scripts/Watch-QCTrigger.ps1` | `scripts/service/Watch-QCTrigger.ps1` |
-| `scripts/Run-QCProcessor.ps1` | `scripts/service/Run-QCProcessor.ps1` |
-| `scripts/run_prepend_qc.ps1` | `scripts/service/run_prepend_qc.ps1` |
-| `scripts/Stop-QCPipeline.ps1` | `scripts/service/Stop-QCPipeline.ps1` |
-
-Repo-root shims unchanged (forward to `scripts/` wrappers).
+| Role | Path |
+|------|------|
+| Dashboard / watcher / worker | `scripts\service\*.ps1` |
+| Stop pipeline | `scripts\service\Stop-QCPipeline.ps1` |
+| Worker path sign-off | `scripts\diagnostics\Invoke-QCWorkerPathSignoff.ps1` |
 
 ### Publish
 
-Copies `scripts/service/` tree, compatibility wrappers, and `Restore-QCModuleExports.ps1`.
+Copies `scripts/service/`, `scripts/Restore-QCModuleExports.ps1`, `scripts/Import-QCScriptModules.ps1`, `scripts/maintenance/Reset-QCFolderWorkflow.ps1`.
 
 ### Test
 
-`test/test_service_script_wrappers.ps1`
+`test/test_phase4_canonical_paths.ps1`, `test/test_server_path_audit.ps1`
 
 ---
 

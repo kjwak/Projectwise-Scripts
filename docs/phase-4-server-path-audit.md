@@ -2,7 +2,16 @@
 
 **Branch:** `phase-4/server-path-audit`  
 **Base branch:** `phase-4/integration`  
-**Status:** In-repo inventory complete — production server sign-off pending
+**Status:** In-repo inventory complete — **production sign-off pending** (see §10)
+
+### Sign-off gate
+
+| Gate | Status |
+|------|--------|
+| In-repo static inventory (§11) | **Complete** |
+| Production worker checklist (§9 on worker host) | **Pending** — run `scripts\diagnostics\Invoke-QCWorkerPathSignoff.ps1` on each pipeline host |
+| ProjectWise Rules Engine manual review (§9.4) | **Pending** |
+| Approved to start `phase-4/service-scripts` | **No** — until §10 production row(s) signed |
 
 ## Purpose
 
@@ -176,6 +185,16 @@ Searched the repository for `Register-ScheduledTask`, `schtasks`, and Rules Engi
 
 Run on each machine that runs QC pipeline or invokes QC scripts. Record results in the sign-off table (Section 10).
 
+### 9.0 Automated checklist (run on each worker host)
+
+From the worker root (or pass `-WorkerRoot`):
+
+```powershell
+.\scripts\diagnostics\Invoke-QCWorkerPathSignoff.ps1 -WorkerRoot 'D:\QC_Pipeline\Prepend PDF QC'
+```
+
+Prints §9.1–9.5 results and a markdown table row for §10. §9.4 Rules Engine still requires manual PW Administrator review.
+
 ### 9.1 Running processes (reveals actual script paths in use)
 
 ```powershell
@@ -261,24 +280,28 @@ Search shared runbooks / desktop shortcuts for:
 
 ## 10. Production sign-off
 
-**Status:** **Deferred/skipped** — production worker checklist (§9) not run. Compatibility wrappers at repo root and `scripts/` mitigate external path risk until sign-off is completed.
+**Status:** **Deferred/skipped** on production workers — §9 checklist not run on pipeline hosts. **4H shim removal is complete on `phase-4/integration`**; production hosts must migrate to canonical paths (`scripts\service\`, etc.) before publish.
 
-**Gate:** `phase-4/shim-removal` (4H) still requires §10 production row(s) and §9.4 Rules Engine review. Service move (`phase-4/service-scripts`) proceeded with wrappers retained.
+**Gate:** Complete §10 production row(s) and §9.4 Rules Engine review before merging `phase-4/integration` → `dev` on hosts that still use old paths.
 
-| Site / host | Worker root path | Task Scheduler | Rules Engine | Path overrides | Running processes | Reviewer | Date | Notes |
-|-------------|------------------|----------------|--------------|----------------|-------------------|----------|------|-------|
-| *(production worker)* | `D:\QC_Pipeline\Prepend PDF QC` | **DEFERRED** | **DEFERRED** | **DEFERRED** | **DEFERRED** | | | Run §9 checklist on worker when ready |
+| Site / host | Worker root path | Task Scheduler paths found | Rules Engine rules found | `appsettings.local` path overrides | Running process paths | Reviewer | Date | Notes |
+|-------------|------------------|----------------------------|--------------------------|-----------------------------------|----------------------|----------|------|-------|
+| AZTEC003028 | `C:\Users\jflint\OneDrive - TYPSA\Documentos\github\Prepend PDF QC` | none | not checked | relative `notifications.email.templatePath` only in committed `appsettings.json` | dev/test only (`Watch-QCTrigger` dry-run) | — | 2026-06-22 | **Dev workstation — not production sign-off** |
+| *(production worker)* | `D:\QC_Pipeline\Prepend PDF QC` | **PENDING** | **PENDING** | **PENDING** | **PENDING** | | | Run `scripts\diagnostics\Invoke-QCWorkerPathSignoff.ps1` on host; fill row from script output |
+
+### In-repo operator doc review (§9.6 — updated post-4H)
+
+Committed docs and README reference canonical paths under `scripts\service\`, `scripts\diagnostics\`, etc. Root and `scripts\` compatibility wrappers were removed in 4H.
+
+**Production deploy** requires republishing with `Publish-QCPipelineCode.ps1` and updating Task Scheduler / shortcuts to `scripts\service\` entrypoints.
 
 ---
 
 ## 11. Static in-repo validation
 
 ```powershell
-./test/test_service_script_wrappers.ps1
+./test/test_phase4_canonical_paths.ps1
 ./test/test_server_path_audit.ps1
-./test/test_diagnostic_script_wrappers.ps1
-./test/test_maintenance_script_wrappers.ps1
-./test/test_processing_deployment_script_wrappers.ps1
 ./test/test_notification_template_paths.ps1
 ```
 
