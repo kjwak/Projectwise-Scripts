@@ -12,18 +12,17 @@ Most logic is in `modules/`. Most runnable entrypoints are in `scripts/`.
 ## Quick start (recommended)
 
 - **Run the live dashboard**:
-  - `.\scripts\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.json`
+  - `.\scripts\service\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.json`
 
 - **Run one watch tick (enqueue only)**:
-  - `.\scripts\Watch-QCTrigger.ps1 -AppSettingsPath .\appsettings.json`
+  - `.\scripts\service\Watch-QCTrigger.ps1 -AppSettingsPath .\appsettings.json`
 
 - **Run one worker tick (dequeue/process one job)**:
-  - `.\scripts\Run-QCProcessor.ps1 -AppSettingsPath .\appsettings.json`
+  - `.\scripts\service\Run-QCProcessor.ps1 -AppSettingsPath .\appsettings.json`
 
 ## Root files
 
 - **`appsettings.json`**: primary configuration (ProjectWise watch list, filters, triggers, queue root, worker pool, processor modes).
-- **`Start-QCPipelineDashboard.ps1` / `Watch-QCTrigger.ps1` / `Run-QCProcessor.ps1` / `run_prepend_qc.ps1`**: root shims that forward to `scripts/` (kept for backward compatibility).
 - **`qc_overlay_prepend.spec`**: PyInstaller spec for building the overlay executable (`dist/qc_overlay_prepend/...`).
 - **`pytest.ini`**: Python test configuration (used by overlay/build/test tooling).
 

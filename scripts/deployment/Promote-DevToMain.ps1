@@ -23,10 +23,10 @@ Skip 'git fetch' before comparing branches.
 Show what would happen without checking out, merging, or pushing.
 
 .EXAMPLE
-.\scripts\Promote-DevToMain.ps1
+.\scripts\deployment\Promote-DevToMain.ps1
 
 .EXAMPLE
-.\scripts\Promote-DevToMain.ps1 -WhatIf
+.\scripts\deployment\Promote-DevToMain.ps1 -WhatIf
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]

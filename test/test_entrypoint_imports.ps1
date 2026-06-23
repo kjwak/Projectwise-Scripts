@@ -1,4 +1,4 @@
-# Phase 4F/4G: production entrypoints resolve folder implementation paths; flat shims still work.
+# Phase 4F/4G/4H: production entrypoints resolve folder implementation paths; flat shims removed.
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
@@ -111,21 +111,16 @@ Import-QCModuleImpl 'Workflow\QC.ProcessType.psm1'
 Import-QCModuleImpl 'Diagnostics\QC.DebugMcp.psm1'
 Assert-Command 'Initialize-QCDebugMcpContext' 'QC.DebugMcp loads from Diagnostics folder'
 
-Write-Host '=== Flat compatibility shims (legacy paths) ===' -ForegroundColor Cyan
-$shimChecks = @(
-    @{ Shim = 'Core.Results.psm1'; Cmd = 'New-QCResult' }
-    @{ Shim = 'QC.Queue.Json.psm1'; Cmd = 'Get-NextQCJob' }
-    @{ Shim = 'QC.JobFactory.psm1'; Cmd = 'New-QCJobObject' }
-)
-foreach ($check in $shimChecks) {
-    $shimPath = Join-Path $modulesRoot $check.Shim
-    if (-not (Test-Path -LiteralPath $shimPath)) {
-        Write-Host "FAIL: missing shim $($check.Shim)" -ForegroundColor Red
+Write-Host '=== Flat compatibility shims removed (Phase 4H) ===' -ForegroundColor Cyan
+$removedShims = @('Core.Results.psm1', 'QC.Queue.Json.psm1', 'QC.JobFactory.psm1')
+foreach ($shim in $removedShims) {
+    $shimPath = Join-Path $modulesRoot $shim
+    if (Test-Path -LiteralPath $shimPath) {
+        Write-Host "FAIL: flat shim should be removed: $shimPath" -ForegroundColor Red
         $fail++
-        continue
+    } else {
+        Write-Host "OK:   flat shim removed: $shim" -ForegroundColor Green
     }
-    Import-Module $shimPath -Force -WarningAction SilentlyContinue | Out-Null
-    Assert-Command $check.Cmd "flat shim $($check.Shim) forwards $($check.Cmd)"
 }
 
 if ($fail -gt 0) {

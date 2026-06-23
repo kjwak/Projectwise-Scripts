@@ -1063,7 +1063,7 @@ function _QDM-ReadProjectWiseProcessTypesForDocuments {
     $folderLocal = $FolderPath
     try {
         $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-            Import-Module (Join-Path $modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+            Import-Module (Join-Path $modulesRoot 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
             $processTypes = @{}
             foreach ($doc in $docInputs) {
                 $guid = [string]$doc.guid
@@ -1875,7 +1875,7 @@ function Compare-QCProjectWiseToDatabase {
         $modulesRoot = Split-Path -Parent $PSScriptRoot
         try {
             $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-                Import-Module (Join-Path $modulesRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+                Import-Module (Join-Path $modulesRoot 'ProjectWise/PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
                 $states = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $guids
                 $names = @{}
                 $guidCmd = Get-Command -Name 'Get-PWDocumentsByGUIDs' -ErrorAction SilentlyContinue

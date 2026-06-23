@@ -15,21 +15,22 @@ function Assert-True($Cond, $Msg) {
     return $true
 }
 
-Write-Host '=== Root compatibility shims ===' -ForegroundColor Cyan
-$rootShims = @(
-    @{ Shim = 'Start-QCPipelineDashboard.ps1'; Target = 'scripts\Start-QCPipelineDashboard.ps1' }
-    @{ Shim = 'Watch-QCTrigger.ps1'; Target = 'scripts\Watch-QCTrigger.ps1' }
-    @{ Shim = 'Run-QCProcessor.ps1'; Target = 'scripts\Run-QCProcessor.ps1' }
-    @{ Shim = 'run_prepend_qc.ps1'; Target = 'scripts\run_prepend_qc.ps1' }
+Write-Host '=== Canonical service entrypoints (Phase 4H) ===' -ForegroundColor Cyan
+$serviceScripts = @(
+    'scripts\service\Start-QCPipelineDashboard.ps1'
+    'scripts\service\Watch-QCTrigger.ps1'
+    'scripts\service\Run-QCProcessor.ps1'
+    'scripts\service\run_prepend_qc.ps1'
+    'scripts\service\Stop-QCPipeline.ps1'
 )
-foreach ($item in $rootShims) {
-    $shimPath = Join-Path $repoRoot $item.Shim
-    $targetPath = Join-Path $repoRoot $item.Target
-    Assert-True (Test-Path -LiteralPath $shimPath) "root shim exists: $($item.Shim)"
-    Assert-True (Test-Path -LiteralPath $targetPath) "shim target exists: $($item.Target)"
-    $text = Get-Content -LiteralPath $shimPath -Raw
-    Assert-True ($text -match [regex]::Escape($item.Target)) "root shim forwards to $($item.Target)"
+foreach ($rel in $serviceScripts) {
+    Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $rel)) "service entrypoint exists: $rel"
 }
+
+Write-Host '=== Removed compatibility layers ===' -ForegroundColor Cyan
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'Start-QCPipelineDashboard.ps1'))) 'root dashboard shim removed'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1'))) 'scripts Watch wrapper removed'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'modules\Core.Runtime.psm1'))) 'flat Core.Runtime shim removed'
 
 Write-Host '=== Publish-QCPipelineCode copy plan ===' -ForegroundColor Cyan
 $publishScript = Join-Path $repoRoot 'scripts\Publish-QCPipelineCode.ps1'
@@ -39,13 +40,8 @@ $publishSources = @(
     'email'
     'scripts\service'
     'scripts\Restore-QCModuleExports.ps1'
-    'scripts\Watch-QCTrigger.ps1'
-    'scripts\Run-QCProcessor.ps1'
     'scripts\Import-QCScriptModules.ps1'
-    'scripts\Start-QCPipelineDashboard.ps1'
-    'scripts\run_prepend_qc.ps1'
-    'scripts\Stop-QCPipeline.ps1'
-    'scripts\Reset-QCFolderWorkflow.ps1'
+    'scripts\maintenance\Reset-QCFolderWorkflow.ps1'
 )
 foreach ($rel in $publishSources) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $rel)) "publish source exists: $rel"

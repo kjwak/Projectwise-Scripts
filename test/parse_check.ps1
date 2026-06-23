@@ -4,9 +4,9 @@ $files = @(
     'modules\Queue\QC.Queue.Json.psm1',
     'modules\Processing\QC.StatusSet.psm1',
     'modules\Processing\QC.Processors.psm1',
-    'scripts\Start-QCPipelineDashboard.ps1',
-    'scripts\Show-QCQueueDiag.ps1',
-    'scripts\Run-QCProcessor.ps1'
+    'scripts\service\Start-QCPipelineDashboard.ps1',
+    'scripts\diagnostics\Show-QCQueueDiag.ps1',
+    'scripts\service\Run-QCProcessor.ps1'
 )
 $bad = 0
 foreach ($f in $files) {

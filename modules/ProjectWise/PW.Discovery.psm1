@@ -37,14 +37,14 @@ function Ensure-PWDiscoveryModuleLoaded {
     )
 
     $restoreOrder = @(
-        'Core.Results.psm1'
-        'Core.Runtime.psm1'
-        'Core.Hashing.psm1'
-        'Core.Database.psm1'
-        'QC.StatusSet.psm1'
-        'PW.Connection.psm1'
-        'PW.AuditPoller.psm1'
-        'PW.Discovery.psm1'
+        'Core/Core.Results.psm1'
+        'Core/Core.Runtime.psm1'
+        'Core/Core.Hashing.psm1'
+        'Database/Core.Database.psm1'
+        'Processing/QC.StatusSet.psm1'
+        'ProjectWise/PW.Connection.psm1'
+        'ProjectWise/PW.AuditPoller.psm1'
+        'ProjectWise/PW.Discovery.psm1'
     )
 
     for ($pass = 0; $pass -lt 3; $pass++) {
@@ -3498,11 +3498,11 @@ function _PWD-EnsureAuditWorkflowExports {
         'Test-QCIsQcPdfDocumentName'
     )
     $restoreOrder = @(
-        'QC.ProcessType.psm1'
-        'Core.Database.psm1'
-        'QC.AuditTriggers.psm1'
-        'QC.Notifications.psm1'
-        'PW.Discovery.psm1'
+        'Workflow/QC.ProcessType.psm1'
+        'Database/Core.Database.psm1'
+        'Workflow/QC.AuditTriggers.psm1'
+        'Notifications/QC.Notifications.psm1'
+        'ProjectWise/PW.Discovery.psm1'
     )
 
     for ($pass = 0; $pass -lt 3; $pass++) {

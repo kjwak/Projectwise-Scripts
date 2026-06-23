@@ -1,7 +1,7 @@
 # Reset-QCFolderWorkflow includes lane PDF registry purge for manual delete + reset workflow.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$scriptPath = Join-Path $repoRoot 'scripts\Reset-QCFolderWorkflow.ps1'
+$scriptPath = Join-Path $repoRoot 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'
 
 function Assert-True($v, $msg) { if (-not $v) { throw "ASSERT FAILED: $msg" } }
 

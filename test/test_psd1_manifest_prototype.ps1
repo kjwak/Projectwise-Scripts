@@ -59,15 +59,14 @@ foreach ($cmd in $queueProbes) {
     Assert-Command $cmd "QC.Queue exposes $cmd"
 }
 
-Write-Host '=== Coexistence: flat shim + folder path after manifest import ===' -ForegroundColor Cyan
+Write-Host '=== Folder implementation after manifest import (Phase 4H) ===' -ForegroundColor Cyan
 $flatResults = Join-Path $modulesRoot 'Core.Results.psm1'
 $folderResults = Join-Path $modulesRoot 'Core\Core.Results.psm1'
-Assert-True (Test-Path -LiteralPath $flatResults) 'flat Core.Results shim still on disk'
-Assert-True (Test-Path -LiteralPath $folderResults) 'folder Core.Results implementation still on disk'
-Import-Module $flatResults -Force -WarningAction SilentlyContinue
+Assert-True (-not (Test-Path -LiteralPath $flatResults)) 'flat Core.Results shim removed'
+Assert-True (Test-Path -LiteralPath $folderResults) 'folder Core.Results implementation exists'
 Import-Module $folderResults -Force -WarningAction SilentlyContinue
-Assert-Command 'New-QCResult' 'flat shim import still resolves New-QCResult'
-Assert-Command 'New-QCSuccessResult' 'folder path import still resolves New-QCSuccessResult'
+Assert-Command 'New-QCResult' 'folder path import resolves New-QCResult'
+Assert-Command 'New-QCSuccessResult' 'folder path import resolves New-QCSuccessResult'
 
 Write-Host '=== Manifest does not require live PW/SQL/Graph (import-only) ===' -ForegroundColor Cyan
 Assert-True (-not (Get-Command Connect-PW -ErrorAction SilentlyContinue)) 'Connect-PW not loaded by core+queue manifests alone'

@@ -1,4 +1,4 @@
-# Assert Phase 4E flat module shims forward to folder implementations and key exports load.
+# Assert Phase 4E folder module implementations exist; flat compatibility shims removed (Phase 4H).
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -51,12 +51,11 @@ $folderMap = @{
 $fail = 0
 foreach ($name in ($folderMap.Keys | Sort-Object)) {
     $folder = $folderMap[$name]
-    $wrapperPath = Join-Path $modulesDir $name
+    $shimPath = Join-Path $modulesDir $name
     $implPath = Join-Path $modulesDir (Join-Path $folder $name)
-    $relTarget = "$folder\$name"
 
-    if (-not (Test-Path -LiteralPath $wrapperPath)) {
-        Write-Host "FAIL: missing shim $wrapperPath" -ForegroundColor Red
+    if (Test-Path -LiteralPath $shimPath) {
+        Write-Host "FAIL: flat shim should be removed: $shimPath" -ForegroundColor Red
         $fail++
         continue
     }
@@ -66,34 +65,27 @@ foreach ($name in ($folderMap.Keys | Sort-Object)) {
         continue
     }
 
-    $wrapperText = Get-Content -LiteralPath $wrapperPath -Raw
-    if ($wrapperText -notmatch [regex]::Escape($relTarget)) {
-        Write-Host "FAIL: shim does not reference $relTarget : $wrapperPath" -ForegroundColor Red
-        $fail++
-        continue
-    }
-
-    Write-Host "OK:   $name -> $relTarget" -ForegroundColor Green
+    Write-Host "OK:   $folder\$name (no flat shim)" -ForegroundColor Green
 }
 
 if ($fail -gt 0) {
-    Write-Host "Module folder shim layout failed: $fail" -ForegroundColor Red
+    Write-Host "Module folder layout failed: $fail" -ForegroundColor Red
     exit 1
 }
 
-# Import smoke via flat shims (offline; no PW/SQL mutations).
+# Import smoke via folder paths (offline; no PW/SQL mutations).
 $importChecks = @(
-    @{ Module = 'Core.Results.psm1'; Command = 'New-QCResult' }
-    @{ Module = 'Core.Runtime.psm1'; Command = 'Get-QCTimestamp' }
-    @{ Module = 'Core.Database.psm1'; Command = 'Test-QCDatabaseEnabled' }
-    @{ Module = 'QC.Queue.Json.psm1'; Command = 'Get-NextQCJob' }
-    @{ Module = 'QC.JobFactory.psm1'; Command = 'New-QCJobObject' }
-    @{ Module = 'QC.Workflow.psm1'; Command = 'Get-QCWorkflowSettings' }
-    @{ Module = 'QC.Notifications.psm1'; Command = 'Get-QCNotificationSettings' }
-    @{ Module = 'QC.Processors.psm1'; Command = 'Invoke-QCPrependProcessor' }
-    @{ Module = 'PW.Connection.psm1'; Command = 'Ensure-PWDiscoveryCmdlets' }
-    @{ Module = 'PW.Discovery.psm1'; Command = 'Get-PWDocName' }
-    @{ Module = 'QC.DebugMcp.psm1'; Command = 'Initialize-QCDebugMcpContext' }
+    @{ Module = 'Core\Core.Results.psm1'; Command = 'New-QCResult' }
+    @{ Module = 'Core\Core.Runtime.psm1'; Command = 'Get-QCTimestamp' }
+    @{ Module = 'Database\Core.Database.psm1'; Command = 'Test-QCDatabaseEnabled' }
+    @{ Module = 'Queue\QC.Queue.Json.psm1'; Command = 'Get-NextQCJob' }
+    @{ Module = 'Queue\QC.JobFactory.psm1'; Command = 'New-QCJobObject' }
+    @{ Module = 'Workflow\QC.Workflow.psm1'; Command = 'Get-QCWorkflowSettings' }
+    @{ Module = 'Notifications\QC.Notifications.psm1'; Command = 'Get-QCNotificationSettings' }
+    @{ Module = 'Processing\QC.Processors.psm1'; Command = 'Invoke-QCPrependProcessor' }
+    @{ Module = 'ProjectWise\PW.Connection.psm1'; Command = 'Ensure-PWDiscoveryCmdlets' }
+    @{ Module = 'ProjectWise\PW.Discovery.psm1'; Command = 'Get-PWDocName' }
+    @{ Module = 'Diagnostics\QC.DebugMcp.psm1'; Command = 'Initialize-QCDebugMcpContext' }
 )
 
 foreach ($check in $importChecks) {
@@ -114,9 +106,9 @@ foreach ($check in $importChecks) {
 }
 
 if ($fail -gt 0) {
-    Write-Host "Module folder shim import checks failed: $fail" -ForegroundColor Red
+    Write-Host "Module folder import checks failed: $fail" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "All module folder shim checks passed ($($folderMap.Count) modules, $($importChecks.Count) import probes)." -ForegroundColor Green
+Write-Host "All module folder layout checks passed ($($folderMap.Count) modules, $($importChecks.Count) import probes)." -ForegroundColor Green
 exit 0

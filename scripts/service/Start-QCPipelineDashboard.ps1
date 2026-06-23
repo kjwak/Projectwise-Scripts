@@ -1570,7 +1570,7 @@ try {
     # Singleton guard: refuse to start if another dashboard is already running. Multiple
     # concurrent dashboards multiply the watcher + worker process count and overwhelm
     # Fortinet (which then kills processes mid-job, leaving orphan running\ jobs and
-    # empty output dirs). Use scripts\Stop-QCPipeline.ps1 to clean up stale instances.
+    # empty output dirs). Use scripts\service\Stop-QCPipeline.ps1 to clean up stale instances.
     $dashLock = Join-Path $queueRoot '_dashboard.lock'
     $alreadyRunning = $false
     if (-not $IgnoreSingletonLock.IsPresent) {
@@ -1620,7 +1620,7 @@ try {
     }
     if ($alreadyRunning) {
         Write-Host "Another dashboard is already running (see $dashLock)." -ForegroundColor Red
-        Write-Host "Stop it first with: .\scripts\Stop-QCPipeline.ps1" -ForegroundColor Yellow
+        Write-Host "Stop it first with: .\scripts\service\Stop-QCPipeline.ps1" -ForegroundColor Yellow
         Write-Host "Or override with: -IgnoreSingletonLock (not recommended if a real instance is running)" -ForegroundColor Yellow
         _Pause-IfInteractiveConsole
         exit 2

@@ -430,7 +430,7 @@ if (-not $haveQpdf) {
 # Load module + connect IMS
 Import-Module pwps_dab -Force
 $repoRootForMods = $prependQcRepoRoot
-$pwDiscoveryMod = Join-Path $repoRootForMods 'modules\PW.Discovery.psm1'
+$pwDiscoveryMod = Join-Path $repoRootForMods 'modules\ProjectWise\PW.Discovery.psm1'
 if (Test-Path -LiteralPath $pwDiscoveryMod) {
   Import-Module $pwDiscoveryMod -Force -ErrorAction SilentlyContinue
 }
@@ -442,7 +442,7 @@ function Get-PrependQcConfig {
   $cfgPath = if ($AppsettingsPath) { $AppsettingsPath } else { (Join-Path $repoRoot 'appsettings.json') }
   if (-not (Test-Path -LiteralPath $cfgPath)) { return $script:PrependQcConfig }
   try {
-    $rtMod = Join-Path $repoRoot 'modules\Core.Runtime.psm1'
+    $rtMod = Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1'
     if (Test-Path -LiteralPath $rtMod) {
       Import-Module $rtMod -Force -ErrorAction SilentlyContinue | Out-Null
       if (Get-Command -Name 'Read-QCAppSettings' -ErrorAction SilentlyContinue) {
@@ -570,7 +570,7 @@ function Invoke-PrependQcStampByProcessType {
   )
 
   $repoRoot = $prependQcRepoRoot
-  $processTypeMod = Join-Path $repoRoot 'modules\QC.ProcessType.psm1'
+  $processTypeMod = Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1'
   if (-not (Test-Path -LiteralPath $processTypeMod)) {
     return @{ applied = $false; skipped = $true; reason = 'QC.ProcessType.psm1 not found' }
   }
@@ -587,7 +587,7 @@ function Invoke-PrependQcStampByProcessType {
   }
 
   $repoRoot = $prependQcRepoRoot
-  $stampMod = Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1'
+  $stampMod = Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1'
   if (Test-Path -LiteralPath $stampMod) {
     Import-Module $stampMod -Force -ErrorAction SilentlyContinue | Out-Null
   }
@@ -667,7 +667,7 @@ function Invoke-QcReviewStampIfNeeded {
     return
   }
   $repoRoot = $prependQcRepoRoot
-  $stampMod = Join-Path $repoRoot 'modules\QC.ReviewStamp.psm1'
+  $stampMod = Join-Path $repoRoot 'modules\Processing\QC.ReviewStamp.psm1'
   if (-not (Test-Path -LiteralPath $stampMod)) {
     Write-Log 'Review stamp skipped: QC.ReviewStamp.psm1 not found.' -Severity WARNING
     return

@@ -4,10 +4,8 @@ Copies QC pipeline modules and entrypoint scripts to a worker/install root and o
 
 .DESCRIPTION
 Use after merging lane-notification, DOCUMENT_DELETE registry, and reset-script changes to dev.
-Copies modules/, email/, scripts/service/ (service implementations), compatibility wrappers at
-scripts/Watch-QCTrigger.ps1, scripts/Run-QCProcessor.ps1, scripts/Import-QCScriptModules.ps1,
-scripts/Start-QCPipelineDashboard.ps1, scripts/run_prepend_qc.ps1, scripts/Stop-QCPipeline.ps1,
-scripts/Restore-QCModuleExports.ps1, and scripts/Reset-QCFolderWorkflow.ps1 to the target root.
+Copies modules/, email/, scripts/service/ (service entrypoints), scripts/Restore-QCModuleExports.ps1,
+scripts/Import-QCScriptModules.ps1, and scripts/maintenance/Reset-QCFolderWorkflow.ps1 to the target root.
 
 Does not copy appsettings.json, appsettings.local.json, appsettings.secrets.json, or queue data.
 Restart the dashboard after publish so loaded modules refresh.
@@ -36,13 +34,8 @@ $copyPlan = @(
     @{ src = (Join-Path $repoRoot 'email'); dst = (Join-Path $workerRootResolved 'email'); type = 'dir' }
     @{ src = (Join-Path $repoRoot 'scripts\service'); dst = (Join-Path $workerRootResolved 'scripts\service'); type = 'dir' }
     @{ src = (Join-Path $repoRoot 'scripts\Restore-QCModuleExports.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Restore-QCModuleExports.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Watch-QCTrigger.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\Run-QCProcessor.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Run-QCProcessor.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Import-QCScriptModules.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Import-QCScriptModules.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\Start-QCPipelineDashboard.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Start-QCPipelineDashboard.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\run_prepend_qc.ps1'); dst = (Join-Path $workerRootResolved 'scripts\run_prepend_qc.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\Stop-QCPipeline.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Stop-QCPipeline.ps1'); type = 'file' }
-    @{ src = (Join-Path $repoRoot 'scripts\Reset-QCFolderWorkflow.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Reset-QCFolderWorkflow.ps1'); type = 'file' }
+    @{ src = (Join-Path $repoRoot 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'); dst = (Join-Path $workerRootResolved 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'); type = 'file' }
 )
 
 Write-Host "[Publish] Repo: $repoRoot" -ForegroundColor Cyan
@@ -75,8 +68,8 @@ if (-not $SkipModuleCopy.IsPresent) {
 }
 
 if ($ConfirmRestart.IsPresent) {
-    $stopScript = Join-Path $workerRootResolved 'scripts\Stop-QCPipeline.ps1'
-    $startScript = Join-Path $workerRootResolved 'scripts\Start-QCPipelineDashboard.ps1'
+    $stopScript = Join-Path $workerRootResolved 'scripts\service\Stop-QCPipeline.ps1'
+    $startScript = Join-Path $workerRootResolved 'scripts\service\Start-QCPipelineDashboard.ps1'
     if (-not (Test-Path -LiteralPath $stopScript)) {
         Write-Host '[Publish] Stop-QCPipeline.ps1 not found; restart manually.' -ForegroundColor Yellow
     } elseif ($PSCmdlet.ShouldProcess('QC pipeline', 'Restart dashboard')) {

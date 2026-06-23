@@ -24,7 +24,7 @@ $coreRuntimePath = Resolve-QCModulePath -RelativePath 'Core.Runtime.psm1'
 Assert-True ($coreRuntimePath -like '*\modules\Core\Core.Runtime.psm1') 'bare name maps to Core\Core.Runtime.psm1'
 Assert-True (Test-Path -LiteralPath $coreRuntimePath) 'resolved Core.Runtime path exists'
 $shimPath = Join-Path $modulesRoot 'Core.Runtime.psm1'
-Assert-True ($coreRuntimePath -ne $shimPath) 'resolver does not target flat shim path'
+Assert-True (-not (Test-Path -LiteralPath $shimPath)) 'flat Core.Runtime shim removed'
 
 Write-Host '=== Test-QCRequiredCommands error message ===' -ForegroundColor Cyan
 $threw = $false

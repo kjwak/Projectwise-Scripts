@@ -329,7 +329,7 @@ VALUES
 
 Write-Host "`n[8] Comparing with current queue..." -ForegroundColor Yellow
 try {
-    Import-Module (Join-Path $modulesDir 'QC.Queue.Json.psm1') -Force -ErrorAction Stop
+    Import-Module (Join-Path $modulesDir 'Queue\QC.Queue.Json.psm1') -Force -ErrorAction Stop
     $stats = Get-QCQueueStats -Config $config
     if ($stats.IsSuccess) {
         $st = $stats.Data.states

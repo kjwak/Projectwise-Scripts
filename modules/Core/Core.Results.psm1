@@ -69,7 +69,7 @@ function Ensure-QCJsonLogAvailable {
     )
 
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) { return $true }
-    $runtimePath = Join-Path $ModulesRoot 'Core.Runtime.psm1'
+    $runtimePath = Join-Path $ModulesRoot 'Core\Core.Runtime.psm1'
     if (-not (Test-Path -LiteralPath $runtimePath)) { return $false }
     Import-Module $runtimePath -Force -WarningAction SilentlyContinue | Out-Null
     return [bool](Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)

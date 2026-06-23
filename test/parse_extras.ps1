@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $paths = @(
-    'scripts\Watch-QCTrigger.ps1'
-    'scripts\Reconcile-QCStatusSets.ps1'
-    'scripts\Run-QCProcessor.ps1'
+    'scripts\service\Watch-QCTrigger.ps1'
+    'scripts\maintenance\Reconcile-QCStatusSets.ps1'
+    'scripts\service\Run-QCProcessor.ps1'
     'modules\Processing\QC.StatusSet.psm1'
     'modules\Queue\QC.Queue.Json.psm1'
 )

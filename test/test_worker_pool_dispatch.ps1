@@ -61,7 +61,7 @@ try {
         return $s
     }
 
-    $scriptPath = Join-Path $repoRoot 'scripts\Run-QCProcessor.ps1'
+    $scriptPath = Join-Path $repoRoot 'scripts\service\Run-QCProcessor.ps1'
     $procs = @()
     for ($w = 1; $w -le 3; $w++) {
         $pArgs = @(

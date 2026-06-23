@@ -15,9 +15,9 @@ Use a **test profile** so queue folders, dry-run behavior, and optional SQL tele
 3. Run scripts with the test profile:
 
    ```powershell
-   .\scripts\Watch-QCTrigger.ps1 -AppSettingsPath .\appsettings.test.json -DryRun
-   .\scripts\Run-QCProcessor.ps1 -AppSettingsPath .\appsettings.test.json
-   .\scripts\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.test.json
+   .\scripts\service\Watch-QCTrigger.ps1 -AppSettingsPath .\appsettings.test.json -DryRun
+   .\scripts\service\Run-QCProcessor.ps1 -AppSettingsPath .\appsettings.test.json
+   .\scripts\service\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.test.json
    ```
 
 The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/database-telemetry.md`.

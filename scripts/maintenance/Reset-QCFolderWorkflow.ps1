@@ -35,13 +35,13 @@ Recommended lane-PDF recycle workflow:
 3. Restart QC prepend cycle from Initiate Origination on the stem PDF.
 
 .EXAMPLE
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath 'AZFWY1704-FD02-SR202\CADD\Sheets' -ConfirmReset
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -KeepLanePdfRegistry
-.\scripts\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipPreviewCounts -QueryTimeoutSeconds 600
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath 'AZFWY1704-FD02-SR202\CADD\Sheets' -ConfirmReset
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipProjectWise
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipDatabase
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipSheetIndexUpdate
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -KeepLanePdfRegistry
+.\scripts\maintenance\Reset-QCFolderWorkflow.ps1 -FolderPath '...\Sheets' -ConfirmReset -SkipPreviewCounts -QueryTimeoutSeconds 600
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(

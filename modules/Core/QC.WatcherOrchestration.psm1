@@ -1,9 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$orchRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $orchRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
-Import-Module (Join-Path $orchRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
+$modulesRoot = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot 'Core.Results.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue
 
 function Get-QCReconcileStatusSetsOnStart {
     [CmdletBinding()]
@@ -121,7 +121,7 @@ function Get-QCInitiatedWorkflowStateName {
     if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
         try {
             if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
-                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+                Import-Module (Join-Path $modulesRoot 'Workflow/QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
             }
             $wf = Get-QCWorkflowSettings -Config $Config
             $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated'
@@ -165,7 +165,7 @@ function Get-QCFinalizingWorkflowStateName {
     if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
         try {
             if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
-                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+                Import-Module (Join-Path $modulesRoot 'Workflow/QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
             }
             $wf = Get-QCWorkflowSettings -Config $Config
             $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing'
@@ -205,7 +205,7 @@ function Get-QCReadyForVerificationWorkflowStateName {
     if (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue) {
         try {
             if (-not (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue)) {
-                Import-Module (Join-Path $orchRoot 'QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+                Import-Module (Join-Path $modulesRoot 'Workflow/QC.Workflow.psm1') -Force -WarningAction SilentlyContinue | Out-Null
             }
             $wf = Get-QCWorkflowSettings -Config $Config
             $resolved = Get-QCWorkflowStateName -Settings $wf -StateKey 'readyForVerification'
