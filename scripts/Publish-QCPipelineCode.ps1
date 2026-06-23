@@ -4,9 +4,10 @@ Copies QC pipeline modules and entrypoint scripts to a worker/install root and o
 
 .DESCRIPTION
 Use after merging lane-notification, DOCUMENT_DELETE registry, and reset-script changes to dev.
-Copies modules/, email/ (notification HTML template and logo), scripts/Watch-QCTrigger.ps1,
-scripts/Run-QCProcessor.ps1, scripts/Import-QCScriptModules.ps1, scripts/Start-QCPipelineDashboard.ps1,
-and scripts/Reset-QCFolderWorkflow.ps1 to the target root.
+Copies modules/, email/, scripts/service/ (service implementations), compatibility wrappers at
+scripts/Watch-QCTrigger.ps1, scripts/Run-QCProcessor.ps1, scripts/Import-QCScriptModules.ps1,
+scripts/Start-QCPipelineDashboard.ps1, scripts/run_prepend_qc.ps1, scripts/Stop-QCPipeline.ps1,
+scripts/Restore-QCModuleExports.ps1, and scripts/Reset-QCFolderWorkflow.ps1 to the target root.
 
 Does not copy appsettings.json, appsettings.local.json, appsettings.secrets.json, or queue data.
 Restart the dashboard after publish so loaded modules refresh.
@@ -33,10 +34,14 @@ if (-not (Test-Path -LiteralPath $workerRootResolved)) {
 $copyPlan = @(
     @{ src = (Join-Path $repoRoot 'modules'); dst = (Join-Path $workerRootResolved 'modules'); type = 'dir' }
     @{ src = (Join-Path $repoRoot 'email'); dst = (Join-Path $workerRootResolved 'email'); type = 'dir' }
+    @{ src = (Join-Path $repoRoot 'scripts\service'); dst = (Join-Path $workerRootResolved 'scripts\service'); type = 'dir' }
+    @{ src = (Join-Path $repoRoot 'scripts\Restore-QCModuleExports.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Restore-QCModuleExports.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Watch-QCTrigger.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Run-QCProcessor.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Run-QCProcessor.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Import-QCScriptModules.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Import-QCScriptModules.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Start-QCPipelineDashboard.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Start-QCPipelineDashboard.ps1'); type = 'file' }
+    @{ src = (Join-Path $repoRoot 'scripts\run_prepend_qc.ps1'); dst = (Join-Path $workerRootResolved 'scripts\run_prepend_qc.ps1'); type = 'file' }
+    @{ src = (Join-Path $repoRoot 'scripts\Stop-QCPipeline.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Stop-QCPipeline.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Reset-QCFolderWorkflow.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Reset-QCFolderWorkflow.ps1'); type = 'file' }
 )
 
@@ -49,12 +54,12 @@ if (-not $SkipModuleCopy.IsPresent) {
             throw "Missing source: $($item.src)"
         }
         if ($item.type -eq 'dir') {
-            if ($PSCmdlet.ShouldProcess($item.dst, 'Mirror modules directory')) {
+            if ($PSCmdlet.ShouldProcess($item.dst, 'Mirror directory')) {
                 if (-not (Test-Path -LiteralPath $item.dst)) {
                     New-Item -ItemType Directory -Path $item.dst -Force | Out-Null
                 }
                 Copy-Item -Path (Join-Path $item.src '*') -Destination $item.dst -Recurse -Force
-                Write-Host "  Copied modules -> $($item.dst)" -ForegroundColor Green
+                Write-Host "  Copied $(Split-Path -Leaf $item.src) -> $($item.dst)" -ForegroundColor Green
             }
         } else {
             $dstDir = Split-Path -Parent $item.dst

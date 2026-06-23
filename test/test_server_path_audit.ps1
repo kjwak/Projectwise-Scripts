@@ -37,10 +37,14 @@ Assert-True (Test-Path -LiteralPath $publishScript) 'Publish-QCPipelineCode.ps1 
 $publishSources = @(
     'modules'
     'email'
+    'scripts\service'
+    'scripts\Restore-QCModuleExports.ps1'
     'scripts\Watch-QCTrigger.ps1'
     'scripts\Run-QCProcessor.ps1'
     'scripts\Import-QCScriptModules.ps1'
     'scripts\Start-QCPipelineDashboard.ps1'
+    'scripts\run_prepend_qc.ps1'
+    'scripts\Stop-QCPipeline.ps1'
     'scripts\Reset-QCFolderWorkflow.ps1'
 )
 foreach ($rel in $publishSources) {
@@ -51,7 +55,7 @@ foreach ($rel in $publishSources) {
     Assert-True ($publishText -match [regex]::Escape($rel)) "publish script references: $rel"
 }
 
-Write-Host '=== Publish email assets and remaining gaps ===' -ForegroundColor Cyan
+Write-Host '=== Publish email assets and config exclusions ===' -ForegroundColor Cyan
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'email\templates\qc_notification.html')) 'email template exists in repo'
 if ($publishText -match '(?s)\$copyPlan = @\((.*?)\)\s*\r?\n\r?\nWrite-Host') {
     $copyPlanBlock = $Matches[1]
@@ -59,17 +63,16 @@ if ($publishText -match '(?s)\$copyPlan = @\((.*?)\)\s*\r?\n\r?\nWrite-Host') {
     $copyPlanBlock = ''
 }
 Assert-True ($copyPlanBlock -match "repoRoot 'email'") 'publish copy plan includes email/ directory'
+Assert-True ($copyPlanBlock -match 'Restore-QCModuleExports') 'publish copy plan includes Restore-QCModuleExports.ps1'
 Assert-True ($copyPlanBlock -notmatch 'appsettings') 'publish copy plan does not include appsettings files'
-Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'scripts\Restore-QCModuleExports.ps1')) 'Restore-QCModuleExports.ps1 exists'
-Assert-True ($publishText -notmatch 'Restore-QCModuleExports') 'publish does not copy Restore-QCModuleExports (expected)'
 
-Write-Host '=== Service spawn path references ===' -ForegroundColor Cyan
-$dashText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Start-QCPipelineDashboard.ps1') -Raw
-Assert-True ($dashText -match 'Watch-QCTrigger\.ps1') 'dashboard spawns Watch-QCTrigger'
-Assert-True ($dashText -match 'Run-QCProcessor\.ps1') 'dashboard spawns Run-QCProcessor'
+Write-Host '=== Service spawn path references (implementations) ===' -ForegroundColor Cyan
+$dashText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\Start-QCPipelineDashboard.ps1') -Raw
+Assert-True ($dashText -match 'scripts\\service\\Watch-QCTrigger\.ps1') 'dashboard spawns service Watch-QCTrigger'
+Assert-True ($dashText -match 'scripts\\service\\Run-QCProcessor\.ps1') 'dashboard spawns service Run-QCProcessor'
 
-$prependText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\run_prepend_qc.ps1') -Raw
-Assert-True ($prependText -match 'Start-QCPipelineDashboard\.ps1') 'run_prepend_qc references dashboard'
+$prependText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\run_prepend_qc.ps1') -Raw
+Assert-True ($prependText -match 'scripts\\service\\Start-QCPipelineDashboard\.ps1') 'run_prepend_qc references service dashboard'
 Assert-True ($prependText -match 'prepend_qc_on_trigger\.ps1') 'run_prepend_qc -Legacy path documented'
 
 Write-Host '=== Processor default paths ===' -ForegroundColor Cyan

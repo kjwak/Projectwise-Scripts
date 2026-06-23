@@ -92,7 +92,7 @@ try {
 
     Write-Host ""
     Write-Host "Test: Worker success path uses single Move-QCJob -Job call (no Update-QCJob)" -ForegroundColor Cyan
-    $rqp = Join-Path $root 'scripts\Run-QCProcessor.ps1'
+    $rqp = Join-Path $root 'scripts\service\Run-QCProcessor.ps1'
     $wsrc = Get-Content -LiteralPath $rqp -Raw
 
     $idxSucc = $wsrc.IndexOf("if (`$proc.IsSuccess)")

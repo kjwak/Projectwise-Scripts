@@ -535,6 +535,7 @@ dev (untouched until Phase 4 complete)
            ├── phase-4/psd1-manifests            (4G) ──merge──► integration
            ├── phase-4/server-path-audit         (docs) ──merge──► integration
            ├── phase-4/publish-email-assets      (publish) ──merge──► integration
+           ├── phase-4/service-scripts           (service) ──merge──► integration
            └── phase-4/shim-removal               (4H) ──merge──► integration
                                                     └──► dev (single merge after full validation)
 ```
@@ -557,6 +558,7 @@ dev (untouched until Phase 4 complete)
 | **4G** | `phase-4/psd1-manifest-prototype` → future `phase-4/psd1-manifests` | **Prototype complete** — `QC.Core.psd1`, `QC.Queue.psd1` only; wildcard exports; not in production | Medium | `test_psd1_manifest_prototype.ps1` | Delete prototype psd1 | PW/DB/Workflow leakage via nested imports |
 | **—** | `phase-4/server-path-audit` | **In-repo inventory complete** — external path audit doc + static test; production sign-off pending | Low | `test_server_path_audit.ps1`, manual checklist in audit doc | Delete audit doc | N/A |
 | **—** | `phase-4/publish-email-assets` | **Complete** — add `email/` to `Publish-QCPipelineCode` copy plan | Low | `test_notification_template_paths.ps1`, `test_server_path_audit.ps1` | Revert publish copy row | N/A |
+| **—** | `phase-4/service-scripts` | Move service implementations to `scripts/service/`; retain root + `scripts/` wrappers | Medium | `test_service_script_wrappers.ps1`, focus suite | Revert move + wrappers | Production entry failure |
 | **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, production sign-off (Appendix L) | Re-add shims | External caller still hits old path |
 
 ---
@@ -904,7 +906,33 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 
 ### Still pending (production)
 
-- Run Section 9–10 checklist on each worker / automation host before `phase-4/service-scripts` or `phase-4/shim-removal`
+- Production sign-off (§9–10) **deferred** — required for **4H shim removal only**; wrappers mitigate path risk after `phase-4/service-scripts`
+
+---
+
+## Appendix N — Phase 4 service script move (complete)
+
+**Branch:** `phase-4/service-scripts` → merge into `phase-4/integration` after review.
+
+### Moved (implementations)
+
+| Wrapper (retained at `scripts/`) | Implementation |
+|----------------------------------|----------------|
+| `scripts/Start-QCPipelineDashboard.ps1` | `scripts/service/Start-QCPipelineDashboard.ps1` |
+| `scripts/Watch-QCTrigger.ps1` | `scripts/service/Watch-QCTrigger.ps1` |
+| `scripts/Run-QCProcessor.ps1` | `scripts/service/Run-QCProcessor.ps1` |
+| `scripts/run_prepend_qc.ps1` | `scripts/service/run_prepend_qc.ps1` |
+| `scripts/Stop-QCPipeline.ps1` | `scripts/service/Stop-QCPipeline.ps1` |
+
+Repo-root shims unchanged (forward to `scripts/` wrappers).
+
+### Publish
+
+Copies `scripts/service/` tree, compatibility wrappers, and `Restore-QCModuleExports.ps1`.
+
+### Test
+
+`test/test_service_script_wrappers.ps1`
 
 ---
 

@@ -94,7 +94,7 @@ InModuleScope -ModuleName Core.Database {
 }
 
 # Watch script references lane delete handler.
-$watchText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts/Watch-QCTrigger.ps1') -Raw
+$watchText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts/service/Watch-QCTrigger.ps1') -Raw
 Assert-True ($watchText -match 'Remove-QCLaneQcPdfRegistryRecords') 'Watch-QCTrigger calls Remove-QCLaneQcPdfRegistryRecords'
 Assert-True ($watchText -match 'DOCUMENT_DELETE') 'Watch-QCTrigger handles DOCUMENT_DELETE'
 

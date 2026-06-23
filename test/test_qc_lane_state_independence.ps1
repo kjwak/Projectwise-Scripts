@@ -128,7 +128,7 @@ Assert-True ($discoveryText -match 'WATCH_AUDIT_STATE_SYNC_CANONICAL_RECONCILED'
 Assert-True ($discoveryText -match 'after batch read') `
     'NO_SOURCE_STATE is deferred until after batch GUID read'
 
-$watchText = Get-Content (Join-Path $repoRoot 'scripts\Watch-QCTrigger.ps1') -Raw
+$watchText = Get-Content (Join-Path $repoRoot 'scripts\service\Watch-QCTrigger.ps1') -Raw
 Assert-True ($watchText -match '-AuditTargetStateName\s+\$acLivePwState') `
     'Watch passes pre-read live PW state into Sync-PWAssociatedSheetWorkflowState'
 

@@ -53,11 +53,15 @@ D:\QC_Pipeline\Prepend PDF QC\
 | Source | Destination on worker |
 |--------|------------------------|
 | `modules/` (recursive) | `modules/` |
-| `email/` (recursive) | `email/` — template `templates/qc_notification.html`, logo `typsalogo.png.webp` |
-| `scripts/Watch-QCTrigger.ps1` | same relative path |
-| `scripts/Run-QCProcessor.ps1` | same |
+| `email/` (recursive) | `email/` |
+| `scripts/service/` (recursive) | `scripts/service/` — service implementations |
+| `scripts/Restore-QCModuleExports.ps1` | same |
+| `scripts/Watch-QCTrigger.ps1` | compatibility wrapper → `service/` |
+| `scripts/Run-QCProcessor.ps1` | compatibility wrapper → `service/` |
 | `scripts/Import-QCScriptModules.ps1` | same |
-| `scripts/Start-QCPipelineDashboard.ps1` | same |
+| `scripts/Start-QCPipelineDashboard.ps1` | compatibility wrapper → `service/` |
+| `scripts/run_prepend_qc.ps1` | compatibility wrapper → `service/` |
+| `scripts/Stop-QCPipeline.ps1` | compatibility wrapper → `service/` |
 | `scripts/Reset-QCFolderWorkflow.ps1` | same |
 
 **Not copied by publish** (worker must already have these from git clone, manual copy, or local build):
@@ -67,24 +71,29 @@ D:\QC_Pipeline\Prepend PDF QC\
 | `appsettings.json` (+ local/secrets) | All runtime config — **never** copied by publish |
 | `dist/qc_overlay_prepend/` | Default `qcPrepend.overlayExePath` / review stamp |
 | `legacy/` | `run_prepend_qc -Legacy`, `statusSet.mode=legacy`, deprecated prepend shim |
-| `scripts/Stop-QCPipeline.ps1` | Used by publish `-ConfirmRestart` only |
-| `scripts/Restore-QCModuleExports.ps1` | Service bootstrap — present on full clone, not published |
 | Diagnostic/maintenance wrappers | Operator tools — not published |
 
 ---
 
-## 2. Root compatibility shims (repo root → `scripts/`)
+## 2. Root and `scripts/` compatibility shims
 
 These **must remain** until 4H after external validation.
 
-| Root shim | Forwards to |
-|-----------|-------------|
-| `Start-QCPipelineDashboard.ps1` | `scripts\Start-QCPipelineDashboard.ps1` |
-| `Watch-QCTrigger.ps1` | `scripts\Watch-QCTrigger.ps1` |
-| `Run-QCProcessor.ps1` | `scripts\Run-QCProcessor.ps1` |
-| `run_prepend_qc.ps1` | `scripts\run_prepend_qc.ps1` |
+| Entry surface | Forwards to |
+|---------------|-------------|
+| `Start-QCPipelineDashboard.ps1` (repo root) | `scripts\Start-QCPipelineDashboard.ps1` |
+| `Watch-QCTrigger.ps1` (repo root) | `scripts\Watch-QCTrigger.ps1` |
+| `Run-QCProcessor.ps1` (repo root) | `scripts\Run-QCProcessor.ps1` |
+| `run_prepend_qc.ps1` (repo root) | `scripts\run_prepend_qc.ps1` |
+| `scripts\Start-QCPipelineDashboard.ps1` | `scripts\service\Start-QCPipelineDashboard.ps1` |
+| `scripts\Watch-QCTrigger.ps1` | `scripts\service\Watch-QCTrigger.ps1` |
+| `scripts\Run-QCProcessor.ps1` | `scripts\service\Run-QCProcessor.ps1` |
+| `scripts\run_prepend_qc.ps1` | `scripts\service\run_prepend_qc.ps1` |
+| `scripts\Stop-QCPipeline.ps1` | `scripts\service\Stop-QCPipeline.ps1` |
 
-**Risk:** Task Scheduler or operator shortcuts that use repo-root paths (e.g. `...\Prepend PDF QC\Start-QCPipelineDashboard.ps1`) depend on these shims.
+**Production sign-off:** **Deferred/skipped** (2026-06-22). Root + `scripts/` wrappers remain the mitigation for Task Scheduler, operator shortcuts, and publish callers until §10 is completed. **4H shim removal still requires production sign-off and soak.**
+
+**Risk:** External callers using repo-root or `scripts\` paths depend on these wrappers; implementations live under `scripts\service\`.
 
 ---
 
@@ -94,12 +103,12 @@ These paths are **inside** production entrypoints — moving service scripts req
 
 | Caller | Spawn target | Notes |
 |--------|--------------|-------|
-| `scripts/Start-QCPipelineDashboard.ps1` | `scripts\Watch-QCTrigger.ps1`, `scripts\Run-QCProcessor.ps1` | Uses `$repoRoot` + `scripts\` |
-| `scripts/run_prepend_qc.ps1` (default) | `scripts\Watch-QCTrigger.ps1`, `scripts\Run-QCProcessor.ps1` | Uses `$PSScriptRoot` (scripts folder) |
-| `scripts/run_prepend_qc.ps1` (default dashboard) | `scripts\Start-QCPipelineDashboard.ps1` | |
-| `scripts/run_prepend_qc.ps1` (`-Legacy`) | `legacy\prepend_qc_on_trigger.ps1`, `legacy\watchlist.json` | True-legacy monolith path |
-| `scripts/Publish-QCPipelineCode.ps1` (`-ConfirmRestart`) | `scripts\Stop-QCPipeline.ps1`, `scripts\Start-QCPipelineDashboard.ps1` | Stop matches process **command-line substrings**, not file paths |
-| `scripts/Stop-QCPipeline.ps1` | (none — kills by name) | Matches `Start-QCPipelineDashboard`, `Watch-QCTrigger`, `Run-QCProcessor` in command line |
+| `scripts/service/Start-QCPipelineDashboard.ps1` | `scripts\service\Watch-QCTrigger.ps1`, `scripts\service\Run-QCProcessor.ps1` | Uses `$repoRoot` + `scripts\service\` |
+| `scripts/service/run_prepend_qc.ps1` (default) | `scripts\service\Watch-QCTrigger.ps1`, `scripts\service\Run-QCProcessor.ps1` | |
+| `scripts/service/run_prepend_qc.ps1` (dashboard) | `scripts\service\Start-QCPipelineDashboard.ps1` | |
+| `scripts/service/run_prepend_qc.ps1` (`-Legacy`) | `legacy\prepend_qc_on_trigger.ps1`, `legacy\watchlist.json` | True-legacy monolith path |
+| `scripts/Publish-QCPipelineCode.ps1` (`-ConfirmRestart`) | `scripts\Stop-QCPipeline.ps1`, `scripts\Start-QCPipelineDashboard.ps1` | Wrappers forward to `service/` |
+| `scripts/service/Stop-QCPipeline.ps1` | (none — kills by name) | Matches `Start-QCPipelineDashboard`, `Watch-QCTrigger`, `Run-QCProcessor`, `run_prepend_qc` |
 
 `Stop-QCPipeline.ps1` does **not** match file paths — only script name tokens in `Win32_Process.CommandLine`. Renaming scripts would break stop/restart until patterns are updated.
 
@@ -114,6 +123,7 @@ Validated by existing wrapper tests:
 | Diagnostics | 23 | `test/test_diagnostic_script_wrappers.ps1` |
 | Maintenance | 16 | `test/test_maintenance_script_wrappers.ps1` |
 | Processing / deployment | 4 | `test/test_processing_deployment_script_wrappers.ps1` |
+| Service | 5 | `test/test_service_script_wrappers.ps1` |
 
 **Cross-wrapper call:** `maintenance/Invoke-QCDatabaseRetention.ps1` spawns `scripts\maintenance\Remove-QCAuditEvents.ps1` via **wrapper path** `Join-Path $PSScriptRoot 'Remove-QCAuditEvents.ps1'` (relative to `maintenance/` — resolves to implementation, not `scripts/Remove-QCAuditEvents.ps1`). External callers using `scripts\Remove-QCAuditEvents.ps1` still hit the flat wrapper.
 
@@ -249,19 +259,22 @@ Search shared runbooks / desktop shortcuts for:
 
 ---
 
-## 10. Production sign-off (fill in manually)
+## 10. Production sign-off
 
-| Site / host | Worker root path | Task Scheduler paths found | Rules Engine rules found | `appsettings.local` path overrides | Running process paths | Reviewer | Date |
-|-------------|------------------|----------------------------|--------------------------|-----------------------------------|----------------------|----------|------|
-| *(example)* | `D:\QC_Pipeline\Prepend PDF QC` | | | | | | |
+**Status:** **Deferred/skipped** — production worker checklist (§9) not run. Compatibility wrappers at repo root and `scripts/` mitigate external path risk until sign-off is completed.
 
-**4H shim removal** requires every row populated with “no unexpected hardcoded paths” or documented migration plan.
+**Gate:** `phase-4/shim-removal` (4H) still requires §10 production row(s) and §9.4 Rules Engine review. Service move (`phase-4/service-scripts`) proceeded with wrappers retained.
+
+| Site / host | Worker root path | Task Scheduler | Rules Engine | Path overrides | Running processes | Reviewer | Date | Notes |
+|-------------|------------------|----------------|--------------|----------------|-------------------|----------|------|-------|
+| *(production worker)* | `D:\QC_Pipeline\Prepend PDF QC` | **DEFERRED** | **DEFERRED** | **DEFERRED** | **DEFERRED** | | | Run §9 checklist on worker when ready |
 
 ---
 
 ## 11. Static in-repo validation
 
 ```powershell
+./test/test_service_script_wrappers.ps1
 ./test/test_server_path_audit.ps1
 ./test/test_diagnostic_script_wrappers.ps1
 ./test/test_maintenance_script_wrappers.ps1
@@ -275,9 +288,8 @@ Search shared runbooks / desktop shortcuts for:
 
 | Priority | Branch | Rationale |
 |----------|--------|-----------|
-| 1 | Complete Section 10 on production hosts | Only gap blocking 4H / service moves |
-| 2 | `phase-4/service-scripts` | Move service entrypoints to `scripts/service/` after sign-off + publish update |
-| 3 | `phase-4/shim-removal` | After soak + sign-off |
+| 1 | Complete §10 production sign-off when ready | Required for 4H only (deferred) |
+| 2 | `phase-4/shim-removal` | After soak + sign-off |
 
 ---
 

@@ -57,7 +57,7 @@ _Assert ($res.Data.pwUpload -eq 'FAILED') "Data.pwUpload preserved"
 
 Write-Host ""
 Write-Host "Test: worker success-path persists full result data" -ForegroundColor Cyan
-$wp = Join-Path $root 'scripts\Run-QCProcessor.ps1'
+$wp = Join-Path $root 'scripts\service\Run-QCProcessor.ps1'
 $wsrc = Get-Content -LiteralPath $wp -Raw
 
 # Success path stamps $Job['result'] in memory, then one Move-QCJob -Job call persists + relocates.
