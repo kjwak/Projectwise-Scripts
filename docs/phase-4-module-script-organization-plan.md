@@ -160,7 +160,7 @@ MCP tools: `search_sheet`, `get_sheet_identity`, `get_sheet_package_members`, `g
 
 ### Scheduled tasks and Rules Engine
 
-No `Register-ScheduledTask` or `schtasks` references exist in-repo. **Before any move**, audit worker servers and ProjectWise Rules Engine for hardcoded paths (Section 8).
+No `Register-ScheduledTask` or `schtasks` references exist in-repo. **In-repo path inventory:** [`docs/phase-4-server-path-audit.md`](phase-4-server-path-audit.md) (Appendix L). **Production sign-off** on worker servers and ProjectWise Rules Engine still required before 4H shim removal (Section 8).
 
 ### Architecture diagram
 
@@ -533,6 +533,7 @@ dev (untouched until Phase 4 complete)
            ├── phase-4/module-folders            (4E) ──merge──► integration
            ├── phase-4/import-updates            (4F) ──merge──► integration
            ├── phase-4/psd1-manifests            (4G) ──merge──► integration
+           ├── phase-4/server-path-audit         (docs) ──merge──► integration
            └── phase-4/shim-removal               (4H) ──merge──► integration
                                                     └──► dev (single merge after full validation)
 ```
@@ -553,7 +554,8 @@ dev (untouched until Phase 4 complete)
 | **4E** | `phase-4/module-folders` | **Complete** — Move 41 modules into responsibility subfolders; flat `modules/*.psm1` shims; internal imports via flat shim paths | **High** | inventory, bootstrap, focus, module folder shim test | Shims at old paths | Bootstrap or inventory fail |
 | **4F** | `phase-4/import-updates` | **Complete** — Update Import-Module paths to folder implementations; `test_entrypoint_imports.ps1`; flat shims retained | **High** | full suite + entrypoint test | Revert import paths | Production entry import failure |
 | **4G** | `phase-4/psd1-manifest-prototype` → future `phase-4/psd1-manifests` | **Prototype complete** — `QC.Core.psd1`, `QC.Queue.psd1` only; wildcard exports; not in production | Medium | `test_psd1_manifest_prototype.ps1` | Delete prototype psd1 | PW/DB/Workflow leakage via nested imports |
-| **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, external path audit | Re-add shims | External caller still hits old path |
+| **—** | `phase-4/server-path-audit` | **In-repo inventory complete** — external path audit doc + static test; production sign-off pending | Low | `test_server_path_audit.ps1`, manual checklist in audit doc | Delete audit doc | N/A |
+| **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, production sign-off (Appendix L) | Re-add shims | External caller still hits old path |
 
 ---
 
@@ -878,6 +880,29 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 ### Test
 
 `test/test_diagnostic_maintenance_bootstrap.ps1`
+
+---
+
+## Appendix L — Phase 4 server path audit (in-repo complete)
+
+**Branch:** `phase-4/server-path-audit` → merge into `phase-4/integration` after review.
+
+**Summary doc:** [`docs/phase-4-server-path-audit.md`](phase-4-server-path-audit.md)
+
+### Delivered
+
+- In-repo inventory: root shims, publish copy plan, service spawn paths, script/module wrappers, processor defaults, MCP notes
+- Documented publish gaps (`email/`, `legacy/`, `dist/`, `Restore-QCModuleExports.ps1`, `Stop-QCPipeline.ps1`)
+- Manual production checklist (Task Scheduler, Rules Engine, `appsettings.local`, running processes)
+- Per-host sign-off table (to be filled on workers)
+
+### Test
+
+`test/test_server_path_audit.ps1`
+
+### Still pending (production)
+
+- Run Section 9–10 checklist on each worker / automation host before `phase-4/service-scripts` or `phase-4/shim-removal`
 
 ---
 
