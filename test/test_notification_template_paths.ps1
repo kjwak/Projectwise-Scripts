@@ -1,4 +1,4 @@
-# Parse-only: worker deployments need email/ assets at repo root; Publish-QCPipelineCode does not copy them.
+# Parse-only: worker publish must include email/ assets at repo root for Graph HTML notifications.
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -21,8 +21,13 @@ Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $templateRel)) 'repo em
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $logoRel)) 'repo email logo exists locally'
 
 $publishText = Get-Content -LiteralPath $publishScript -Raw
-Assert-True ($publishText -notmatch [regex]::Escape($templateRel)) 'Publish copy plan does not include email template (documented gap)'
-Assert-True ($publishText -notmatch 'email\\') 'Publish copy plan does not copy email\ tree'
+if ($publishText -match '(?s)\$copyPlan = @\((.*?)\)\s*\r?\n\r?\nWrite-Host') {
+    $copyPlanBlock = $Matches[1]
+} else {
+    $copyPlanBlock = ''
+}
+Assert-True ($copyPlanBlock -match "repoRoot 'email'") 'Publish copy plan includes email/ directory'
+Assert-True ($copyPlanBlock -notmatch 'appsettings') 'Publish copy plan does not include appsettings files'
 
 # Simulate post-4E module folder layout: relative path must not resolve under modules/Notifications.
 Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.NotificationTemplates.psm1') -Force

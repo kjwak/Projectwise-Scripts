@@ -36,6 +36,7 @@ $publishScript = Join-Path $repoRoot 'scripts\Publish-QCPipelineCode.ps1'
 Assert-True (Test-Path -LiteralPath $publishScript) 'Publish-QCPipelineCode.ps1 exists'
 $publishSources = @(
     'modules'
+    'email'
     'scripts\Watch-QCTrigger.ps1'
     'scripts\Run-QCProcessor.ps1'
     'scripts\Import-QCScriptModules.ps1'
@@ -50,9 +51,15 @@ foreach ($rel in $publishSources) {
     Assert-True ($publishText -match [regex]::Escape($rel)) "publish script references: $rel"
 }
 
-Write-Host '=== Documented publish gaps (expected) ===' -ForegroundColor Cyan
+Write-Host '=== Publish email assets and remaining gaps ===' -ForegroundColor Cyan
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'email\templates\qc_notification.html')) 'email template exists in repo'
-Assert-True ($publishText -notmatch 'email\\') 'publish does not copy email\ (documented gap)'
+if ($publishText -match '(?s)\$copyPlan = @\((.*?)\)\s*\r?\n\r?\nWrite-Host') {
+    $copyPlanBlock = $Matches[1]
+} else {
+    $copyPlanBlock = ''
+}
+Assert-True ($copyPlanBlock -match "repoRoot 'email'") 'publish copy plan includes email/ directory'
+Assert-True ($copyPlanBlock -notmatch 'appsettings') 'publish copy plan does not include appsettings files'
 Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot 'scripts\Restore-QCModuleExports.ps1')) 'Restore-QCModuleExports.ps1 exists'
 Assert-True ($publishText -notmatch 'Restore-QCModuleExports') 'publish does not copy Restore-QCModuleExports (expected)'
 

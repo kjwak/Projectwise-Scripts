@@ -509,7 +509,7 @@ Inspect before any file move:
 | **Task Scheduler** | Actions pointing to root shims or `scripts\*.ps1` on worker machines |
 | **ProjectWise Rules Engine** | Rules invoking `legacy\` or `scripts\` paths |
 | **MCP config** | `.cursor/mcp.json` → `tools/pw-qc-mcp/server.py`; worker repo root assumptions |
-| **Publish-QCPipelineCode** | Copy plan: `modules/`, Watch, Run, Import-QCScriptModules, Start dashboard, Reset |
+| **Publish-QCPipelineCode** | Copy plan: `modules/`, `email/`, Watch, Run, Import-QCScriptModules, Start dashboard, Reset — not appsettings.local/secrets |
 | **appsettings.local / secrets** | `qcPrepend.legacyScriptPath`, `statusSet.legacyScriptPath` overrides |
 | **Power BI / reporting** | Consumers of `Scan-PWProjectMetrics`, SQL connection strings |
 | **Operator docs** | `docs/`, `modules/README.md`, `legacy/README.md`, runbooks |
@@ -534,6 +534,7 @@ dev (untouched until Phase 4 complete)
            ├── phase-4/import-updates            (4F) ──merge──► integration
            ├── phase-4/psd1-manifests            (4G) ──merge──► integration
            ├── phase-4/server-path-audit         (docs) ──merge──► integration
+           ├── phase-4/publish-email-assets      (publish) ──merge──► integration
            └── phase-4/shim-removal               (4H) ──merge──► integration
                                                     └──► dev (single merge after full validation)
 ```
@@ -555,6 +556,7 @@ dev (untouched until Phase 4 complete)
 | **4F** | `phase-4/import-updates` | **Complete** — Update Import-Module paths to folder implementations; `test_entrypoint_imports.ps1`; flat shims retained | **High** | full suite + entrypoint test | Revert import paths | Production entry import failure |
 | **4G** | `phase-4/psd1-manifest-prototype` → future `phase-4/psd1-manifests` | **Prototype complete** — `QC.Core.psd1`, `QC.Queue.psd1` only; wildcard exports; not in production | Medium | `test_psd1_manifest_prototype.ps1` | Delete prototype psd1 | PW/DB/Workflow leakage via nested imports |
 | **—** | `phase-4/server-path-audit` | **In-repo inventory complete** — external path audit doc + static test; production sign-off pending | Low | `test_server_path_audit.ps1`, manual checklist in audit doc | Delete audit doc | N/A |
+| **—** | `phase-4/publish-email-assets` | **Complete** — add `email/` to `Publish-QCPipelineCode` copy plan | Low | `test_notification_template_paths.ps1`, `test_server_path_audit.ps1` | Revert publish copy row | N/A |
 | **4H** | `phase-4/shim-removal` | Remove shims after server validation | **Critical** | 1-week production soak, production sign-off (Appendix L) | Re-add shims | External caller still hits old path |
 
 ---
@@ -892,7 +894,7 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 ### Delivered
 
 - In-repo inventory: root shims, publish copy plan, service spawn paths, script/module wrappers, processor defaults, MCP notes
-- Documented publish gaps (`email/`, `legacy/`, `dist/`, `Restore-QCModuleExports.ps1`, `Stop-QCPipeline.ps1`)
+- Documented publish gaps (`legacy/`, `dist/`, `Restore-QCModuleExports.ps1`, `Stop-QCPipeline.ps1`) — `email/` closed by Appendix M
 - Manual production checklist (Task Scheduler, Rules Engine, `appsettings.local`, running processes)
 - Per-host sign-off table (to be filled on workers)
 
@@ -903,6 +905,24 @@ Diagnostic/maintenance/`Combine-StatusSet` bootstrap: see Appendix K.
 ### Still pending (production)
 
 - Run Section 9–10 checklist on each worker / automation host before `phase-4/service-scripts` or `phase-4/shim-removal`
+
+---
+
+## Appendix M — Phase 4 publish email assets (complete)
+
+**Branch:** `phase-4/publish-email-assets` → merge into `phase-4/integration` after review.
+
+### Change
+
+`Publish-QCPipelineCode.ps1` now mirrors the repo `email/` directory to the worker root (HTML template, logo, and other files under `email/`).
+
+### Not copied (unchanged)
+
+`appsettings.json`, `appsettings.local.json`, `appsettings.secrets.json`, queue data, `legacy/`, `dist/`.
+
+### Test
+
+`test/test_notification_template_paths.ps1`
 
 ---
 
