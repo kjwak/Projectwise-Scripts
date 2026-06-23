@@ -3471,6 +3471,7 @@ function Ensure-SheetPackage {
         [string]$ReviewerEmail,
         [string]$CheckerEmail,
         [string]$QcReviewType,
+        [string]$QcProcessType = '',
         [string]$QcAssignedTo,
         [string]$PwStateName,
         [string]$QcCycleId,
@@ -3492,6 +3493,10 @@ function Ensure-SheetPackage {
     $qcLane = ''
     if ($role -eq 'qc_pdf' -and $DocumentName) {
         $qcLane = _QDB-GetQcPdfLaneFromDocumentName -DocumentName $DocumentName
+    }
+    $qcProcessTypeNorm = _QDB-NormalizeQcProcessTypeForColumn -RawValue $QcProcessType
+    if (-not $qcProcessTypeNorm -and $QcReviewType) {
+        $qcProcessTypeNorm = _QDB-NormalizeQcProcessTypeForColumn -RawValue $QcReviewType
     }
     try {
         $sql = @"
@@ -3520,6 +3525,7 @@ WHEN MATCHED THEN UPDATE SET
                          WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@checkerEmail, tgt.checker_email)
                          ELSE tgt.checker_email END,
     qc_review_type = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcReviewType, tgt.qc_review_type) ELSE tgt.qc_review_type END,
+    qc_process_type = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcProcessType, tgt.qc_process_type) ELSE tgt.qc_process_type END,
     qc_assigned_to = CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN COALESCE(@qcAssignedTo, tgt.qc_assigned_to) ELSE tgt.qc_assigned_to END,
     pw_state_name = tgt.pw_state_name,
     qc_cycle_id = CASE WHEN @documentRole = 'sheet_pdf' THEN COALESCE(@qcCycleId, tgt.qc_cycle_id) ELSE tgt.qc_cycle_id END,
@@ -3529,7 +3535,7 @@ WHEN NOT MATCHED THEN INSERT (
     sheet_package_id, sheet_stem, folder_path,
     dgn_guid, dgn_name, sheet_pdf_guid, sheet_pdf_name, qc_pdf_guid, qc_pdf_name,
     qc_chk_pdf_guid, qc_chk_pdf_name, qc_rev_pdf_guid, qc_rev_pdf_name,
-    designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, pw_state_name,
+    designer_email, reviewer_email, checker_email, qc_review_type, qc_process_type, qc_assigned_to, pw_state_name,
     qc_cycle_id, qc_cycle_number
 ) VALUES (
     NEWID(), @sheetStem, @folderPath,
@@ -3547,6 +3553,7 @@ WHEN NOT MATCHED THEN INSERT (
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @reviewerEmail END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @checkerEmail END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcReviewType END,
+    CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcProcessType END,
     CASE WHEN @documentRole IN ('dgn', 'sheet_pdf') THEN @qcAssignedTo END,
     NULL,
     CASE WHEN @documentRole = 'sheet_pdf' THEN @qcCycleId END,
@@ -3566,6 +3573,7 @@ SELECT TOP 1 sheet_package_id FROM @ids;
             reviewerEmail = if ($ReviewerEmail) { $ReviewerEmail } else { [DBNull]::Value }
             checkerEmail = if ($CheckerEmail) { $CheckerEmail } else { [DBNull]::Value }
             qcReviewType = if ($QcReviewType) { $QcReviewType } else { [DBNull]::Value }
+            qcProcessType = if ($qcProcessTypeNorm) { $qcProcessTypeNorm } else { [DBNull]::Value }
             qcAssignedTo = if ($QcAssignedTo) { $QcAssignedTo } else { [DBNull]::Value }
             pwStateName = if ($PwStateName) { $PwStateName } else { [DBNull]::Value }
             qcCycleId = if ($QcCycleId) { $QcCycleId } else { [DBNull]::Value }
@@ -3699,6 +3707,7 @@ function _QDB-SyncSheetPackageDualWrite {
         [string]$ReviewerEmail = '',
         [string]$CheckerEmail = '',
         [string]$QcReviewType = '',
+        [string]$QcProcessType = '',
         [string]$QcAssignedTo = '',
         [string]$PwStateName = '',
         [string]$FileModifiedAt = '',
@@ -3717,6 +3726,7 @@ function _QDB-SyncSheetPackageDualWrite {
         -ReviewerEmail $ReviewerEmail `
         -CheckerEmail $CheckerEmail `
         -QcReviewType $QcReviewType `
+        -QcProcessType $QcProcessType `
         -QcAssignedTo $QcAssignedTo `
         -PwStateName $PwStateName `
         -QcCycleId $QcCycleId `
@@ -3980,6 +3990,18 @@ function Build-SheetPackageBackfillPlan {
     }
 }
 
+function _QDB-NormalizeQcProcessTypeForColumn {
+    param([string]$RawValue)
+    if ([string]::IsNullOrWhiteSpace($RawValue)) { return $null }
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        try {
+            $normalized = Normalize-QCProcessType -ProcessType ([string]$RawValue).Trim()
+            if ($normalized) { return $normalized }
+        } catch { }
+    }
+    return ([string]$RawValue).Trim().ToLowerInvariant()
+}
+
 function Write-QCSheetIndex {
     <#
     .SYNOPSIS
@@ -4001,6 +4023,7 @@ function Write-QCSheetIndex {
         [string]$ReviewerEmail,
         [string]$CheckerEmail,
         [string]$QcReviewType,
+        [string]$QcProcessType,
         [string]$QcAssignedTo,
         [string]$PwStateName,
         [string]$QcStage,
@@ -4023,6 +4046,10 @@ function Write-QCSheetIndex {
             if ($ext) { $Extension = $ext.ToLowerInvariant() }
         }
         $setOwnership = if ($SetOwnershipFromProjectWise) { 1 } else { 0 }
+        $qcProcessTypeNorm = _QDB-NormalizeQcProcessTypeForColumn -RawValue $QcProcessType
+        if (-not $qcProcessTypeNorm -and $QcReviewType) {
+            $qcProcessTypeNorm = _QDB-NormalizeQcProcessTypeForColumn -RawValue $QcReviewType
+        }
         $sql = @"
 MERGE sheet_index AS tgt
 USING (SELECT @docGuid AS document_guid) AS src ON tgt.document_guid = src.document_guid
@@ -4038,6 +4065,7 @@ WHEN MATCHED THEN UPDATE SET
     reviewer_email = CASE WHEN @setOwnership = 1 THEN @reviewerEmail ELSE COALESCE(@reviewerEmail, tgt.reviewer_email) END,
     checker_email = CASE WHEN @setOwnership = 1 THEN COALESCE(@checkerEmail, tgt.checker_email) ELSE COALESCE(@checkerEmail, tgt.checker_email) END,
     qc_review_type = CASE WHEN @setOwnership = 1 THEN COALESCE(@qcReviewType, tgt.qc_review_type) ELSE COALESCE(@qcReviewType, tgt.qc_review_type) END,
+    qc_process_type = CASE WHEN @setOwnership = 1 THEN COALESCE(@qcProcessType, tgt.qc_process_type) ELSE COALESCE(@qcProcessType, tgt.qc_process_type) END,
     qc_assigned_to = CASE WHEN @setOwnership = 1 THEN COALESCE(@qcAssignedTo, tgt.qc_assigned_to) ELSE COALESCE(@qcAssignedTo, tgt.qc_assigned_to) END,
     pw_state_name = CASE WHEN @setOwnership = 1 THEN @pwStateName ELSE COALESCE(@pwStateName, tgt.pw_state_name) END,
     qc_stage = COALESCE(@qcStage, tgt.qc_stage),
@@ -4047,11 +4075,11 @@ WHEN MATCHED THEN UPDATE SET
     file_modified_at = COALESCE(@fileModifiedAt, tgt.file_modified_at)
 WHEN NOT MATCHED THEN INSERT
     (document_guid, document_name, document_number, folder_path, project_name, watch_root,
-     extension, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to,
+     extension, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_process_type, qc_assigned_to,
      pw_state_name, qc_stage, qc_status, last_audit_event_at, file_modified_at)
 VALUES
     (@docGuid, @docName, @docNumber, @folderPath, @projectName, @watchRoot,
-     @extension, @sourceType, @designerEmail, @reviewerEmail, @checkerEmail, @qcReviewType, @qcAssignedTo,
+     @extension, @sourceType, @designerEmail, @reviewerEmail, @checkerEmail, @qcReviewType, @qcProcessType, @qcAssignedTo,
      @pwStateName, @qcStage, @qcStatus, @lastAuditEventAt, @fileModifiedAt);
 "@
         $params = @{
@@ -4067,6 +4095,7 @@ VALUES
             reviewerEmail    = if ($ReviewerEmail)     { $ReviewerEmail }     else { $null }
             checkerEmail     = if ($CheckerEmail)      { $CheckerEmail }      else { $null }
             qcReviewType     = if ($QcReviewType)      { $QcReviewType }      else { $null }
+            qcProcessType    = if ($qcProcessTypeNorm) { $qcProcessTypeNorm } else { $null }
             qcAssignedTo     = if ($QcAssignedTo)      { $QcAssignedTo }      else { $null }
             pwStateName      = if ($PwStateName)       { $PwStateName }       else { $null }
             qcStage          = if ($QcStage)           { $QcStage }           else { $null }
@@ -4084,7 +4113,7 @@ VALUES
             -DocumentGuid $DocumentGuid -DocumentName $DocumentName -FolderPath $FolderPath `
             -Extension $Extension -SourceType $SourceType `
             -DesignerEmail $DesignerEmail -ReviewerEmail $ReviewerEmail -CheckerEmail $CheckerEmail `
-            -QcReviewType $QcReviewType -QcAssignedTo $QcAssignedTo -PwStateName $PwStateName -FileModifiedAt $FileModifiedAt
+            -QcReviewType $QcReviewType -QcProcessType $qcProcessTypeNorm -QcAssignedTo $QcAssignedTo -PwStateName $PwStateName -FileModifiedAt $FileModifiedAt
         return New-QCSuccessResult -Code 'SHEET_INDEX_WRITTEN' -Message 'Sheet index upserted.' -Data @{
             written = $true
             rowsAffected = $dbRes.Data.rowsAffected
@@ -4756,6 +4785,7 @@ CREATE TABLE #sheet_index_stage (
     reviewer_email NVARCHAR(200) NULL,
     checker_email NVARCHAR(200) NULL,
     qc_review_type NVARCHAR(100) NULL,
+    qc_process_type NVARCHAR(32) NULL,
     qc_assigned_to NVARCHAR(200) NULL,
     qc_status NVARCHAR(50) NULL,
     pw_state_name  NVARCHAR(100) NULL
@@ -4763,7 +4793,7 @@ CREATE TABLE #sheet_index_stage (
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $createSql -Parameters @{} -CommandTimeout 120)
 
-            $sheetParamsPerRow = 12
+            $sheetParamsPerRow = 13
             $chunkSize = _QDB-GetMaxRowsForSqlParameters -ParametersPerRow $sheetParamsPerRow
             if ($chunkSize -gt 200) { $chunkSize = 200 }
             for ($i = 0; $i -lt $Rows.Count; $i += $chunkSize) {
@@ -4773,7 +4803,7 @@ CREATE TABLE #sheet_index_stage (
                 for ($r = 0; $r -lt $chunk.Count; $r++) {
                     $row = $chunk[$r]
                     if ($r -gt 0) { [void]$sb.AppendLine(',') }
-                    [void]$sb.Append(("(@docGuid{0},@docName{0},@folderPath{0},@watchRoot{0},@sourceType{0},@designerEmail{0},@reviewerEmail{0},@checkerEmail{0},@qcReviewType{0},@qcAssignedTo{0},@qcStatus{0},@pwStateName{0})" -f $r))
+                    [void]$sb.Append(("(@docGuid{0},@docName{0},@folderPath{0},@watchRoot{0},@sourceType{0},@designerEmail{0},@reviewerEmail{0},@checkerEmail{0},@qcReviewType{0},@qcProcessType{0},@qcAssignedTo{0},@qcStatus{0},@pwStateName{0})" -f $r))
                     $params["docGuid$r"] = [string]$row.documentGuid
                     $params["docName$r"] = [string]$row.documentName
                     $params["folderPath$r"] = [string]$row.folderPath
@@ -4783,13 +4813,15 @@ CREATE TABLE #sheet_index_stage (
                     $params["reviewerEmail$r"] = if ($row.reviewerEmail) { [string]$row.reviewerEmail } else { $null }
                     $params["checkerEmail$r"] = if ($row.checkerEmail) { [string]$row.checkerEmail } else { $null }
                     $params["qcReviewType$r"] = if ($row.qcReviewType) { [string]$row.qcReviewType } else { $null }
+                    $processType = if ($row.qcProcessType) { [string]$row.qcProcessType } elseif ($row.qcReviewType) { [string]$row.qcReviewType } else { $null }
+                    $params["qcProcessType$r"] = _QDB-NormalizeQcProcessTypeForColumn -RawValue $processType
                     $params["qcAssignedTo$r"] = if ($row.qcAssignedTo) { [string]$row.qcAssignedTo } else { $null }
                     $params["qcStatus$r"] = if ($row.qcStatus) { [string]$row.qcStatus } else { $null }
                     $params["pwStateName$r"] = if ($row.pwStateName) { [string]$row.pwStateName } else { $null }
                 }
                 $insSql = @"
 INSERT INTO #sheet_index_stage
-    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name)
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_process_type, qc_assigned_to, qc_status, pw_state_name)
 VALUES
 $($sb.ToString());
 "@
@@ -4809,14 +4841,15 @@ WHEN MATCHED THEN UPDATE SET
     reviewer_email = COALESCE(src.reviewer_email, tgt.reviewer_email),
     checker_email = COALESCE(src.checker_email, tgt.checker_email),
     qc_review_type = COALESCE(src.qc_review_type, tgt.qc_review_type),
+    qc_process_type = COALESCE(src.qc_process_type, tgt.qc_process_type),
     qc_assigned_to = COALESCE(src.qc_assigned_to, tgt.qc_assigned_to),
     qc_status = COALESCE(src.qc_status, tgt.qc_status),
     pw_state_name = COALESCE(src.pw_state_name, tgt.pw_state_name),
     last_updated_at = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT
-    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name)
+    (document_guid, document_name, folder_path, watch_root, source_type, designer_email, reviewer_email, checker_email, qc_review_type, qc_process_type, qc_assigned_to, qc_status, pw_state_name)
 VALUES
-    (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.checker_email, src.qc_review_type, src.qc_assigned_to, src.qc_status, src.pw_state_name);
+    (src.document_guid, src.document_name, src.folder_path, src.watch_root, src.source_type, src.designer_email, src.reviewer_email, src.checker_email, src.qc_review_type, src.qc_process_type, src.qc_assigned_to, src.qc_status, src.pw_state_name);
 "@
             [void](Invoke-QCDatabaseNonQueryWithConnection -Connection $conn -Sql $mergeSql -Parameters @{} -CommandTimeout 120)
             foreach ($row in $Rows) {
@@ -4835,6 +4868,7 @@ VALUES
                     -ReviewerEmail $(if ($row.reviewerEmail) { [string]$row.reviewerEmail } else { '' }) `
                     -CheckerEmail $(if ($row.checkerEmail) { [string]$row.checkerEmail } else { '' }) `
                     -QcReviewType $(if ($row.qcReviewType) { [string]$row.qcReviewType } else { '' }) `
+                    -QcProcessType $(if ($row.qcProcessType) { [string]$row.qcProcessType } elseif ($row.qcReviewType) { [string]$row.qcReviewType } else { '' }) `
                     -QcAssignedTo $(if ($row.qcAssignedTo) { [string]$row.qcAssignedTo } else { '' }) `
                     -PwStateName $(if ($row.pwStateName) { [string]$row.pwStateName } else { '' }))
             }

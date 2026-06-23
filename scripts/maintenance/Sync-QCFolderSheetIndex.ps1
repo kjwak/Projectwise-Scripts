@@ -208,6 +208,9 @@ function _SIS-BuildBatchRow {
         reviewerEmail  = if ($IncludeEmail) { [string]$PwRow.reviewerEmail } else { $null }
         checkerEmail   = if ($IncludeEmail) { [string]$PwRow.checkerEmail } else { $null }
         qcReviewType   = if ($IncludeReviewType) { [string]$PwRow.qcReviewType } else { $null }
+        qcProcessType  = if ($IncludeReviewType) {
+            if ($PwRow.qcProcessType) { [string]$PwRow.qcProcessType } elseif ($PwRow.qcReviewType) { [string]$PwRow.qcReviewType } else { $null }
+        } else { $null }
         qcAssignedTo   = $null
         qcStatus       = $null
         pwStateName    = if ($IncludeWorkflow) { [string]$PwRow.pwStateName } else { $null }

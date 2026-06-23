@@ -267,17 +267,32 @@ function _QDM-ParseDocumentPath {
     <#
     .SYNOPSIS
     Parses a ProjectWise document path (pw:\\datasource\Documents\...\file.pdf) into telemetry keys.
+    Paths ending in a folder segment (no file extension) are treated as folder-only lookups.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentPath)
 
     $raw = $DocumentPath.Trim()
+    $isFolderOnly = $raw -match '[\\/]\s*$'
     $normRes = Normalize-QCPath -Path $raw
     if (-not $normRes.IsSuccess) {
         return @{ error = $normRes.Message; raw_path = $raw }
     }
 
     $full = [string]$normRes.Data.path
+    if ($isFolderOnly) {
+        $folderPath = $full
+        $folderRes = Normalize-QCDocumentsFolderPath -Path $folderPath
+        if ($folderRes.IsSuccess) { $folderPath = [string]$folderRes.Data.path }
+        return @{
+            raw_path = $raw
+            folder_path = $folderPath
+            document_name = $null
+            sheet_stem = $null
+            is_folder_only = $true
+        }
+    }
+
     $documentName = [System.IO.Path]::GetFileName($full)
     $parent = [System.IO.Path]::GetDirectoryName($full)
     if ([string]::IsNullOrWhiteSpace($documentName)) {
@@ -290,6 +305,20 @@ function _QDM-ParseDocumentPath {
         if ($folderRes.IsSuccess) { $folderPath = [string]$folderRes.Data.path }
     }
 
+    $ext = [System.IO.Path]::GetExtension($documentName)
+    if ([string]::IsNullOrWhiteSpace($ext)) {
+        $folderOnlyPath = $full
+        $folderRes = Normalize-QCDocumentsFolderPath -Path $folderOnlyPath
+        if ($folderRes.IsSuccess) { $folderOnlyPath = [string]$folderRes.Data.path }
+        return @{
+            raw_path = $raw
+            folder_path = $folderOnlyPath
+            document_name = $null
+            sheet_stem = $null
+            is_folder_only = $true
+        }
+    }
+
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($documentName)
     if ($stem -match '(?i)-(prod|chk|rev)$') { $stem = $stem -replace '(?i)-(prod|chk|rev)$', '' }
 
@@ -298,6 +327,55 @@ function _QDM-ParseDocumentPath {
         folder_path = $folderPath
         document_name = $documentName
         sheet_stem = $stem.ToLowerInvariant()
+        is_folder_only = $false
+    }
+}
+
+function _QDM-IngestFolderPathIdentity {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [System.Collections.Generic.HashSet[string]]$PackageIds,
+        [System.Collections.Generic.HashSet[string]]$DocumentGuids,
+        [System.Collections.Generic.HashSet[string]]$DocumentNames,
+        [System.Collections.Generic.HashSet[string]]$SheetStems
+    )
+
+    if (_QDM-TestTableExists -TableName 'sheet_index') {
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_index' -Requested @(
+            'document_guid', 'document_name', 'sheet_package_id', 'sheet_stem', 'folder_path', 'qc_pdf_guid'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (200) $select FROM [sheet_index] WHERE folder_path = @folderPath ORDER BY last_updated_at DESC" -Parameters @{
+                folderPath = $FolderPath
+            }
+            _QDM-IngestIdentityRows -Rows $rows -PackageIds $PackageIds -DocumentGuids $DocumentGuids -DocumentNames $DocumentNames -SheetStems $SheetStems
+        }
+    }
+
+    if (_QDM-TestTableExists -TableName 'sheet_packages') {
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_packages' -Requested @(
+            'sheet_package_id', 'sheet_stem', 'folder_path', 'dgn_guid', 'sheet_pdf_guid', 'qc_pdf_guid'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (200) $select FROM [sheet_packages] WHERE folder_path = @folderPath ORDER BY last_updated_at DESC" -Parameters @{
+                folderPath = $FolderPath
+            }
+            _QDM-IngestIdentityRows -Rows $rows -PackageIds $PackageIds -DocumentGuids $DocumentGuids -DocumentNames $DocumentNames -SheetStems $SheetStems
+        }
+    }
+
+    if ($PackageIds.Count -gt 0 -and (_QDM-TestTableExists -TableName 'sheet_documents')) {
+        $cols = _QDM-SelectExistingColumns -TableName 'sheet_documents' -Requested @(
+            'document_guid', 'document_name', 'sheet_package_id', 'document_role'
+        )
+        if ($cols.Count -gt 0) {
+            $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+            $inList = (@($PackageIds) | ForEach-Object { "'$_'" }) -join ','
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (200) $select FROM [sheet_documents] WHERE CAST(sheet_package_id AS NVARCHAR(36)) IN ($inList)" -Parameters @{}
+            _QDM-IngestIdentityRows -Rows $rows -PackageIds $PackageIds -DocumentGuids $DocumentGuids -DocumentNames $DocumentNames -SheetStems $SheetStems
+        }
     }
 }
 
@@ -428,6 +506,14 @@ WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg
         if ($parsed.error) {
             throw "Invalid document_path: $($parsed.error)"
         }
+        if ($parsed.is_folder_only) {
+            $lookupType = 'folder_path'
+            $lookupText = [string]$parsed.raw_path
+            $rawDocumentPath = [string]$parsed.raw_path
+            $folderPath = [string]$parsed.folder_path
+            _QDM-IngestFolderPathIdentity -FolderPath $folderPath -PackageIds $packageIds -DocumentGuids $documentGuids `
+                -DocumentNames $documentNames -SheetStems $sheetStems
+        } else {
         $lookupType = 'document_path'
         $lookupText = [string]$parsed.raw_path
         $rawDocumentPath = [string]$parsed.raw_path
@@ -478,6 +564,7 @@ WHERE CAST(sheet_package_id AS NVARCHAR(36)) = @pkg
                 $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (50) $select FROM [sheet_documents] WHERE $($clauses -join ' OR ')" -Parameters $params
                 _QDM-IngestIdentityRows -Rows $rows -PackageIds $packageIds -DocumentGuids $documentGuids -DocumentNames $documentNames -SheetStems $sheetStems
             }
+        }
         }
     }
     elseif (-not [string]::IsNullOrWhiteSpace($SheetNumber)) {
@@ -597,7 +684,7 @@ function Search-QCDebugSheet {
     }
     }
 
-    if ($lookup.lookup_type -eq 'document_path') {
+    if ($lookup.lookup_type -in @('document_path', 'folder_path')) {
         foreach ($table in @('sheet_index', 'sheet_packages', 'sheet_documents', 'transition_events', 'document_state_history', 'notification_log')) {
             if (-not (_QDM-TestTableExists -TableName $table)) { continue }
             $cols = _QDM-GetColumns -TableName $table
@@ -608,13 +695,15 @@ function Search-QCDebugSheet {
                 $clauses += 'folder_path = @folderPath'
                 $params['folderPath'] = $lookup.folder_path
             }
-            if ($table -eq 'sheet_packages' -and ($cols -contains 'sheet_stem')) {
-                $clauses += 'sheet_stem = @sheetStem'
-                $params['sheetStem'] = $lookup.sheet_stem
-            }
-            elseif ($cols -contains 'document_name') {
-                $clauses += 'document_name = @documentName'
-                $params['documentName'] = $lookup.document_name
+            if ($lookup.lookup_type -eq 'document_path') {
+                if ($table -eq 'sheet_packages' -and ($cols -contains 'sheet_stem')) {
+                    $clauses += 'sheet_stem = @sheetStem'
+                    $params['sheetStem'] = $lookup.sheet_stem
+                }
+                elseif ($cols -contains 'document_name') {
+                    $clauses += 'document_name = @documentName'
+                    $params['documentName'] = $lookup.document_name
+                }
             }
             if ($lookup.sheet_package_ids.Count -gt 0 -and ($cols -contains 'sheet_package_id')) {
                 $inList = (@($lookup.sheet_package_ids) | ForEach-Object { "'$_'" }) -join ','
@@ -622,7 +711,8 @@ function Search-QCDebugSheet {
             }
             if ($clauses.Count -eq 0) { continue }
             try {
-                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE $($clauses -join ' AND ')" -Parameters $params
+                $orderBy = if ($table -eq 'sheet_index' -or $table -eq 'sheet_packages') { ' ORDER BY last_updated_at DESC' } else { '' }
+                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE $($clauses -join ' AND ')$orderBy" -Parameters $params
             } catch {
                 $warnings += _QDM-BuildWarning -Message "Path query failed on $table`: $($_.Exception.Message)" -Table $table
                 continue
@@ -636,9 +726,17 @@ function Search-QCDebugSheet {
             $cols = _QDM-GetColumns -TableName 'audit_events'
             $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
             try {
-                $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [audit_events] WHERE resolved_folder = @folderPath AND pw_itemname = @documentName ORDER BY captured_at DESC" -Parameters @{
-                    folderPath = $lookup.folder_path; documentName = $lookup.document_name
+                $auditSql = if ($lookup.lookup_type -eq 'folder_path') {
+                    "SELECT TOP (100) $select FROM [audit_events] WHERE resolved_folder = @folderPath ORDER BY captured_at DESC"
+                } else {
+                    "SELECT TOP (100) $select FROM [audit_events] WHERE resolved_folder = @folderPath AND pw_itemname = @documentName ORDER BY captured_at DESC"
                 }
+                $auditParams = if ($lookup.lookup_type -eq 'folder_path') {
+                    @{ folderPath = $lookup.folder_path }
+                } else {
+                    @{ folderPath = $lookup.folder_path; documentName = $lookup.document_name }
+                }
+                $rows = _QDM-RowsFromQuery -Sql $auditSql -Parameters $auditParams
                 if ($rows.Count -gt 0) {
                     $grouped['audit_events'] = $rows
                     [void]$sourceTables.Add('audit_events')
@@ -1680,7 +1778,17 @@ function Get-QCDebugDataIntegrityReport {
 
     $expectedRoles = @('dgn', 'sheet_pdf', 'qc_pdf')
     $foundRoles = @($docRows | ForEach-Object { [string]$_.document_role } | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
+    $lanePdfRows = @($members.sheet_package_qc_pdf_rows | Where-Object {
+        $_.is_active -is [DBNull] -or $_.is_active -eq $true -or [string]$_.is_active -eq '1'
+    })
+    $hasLaneRegistry = ($lanePdfRows.Count -gt 0)
+    if (-not $hasLaneRegistry -and $pkg) {
+        foreach ($col in @('qc_pdf_guid', 'qc_chk_pdf_guid', 'qc_rev_pdf_guid')) {
+            if ($pkg.$col -and -not ($pkg.$col -is [DBNull])) { $hasLaneRegistry = $true; break }
+        }
+    }
     foreach ($role in @($expectedRoles | Where-Object { $_ -notin $foundRoles })) {
+        if ($role -eq 'qc_pdf' -and -not $hasLaneRegistry) { continue }
         $issues.Add(@{ code = 'missing_role'; message = "sheet_documents missing role $role."; role = $role })
     }
 
@@ -2123,6 +2231,21 @@ function Get-QCDebugProcessHealth {
         $sourceTables += 'v_mcp_process_health'
         $q = _QDM-QueryAutomationView -ViewName 'v_mcp_process_health' -Limit 50 -OrderBy 'last_event_at DESC'
         $rows = @($q.rows)
+        if ($rows.Count -eq 0) {
+            $fallback = $true
+            $warnings += (_QDM-BuildWarning -Message 'automation_events returned no rows; falling back to JSONL tail.')
+            $events = @(_QDM-ReadJsonlAutomationEvents -MaxLines 2000)
+            $groups = $events | Group-Object { if ($_.data.process_name) { $_.data.process_name } else { 'unknown' } }
+            $rows = @($groups | ForEach-Object {
+                @{
+                    process_name = $_.Name
+                    last_event_at = ($_.Group | Sort-Object { [string]$_.ts } -Descending | Select-Object -First 1).ts
+                    error_count_24h = @($_.Group | Where-Object { $_.level -match '^(?i)error$' }).Count
+                    warning_count_24h = @($_.Group | Where-Object { $_.level -match '^(?i)warning$' }).Count
+                    event_count_24h = $_.Count
+                }
+            })
+        }
     } else {
         $fallback = $true
         $warnings += (_QDM-BuildWarning -Message 'Process health derived from JSONL tail (limited accuracy).')

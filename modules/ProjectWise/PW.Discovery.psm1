@@ -1048,7 +1048,7 @@ function _PWD-SyncReferenceSheetProcessTypeAttributes {
                         $sourceType = if ($ext -eq '.pdf') { 'pdf' } elseif ($ext -eq '.dgn') { 'dgn' } else { $null }
                         Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
                             -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonicalDisplay `
-                            -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                            -QcProcessType $canonicalNorm -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
                     } catch { }
                 }
             } catch {
@@ -1496,7 +1496,13 @@ function Build-PWSheetIndexRowsForPairedSheets {
                 $f = if ($nameToFields.ContainsKey($pair.name.ToLowerInvariant())) {
                     $nameToFields[$pair.name.ToLowerInvariant()]
                 } else {
-                    @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = ''; qcAssignedTo = ''; qcStatus = ''; pwStateName = '' }
+                    @{ designerEmail = ''; reviewerEmail = ''; checkerEmail = ''; qcReviewType = ''; qcProcessType = ''; qcAssignedTo = ''; qcStatus = ''; pwStateName = '' }
+                }
+                $resolvedReviewType = _PWD-ResolveSheetIndexQcReviewType -Config $Config -FieldsFromPwRead $f `
+                    -FolderPath $FolderPath -DocumentName $pair.name -EnrichFromSourcePdf:$false
+                $resolvedProcessType = _PWD-ResolveCanonicalProcessTypeForSync -RawValue ([string]$f.qcProcessType) -Config $Config
+                if (-not $resolvedProcessType) {
+                    $resolvedProcessType = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $resolvedReviewType -Config $Config
                 }
                 $state = if ($StateByGuid.ContainsKey($pair.guid.ToLowerInvariant())) {
                     [string]$StateByGuid[$pair.guid.ToLowerInvariant()]
@@ -1512,7 +1518,8 @@ function Build-PWSheetIndexRowsForPairedSheets {
                     designerEmail  = [string]$f.designerEmail
                     reviewerEmail  = [string]$f.reviewerEmail
                     checkerEmail   = [string]$f.checkerEmail
-                    qcReviewType   = [string]$f.qcReviewType
+                    qcReviewType   = if ($resolvedReviewType) { $resolvedReviewType } else { [string]$f.qcReviewType }
+                    qcProcessType  = if ($resolvedProcessType) { $resolvedProcessType } else { '' }
                     qcAssignedTo   = [string]$f.qcAssignedTo
                     qcStatus       = [string]$f.qcStatus
                     pwStateName    = $state
@@ -3104,7 +3111,7 @@ function Sync-PWAssociatedSheetReviewTypeAttributes {
                     elseif ($ext -eq '.dgn') { $sourceType = 'dgn' }
                     Write-QCSheetIndex -Config $Config -DocumentGuid $dg -DocumentName $dn -FolderPath $FolderPath `
                         -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType -QcReviewType $canonicalDisplay `
-                        -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
+                        -QcProcessType $canonicalNorm -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise | Out-Null
                     $change.indexUpdated = $true
                 } catch { }
             }
@@ -5193,13 +5200,14 @@ function Sync-PWSheetIndexOwnership {
     $dbReviewer = ''
     $dbChecker = ''
     $dbReviewType = ''
+    $dbProcessType = ''
     $dbAssignedTo = ''
     $dbQcStatus = ''
     $dbState = ''
     $rowExists = $false
     try {
         $dbRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
-SELECT designer_email, reviewer_email, checker_email, qc_review_type, qc_assigned_to, qc_status, pw_state_name
+SELECT designer_email, reviewer_email, checker_email, qc_review_type, qc_process_type, qc_assigned_to, qc_status, pw_state_name
 FROM sheet_index
 WHERE document_guid = @docGuid
 "@ -Parameters @{ docGuid = $DocumentGuid }
@@ -5210,6 +5218,7 @@ WHERE document_guid = @docGuid
             if (-not ($r.reviewer_email -is [DBNull])) { $dbReviewer = [string]$r.reviewer_email }
             if ($r.Table.Columns.Contains('checker_email') -and -not ($r.checker_email -is [DBNull])) { $dbChecker = [string]$r.checker_email }
             if ($r.Table.Columns.Contains('qc_review_type') -and -not ($r.qc_review_type -is [DBNull])) { $dbReviewType = [string]$r.qc_review_type }
+            if ($r.Table.Columns.Contains('qc_process_type') -and -not ($r.qc_process_type -is [DBNull])) { $dbProcessType = [string]$r.qc_process_type }
             if ($r.Table.Columns.Contains('qc_assigned_to') -and -not ($r.qc_assigned_to -is [DBNull])) { $dbAssignedTo = [string]$r.qc_assigned_to }
             if (-not ($r.qc_status -is [DBNull])) { $dbQcStatus = [string]$r.qc_status }
             if (-not ($r.pw_state_name -is [DBNull])) { $dbState = [string]$r.pw_state_name }
@@ -5259,12 +5268,18 @@ WHERE document_guid = @docGuid
     $pwAssignedTo = [string]$fields.qcAssignedTo
     $pwQcStatus = [string]$fields.qcStatus
     $pwState = [string]$fields.pwStateName
+    $pwProcessType = _PWD-ResolveCanonicalProcessTypeForSync -RawValue ([string]$fieldsRaw.qcProcessType) -Config $Config
+    if (-not $pwProcessType) {
+        $pwProcessType = _PWD-ResolveCanonicalProcessTypeForSync -RawValue $pwReviewType -Config $Config
+    }
 
     $emailsDiffer = (_PWD-NormalizeSheetIndexValue $pwDesigner) -ne (_PWD-NormalizeSheetIndexValue $dbDesigner) `
         -or (_PWD-NormalizeSheetIndexValue $pwReviewer) -ne (_PWD-NormalizeSheetIndexValue $dbReviewer)
     $reviewTypeDiffer = (_PWD-NormalizeSheetIndexValue $pwReviewType) -ne (_PWD-NormalizeSheetIndexValue $dbReviewType)
+    $processTypeDiffer = (_PWD-NormalizeSheetIndexValue $pwProcessType) -ne (_PWD-NormalizeSheetIndexValue $dbProcessType)
     $qcFieldsDiffer = (_PWD-NormalizeSheetIndexValue $pwChecker) -ne (_PWD-NormalizeSheetIndexValue $dbChecker) `
         -or $reviewTypeDiffer `
+        -or $processTypeDiffer `
         -or (_PWD-NormalizeSheetIndexValue $pwAssignedTo) -ne (_PWD-NormalizeSheetIndexValue $dbAssignedTo) `
         -or (_PWD-NormalizeSheetIndexValue $pwQcStatus) -ne (_PWD-NormalizeSheetIndexValue $dbQcStatus)
     $stateDiffers = (_PWD-NormalizeSheetIndexValue $pwState) -ne (_PWD-NormalizeSheetIndexValue $dbState)
@@ -5294,7 +5309,7 @@ WHERE document_guid = @docGuid
     Write-QCSheetIndex -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
         -FolderPath $FolderPath -WatchRoot $WatchRoot -Extension $ext -SourceType $sourceType `
         -DesignerEmail $pwDesigner -ReviewerEmail $pwReviewer -CheckerEmail $pwChecker `
-        -QcReviewType $pwReviewType -QcAssignedTo $pwAssignedTo -QcStatus $pwQcStatus `
+        -QcReviewType $pwReviewType -QcProcessType $pwProcessType -QcAssignedTo $pwAssignedTo -QcStatus $pwQcStatus `
         -PwStateName $pwState -LastAuditEventAt $LastAuditEventAt -SetOwnershipFromProjectWise
 
     if (Get-Command -Name 'Invoke-QCAuditWorkflowStateChangeTriggers' -ErrorAction SilentlyContinue) {
