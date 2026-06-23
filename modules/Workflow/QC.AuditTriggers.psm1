@@ -991,6 +991,21 @@ function Invoke-QCSheetGroupWorkflowTransition {
             }
         }
     }
+    if ($Context -and $Context.ContainsKey('lanePostPrependSplit')) {
+        $split = _QCAT-ToHashtable $Context.lanePostPrependSplit
+        if ($split -and $split.ContainsKey('updates')) {
+            foreach ($upd in @($split.updates)) {
+                $u = _QCAT-ToHashtable $upd
+                if (-not $u) { continue }
+                $ug = [string]$u.documentGuid
+                if ([string]::IsNullOrWhiteSpace($ug)) { continue }
+                $from = _QCAT-NormalizeValue ([string]$u.fromState)
+                if ([string]::IsNullOrWhiteSpace($from)) { continue }
+                # Post-prepend lane write updates sheet_index before processor telemetry runs; preserve the real from-state.
+                $PreviousStateByGuid[$ug.ToLowerInvariant()] = $from
+            }
+        }
+    }
 
     foreach ($member in @($Members)) {
         $dg = [string]$member.documentGuid

@@ -264,6 +264,60 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid 
 Assert-Eq $script:transitionCalls.Count 1 'prepend completion: lane prod PDF gets Ready for QC event'
 Assert-Eq $script:notificationCalls 0 'prepend path suppresses sheet-group notification'
 
+# 7c. Lane-independent initial prepend: sheet_index updated before telemetry must still record lane transition
+Reset-TestState
+$revGuid = [guid]::NewGuid().ToString()
+$revMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
+    @{ documentGuid = $revGuid; documentName = ($sheetStem + '-rev.pdf'); document = $null }
+)
+$laneSplitCtx = @{
+    job = @{ id = 'job-prepend-rev-cycle2' }
+    laneIndependentInitialPrepend = $true
+    laneTargetState = 'Originated'
+    referenceState = 'In Development'
+    activeQcProcessType = 'review'
+    qcProcessType = 'review'
+    lanePostPrependSplit = @{
+        lanePdfName = ($sheetStem + '-rev.pdf')
+        laneStateVerified = $true
+        updates = @(
+            @{
+                documentGuid = $revGuid
+                documentName = ($sheetStem + '-rev.pdf')
+                fromState = 'Redlines Received'
+                toState = 'Originated'
+                verified = $true
+                isLaneAuthority = $true
+            }
+            @{
+                documentGuid = $pdfGuid
+                documentName = ($sheetStem + '.pdf')
+                fromState = 'Initiate Origination'
+                toState = 'In Development'
+                verified = $true
+                isStemReference = $true
+            }
+        )
+    }
+}
+# Simulate sheet_index already updated to Originated before processor telemetry runs.
+$indexLagPrev = @{
+    ($revGuid.ToLowerInvariant()) = 'Originated'
+    ($pdfGuid.ToLowerInvariant()) = 'In Development'
+    ($dgnGuid.ToLowerInvariant()) = 'In Development'
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $pdfGuid `
+    -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder -SourceState 'Initiate Origination' `
+    -TargetState 'Originated' -TransitionSource 'automation_prepend_completion' `
+    -Members $revMembers -PreviousStateByGuid $indexLagPrev -JobId 'job-prepend-rev-cycle2' -JobType 'QC_PREPEND' `
+    -Context $laneSplitCtx -SuppressNotification | Out-Null
+$revTransition = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $revGuid })
+Assert-Eq $revTransition.Count 1 'lane rev PDF gets Originated workflow event after cycle overwrite prepend'
+Assert-Eq $revTransition[0].fromValue 'Redlines Received' 'lane event uses prepend from-state not post-write sheet_index'
+Assert-Eq $revTransition[0].toValue 'Originated' 'lane event target is Originated'
+
 # 7b. PW already at target but sheet_index still shows prior state (trigger-doc bug)
 Reset-TestState
 $liveAligned = @{

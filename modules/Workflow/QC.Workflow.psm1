@@ -1980,6 +1980,7 @@ function Set-PWQCWorkflowState {
             }
             if (Get-Command -Name 'Invoke-QCSheetGroupWorkflowTransition' -ErrorAction SilentlyContinue) {
                 if ($Context -and $data.sheetStateSync) { $Context['sheetStateSync'] = $data.sheetStateSync }
+                if ($Context -and $data.lanePostPrependSplit) { $Context['lanePostPrependSplit'] = $data.lanePostPrependSplit }
                 $transitionTarget = if ($laneIndependentInitialPrepend) { $laneTargetState } else { $StateName }
                 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $docGuid -TriggerDocumentName $docName `
                     -FolderPath $folderPath -SourceState $previousForTelemetry -TargetState $transitionTarget `
