@@ -595,4 +595,126 @@ function Write-QCJsonLog {
     }
 }
 
+function Get-QCEffectiveDryRunPolicy {
+    <#
+    .SYNOPSIS
+    Resolves the effective side-effect policy from layered dry-run and safety flags.
+    .DESCRIPTION
+    Maps global dryRun, processors.dryRun, qcWorkflow.dryRunWriteback, notifications.dryRun,
+    database.allowWritesInDryRun, and role (watcher vs worker) into operator-facing booleans.
+    See docs/reference/dry-run-policy.md.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [ValidateSet('watcher', 'worker')]
+        [string]$Role = 'worker'
+    )
+
+    $globalDry = $false
+    if ($Config.ContainsKey('dryRun')) { try { $globalDry = [bool]$Config.dryRun } catch { } }
+
+    $invokeHandler = $false
+    $allowStateChange = $false
+    if ($Config.ContainsKey('processors') -and $Config.processors -and $Config.processors.ContainsKey('dryRun') -and $Config.processors.dryRun) {
+        $pd = $Config.processors.dryRun
+        if ($pd -is [hashtable]) {
+            if ($pd.ContainsKey('invokeHandler')) { try { $invokeHandler = [bool]$pd.invokeHandler } catch { } }
+            if ($pd.ContainsKey('allowStateChange')) { try { $allowStateChange = [bool]$pd.allowStateChange } catch { } }
+        } else {
+            if ($null -ne $pd.invokeHandler) { try { $invokeHandler = [bool]$pd.invokeHandler } catch { } }
+            if ($null -ne $pd.allowStateChange) { try { $allowStateChange = [bool]$pd.allowStateChange } catch { } }
+        }
+    }
+
+    $wfDryWriteback = $true
+    if ($Config.ContainsKey('qcWorkflow') -and $Config.qcWorkflow -and $null -ne $Config.qcWorkflow.dryRunWriteback) {
+        try { $wfDryWriteback = [bool]$Config.qcWorkflow.dryRunWriteback } catch { }
+    }
+
+    $notifEnabled = $false
+    $notifDry = $true
+    if ($Config.ContainsKey('notifications') -and $Config.notifications) {
+        if ($null -ne $Config.notifications.enabled) { try { $notifEnabled = [bool]$Config.notifications.enabled } catch { } }
+        if ($null -ne $Config.notifications.dryRun) { try { $notifDry = [bool]$Config.notifications.dryRun } catch { } }
+    }
+
+    $dbEnabled = $false
+    $dbAllowDryRun = $false
+    if ($Config.ContainsKey('database') -and $Config.database) {
+        if ($null -ne $Config.database.enabled) { try { $dbEnabled = [bool]$Config.database.enabled } catch { } }
+        if ($null -ne $Config.database.allowWritesInDryRun) { try { $dbAllowDryRun = [bool]$Config.database.allowWritesInDryRun } catch { } }
+    }
+
+    $statusSetWriteBack = $true
+    if ($Config.ContainsKey('statusSet') -and $Config.statusSet -and $null -ne $Config.statusSet.writeBackToPW) {
+        try { $statusSetWriteBack = [bool]$Config.statusSet.writeBackToPW } catch { }
+    }
+
+    $writeSql = $dbEnabled -and ((-not $globalDry) -or $dbAllowDryRun)
+    $enqueueJobs = (-not $globalDry)
+    $lockAndMoveQueue = (-not $globalDry) -or $allowStateChange
+    $invokeHandlers = (-not $globalDry) -or $invokeHandler
+    $writePwFromProcessors = -not $globalDry
+    $writePwWorkflow = (-not $wfDryWriteback) -and (-not $globalDry)
+    $sendEmail = $notifEnabled -and (-not $notifDry) -and (-not $globalDry)
+
+    return @{
+        role = $Role
+        globalDryRun = $globalDry
+        sources = @{
+            processorsDryRunInvokeHandler = $invokeHandler
+            processorsDryRunAllowStateChange = $allowStateChange
+            qcWorkflowDryRunWriteback = $wfDryWriteback
+            notificationsEnabled = $notifEnabled
+            notificationsDryRun = $notifDry
+            databaseEnabled = $dbEnabled
+            databaseAllowWritesInDryRun = $dbAllowDryRun
+            statusSetWriteBackToPW = $statusSetWriteBack
+        }
+        effectivePolicy = @{
+            discoverPw = $true
+            readSql = $dbEnabled
+            writeSqlTelemetry = $writeSql
+            enqueueJobs = if ($Role -eq 'watcher') { $enqueueJobs } else { $null }
+            lockAndMoveQueueJobs = if ($Role -eq 'worker') { $lockAndMoveQueue } else { $null }
+            invokeProcessorHandlers = if ($Role -eq 'worker') { $invokeHandlers } else { $null }
+            writePwFilesViaProcessors = if ($Role -eq 'worker') { $writePwFromProcessors } else { $false }
+            writePwWorkflowAttributes = if ($Role -eq 'worker') { $writePwWorkflow } else { $false }
+            uploadStatusSetToPw = if ($Role -eq 'worker') { $writePwFromProcessors -and $statusSetWriteBack } else { $false }
+            sendNotificationEmail = if ($Role -eq 'worker') { $sendEmail } else { $false }
+        }
+    }
+}
+
+function Write-QCEffectiveDryRunPolicyLog {
+    <#
+    .SYNOPSIS
+    Emits EFFECTIVE_DRY_RUN_POLICY JSON log line via Write-QCJsonLog.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [ValidateSet('watcher', 'worker')]
+        [string]$Role = 'worker',
+        [string]$WorkerLabel = '',
+        [switch]$IncludeWorkerPid,
+        [switch]$Flush
+    )
+
+    $policy = Get-QCEffectiveDryRunPolicy -Config $Config -Role $Role
+    $logParams = @{
+        Level   = 'Information'
+        Code    = 'EFFECTIVE_DRY_RUN_POLICY'
+        Message = 'Effective side-effect policy for this run.'
+        Data    = $policy
+    }
+    if ($WorkerLabel) { $logParams['WorkerLabel'] = $WorkerLabel }
+    if ($IncludeWorkerPid.IsPresent) { $logParams['IncludeWorkerPid'] = $true }
+    if ($Flush.IsPresent) { $logParams['Flush'] = $true }
+    Write-QCJsonLog @logParams
+}
+
 Export-ModuleMember -Function *

@@ -12,6 +12,7 @@ Project documentation for the Prepend PDF QC pipeline. For a quick repo overview
 |----------|-------------|
 | [`reference/appsettings-reference.md`](reference/appsettings-reference.md) | Full `appsettings.json` section guide |
 | [`reference/testing-config.md`](reference/testing-config.md) | Test profile, merge chain, `appsettings.test.json` |
+| [`reference/dry-run-policy.md`](reference/dry-run-policy.md) | Layered dry-run flags and effective side-effect policy |
 | [`reference/module-contracts.md`](reference/module-contracts.md) | Result envelope, error codes, module conventions |
 | [`reference/project_id_from_workarea.md`](reference/project_id_from_workarea.md) | Project ID from PW work area properties |
 | [`reference/pw-extractable-from-projectwise.json`](reference/pw-extractable-from-projectwise.json) | PW extractable field reference (JSON) |

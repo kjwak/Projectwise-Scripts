@@ -73,6 +73,7 @@ Start at `docs/README.md`. Key paths:
 | QC workflow writeback | `docs/workflow/qc-workflow-framework.md` |
 | Notifications | `docs/workflow/qc-notifications.md` |
 | Testing profile | `docs/reference/testing-config.md` |
+| Dry-run policy | `docs/reference/dry-run-policy.md` |
 | Module conventions | `docs/reference/module-contracts.md` |
 | Phase migration history | `docs/archive/phase/` (historical — see below) |
 

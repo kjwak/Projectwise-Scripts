@@ -611,6 +611,9 @@ _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_START' -Message 'Wa
     continuous = $watcherContinuous
     pollSleepMs = $watcherPollSleepMs
 }
+if (Get-Command -Name 'Write-QCEffectiveDryRunPolicyLog' -ErrorAction SilentlyContinue) {
+    Write-QCEffectiveDryRunPolicyLog -Config $config -Role 'watcher' -Flush
+}
 
 $queueRoot = _Get-WatcherQueueRoot -Config $config
 

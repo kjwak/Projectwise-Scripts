@@ -1,5 +1,11 @@
 # ProjectWise Audit Trail Architecture — From Directory Polling to Event-Driven Processing
 
+> **Historical design document.** This file records the original analysis and migration proposal (2025–2026). It is **not** the current operator guide.
+>
+> **Use instead:** [`hybrid-polling.md`](hybrid-polling.md) (current watcher behavior), [`../data/database-telemetry.md`](../data/database-telemetry.md) (SQL schema), [`../workflow/qc-notifications.md`](../workflow/qc-notifications.md) (notifications).
+>
+> Sections below may describe superseded paths, reconciliation cadence, or state names. When this doc disagrees with `hybrid-polling.md` or committed `appsettings.json`, trust the newer sources.
+
 ## Implementation Status (June 2026)
 
 | Phase | Status | Notes |
@@ -22,8 +28,8 @@ Key differences from the original proposal below:
 |-------|--------------|----------|
 | Database | SQLite | **SQL Server 2025 Express** (`QC_Pipeline` on `localhost\SQLEXPRESS`) |
 | Poller modules | `PW.AuditPoller` + `PW.AuditPoller.Schema` | Single **`PW.AuditPoller.psm1`**; schema in **`Core.Database.psm1`** |
-| Watermark | `poll_state.json` only | **`queue/_watcher/audit-capture-watermark.txt`** + optional `poll_runs.watermark_after` when file exists |
-| Reconciliation | Fixed 6–24 h interval | Every **`auditPoller.reconcileEveryNCycles`** ticks (default 100 in prod `appsettings.json`) |
+| Watermark | `poll_state.json` only | **`watcher_state`** (SQL, when DB enabled) + **`queue/_watcher/audit-capture-watermark.txt`** mirror + `poll_runs.watermark_after` |
+| Reconciliation | Fixed 6–24 h interval | **`auditPoller.fullScanSchedule.times`** (committed: `06:00`, `18:00`); legacy **`reconcileEveryNCycles`** when schedule empty |
 | QC workflow state (`1012`) | “Not yet implemented” | **`Sync-PWAssociatedSheetWorkflowState`** + history / notifications via **`QC.AuditTriggers`** |
 | QC attribute change (`1003`) | “Not yet implemented” | **`Sync-PWSheetIndexOwnership`** + **`Invoke-QCAuditWorkflowAttributeChangeTriggers`** |
 | `document_state_history` / `transition_events` | Proposed only | Written on **audit** triggers and **`recordFromProcessor`** (QC_PREPEND / comment sync) |

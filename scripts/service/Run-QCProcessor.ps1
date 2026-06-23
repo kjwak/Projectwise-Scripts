@@ -116,6 +116,9 @@ Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Infor
     idleSleepMs = $IdleSleepMs
     loopMode = $loopMode
 }
+if (Get-Command -Name 'Write-QCEffectiveDryRunPolicyLog' -ErrorAction SilentlyContinue) {
+    Write-QCEffectiveDryRunPolicyLog -Config $config -Role 'worker' -WorkerLabel $script:WorkerLabel -IncludeWorkerPid
+}
 
 function _Resolve-Handler([hashtable]$Job, [hashtable]$Config) {
     $jobType = [string]$Job['type']
