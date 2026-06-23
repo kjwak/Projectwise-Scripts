@@ -64,7 +64,9 @@ Project documentation for the Prepend PDF QC pipeline. For a quick repo overview
 
 ## Archive — phase migration summaries
 
-Historical records of Phase 2–4 refactors. Prefer **Architecture** and **Workflow** docs above for current behavior.
+> **Historical only.** Files under `docs/archive/` may describe older paths, states, or architecture. Do **not** treat them as current implementation guidance unless another **current** document (outside `archive/`) explicitly links to them as authoritative. For day-to-day operations, use **Reference**, **Architecture**, **Workflow**, **Data**, and **Engineering** sections above.
+
+Historical records of Phase 2–4 refactors:
 
 | Document | Description |
 |----------|-------------|
@@ -89,5 +91,5 @@ docs/
   workflow/           ← QC workflow, notifications, comments
   data/               ← SQL telemetry
   engineering/        ← audits, active plans, tooling notes
-  archive/phase/      ← migration summaries (superseded for day-to-day ops)
+  archive/phase/      ← historical migration summaries (not current guidance)
 ```

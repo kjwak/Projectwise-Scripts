@@ -1,4 +1,4 @@
-# Agent instructions — Prepend PDF QC
+# Agent instructions — ProjectWise QC Pipeline
 
 Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 
@@ -74,7 +74,16 @@ Start at `docs/README.md`. Key paths:
 | Notifications | `docs/workflow/qc-notifications.md` |
 | Testing profile | `docs/reference/testing-config.md` |
 | Module conventions | `docs/reference/module-contracts.md` |
-| Phase migration history | `docs/archive/phase/` |
+| Phase migration history | `docs/archive/phase/` (historical — see below) |
+
+### Archive documents (`docs/archive/`)
+
+Files under `docs/archive/` are **historical references**. They may describe older paths, workflow states, or architecture and **must not** be treated as current implementation guidance.
+
+- Prefer `reference/`, `architecture/`, `workflow/`, `data/`, and `engineering/` for how the system works today.
+- Consult `docs/archive/` only for migration context, decision history, or audit trail of refactors.
+- If an archive doc disagrees with code or a non-archive doc, **trust code and the current doc**.
+- Treat an archive document as authoritative **only** when another **current** document explicitly links to it for that purpose.
 
 ## When you change behavior — update docs
 
