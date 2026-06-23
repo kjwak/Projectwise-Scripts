@@ -12,5 +12,6 @@ Assert-True ($text -match 'sheet_index_lane') 'deletes lane sheet_index rows'
 Assert-True ($text -match 'sheet_documents_qc_pdf') 'deletes sheet_documents qc_pdf role rows'
 Assert-True ($text -match "NOT \(\`$siLaneNameClause\)") 'stem/DGN index update excludes lane rows when purging'
 Assert-True ($text -match 'sheet_package_qc_pdfs') 'still clears sheet_package_qc_pdfs'
+Assert-True ($text -match 'qc_notification_messages') 'deletes qc_notification_messages before notification_log'
 
 Write-Host 'OK: Reset-QCFolderWorkflow lane registry tests passed.' -ForegroundColor Green

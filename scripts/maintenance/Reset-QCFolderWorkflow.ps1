@@ -676,6 +676,12 @@ if (-not $SkipDatabase.IsPresent) {
             $dbCounts.notification_log = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM notification_log n WHERE ($whereNotification)
 "@
+            try {
+                $dbCounts.qc_notification_messages = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
+SELECT COUNT_BIG(1) FROM qc_notification_messages m
+WHERE m.notification_log_id IN (SELECT n.id FROM notification_log n WHERE ($whereNotification))
+"@
+            } catch { }
             $dbCounts.document_state_history = _RQCF-GetScalarConn -Connection $dbConn -Params $params -CommandTimeout $QueryTimeoutSeconds -Sql @"
 SELECT COUNT_BIG(1) FROM document_state_history h WHERE ($whereHistory)
 "@
@@ -865,6 +871,18 @@ WHERE comment_record_id IN (SELECT c.comment_record_id FROM qc_comments c WHERE 
 DELETE TOP (@batchSize) FROM qc_comment_runs
 WHERE run_id IN ($commentRunSub)
 "@
+            }
+
+            try {
+                $deleted.qc_notification_messages = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'qc_notification_messages' -CommandTimeout $QueryTimeoutSeconds -Sql @"
+DELETE TOP (@batchSize) FROM qc_notification_messages
+WHERE id IN (
+  SELECT m.id FROM qc_notification_messages m
+  WHERE m.notification_log_id IN (SELECT n.id FROM notification_log n WHERE ($whereNotification))
+)
+"@
+            } catch {
+                Write-Host ("  [qc_notification_messages] skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
             }
 
             $deleted.notification_log = _RQCF-RunDeleteLoopConn -Connection $dbConn -Params $params -Label 'notification_log' -CommandTimeout $QueryTimeoutSeconds -Sql @"
