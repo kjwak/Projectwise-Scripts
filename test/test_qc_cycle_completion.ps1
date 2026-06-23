@@ -64,7 +64,7 @@ function Write-QCWorkflowEventRow {
         [string]$DecisionCode = '', [string]$PayloadJson = '', [string]$QcReviewType = '',
         [Nullable[int]]$TransitionEventId = $null
     )
-    $script:workflowEvents.Add(@{ documentId = $DocumentId; eventType = $EventType }) | Out-Null
+    $script:workflowEvents.Add(@{ documentId = $DocumentId; eventType = $EventType; qcReviewType = $QcReviewType }) | Out-Null
     return [pscustomobject]@{ IsSuccess = $true; Data = @{ written = $true } }
 }
 
@@ -261,6 +261,33 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid 
     -Members $members -PreviousStateByGuid $prevMap -AuditEventId 9002
 Assert-Eq $script:completionCalls.Count 1 'QC PDF trigger should record one package completion'
 Assert-Eq $script:completionCalls[0].documentGuid $dgnGuid 'QC PDF trigger should canonicalize to DGN GUID'
+
+# Lane rev PDF with stale Production QC on stem sheet PDF still records review completion
+Reset-CompletionState
+$staleStemMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $sheetGuid; documentName = ($sheetStem + '.pdf'); document = [pscustomobject]@{ QC_Review_Type = 'Production QC' } }
+    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-rev.pdf'); document = $null }
+)
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-rev.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $staleStemMembers -PreviousStateByGuid $prevMap -AuditEventId 9026
+Assert-Eq $script:completionCalls.Count 1 'Stale stem Production QC must not misclassify lane rev completion'
+Assert-Eq $script:completionCalls[0].qcReviewType 'review' 'Lane rev completion should bucket as review'
+
+# Lane prod PDF with stale Peer Review on stem still records production completion
+Reset-CompletionState
+$stalePeerMembers = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $sheetGuid; documentName = ($sheetStem + '.pdf'); document = [pscustomobject]@{ QC_Review_Type = 'Peer Review' } }
+    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
+)
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder `
+    -SourceState 'QC Finalizing' -TargetState 'QC Complete' -TransitionSource 'user_audit' `
+    -Members $stalePeerMembers -PreviousStateByGuid $prevMap -AuditEventId 9027
+Assert-Eq $script:completionCalls[0].qcReviewType 'production' 'Lane prod completion should bucket as production'
 
 # 4. Sibling retries produce one completion row
 Reset-CompletionState

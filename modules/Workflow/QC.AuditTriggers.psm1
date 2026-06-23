@@ -145,6 +145,183 @@ function _QCAT-ResolveLaneProcessTypeFromDocumentName {
     return ''
 }
 
+function _QCAT-ResolveReviewTypeLabelFromProcessBucket {
+    param(
+        [hashtable]$Config = @{},
+        [Parameter(Mandatory)][string]$ProcessBucket
+    )
+
+    $bucket = ''
+    if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+        try { $bucket = [string](Normalize-QCProcessType -ProcessType $ProcessBucket -AllowNullOnEmpty) } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($bucket)) { $bucket = $ProcessBucket.Trim().ToLowerInvariant() }
+
+    if (Get-Command -Name 'Get-QCWorkflowSettings' -ErrorAction SilentlyContinue) {
+        try {
+            $wf = Get-QCWorkflowSettings -Config $Config
+            $rt = _QCAT-ToHashtable $wf.reviewTypes
+            if ($rt) {
+                $key = switch ($bucket) {
+                    'check' { 'independentCheck' }
+                    'review' { 'peerReview' }
+                    default { 'productionQc' }
+                }
+                if ($rt.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$rt[$key])) {
+                    return [string]$rt[$key]
+                }
+            }
+        } catch { }
+    }
+
+    switch ($bucket) {
+        'production' { return 'Production QC' }
+        'check' { return 'Independent Check' }
+        'review' { return 'Peer Review' }
+        default { return $ProcessBucket }
+    }
+}
+
+function _QCAT-ResolveLaneReviewTypeFromTelemetry {
+    <#
+    Lane PDFs (*-prod/*-chk/*-rev) resolve from the lane document or filename, not stem sheet PDF QC_Review_Type.
+    #>
+    param(
+        [hashtable]$Config = @{},
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [object]$Document = $null
+    )
+
+    $laneBucket = _QCAT-ResolveLaneProcessTypeFromDocumentName -DocumentName $DocumentName
+    if ([string]::IsNullOrWhiteSpace($laneBucket)) { return '' }
+
+    $processCol = 'QC_Process_Type'
+    $reviewCol = 'QC_Review_Type'
+    if ($Config -and (Get-Command -Name 'Get-PWQcProcessTypeAttributeName' -ErrorAction SilentlyContinue)) {
+        try { $processCol = Get-PWQcProcessTypeAttributeName -Config $Config } catch { }
+    }
+    if ($Config -and (Get-Command -Name 'Get-PWQcReviewTypeAttributeName' -ErrorAction SilentlyContinue)) {
+        try { $reviewCol = Get-PWQcReviewTypeAttributeName -Config $Config } catch { }
+    }
+
+    if ($Document) {
+        foreach ($k in @($processCol, 'QC_Process_Type', 'qcProcessType', 'qc_process_type', $reviewCol, 'QC_Review_Type', 'qcReviewType', 'reviewType')) {
+            try {
+                if ($Document.PSObject.Properties[$k] -and -not [string]::IsNullOrWhiteSpace([string]$Document.$k)) {
+                    return [string]$Document.$k
+                }
+            } catch { }
+        }
+    }
+
+    if ($Config -and -not [string]::IsNullOrWhiteSpace($DocumentGuid) `
+            -and (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue) `
+            -and (Test-QCDatabaseEnabled -Config $Config)) {
+        try {
+            $siRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
+SELECT qc_review_type, qc_process_type FROM sheet_index WHERE document_guid = @docGuid
+"@ -Parameters @{ docGuid = $DocumentGuid }
+            if ($siRes.IsSuccess -and $siRes.Data.table -and $siRes.Data.table.Rows.Count -gt 0) {
+                $r = $siRes.Data.table.Rows[0]
+                $raw = if (-not ($r.qc_process_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_process_type)) {
+                    [string]$r.qc_process_type
+                } elseif (-not ($r.qc_review_type -is [DBNull]) -and -not [string]::IsNullOrWhiteSpace([string]$r.qc_review_type)) {
+                    [string]$r.qc_review_type
+                } else { '' }
+                if (-not [string]::IsNullOrWhiteSpace($raw)) { return $raw }
+            }
+        } catch { }
+    }
+
+    return (_QCAT-ResolveReviewTypeLabelFromProcessBucket -Config $Config -ProcessBucket $laneBucket)
+}
+
+function _QCAT-ResolveQCCycleCompletionReviewType {
+    <#
+    Resolves normalized completion bucket for qc_cycle_completions.
+    Lane PDF triggers use filename/context first; stem sheet PDF QC_Review_Type is a fallback only.
+    #>
+    param(
+        [hashtable]$Config = @{},
+        [string]$DocumentGuid = '',
+        [string]$DocumentName = '',
+        [object]$Document = $null,
+        [string]$FolderPath = '',
+        [hashtable]$Context = $null,
+        [hashtable]$PwAttributes = $null,
+        [array]$Members = @()
+    )
+
+    $reviewType = ''
+    $normalizedReviewType = $null
+
+    if ($Context -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
+        foreach ($k in @('activeQcProcessType', 'qcProcessType')) {
+            if (-not $Context.ContainsKey($k)) { continue }
+            $norm = Normalize-QCProcessType -ProcessType ([string]$Context[$k]) -AllowNullOnEmpty
+            if ($norm) {
+                return @{
+                    reviewType = [string]$Context[$k]
+                    normalizedReviewType = $norm
+                }
+            }
+        }
+    }
+
+    $triggerLane = _QCAT-ResolveLaneProcessTypeFromDocumentName -DocumentName $DocumentName
+    if (-not [string]::IsNullOrWhiteSpace($triggerLane)) {
+        $laneReviewType = _QCAT-ResolveLaneReviewTypeFromTelemetry -Config $Config -DocumentName $DocumentName `
+            -DocumentGuid $DocumentGuid -Document $Document
+        if (-not [string]::IsNullOrWhiteSpace($laneReviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
+            $norm = Get-QCReviewTypeBucket -ReviewType $laneReviewType
+            if ($norm) {
+                return @{ reviewType = $laneReviewType; normalizedReviewType = $norm }
+            }
+        }
+        if (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue) {
+            $norm = Normalize-QCProcessType -ProcessType $triggerLane -AllowNullOnEmpty
+            if ($norm) {
+                return @{
+                    reviewType = (_QCAT-ResolveReviewTypeLabelFromProcessBucket -Config $Config -ProcessBucket $norm)
+                    normalizedReviewType = $norm
+                }
+            }
+        }
+    }
+
+    if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
+        try {
+            $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $DocumentGuid `
+                -FolderPath $FolderPath -DocumentName $DocumentName -Context $Context -PwAttributes $PwAttributes -Document $Document
+        } catch { }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($reviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
+        $normalizedReviewType = Get-QCReviewTypeBucket -ReviewType $reviewType
+    }
+    if ($normalizedReviewType) {
+        return @{ reviewType = $reviewType; normalizedReviewType = $normalizedReviewType }
+    }
+
+    $sheetPdfMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
+    if ($sheetPdfMember) {
+        $fallbackGuid = [string]$sheetPdfMember.documentGuid
+        $fallbackName = [string]$sheetPdfMember.documentName
+        $fallbackDoc = if ($sheetPdfMember.document) { $sheetPdfMember.document } else { $null }
+        if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
+            try {
+                $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $fallbackGuid `
+                    -FolderPath $FolderPath -DocumentName $fallbackName -Context $Context -PwAttributes $PwAttributes -Document $fallbackDoc
+            } catch { }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($reviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
+            $normalizedReviewType = Get-QCReviewTypeBucket -ReviewType $reviewType
+        }
+    }
+
+    return @{ reviewType = $reviewType; normalizedReviewType = $normalizedReviewType }
+}
+
 function _QCAT-ResolveActiveLaneMemberForNotification {
     param(
         [hashtable]$Config,
@@ -605,6 +782,21 @@ function _QCAT-TryRecordQCCycleCompletion {
 
     if (-not (Get-Command -Name 'Ensure-QCCycleCompletion' -ErrorAction SilentlyContinue)) { return }
 
+    $triggerDocumentGuid = [string]$DocumentGuid
+    $triggerDocumentName = [string]$DocumentName
+    $triggerDocumentObject = $Document
+    foreach ($member in @($Members)) {
+        $memberGuid = [string]$member.documentGuid
+        if ([string]::IsNullOrWhiteSpace($memberGuid)) { continue }
+        if ($memberGuid -ieq $triggerDocumentGuid) {
+            if ($member.document) { $triggerDocumentObject = $member.document }
+            if ([string]::IsNullOrWhiteSpace($triggerDocumentName) -and $member.documentName) {
+                $triggerDocumentName = [string]$member.documentName
+            }
+            break
+        }
+    }
+
     $canonical = _QCAT-ResolveCanonicalSheetPackageIdentity -Config $Config -DocumentGuid $DocumentGuid `
         -DocumentName $DocumentName -FolderPath $FolderPath -SheetStem $SheetStem -Members $Members
     if (-not [bool]$canonical.resolved) {
@@ -656,47 +848,11 @@ function _QCAT-TryRecordQCCycleCompletion {
         return
     }
 
-    $reviewType = ''
-    $reviewSourceMember = _QCAT-ResolveSheetPackageSheetPdfMember -Members $Members
-    $reviewDocGuid = if ($reviewSourceMember) { [string]$reviewSourceMember.documentGuid } else { $docGuid }
-    $reviewDocName = if ($reviewSourceMember) { [string]$reviewSourceMember.documentName } else { $docName }
-    $reviewDocObject = if ($reviewSourceMember -and $reviewSourceMember.document) { $reviewSourceMember.document } else { $docObject }
-    if (Get-Command -Name 'Resolve-QCWorkflowEventQcReviewType' -ErrorAction SilentlyContinue) {
-        try {
-            $reviewType = Resolve-QCWorkflowEventQcReviewType -Config $Config -DocumentGuid $reviewDocGuid `
-                -FolderPath $FolderPath -DocumentName $reviewDocName -Context $Context -PwAttributes $PwAttributes -Document $reviewDocObject
-        } catch { }
-    }
-
-    $normalizedReviewType = $null
-    if (-not [string]::IsNullOrWhiteSpace($reviewType) -and (Get-Command -Name 'Get-QCReviewTypeBucket' -ErrorAction SilentlyContinue)) {
-        $normalizedReviewType = Get-QCReviewTypeBucket -ReviewType $reviewType
-    }
-    if (-not $normalizedReviewType -and $Context -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-        foreach ($k in @('activeQcProcessType', 'qcProcessType')) {
-            if (-not $Context.ContainsKey($k)) { continue }
-            $norm = Normalize-QCProcessType -ProcessType ([string]$Context[$k]) -AllowNullOnEmpty
-            if ($norm) {
-                $normalizedReviewType = $norm
-                if ([string]::IsNullOrWhiteSpace($reviewType)) { $reviewType = [string]$Context[$k] }
-                break
-            }
-        }
-    }
-    if (-not $normalizedReviewType -and (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue)) {
-        foreach ($name in @($DocumentName, $reviewDocName)) {
-            if ([string]::IsNullOrWhiteSpace($name)) { continue }
-            $lane = Get-PWQcPdfLaneFromDocumentName -DocumentName $name
-            if ($lane -and (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) {
-                $norm = Normalize-QCProcessType -ProcessType ([string]$lane) -AllowNullOnEmpty
-                if ($norm) {
-                    $normalizedReviewType = $norm
-                    if ([string]::IsNullOrWhiteSpace($reviewType)) { $reviewType = [string]$lane }
-                    break
-                }
-            }
-        }
-    }
+    $resolvedReview = _QCAT-ResolveQCCycleCompletionReviewType -Config $Config -DocumentGuid $triggerDocumentGuid `
+        -DocumentName $triggerDocumentName -Document $triggerDocumentObject -FolderPath $FolderPath -Context $Context `
+        -PwAttributes $PwAttributes -Members $Members
+    $reviewType = if ($resolvedReview.reviewType) { [string]$resolvedReview.reviewType } else { '' }
+    $normalizedReviewType = $resolvedReview.normalizedReviewType
     if (-not $normalizedReviewType) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
             Write-QCJsonLog -Level 'Warning' -Code 'QC_CYCLE_COMPLETION_SKIPPED' `
@@ -1995,13 +2151,21 @@ function Resolve-QCWorkflowEventQcReviewType {
             if ($job -and $job.sourceName) { $source = [string]$job.sourceName }
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($source) -and (Test-QCIsQcPdfDocumentName -DocumentName $source)) {
-        $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
-            Get-PWSheetStemFromDocumentName -DocumentName $source
-        } else {
-            [System.IO.Path]::GetFileNameWithoutExtension($source)
+    $laneReviewType = _QCAT-ResolveLaneReviewTypeFromTelemetry -Config $Config -DocumentName $source `
+        -DocumentGuid $DocumentGuid -Document $Document
+    if (-not [string]::IsNullOrWhiteSpace($laneReviewType)) {
+        return $laneReviewType
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($source) -and (Get-Command -Name 'Test-QCLegacyQcPdfDocumentName' -ErrorAction SilentlyContinue)) {
+        if (Test-QCLegacyQcPdfDocumentName -DocumentName $source) {
+            $stem = if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+                Get-PWSheetStemFromDocumentName -DocumentName $source
+            } else {
+                [System.IO.Path]::GetFileNameWithoutExtension($source)
+            }
+            $source = $stem + '.pdf'
         }
-        $source = $stem + '.pdf'
     }
     if ($Config -and -not [string]::IsNullOrWhiteSpace($folder) -and -not [string]::IsNullOrWhiteSpace($source)) {
         if (Get-Command -Name 'Get-PWQcPrependRoleFieldsFromSourcePdf' -ErrorAction SilentlyContinue) {
