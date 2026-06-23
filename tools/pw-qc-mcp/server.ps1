@@ -12,13 +12,22 @@ if ([string]::IsNullOrWhiteSpace($repoRoot)) {
     $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 }
 $modulesRoot = Join-Path $repoRoot 'modules'
+$scriptsRoot = Join-Path $repoRoot 'scripts'
 $script:McpContextReady = $false
 
 function Initialize-McpRuntime {
     if ($script:McpContextReady) { return }
-    Import-Module (Join-Path $modulesRoot 'QC.DebugMcp.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-    Import-Module (Join-Path $modulesRoot 'Core.Runtime.psm1') -Force -WarningAction SilentlyContinue | Out-Null
-    Import-Module (Join-Path $modulesRoot 'Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue | Out-Null
+    . (Join-Path $scriptsRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+    Import-QCModuleBootstrapSet -FeatureModules @(
+        'Diagnostics\QC.DebugMcp.psm1'
+        'Core\Core.Telemetry.psm1'
+    ) -RequiredCommands @(
+        'Initialize-QCDebugMcpContext'
+        'Get-QCAppSettingsConfig'
+        'Search-QCDebugSheet'
+    ) -Context 'pw-qc-mcp server'
+    Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
+    Test-QCRequiredCommands -Names @('Invoke-PWAuthenticatedCommand') -Context 'pw-qc-mcp server ProjectWise'
     $appSettings = $env:PWQC_APPSETTINGS
     if ([string]::IsNullOrWhiteSpace($appSettings)) {
         $appSettings = Join-Path $repoRoot 'appsettings.json'
