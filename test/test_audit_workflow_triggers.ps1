@@ -35,6 +35,10 @@ Assert-True (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -Docume
 Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00-qc.pdf')) 'legacy qc pdf member suppressed'
 Assert-True (-not (Test-QCShouldNotifyForSheetPackageMember -Config $cfgNotify -DocumentName '00-100000-00-00.pdf')) 'sheet pdf member suppressed when qcPdfNotificationsOnly'
 
+Assert-True (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $cfgNotify -DocumentName '00-100000-00-00-prod.pdf') 'lane prod pdf may record workflow telemetry'
+Assert-True (-not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $cfgNotify -DocumentName '00-100000-00-00.pdf')) 'stem sheet pdf suppressed when qcPdfEventsOnly'
+Assert-True (-not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $cfgNotify -DocumentName '00-100000-00-00.dgn')) 'dgn suppressed when qcPdfEventsOnly'
+
 $cfg = @{
     auditPoller = @{
         workflowTriggers = @{

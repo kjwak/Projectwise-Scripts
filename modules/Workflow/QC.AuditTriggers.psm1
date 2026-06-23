@@ -803,6 +803,12 @@ function _QCAT-WriteSheetGroupMemberWorkflowEvents {
         return $result
     }
 
+    if (-not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $DocumentName)) {
+        $result.skipped = $true
+        $result.skipReason = 'qc_pdf_events_only'
+        return $result
+    }
+
     if ([bool]$Settings.recordStateHistory) {
         $hist = Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $DocumentGuid -DocumentName $DocumentName `
             -FolderPath $FolderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
@@ -1136,6 +1142,9 @@ function Invoke-QCSheetGroupWorkflowTransition {
             -TransitionSource $TransitionSource -AuditEventId $AuditEventId -JobId $JobId
 
         $shouldRecord = (_QCAT-NormalizeValue $prevState) -ne $finalState
+        if ($shouldRecord -and -not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $dn)) {
+            $shouldRecord = $false
+        }
 
         $telemetry = @{
             role = $role
@@ -1152,6 +1161,10 @@ function Invoke-QCSheetGroupWorkflowTransition {
             transitionReused = $false
             mirrorInserted = $false
             transitionId = $null
+        }
+        if (-not $shouldRecord -and (_QCAT-NormalizeValue $prevState) -ne $finalState `
+                -and -not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $dn)) {
+            $telemetry.skipReason = 'qc_pdf_events_only'
         }
 
         if ($shouldRecord) {
@@ -1369,6 +1382,7 @@ function Get-QCAuditWorkflowTriggerSettings {
         recordProcessingJobs            = $true
         notifyOnStateChange             = $true
         qcPdfNotificationsOnly          = $true
+        qcPdfEventsOnly                 = $true
         ignoreStateChangeFromAutomation = $false
         suppressBaselineIndexStateTransition = $true
         baselineStateNames              = @()
@@ -2328,6 +2342,25 @@ function Test-QCShouldNotifyForSheetPackageMember {
     return $true
 }
 
+function Test-QCShouldRecordWorkflowTelemetryForDocument {
+    <#
+    .SYNOPSIS
+    True when workflow telemetry (state history, transition_events, qc_workflow_events) should be recorded for this document.
+    When qcPdfEventsOnly is enabled, only lane QC PDFs (*-prod/-chk/-rev.pdf) are recorded — not stem sheet PDF, DGN, or legacy *-qc.pdf.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$DocumentName
+    )
+
+    $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
+    if ([bool]$settings.qcPdfEventsOnly -and -not (Test-QCIsQcPdfDocumentName -DocumentName $DocumentName)) {
+        return $false
+    }
+    return $true
+}
+
 function Invoke-QCAuditWorkflowStateChangeTriggers {
     <#
     .SYNOPSIS
@@ -2424,6 +2457,21 @@ function Invoke-QCAuditWorkflowStateChangeTriggers {
         if (Test-QCWorkflowStateIsAutomationIntake -StateName $curr -Config $Config) {
             $shouldNotify = $false
         }
+    }
+
+    if (-not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $DocumentName)) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Information' -Code 'WATCH_AUDIT_WORKFLOW_TELEMETRY_SKIPPED_QC_PDF_ONLY' `
+                -Message 'Skipped workflow telemetry for non-lane document (qcPdfEventsOnly).' -Data @{
+                documentGuid = $DocumentGuid
+                documentName = $DocumentName
+                folderPath = $FolderPath
+                previousState = $prev
+                currentState = $curr
+                auditActionName = $AuditActionName
+            } | Out-Null
+        }
+        return
     }
 
     if ([bool]$settings.recordStateHistory) {
@@ -2792,7 +2840,7 @@ function Invoke-QCProcessorWorkflowStateTelemetry {
                 }
             }
         }
-    } else {
+    } elseif (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $id.documentName) {
         if ([bool]$settings.recordStateHistory) {
             Write-QCDocumentStateHistoryRow -Config $Config -DocumentGuid $id.documentGuid -DocumentName $id.documentName `
                 -FolderPath $id.folderPath -EventType 'STATE_CHANGE' -OldValue $prev -NewValue $curr `
@@ -2896,6 +2944,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
     $settings = Get-QCAuditWorkflowTriggerSettings -Config $Config
     if (-not [bool]$settings.enabled) { return }
     if (-not $FieldChanges -or $FieldChanges.Keys.Count -eq 0) { return }
+    if (-not (Test-QCShouldRecordWorkflowTelemetryForDocument -Config $Config -DocumentName $DocumentName)) { return }
 
     foreach ($field in @($FieldChanges.Keys)) {
         $change = _QCAT-ToHashtable $FieldChanges[$field]
@@ -2919,7 +2968,7 @@ function Invoke-QCAuditWorkflowAttributeChangeTriggers {
 }
 
 Export-ModuleMember -Function Get-QCAuditWorkflowTriggerSettings, Get-QCBaselineWorkflowStateNames, Get-QCRestartIntakeSourceStateNames, Test-QCWorkflowStateIsRestartIntakeTransition, Get-QCAuditStateTransitionKey, Get-QCPrependStateTransitionDedupeKey, Get-QCSheetGroupTransitionKey, Test-QCIsQcPdfDocumentName, `
-    Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
+    Test-QCIsAutomationPwActor, Test-QCShouldNotifyForSheetPackageMember, Test-QCShouldRecordWorkflowTelemetryForDocument, Test-QCDocumentStateAuditEventIsStale, Test-QCShouldSuppressBaselineSheetIndexStateTransition, Test-QCShouldSuppressAuditReadyForQcBaselineNotification, Test-QCShouldSuppressAuditStateChangeNotificationFromAttrSync, Test-QCShouldSkipAuditWorkflowProcessingForEvent, `
     Test-QCShouldSuppressAuditStateChangeNotification, Test-QCShouldSuppressAuditTriggerSheetPackageEchoNotification, Test-QCShouldSuppressAuditSheetStateSync, `
     Resolve-QCWorkflowEventQcReviewType, Resolve-QCWorkflowEventQcProcessType, Invoke-QCSheetGroupWorkflowTransition, Invoke-QCAuditWorkflowStateChangeTriggers, Invoke-QCAuditWorkflowAttributeChangeTriggers, `
     Invoke-QCProcessorWorkflowStateTelemetry, Invoke-QCProcessorWorkflowAttributeTelemetry

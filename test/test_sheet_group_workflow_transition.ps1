@@ -135,6 +135,7 @@ $cfg = @{
             recordFromProcessor = $true
             notifyOnStateChange = $true
             qcPdfNotificationsOnly = $true
+            qcPdfEventsOnly = $true
         }
     }
 }
@@ -143,11 +144,11 @@ $sheetStem = '080J082001ab001'
 $folder = 'Documents\X\CADD\Sheets'
 $dgnGuid = 'guid-dgn'
 $pdfGuid = 'guid-pdf'
-$qcGuid = 'guid-qc'
+$qcGuid = 'guid-prod'
 $members = @(
     @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
     @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
-    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
 )
 
 function Reset-TestState {
@@ -163,7 +164,7 @@ function Reset-TestState {
     }
 }
 
-# 1. User changes DGN -> QC Initiated; all siblings get events after prepend target Ready for QC
+# 1. User changes DGN -> QC Initiated; only lane prod PDF gets telemetry when qcPdfEventsOnly
 Reset-TestState
 $prevMap = @{
     ($dgnGuid.ToLowerInvariant()) = 'In Production'
@@ -174,36 +175,37 @@ $r1 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $d
     -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder -SourceState 'In Production' `
     -TargetState 'QC Initiated' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $prevMap -AuditEventId 5001 -ChangedByUser 7 -ChangedByUsername 'human.user'
-Assert-Eq $script:historyCalls.Count 3 'DGN trigger: history for all siblings'
-Assert-Eq $script:transitionCalls.Count 3 'DGN trigger: transitions for all siblings'
-Assert-Eq $script:workflowEvents.Count 3 'DGN trigger: workflow mirror per sibling'
-Assert-True (@($script:workflowEvents | Where-Object { $null -ne $_.transitionEventId -and $_.transitionEventId -gt 0 }).Count -eq 3) `
-    'Workflow mirror rows should link to transition_events.id'
+Assert-Eq $script:historyCalls.Count 1 'DGN trigger: history for lane prod PDF only'
+Assert-Eq $script:transitionCalls.Count 1 'DGN trigger: transition for lane prod PDF only'
+Assert-Eq $script:workflowEvents.Count 1 'DGN trigger: workflow mirror for lane prod PDF only'
+Assert-Eq $script:transitionCalls[0].documentGuid $qcGuid 'DGN trigger: prod lane receives transition'
+Assert-True (@($script:workflowEvents | Where-Object { $null -ne $_.transitionEventId -and $_.transitionEventId -gt 0 }).Count -eq 1) `
+    'Workflow mirror row should link to transition_events.id'
 Assert-Eq $script:notificationCalls 1 'DGN trigger: one notification per sheet group'
 Assert-True ($null -ne $r1.transitionGroupId) 'transition_group_id returned'
 Assert-Eq $r1.sheetPackageId $script:mockSheetPackageId 'sheet_package_id returned'
 $groupIds = @($script:transitionCalls | ForEach-Object { $_.transitionGroupId.ToString() } | Select-Object -Unique)
-Assert-Eq $groupIds.Count 1 'all sibling transitions share one transition_group_id'
+Assert-Eq $groupIds.Count 1 'lane transition has transition_group_id'
 $pkgIds = @($script:transitionCalls | ForEach-Object { $_.sheetPackageId.ToString() } | Select-Object -Unique)
-Assert-Eq $pkgIds.Count 1 'all sibling transitions share one sheet_package_id'
+Assert-Eq $pkgIds.Count 1 'lane transition has sheet_package_id'
 Assert-Eq $pkgIds[0] $script:mockSheetPackageId.ToString() 'transition sheet_package_id matches package'
 
-# 2. User changes Sheet PDF
+# 2. User changes Sheet PDF — same lane-only telemetry
 Reset-TestState
 $r2 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $pdfGuid `
     -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder -SourceState 'In Production' `
     -TargetState 'QC Initiated' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $prevMap -AuditEventId 5002
-Assert-Eq $script:transitionCalls.Count 3 'PDF trigger: all siblings receive transitions'
+Assert-Eq $script:transitionCalls.Count 1 'PDF trigger: lane prod PDF receives transition'
 
-# 3. User changes QC PDF
+# 3. User changes lane prod PDF
 Reset-TestState
 $r3 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'In Production' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'In Production' `
     -TargetState 'QC Initiated' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $prevMap -AuditEventId 5003
-Assert-Eq $script:transitionCalls.Count 3 'QC PDF trigger: all siblings receive transitions'
-Assert-Eq $script:notificationCalls 1 'QC PDF trigger: one notification'
+Assert-Eq $script:transitionCalls.Count 1 'prod PDF trigger: lane document receives transition'
+Assert-Eq $script:notificationCalls 1 'prod PDF trigger: one notification'
 
 # 4. Notification once per transition (already asserted above; explicit recount)
 Reset-TestState
@@ -222,7 +224,7 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $pdfGuid
     -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder -TargetState 'QC Initiated' `
     -TransitionSource 'user_audit' -Members $members -PreviousStateByGuid $prevMap -AuditEventId 5005 | Out-Null
 Assert-Eq $script:transitionCalls.Count $firstCount 'duplicate audit id does not insert duplicate transitions'
-Assert-True ($script:transitionReuseCount -ge 3) 'duplicate audit id reuses transition rows'
+Assert-True ($script:transitionReuseCount -ge 1) 'duplicate audit id reuses transition row'
 
 # 6. Missing sibling skipped with telemetry
 Reset-TestState
@@ -235,7 +237,7 @@ $r6 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $d
     -TransitionSource 'user_audit' -Members $partialMembers -PreviousStateByGuid $prevMap -AuditEventId 5006
 $missing = @($r6.members | Where-Object { $_.skipReason -eq 'sibling_missing' -and $_.role -eq 'qcPdf' })
 Assert-Eq $missing.Count 1 'missing qc pdf logged with sibling_missing'
-Assert-Eq $script:transitionCalls.Count 2 'only resolved siblings get transitions'
+Assert-Eq $script:transitionCalls.Count 0 'no lane PDF resolved: no transitions when qcPdfEventsOnly'
 
 # 7. Prepend completion records all siblings (Ready for QC)
 Reset-TestState
@@ -255,11 +257,11 @@ $ctx = @{
     }
 }
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'QC Initiated' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'QC Initiated' `
     -TargetState 'Ready for QC' -TransitionSource 'automation_prepend_completion' `
     -Members $members -PreviousStateByGuid $prevReady -JobId 'job-prepend-1' -JobType 'QC_PREPEND' `
     -Context $ctx -SuppressNotification | Out-Null
-Assert-Eq $script:transitionCalls.Count 3 'prepend completion: all siblings get Ready for QC events'
+Assert-Eq $script:transitionCalls.Count 1 'prepend completion: lane prod PDF gets Ready for QC event'
 Assert-Eq $script:notificationCalls 0 'prepend path suppresses sheet-group notification'
 
 # 7b. PW already at target but sheet_index still shows prior state (trigger-doc bug)
@@ -273,19 +275,15 @@ Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid
     -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder -SourceState 'In Production' `
     -TargetState 'QC Initiated' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $prevMap -StateByGuid $liveAligned -AuditEventId 5007 | Out-Null
-Assert-Eq $script:transitionCalls.Count 3 'index-lag still records events for all siblings when PW already aligned'
+Assert-Eq $script:transitionCalls.Count 1 'index-lag still records lane prod event when PW already aligned'
 
-# 8. Dashboard parity: DGN rows get same transition target as PDF/QC PDF
+# 8. Lane prod row gets transition target when stem/DGN triggers
 Reset-TestState
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $dgnGuid `
     -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder -TargetState 'QC Initiated' `
     -TransitionSource 'user_audit' -Members $members -PreviousStateByGuid $prevMap -AuditEventId 5008 | Out-Null
-$dgnT = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $dgnGuid })
-$pdfT = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $pdfGuid })
 $qcT = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $qcGuid })
-Assert-Eq $dgnT[0].toValue 'QC Initiated' 'DGN dashboard row target state'
-Assert-Eq $pdfT[0].toValue 'QC Initiated' 'PDF dashboard row target state'
-Assert-Eq $qcT[0].toValue 'QC Initiated' 'QC PDF dashboard row target state'
+Assert-Eq $qcT[0].toValue 'QC Initiated' 'lane prod dashboard row target state'
 
 Assert-Eq (Get-QCSheetGroupTransitionKey -SheetStem $sheetStem -DocumentGuid $pdfGuid -TargetState 'QC Initiated' `
     -TransitionSource 'user_audit' -AuditEventId 42) `
@@ -305,12 +303,13 @@ $preSync = @{
     ($qcGuid.ToLowerInvariant()) = 'Redlines Received'
 }
 $r9 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
     -TargetState 'Corrections Received' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $redlinesPrev -StateByGuid $preSync -AuditEventId 40598
 $pdfMember = @($r9.members | Where-Object { $_.role -eq 'pdf' })[0]
 Assert-Eq $pdfMember.preSyncLiveState 'Redlines Received' 'preSyncLiveState should reflect PW before sibling sync'
 Assert-Eq $pdfMember.finalState 'Corrections Received' 'finalState should reflect logical target after sibling sync'
+Assert-Eq $pdfMember.skipReason 'qc_pdf_events_only' 'stem PDF member skipped for workflow telemetry'
 Assert-True ($null -eq $pdfMember.liveState) 'legacy liveState field should not be emitted'
 
 # 10. Duplicate notification results should not count as sent in sheet-group telemetry
@@ -328,7 +327,7 @@ $script:notificationResultOverride = [pscustomobject]@{
     Data = @{ skipped = $true; dedupeKey = 'test-dedupe-key' }
 }
 $r10 = Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $qcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'Redlines Received' `
     -TargetState 'Corrections Received' -TransitionSource 'user_audit' -Members $members `
     -PreviousStateByGuid $redlinesPrev -AuditEventId 40599
 Assert-True $r10.notificationEvaluated 'duplicate skip should still mark notification evaluated'
@@ -336,7 +335,7 @@ Assert-True (-not $r10.notificationSent) 'duplicate skip should not mark notific
 Assert-Eq $r10.notificationResultCode 'QC_NOTIFICATION_SKIPPED_DUPLICATE' 'duplicate skip should preserve result code'
 Assert-True (-not $r10.notificationEmitted) 'notificationEmitted should mirror notificationSent'
 
-# 11. QC PDF trigger should win over stale sibling *-qc.pdf when sending notification
+# 11. Lane prod PDF trigger should win over stale sibling when sending notification
 $script:lastNotifyDocumentGuid = $null
 $script:notificationResultOverride = $null
 function Invoke-QCWorkflowStateChangeNotification {
@@ -353,8 +352,8 @@ $newQcGuid = '72bf6609-063c-40db-b067-94d1b064a5b5'
 $mixedMembers = @(
     @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
     @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
-    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
-    @{ documentGuid = $newQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
+    @{ documentGuid = $newQcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
 )
 $stalePrevMap = @{
     ($dgnGuid.ToLowerInvariant()) = 'Ready for QC'
@@ -364,14 +363,14 @@ $stalePrevMap = @{
 }
 Reset-TestState
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $newQcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
     -TargetState 'Redlines Received' -TransitionSource 'user_audit' -Members $mixedMembers `
     -PreviousStateByGuid $stalePrevMap -AuditEventId 41070 | Out-Null
-Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Trigger QC PDF member should be selected for notification'
+Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Trigger lane prod member should be selected for notification'
 $staleOnlyMembers = @(
     @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
     @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
-    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-qc.pdf'); document = $null }
+    @{ documentGuid = $oldQcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
 )
 $staleOnlyPrevMap = @{
     ($dgnGuid.ToLowerInvariant()) = 'Ready for QC'
@@ -380,9 +379,27 @@ $staleOnlyPrevMap = @{
 }
 Reset-TestState
 Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $newQcGuid `
-    -TriggerDocumentName ($sheetStem + '-qc.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
+    -TriggerDocumentName ($sheetStem + '-prod.pdf') -FolderPath $folder -SourceState 'Ready for QC' `
     -TargetState 'Redlines Received' -TransitionSource 'user_audit' -Members $staleOnlyMembers `
     -PreviousStateByGuid $staleOnlyPrevMap -AuditEventId 41071 | Out-Null
-Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Missing trigger QC PDF member should fall back to trigger identity'
+Assert-Eq $script:lastNotifyDocumentGuid $newQcGuid 'Missing trigger lane prod member should fall back to trigger identity'
+
+# 12. qcPdfEventsOnly=false restores all-sibling telemetry (legacy dashboard parity)
+$cfgAllSiblings = @{
+    database = @{ enabled = $true; allowWritesInDryRun = $true }
+    auditPoller = @{
+        workflowTriggers = @{
+            enabled = $true
+            recordStateHistory = $true
+            recordTransitions = $true
+            qcPdfEventsOnly = $false
+        }
+    }
+}
+Reset-TestState
+Invoke-QCSheetGroupWorkflowTransition -Config $cfgAllSiblings -TriggerDocumentGuid $dgnGuid `
+    -TriggerDocumentName ($sheetStem + '.dgn') -FolderPath $folder -TargetState 'QC Initiated' `
+    -TransitionSource 'user_audit' -Members $members -PreviousStateByGuid $prevMap -AuditEventId 5010 | Out-Null
+Assert-Eq $script:transitionCalls.Count 3 'qcPdfEventsOnly=false: all siblings receive transitions'
 
 Write-Host 'test_sheet_group_workflow_transition.ps1 passed'
