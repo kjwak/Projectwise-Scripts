@@ -113,10 +113,10 @@ function _RQCF-PauseIfInteractiveConsole {
 
 function _RQCF-ParseFolderSelectionInput {
     param(
-        [Parameter(Mandatory)][string]$Input,
+        [Parameter(Mandatory)][string]$SelectionText,
         [Parameter(Mandatory)][string[]]$AvailablePaths
     )
-    $text = $Input.Trim()
+    $text = $SelectionText.Trim()
     if ($text -match '^(?i)(all|\*|a)$') {
         return @($AvailablePaths)
     }
@@ -127,12 +127,11 @@ function _RQCF-ParseFolderSelectionInput {
     }
 
     $selected = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($token in ($text -split '[,\s;]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-        $token = $token.Trim()
-        if ($token -match '^(\d+)\s*-\s*(\d+)$') {
+    foreach ($part in ($text -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if ($part -match '^(\d+)\s*-\s*(\d+)$') {
             $start = [int]$Matches[1]
             $end = [int]$Matches[2]
-            if ($start -gt $end) { throw "Invalid range: $token" }
+            if ($start -gt $end) { throw "Invalid range: $part" }
             for ($n = $start; $n -le $end; $n++) {
                 if ($n -lt 1 -or $n -gt $AvailablePaths.Count) {
                     throw "Selection out of range: $n (1-$($AvailablePaths.Count))"
@@ -141,15 +140,15 @@ function _RQCF-ParseFolderSelectionInput {
             }
             continue
         }
-        if ($token -match '^\d+$') {
-            $n = [int]$token
+        if ($part -match '^\d+$') {
+            $n = [int]$part
             if ($n -lt 1 -or $n -gt $AvailablePaths.Count) {
                 throw "Selection out of range: $n (1-$($AvailablePaths.Count))"
             }
             [void]$selected.Add($AvailablePaths[$n - 1])
             continue
         }
-        throw "Unrecognized selection '$token'. Use all, numbers (1,3,5 or 1-3), or a folder path."
+        throw "Unrecognized selection '$part'. Use all, numbers (1,3,5 or 17-23), or a folder path."
     }
     if ($selected.Count -eq 0) { throw 'No folders selected.' }
     return @($selected | Sort-Object)
@@ -216,7 +215,7 @@ function _RQCF-PromptInteractiveFolderSelection {
         $raw = (Read-Host 'Folder selection').Trim()
     } while ([string]::IsNullOrWhiteSpace($raw))
 
-    $selected = @(_RQCF-ParseFolderSelectionInput -Input $raw -AvailablePaths @($paths))
+    $selected = @(_RQCF-ParseFolderSelectionInput -SelectionText $raw -AvailablePaths @($paths))
     $manualPath = ($raw -match '[\\/]' -or $raw -imatch '^documents')
     return @{
         paths                    = @($selected)
