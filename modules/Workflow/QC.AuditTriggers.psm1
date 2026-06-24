@@ -1129,6 +1129,9 @@ function Invoke-QCSheetGroupWorkflowTransition {
     }
 
     $laneIndependentMode = $LaneIndependentMode.IsPresent
+    if (-not $laneIndependentMode -and $Context -and $Context.ContainsKey('laneIndependentInitialPrepend')) {
+        try { $laneIndependentMode = [bool]$Context.laneIndependentInitialPrepend } catch { }
+    }
     if (-not $laneIndependentMode -and (Test-QCIsQcPdfDocumentName -DocumentName $TriggerDocumentName) -and (@($Members).Count -le 1)) {
         $laneIndependentMode = $true
     }
@@ -1287,6 +1290,9 @@ function Invoke-QCSheetGroupWorkflowTransition {
                 $memberLane = Get-PWQcPdfLaneFromDocumentName -DocumentName $dn
                 if ($memberLane -and $activeLane -and ($memberLane -ieq $activeLane)) {
                     $finalState = $laneTarget
+                } elseif ($memberLane -and $activeLane -and ($memberLane -ine $activeLane)) {
+                    # Inactive lane PDF during lane-independent prepend — no PW write and no transition telemetry.
+                    $finalState = _QCAT-NormalizeValue $prevState
                 } elseif ($dn -match '(?i)\.dgn$' -or ($dn -match '(?i)\.pdf$' -and $dn -notmatch '(?i)-(prod|chk|rev)\.pdf$')) {
                     $writeStemRef = $true
                     if ($Context.ContainsKey('writeStemPdfReferenceState')) {
@@ -2087,6 +2093,18 @@ function Resolve-QCWorkflowEventQcReviewType {
         [hashtable]$PwAttributes = $null,
         [object]$Document = $null
     )
+
+    # Lane PDFs resolve from filename / lane registry first — shared prepend Context must not override.
+    if (Get-Command -Name '_QCAT-ResolveLaneProcessTypeFromDocumentName' -ErrorAction SilentlyContinue) {
+        $laneBucket = _QCAT-ResolveLaneProcessTypeFromDocumentName -DocumentName $DocumentName
+        if (-not [string]::IsNullOrWhiteSpace($laneBucket)) {
+            $laneFromDocument = _QCAT-ResolveLaneReviewTypeFromTelemetry -Config $Config -DocumentName $DocumentName `
+                -DocumentGuid $DocumentGuid -Document $Document
+            if (-not [string]::IsNullOrWhiteSpace($laneFromDocument)) {
+                return $laneFromDocument
+            }
+        }
+    }
 
     if ($Context) {
         if ($Context.ContainsKey('attributes') -and $Context.attributes) {

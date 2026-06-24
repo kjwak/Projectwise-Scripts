@@ -106,6 +106,13 @@ Assert-Eq (Get-QCReviewTypeBucket -ReviewType $laneProdReviewType) 'production' 
 $laneChkReviewType = Resolve-QCWorkflowEventQcReviewType -DocumentName '080J082001ab001-chk.pdf'
 Assert-Eq (Get-QCReviewTypeBucket -ReviewType $laneChkReviewType) 'check' 'lane chk PDF resolves to check bucket'
 
+$laneRevWithPrependContext = Resolve-QCWorkflowEventQcReviewType -DocumentName '080J082001ab001-rev.pdf' -Context @{
+    attributes    = @{ reviewType = 'Production' }
+    qcProcessType = 'production'
+}
+Assert-Eq (Get-QCReviewTypeBucket -ReviewType $laneRevWithPrependContext) 'review' `
+    'prepend stem context must not override lane rev PDF review type'
+
 Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force
 $prependActions = Get-QCPrependAuditActions -Config $cfgDefault
 Assert-True ($prependActions -contains 'DOCUMENT_ATTR') 'default prepend actions include DOCUMENT_ATTR'

@@ -318,6 +318,30 @@ Assert-Eq $revTransition.Count 1 'lane rev PDF gets Originated workflow event af
 Assert-Eq $revTransition[0].fromValue 'Redlines Received' 'lane event uses prepend from-state not post-write sheet_index'
 Assert-Eq $revTransition[0].toValue 'Originated' 'lane event target is Originated'
 
+# 7d. Review prepend with existing prod lane — prod must not get spurious transition telemetry
+Reset-TestState
+$revMembersWithProd = @(
+    @{ documentGuid = $dgnGuid; documentName = ($sheetStem + '.dgn'); document = $null }
+    @{ documentGuid = $pdfGuid; documentName = ($sheetStem + '.pdf'); document = $null }
+    @{ documentGuid = $qcGuid; documentName = ($sheetStem + '-prod.pdf'); document = $null }
+    @{ documentGuid = $revGuid; documentName = ($sheetStem + '-rev.pdf'); document = $null }
+)
+$indexLagPrevWithProd = @{
+    ($revGuid.ToLowerInvariant()) = 'Redlines Received'
+    ($qcGuid.ToLowerInvariant()) = 'Initiate Origination'
+    ($pdfGuid.ToLowerInvariant()) = 'In Development'
+    ($dgnGuid.ToLowerInvariant()) = 'In Development'
+}
+Invoke-QCSheetGroupWorkflowTransition -Config $cfg -TriggerDocumentGuid $pdfGuid `
+    -TriggerDocumentName ($sheetStem + '.pdf') -FolderPath $folder -SourceState 'Initiate Origination' `
+    -TargetState 'Originated' -TransitionSource 'automation_prepend_completion' `
+    -Members $revMembersWithProd -PreviousStateByGuid $indexLagPrevWithProd -JobId 'job-prepend-rev-with-prod' -JobType 'QC_PREPEND' `
+    -Context $laneSplitCtx -SuppressNotification | Out-Null
+$prodTransition = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $qcGuid })
+Assert-Eq $prodTransition.Count 0 'inactive prod lane skipped during review prepend telemetry'
+$revWithProdTransition = @($script:transitionCalls | Where-Object { $_.documentGuid -eq $revGuid })
+Assert-Eq $revWithProdTransition.Count 1 'active rev lane still records Originated transition'
+
 # 7b. PW already at target but sheet_index still shows prior state (trigger-doc bug)
 Reset-TestState
 $liveAligned = @{

@@ -26,6 +26,12 @@ Each sheet stem can have up to three lane QC PDFs in ProjectWise:
 
 Lane states are **independent** by default (`QCProcess.EnableLegacySiblingStateSync: false`). Post-initial-prepend lane split is handled by `Sync-PWPostInitialPrependLaneStates` in `PW.Discovery.psm1`.
 
+**Lane-independent prepend telemetry** (`Invoke-QCSheetGroupWorkflowTransition` with `laneIndependentInitialPrepend`):
+
+- Only the **active** lane PDF and (on initial prepend) stem/DGN reference members receive `transition_events` / `qc_workflow_events`.
+- Inactive sibling lane PDFs (for example `-prod.pdf` during a review prepend) must not record state transitions — PW writeback already skips them; telemetry mirrors that rule.
+- `qc_workflow_events.qc_review_type` for lane PDFs is resolved from the **filename** (`*-prod/-rev/-chk`), not from shared prepend job context (stem `QC_Process_Type`).
+
 ### Legacy compatibility (`*-qc.pdf`)
 
 The single-lane `*-qc.pdf` naming pattern is **legacy**. Code still supports it as a bridge (for example standalone `Invoke-QCPrependPw.ps1` without strict lane params, normalization helpers, and older `sheet_index` rows). **Do not** treat `*-qc.pdf` as the current authoritative lane document. New work should use `*-prod.pdf` / `*-rev.pdf` / `*-chk.pdf`.
