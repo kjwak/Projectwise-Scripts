@@ -2268,10 +2268,6 @@ function _PWD-ResolvePwDocumentInFolder {
         [Parameter(Mandatory)][string]$DocumentName,
         [string]$DocumentGuid = ''
     )
-    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
-        $gk = $DocumentGuid.ToLowerInvariant()
-        if ($DocByGuid.ContainsKey($gk)) { return $DocByGuid[$gk] }
-    }
     $searchCmd = Get-Command -Name 'Get-PWDocumentsBySearch' -ErrorAction SilentlyContinue
     if (-not $searchCmd -or [string]::IsNullOrWhiteSpace($DocumentName)) { return $null }
     $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
@@ -2286,6 +2282,21 @@ function _PWD-ResolvePwDocumentInFolder {
     Add-NameCandidate $DocumentName
     if ($DocumentName -match '(?i)^(.+)-(prod|chk|rev)\.pdf$') {
         Add-NameCandidate ([string]$Matches[1] + '-' + [string]$Matches[2].ToLowerInvariant() + '.pdf')
+    }
+    if (Test-PWValidDocumentGuid -DocumentGuid $DocumentGuid) {
+        $gk = $DocumentGuid.ToLowerInvariant()
+        if ($DocByGuid.ContainsKey($gk)) {
+            $cached = $DocByGuid[$gk]
+            $cachedName = ''
+            try { $cachedName = [string]$cached.Name } catch { }
+            if ($cachedName) {
+                foreach ($searchName in @($nameCandidates)) {
+                    if ($cachedName.Equals($searchName, [StringComparison]::OrdinalIgnoreCase)) {
+                        return $cached
+                    }
+                }
+            }
+        }
     }
     foreach ($searchName in @($nameCandidates)) {
         try {

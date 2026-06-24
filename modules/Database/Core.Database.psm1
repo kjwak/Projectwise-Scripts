@@ -4603,7 +4603,8 @@ ORDER BY
             $g = if ($idxRes.Data.table.Rows[0].document_guid -is [DBNull]) { '' } else { [string]$idxRes.Data.table.Rows[0].document_guid }
             if (-not [string]::IsNullOrWhiteSpace($g)) { return $g.Trim() }
         }
-        if (-not [string]::IsNullOrWhiteSpace($SourceDocumentGuid)) {
+        # Production-only fallback: never reuse qc_pdf_guid when resolving check/review lane filenames.
+        if (-not [string]::IsNullOrWhiteSpace($SourceDocumentGuid) -and ($lane -in @('', 'production'))) {
             $pkgRes = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT TOP 1 sp.qc_pdf_guid
 FROM sheet_packages sp

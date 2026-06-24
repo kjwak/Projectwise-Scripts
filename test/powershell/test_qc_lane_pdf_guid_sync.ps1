@@ -13,6 +13,9 @@ $staleGuid = '00913b00-94c6-4c23-b6a3-7b379b527141'
 $folder = 'documents\caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
 $apiFolder = 'caltrans\cafwy2200-i-15_elpse\cadd\sheets\seg_1'
 $chkName = '080J082001ca001-chk.pdf'
+$prodGuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+$prodName = '080J082001ca001-prod.pdf'
+$revName = '080J082001ca001-rev.pdf'
 $config = @{ database = @{ enabled = $true; connectionString = 'x' } }
 
 InModuleScope -ModuleName Core.Database {
@@ -53,6 +56,34 @@ InModuleScope -ModuleName Core.Database {
 
     $resolved = Resolve-QCSheetQcPdfGuid -Config $config -FolderPath $folder -QcPdfName $chkName
     Assert-Eq $resolved $liveGuid 'Resolve-QCSheetQcPdfGuid should prefer live PW search over stale DB'
+}
+
+InModuleScope -ModuleName Core.Database {
+    function Test-QCDatabaseEnabled { param([hashtable]$Config) return $true }
+    function _QDB-IsEnabled { param([hashtable]$Config) return $true }
+    function _QDB-NormalizeTelemetryPath { param([string]$Path) return $Path }
+    function Get-PWDocumentsBySearch { param([string]$FolderPath, [string]$DocumentName, [switch]$JustThisFolder) return @() }
+
+    function Invoke-QCDatabaseQuery {
+        param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
+        if ($Sql -match 'sp\.qc_pdf_guid' -and $Sql -match 'INNER JOIN sheet_index') {
+            $table = New-Object System.Data.DataTable
+            [void]$table.Columns.Add('qc_pdf_guid', [string])
+            [void]$table.Rows.Add($prodGuid)
+            return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $table }
+        }
+        return New-QCSuccessResult -Code 'DB_QUERY_OK' -Message 'ok' -Data @{ table = $null }
+    }
+
+    $chkMissing = Resolve-QCSheetQcPdfGuid -Config $config -FolderPath $folder -QcPdfName $chkName `
+        -SourceDocumentGuid $prodGuid
+    Assert-Eq $chkMissing '' 'check lane must not fall back to production qc_pdf_guid'
+    $revMissing = Resolve-QCSheetQcPdfGuid -Config $config -FolderPath $folder -QcPdfName $revName `
+        -SourceDocumentGuid $prodGuid
+    Assert-Eq $revMissing '' 'review lane must not fall back to production qc_pdf_guid'
+    $prodResolved = Resolve-QCSheetQcPdfGuid -Config $config -FolderPath $folder -QcPdfName $prodName `
+        -SourceDocumentGuid $prodGuid
+    Assert-Eq $prodResolved $prodGuid 'production lane may still use package qc_pdf_guid fallback'
 }
 
 # _PWD-SyncSheetPackageLaneQcPdfs reconciles lane GUID columns via live PW before member upsert.
