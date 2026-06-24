@@ -63,6 +63,18 @@ InModuleScope -ModuleName QC.Processors {
     Assert-True (-not $fail.IsSuccess) 'missing process type fails'
     Assert-Eq $fail.Code 'QC_PROCESS_TYPE_UNKNOWN' 'unknown process type code'
 
+    $initialIntake = @{
+        id = 'j-initial-intake'
+        sourceFolder = 'Documents\X\CADD\Sheets'
+        sourceName = '080J082001ab001.pdf'
+        metadata = @{ prependTrigger = 'initialQcPdf'; triggerDocumentName = '080J082001ab001.pdf' }
+    }
+    $initialLane = _QCP-TryResolvePrependLaneContext -Job $initialIntake -Config $cfg
+    Assert-True $initialLane.IsSuccess 'initialQcPdf on stem sheet defaults to production'
+    Assert-Eq $initialLane.Data.qcProcessType 'production' 'initial intake => production'
+    Assert-Eq $initialLane.Data.resolutionSource 'initial_prepend_default' 'initial intake resolution source'
+    Assert-Eq $initialLane.Data.expectedLanePdfName '080J082001ab001-prod.pdf' 'initial intake creates *-prod.pdf'
+
     $finalPrependJob = @{
         id = 'j-final-rev-trigger'
         sourceFolder = 'Documents\X\CADD\Sheets'

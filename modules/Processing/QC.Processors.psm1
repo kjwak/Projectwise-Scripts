@@ -377,6 +377,17 @@ function _QCP-TryResolvePrependLaneContext {
     }
 
     if (-not $processType) {
+        $prependTrigger = _QCP-ResolvePrependTrigger -Job $Job
+        if ($prependTrigger -eq 'initialQcPdf' `
+                -and (_QCP-IsStemSheetDocumentName ([string]$laneTriggerName)) `
+                -and (_QCP-IsStemSheetDocumentName ([string]$sheetPdfName))) {
+            # QC Initiated intake on the stem sheet PDF always creates the production lane PDF.
+            $processType = 'production'
+            $resolutionSource = 'initial_prepend_default'
+        }
+    }
+
+    if (-not $processType) {
         return New-QCFailureResult -Code 'QC_PROCESS_TYPE_UNKNOWN' `
             -Message 'QC_PREPEND could not resolve qc_process_type; refusing to default to production.' -Data @{
             jobId = if ($Job.id) { [string]$Job.id } else { '' }
@@ -2405,8 +2416,20 @@ function Add-QCPrependJobForQcInitiatedStateChange {
     if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
     $laneEnqueue = _QCP-TryResolvePrependLaneContext -Job $job -Config $Config
-    if ($laneEnqueue.IsSuccess) {
-        $md = _QCP-EnsureJobMetadataHashtable -Job $job
+    if (-not $laneEnqueue.IsSuccess) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_PREPEND_SKIPPED_NO_PROCESS_TYPE' `
+                -Message 'QC_PREPEND skipped: qc_process_type could not be resolved at enqueue time.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr; prependTrigger = 'initialQcPdf'
+                errorCode = [string]$laneEnqueue.Code; errorMessage = [string]$laneEnqueue.Message
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_NO_PROCESS_TYPE' `
+            -Message 'QC_PREPEND skipped because qc_process_type could not be resolved.' -Data @{
+            skipped = $true; sheetPdf = $sheetPdf; folderPath = $FolderPath; prependTrigger = 'initialQcPdf'
+            errorCode = [string]$laneEnqueue.Code; errorMessage = [string]$laneEnqueue.Message
+        }
     }
 
     if ($DryRun) {
@@ -2536,8 +2559,20 @@ function Add-QCPrependJobForQcFinalizingStateChange {
     if (-not (_QCP-IsNullOrWhiteSpace $ChangedByUsername)) { $md['changedByUsername'] = [string]$ChangedByUsername }
     $job['metadata'] = $md
     $laneEnqueue = _QCP-TryResolvePrependLaneContext -Job $job -Config $Config
-    if ($laneEnqueue.IsSuccess) {
-        $md = _QCP-EnsureJobMetadataHashtable -Job $job
+    if (-not $laneEnqueue.IsSuccess) {
+        if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+            Write-QCJsonLog -Level 'Warning' -Code 'QC_PREPEND_SKIPPED_NO_PROCESS_TYPE' `
+                -Message 'QC_PREPEND skipped: qc_process_type could not be resolved at enqueue time.' -Data @{
+                jobId = [string]$job.id; sourcePath = $sourcePath; folderPath = $FolderPath
+                triggerDocumentGuid = $TriggerDocumentGuid; currentState = $curr; prependTrigger = 'finalQcComplete'
+                errorCode = [string]$laneEnqueue.Code; errorMessage = [string]$laneEnqueue.Message
+            } | Out-Null
+        }
+        return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_NO_PROCESS_TYPE' `
+            -Message 'QC_PREPEND skipped because qc_process_type could not be resolved.' -Data @{
+            skipped = $true; sheetPdf = $sheetPdf; folderPath = $FolderPath; prependTrigger = 'finalQcComplete'
+            errorCode = [string]$laneEnqueue.Code; errorMessage = [string]$laneEnqueue.Message
+        }
     }
 
     if ($DryRun) {
