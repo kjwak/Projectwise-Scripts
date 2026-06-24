@@ -809,6 +809,13 @@ $localMerged = Join-Path $tempWorkDir $HistoryDocName
 if (-not $historyDoc) {
   Write-Log "History document does not exist yet."
 
+  Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
+  try {
+    Invoke-QcReviewStampIfNeeded -MergedPdfPath $localIncoming -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
+  } catch {
+    throw
+  }
+
   if ($PSCmdlet.ShouldProcess("$IncomingFolderPath\$HistoryDocName", "Create history document from incoming")) {
     Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
     New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
