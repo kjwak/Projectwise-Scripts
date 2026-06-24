@@ -6,8 +6,9 @@
 # - Uses Bentley IMS login via Open-PWConnection.
 # - Avoids wildcard searches (your environment doesn't handle them reliably).
 # - History document is (incoming filename base)-qc.pdf, saved in the same PW folder as the incoming file.
-# - If the history doc doesn't exist, it creates it from the incoming PDF (base case).
-#   - If it exists, it exports both and prepends (with overlay layers when available), then updates the history doc in PW.
+# - If the history doc doesn't exist, it seeds local history from the incoming export, runs the same
+#   overlay/qpdf merge + review stamp pipeline as subsequent prepends, then creates the lane PDF in PW.
+# - If it exists, it exports both and prepends (with overlay layers when available), then updates the history doc in PW.
 # - PDF tools (qpdf / qc_overlay_prepend) need local temp files: export from PW → process → upload merged PDF back.
 #   "Old" vs "new" for the overlay always comes from PW content (exported history + exported incoming).
 #   -OverlaySheetWorkDir:$true (default): LocalRoot\work\<historyBase>\ splits each history page to <stem>-NN.pdf, MANIFEST,
@@ -336,6 +337,30 @@ function Invoke-PdfPrependMerge([string]$newPdf, [string]$historyPdf, [string]$o
 function Convert-OverlayExeOutputLine($obj) {
   if ($null -eq $obj) { return '' }
   return [string]$obj
+}
+
+function Copy-PrependQcPdfToHistTemp {
+  param(
+    [Parameter(Mandatory)][string]$SourcePdf,
+    [Parameter(Mandatory)][string]$HistBaseName,
+    [Parameter(Mandatory)][string]$TempWorkDir
+  )
+  $localHistoryTmp = $null
+  foreach ($suffix in @('', '_2', '_3', '_4', '_5')) {
+    $dest = Join-Path $TempWorkDir ($HistBaseName + $suffix + '.pdf')
+    try {
+      Invoke-RetryOnAccessDenied { Copy-Item -LiteralPath $SourcePdf -Destination $dest -Force }
+      $localHistoryTmp = $dest
+      break
+    } catch {
+      if ($_.Exception.Message -match 'Access to the path .* is denied' -and $suffix -ne '_5') { continue }
+      throw
+    }
+  }
+  if (-not $localHistoryTmp) {
+    throw "Failed to copy source PDF to history temp: $SourcePdf"
+  }
+  return $localHistoryTmp
 }
 
 function Invoke-PdfPrependOverlay(
@@ -805,70 +830,37 @@ $baseName = [System.IO.Path]::GetFileNameWithoutExtension($HistoryDocName)
 # Match PW document name on disk so Update-PWDocumentFile / open-save use *-qc.pdf (not *_MERGED_*).
 # Safe here: exported history is copied to *_hist_* and the export copy is removed before merge.
 $localMerged = Join-Path $tempWorkDir $HistoryDocName
+$createNewHistoryDoc = (-not $historyDoc)
+$histBase = [System.IO.Path]::GetFileNameWithoutExtension($HistoryDocName) + "_hist_" + $stamp
 
-if (-not $historyDoc) {
-  Write-Log "History document does not exist yet."
-
-  Invoke-PrependQcReviewTypeDefaultIfNeeded -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
-  try {
-    Invoke-QcReviewStampIfNeeded -MergedPdfPath $localIncoming -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName
-  } catch {
-    throw
-  }
-
-  if ($PSCmdlet.ShouldProcess("$IncomingFolderPath\$HistoryDocName", "Create history document from incoming")) {
-    Write-Log "Creating $HistoryDocName in same folder as incoming (base case = incoming becomes history)..."
-    New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localIncoming -DocumentName $HistoryDocName | Out-Null
-    Write-Log "Created history document."
-    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
-    if (Test-Path $localIncoming) { Remove-ItemWithRetry $localIncoming }
-  } else {
-    Write-Log "WhatIf: would create history document."
-  }
-
-  Write-Log "Done."
-  Close-PWConnection -ErrorAction SilentlyContinue
-  Remove-PrependQcExportScratch $exportDir
-  exit 0
-}
-
-Write-Log ("History resolved: DocumentID={0}, FullPath={1}" -f $historyDoc.DocumentID, $historyDoc.FullPath)
-
-# Export history to %TEMP% (avoids AV/lock on LocalRoot)
-Write-Log "Exporting existing history document from PW to local..."
-Export-PWDocumentsSimple -InputDocuments $historyDoc -TargetFolder $tempWorkDir | Out-Null
-Start-Sleep -Milliseconds 300   # let PW release file handle (Error 100 can leave file locked briefly)
-
-# Prefer path reported by export; else expected path; else newest matching name
-if ($historyDoc.CopiedOutLocalFileName -and (Test-Path $historyDoc.CopiedOutLocalFileName)) {
-  $localHistory = $historyDoc.CopiedOutLocalFileName
-} elseif (Test-Path $localHistory) {
-  # use $localHistory as set
+if ($createNewHistoryDoc) {
+  Write-Log "History document does not exist yet; seeding local history from incoming for merge/stamp pipeline."
+  $localHistory = Copy-PrependQcPdfToHistTemp -SourcePdf $localIncoming -HistBaseName $histBase -TempWorkDir $tempWorkDir
 } else {
-  $foundHist = Get-ChildItem $tempWorkDir -File | Where-Object { $_.Name -ieq $HistoryDocName } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($foundHist) { $localHistory = $foundHist.FullName }
-}
+  Write-Log ("History resolved: DocumentID={0}, FullPath={1}" -f $historyDoc.DocumentID, $historyDoc.FullPath)
 
-if (-not (Test-Path $localHistory)) {
-  throw "History export failed; expected local file not found: $localHistory"
-}
-# Copy to unique file in TEMP; on "Access denied" retry with a different filename (suffix)
-$localHistoryExport = $localHistory
-$histBase = [System.IO.Path]::GetFileNameWithoutExtension($HistoryDocName) + "_hist_" + (Get-Date -Format "yyyyMMdd_HHmmss")
-$localHistoryTmp = $null
-foreach ($suffix in @('', '_2', '_3', '_4', '_5')) {
-  $dest = Join-Path $tempWorkDir ($histBase + $suffix + ".pdf")
-  try {
-    Invoke-RetryOnAccessDenied { Copy-Item -LiteralPath $localHistoryExport -Destination $dest -Force }
-    $localHistoryTmp = $dest
-    break
-  } catch {
-    if ($_.Exception.Message -match 'Access to the path .* is denied' -and $suffix -ne '_5') { continue }
-    throw
+  # Export history to %TEMP% (avoids AV/lock on LocalRoot)
+  Write-Log "Exporting existing history document from PW to local..."
+  Export-PWDocumentsSimple -InputDocuments $historyDoc -TargetFolder $tempWorkDir | Out-Null
+  Start-Sleep -Milliseconds 300   # let PW release file handle (Error 100 can leave file locked briefly)
+
+  # Prefer path reported by export; else expected path; else newest matching name
+  if ($historyDoc.CopiedOutLocalFileName -and (Test-Path $historyDoc.CopiedOutLocalFileName)) {
+    $localHistory = $historyDoc.CopiedOutLocalFileName
+  } elseif (Test-Path $localHistory) {
+    # use $localHistory as set
+  } else {
+    $foundHist = Get-ChildItem $tempWorkDir -File | Where-Object { $_.Name -ieq $HistoryDocName } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($foundHist) { $localHistory = $foundHist.FullName }
   }
+
+  if (-not (Test-Path $localHistory)) {
+    throw "History export failed; expected local file not found: $localHistory"
+  }
+  $localHistoryExport = $localHistory
+  $localHistory = Copy-PrependQcPdfToHistTemp -SourcePdf $localHistoryExport -HistBaseName $histBase -TempWorkDir $tempWorkDir
+  Remove-ItemWithRetry $localHistoryExport   # best effort; PW may still have lock on export
 }
-Remove-ItemWithRetry $localHistoryExport   # best effort; PW may still have lock on export
-$localHistory = $localHistoryTmp
 $fh = Get-Item -LiteralPath $localHistory
 if ($fh.Length -eq 0) {
   Remove-ItemWithRetry $localHistory
@@ -953,36 +945,47 @@ try {
 }
 
 # Upload / replace history in PW (parameter name varies by pwps_dab version: LocalPath, SourcePath, etc.)
-Write-Log "Updating history document content in PW..."
-if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content from merged PDF")) {
-
-  $updateCmd = Get-Command Update-PWDocumentFile
-
-  # pwps_dab 24+ uses: -InputDocuments and -NewFilePathName
-  $docParamName = if ($updateCmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' } elseif ($updateCmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' } else { $null }
-  if (-not $docParamName) { throw "Update-PWDocumentFile: could not find document input parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
-
-  $fileParamName = if ($updateCmd.Parameters.ContainsKey('NewFilePathName')) { 'NewFilePathName' } else { $null }
-  if (-not $fileParamName) {
-    $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
-      $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','OutVariable','OutBuffer','PipelineVariable')
-    } | Select-Object -First 1
+if ($createNewHistoryDoc) {
+  Write-Log "Creating history document in PW from merged/stamped PDF..."
+  if ($PSCmdlet.ShouldProcess("$IncomingFolderPath\$HistoryDocName", "Create history document from merged PDF")) {
+    New-PWDocument -FolderPath $IncomingFolderPath -FilePath $localMerged -DocumentName $HistoryDocName | Out-Null
+    Write-Log "Created history document."
+    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
+    @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
+  } else {
+    Write-Log "WhatIf: would create history document from merged PDF."
   }
-  if (-not $fileParamName) {
-    $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -notin @('InputDocument','InputDocuments') } | Select-Object -First 1
-  }
-  if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
-
-  $docArg = if ($docParamName -eq 'InputDocuments') { @($historyDoc) } else { $historyDoc }
-  $pwUpdateFileParams = @{ $docParamName = $docArg; $fileParamName = $localMerged }
-  Update-PWDocumentFile @pwUpdateFileParams | Out-Null
-
-  Write-Log "Updated history document."
-  Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
-  # Clear working files after successful PW update (Remove-ItemWithRetry continues if antivirus blocks)
-  @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
 } else {
-  Write-Log "WhatIf: would update history document file content."
+  Write-Log "Updating history document content in PW..."
+  if ($PSCmdlet.ShouldProcess($historyDoc.FullPath, "Update document file content from merged PDF")) {
+
+    $updateCmd = Get-Command Update-PWDocumentFile
+
+    # pwps_dab 24+ uses: -InputDocuments and -NewFilePathName
+    $docParamName = if ($updateCmd.Parameters.ContainsKey('InputDocuments')) { 'InputDocuments' } elseif ($updateCmd.Parameters.ContainsKey('InputDocument')) { 'InputDocument' } else { $null }
+    if (-not $docParamName) { throw "Update-PWDocumentFile: could not find document input parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
+
+    $fileParamName = if ($updateCmd.Parameters.ContainsKey('NewFilePathName')) { 'NewFilePathName' } else { $null }
+    if (-not $fileParamName) {
+      $fileParamName = $updateCmd.Parameters.Keys | Where-Object {
+        $_ -match '^(LocalPath|SourcePath|FilePath|Path|SourceFile|File)$' -and $_ -notin @('Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','OutVariable','OutBuffer','PipelineVariable')
+      } | Select-Object -First 1
+    }
+    if (-not $fileParamName) {
+      $fileParamName = $updateCmd.Parameters.Keys | Where-Object { $_ -match 'path|file' -and $_ -notin @('InputDocument','InputDocuments') } | Select-Object -First 1
+    }
+    if (-not $fileParamName) { throw "Update-PWDocumentFile: could not find file path parameter. Parameters: $($updateCmd.Parameters.Keys -join ', ')" }
+
+    $docArg = if ($docParamName -eq 'InputDocuments') { @($historyDoc) } else { $historyDoc }
+    $pwUpdateFileParams = @{ $docParamName = $docArg; $fileParamName = $localMerged }
+    Update-PWDocumentFile @pwUpdateFileParams | Out-Null
+
+    Write-Log "Updated history document."
+    Invoke-PrependQcPdfAttributeSync -FolderPath $IncomingFolderPath -SourceDocumentName $IncomingDocName -QcDocumentName $HistoryDocName -QcProcessType $QcProcessType
+    @($localIncoming, $localHistory, $localMerged, $overlayEphemeralPage1Master) | Where-Object { $_ } | ForEach-Object { Remove-ItemWithRetry $_ }
+  } else {
+    Write-Log "WhatIf: would update history document file content."
+  }
 }
 
 Write-Log "Done."
