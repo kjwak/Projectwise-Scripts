@@ -9,8 +9,9 @@ For a Sheets folder, one stem PDF/DGN path, or one lane QC PDF path (*-prod/-chk
    (default: qcWorkflow.states.production, usually "In Production").
 2. Database - deletes scoped rows from QC telemetry tables (not sheet_index, sheet_packages, or sheet_documents).
 
-Double-click the script (or run with no path parameters) for an interactive menu. Interactive mode always
-skips ProjectWise and applies database changes only after you confirm.
+Double-click the script (or run with no path parameters) for an interactive menu. Option 1 lists folder
+paths from the database so you can pick all, specific numbers (e.g. 1,3 or 1-3), or type a path manually.
+Interactive mode always skips ProjectWise and applies database changes only after you confirm.
 
 Default is preview only. Pass -ConfirmReset to apply PW and database changes.
 
@@ -110,7 +111,122 @@ function _RQCF-PauseIfInteractiveConsole {
     } catch { }
 }
 
+function _RQCF-ParseFolderSelectionInput {
+    param(
+        [Parameter(Mandatory)][string]$Input,
+        [Parameter(Mandatory)][string[]]$AvailablePaths
+    )
+    $text = $Input.Trim()
+    if ($text -match '^(?i)(all|\*|a)$') {
+        return @($AvailablePaths)
+    }
+    if ($text -match '[\\/]' -or $text -imatch '^documents') {
+        $normRes = Normalize-QCDocumentsFolderPath -Path $text
+        if (-not $normRes.IsSuccess) { throw $normRes.Message }
+        return @([string]$normRes.Data.path)
+    }
+
+    $selected = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($token in ($text -split '[,\s;]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $token = $token.Trim()
+        if ($token -match '^(\d+)\s*-\s*(\d+)$') {
+            $start = [int]$Matches[1]
+            $end = [int]$Matches[2]
+            if ($start -gt $end) { throw "Invalid range: $token" }
+            for ($n = $start; $n -le $end; $n++) {
+                if ($n -lt 1 -or $n -gt $AvailablePaths.Count) {
+                    throw "Selection out of range: $n (1-$($AvailablePaths.Count))"
+                }
+                [void]$selected.Add($AvailablePaths[$n - 1])
+            }
+            continue
+        }
+        if ($token -match '^\d+$') {
+            $n = [int]$token
+            if ($n -lt 1 -or $n -gt $AvailablePaths.Count) {
+                throw "Selection out of range: $n (1-$($AvailablePaths.Count))"
+            }
+            [void]$selected.Add($AvailablePaths[$n - 1])
+            continue
+        }
+        throw "Unrecognized selection '$token'. Use all, numbers (1,3,5 or 1-3), or a folder path."
+    }
+    if ($selected.Count -eq 0) { throw 'No folders selected.' }
+    return @($selected | Sort-Object)
+}
+
+function _RQCF-GetAvailableFolderPathsFromDatabase {
+    param([Parameter(Mandatory)][hashtable]$Config)
+    Initialize-QCDatabaseSchema -Config $Config | Out-Null
+    $sql = @"
+SELECT f.folder_path,
+       ISNULL(p.package_count, 0) AS package_count,
+       ISNULL(i.index_count, 0) AS index_count
+FROM (
+    SELECT folder_path FROM sheet_packages WHERE folder_path IS NOT NULL AND LTRIM(RTRIM(folder_path)) <> ''
+    UNION
+    SELECT folder_path FROM sheet_index WHERE folder_path IS NOT NULL AND LTRIM(RTRIM(folder_path)) <> ''
+) f
+LEFT JOIN (
+    SELECT folder_path, COUNT_BIG(*) AS package_count FROM sheet_packages GROUP BY folder_path
+) p ON p.folder_path = f.folder_path
+LEFT JOIN (
+    SELECT folder_path, COUNT_BIG(*) AS index_count FROM sheet_index GROUP BY folder_path
+) i ON i.folder_path = f.folder_path
+ORDER BY f.folder_path
+"@
+    $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql
+    if (-not $res.IsSuccess) { throw $res.Message }
+    $table = $res.Data.table
+    if (-not $table -or $table.Rows.Count -eq 0) { return @() }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($dataRow in @($table.Rows)) {
+        $rows.Add([pscustomobject]@{
+            folder_path    = [string]$dataRow.folder_path
+            package_count  = [long]$dataRow.package_count
+            index_count    = [long]$dataRow.index_count
+        }) | Out-Null
+    }
+    return @($rows)
+}
+
+function _RQCF-PromptInteractiveFolderSelection {
+    param([Parameter(Mandatory)][hashtable]$Config)
+    Write-Host ''
+    Write-Host 'Loading folder paths from database...' -ForegroundColor Gray
+    $available = @(_RQCF-GetAvailableFolderPathsFromDatabase -Config $Config)
+    if ($available.Count -eq 0) {
+        Write-Host 'No folder paths found in database.' -ForegroundColor Yellow
+        return $null
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    Write-Host ''
+    Write-Host 'Available folder paths:' -ForegroundColor Cyan
+    $idx = 1
+    foreach ($row in $available) {
+        $paths.Add([string]$row.folder_path) | Out-Null
+        Write-Host ("  {0,4}) {1}  (packages: {2}, index: {3})" -f $idx, $row.folder_path, $row.package_count, $row.index_count)
+        $idx++
+    }
+    Write-Host ''
+    Write-Host "Enter selection: all ($($paths.Count) folders), numbers (e.g. 1,3,5 or 1-3), or type a folder path." -ForegroundColor DarkGray
+    do {
+        $raw = (Read-Host 'Folder selection').Trim()
+    } while ([string]::IsNullOrWhiteSpace($raw))
+
+    $selected = @(_RQCF-ParseFolderSelectionInput -Input $raw -AvailablePaths @($paths))
+    $manualPath = ($raw -match '[\\/]' -or $raw -imatch '^documents')
+    return @{
+        paths                    = @($selected)
+        folderPickFromDatabase   = -not $manualPath
+    }
+}
+
 function _RQCF-PromptInteractiveScope {
+    param([hashtable]$Config = $null)
+
     Write-Host ''
     Write-Host '=== QC Database Reset ===' -ForegroundColor Cyan
     Write-Host 'ProjectWise is skipped in interactive mode (database edits only).' -ForegroundColor DarkGray
@@ -123,6 +239,23 @@ function _RQCF-PromptInteractiveScope {
         $choice = (Read-Host 'Select reset scope (1/2/3)').Trim()
     } while ($choice -notin @('1', '2', '3'))
 
+    if ($choice -eq '1' -and $Config -and (Test-QCDatabaseEnabled -Config $Config)) {
+        try {
+            $folderPick = _RQCF-PromptInteractiveFolderSelection -Config $Config
+            if ($folderPick) {
+                return @{
+                    scopeMode              = 'Folder'
+                    inputPath              = ($folderPick.paths -join '; ')
+                    folderPaths            = @($folderPick.paths)
+                    folderPickFromDatabase = [bool]$folderPick.folderPickFromDatabase
+                }
+            }
+        } catch {
+            Write-Host ("Could not list folders from database: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+            Write-Host 'Enter folder path manually.' -ForegroundColor DarkGray
+        }
+    }
+
     $prompt = switch ($choice) {
         '1' { @('Enter folder path (Documents\...\Sheets\...)', 'Folder') }
         '2' { @('Enter stem PDF path (Documents\...\sheetstem.pdf or .dgn)', 'Stem') }
@@ -133,7 +266,12 @@ function _RQCF-PromptInteractiveScope {
     do {
         $path = (Read-Host $prompt[0]).Trim()
     } while ([string]::IsNullOrWhiteSpace($path))
-    return @{ scopeMode = $label; inputPath = $path }
+    return @{
+        scopeMode              = $label
+        inputPath              = $path
+        folderPaths            = @()
+        folderPickFromDatabase = $false
+    }
 }
 
 function _RQCF-ParsePwDocumentPath {
@@ -175,6 +313,8 @@ function _RQCF-GetLaneTypeFromDocumentName {
 }
 
 $script:_rqcfInteractiveLaunch = $false
+$script:_rqcfInteractiveFolderPick = $false
+$config = $null
 if ($Interactive.IsPresent) {
     $script:_rqcfInteractiveLaunch = $true
 } elseif ($Host.Name -eq 'ConsoleHost' -and
@@ -185,10 +325,18 @@ if ($Interactive.IsPresent) {
 }
 
 if ($script:_rqcfInteractiveLaunch) {
-    $prompted = _RQCF-PromptInteractiveScope
+    $cfgResEarly = Read-QCAppSettings -Path $AppSettingsPath
+    if (-not $cfgResEarly.IsSuccess) { throw $cfgResEarly.Message }
+    $config = [hashtable]$cfgResEarly.Data.config
+    $prompted = _RQCF-PromptInteractiveScope -Config $config
     $ScopeMode = [string]$prompted.scopeMode
     switch ($ScopeMode) {
-        'Folder' { $FolderPath = [string]$prompted.inputPath }
+        'Folder' {
+            $FolderPath = [string]$prompted.inputPath
+            if (@($prompted.folderPaths).Count -gt 0) {
+                $script:_rqcfInteractiveFolderPick = [bool]$prompted.folderPickFromDatabase
+            }
+        }
         'Stem' { $StemPath = [string]$prompted.inputPath }
         'QcPdf' { $QcPdfPath = [string]$prompted.inputPath }
     }
@@ -217,11 +365,25 @@ $scopeStem = ''
 $scopeDocName = ''
 $scopeDocPathLike = ''
 $normFolder = ''
+$normFolders = @()
 
 if ($scopeUsesFolder) {
-    $normRes = Normalize-QCDocumentsFolderPath -Path $scopeInputPath
-    if (-not $normRes.IsSuccess) { throw $normRes.Message }
-    $normFolder = [string]$normRes.Data.path
+    if ($script:_rqcfInteractiveLaunch -and @($prompted.folderPaths).Count -gt 0) {
+        foreach ($folderPath in @($prompted.folderPaths)) {
+            $normRes = Normalize-QCDocumentsFolderPath -Path $folderPath
+            if (-not $normRes.IsSuccess) { throw $normRes.Message }
+            $normFolders += [string]$normRes.Data.path
+        }
+    } else {
+        $normRes = Normalize-QCDocumentsFolderPath -Path $scopeInputPath
+        if (-not $normRes.IsSuccess) { throw $normRes.Message }
+        $normFolders = @([string]$normRes.Data.path)
+    }
+    if ($normFolders.Count -eq 1) {
+        $normFolder = $normFolders[0]
+    } else {
+        $normFolder = "$($normFolders.Count) folders"
+    }
 } else {
     $parsed = _RQCF-ParsePwDocumentPath -Path $scopeInputPath
     $normFolder = [string]$parsed.folderPath
@@ -259,7 +421,11 @@ if (-not $DryRun.IsPresent -and -not $ConfirmReset.IsPresent) {
     $DryRun = $true
 }
 
-$cfgRes = Read-QCAppSettings -Path $AppSettingsPath
+$cfgRes = if ($null -ne $config) {
+    New-QCSuccessResult -Code 'CONFIG_CACHED' -Message 'Using config loaded for interactive mode.' -Data @{ config = $config }
+} else {
+    Read-QCAppSettings -Path $AppSettingsPath
+}
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
 
@@ -296,6 +462,31 @@ function _RQCF-PathLikeClause {
         [string]$ParamName = 'folderLike'
     )
     return "REPLACE(LOWER(LTRIM(RTRIM(ISNULL($ColumnSql, '')))), '\', '/') LIKE @$ParamName"
+}
+
+function _RQCF-BuildFolderScopeMatchClause {
+    param(
+        [Parameter(Mandatory)][string]$ColumnSql,
+        [Parameter(Mandatory)][string[]]$FolderPaths,
+        [Parameter(Mandatory)][hashtable]$Params,
+        [switch]$UseLikePattern
+    )
+    if ($UseLikePattern -and $FolderPaths.Count -eq 1) {
+        $Params.folderLike = _RQCF-NormalizePathPattern -Pattern $FolderPaths[0]
+        return _RQCF-PathLikeClause -ColumnSql $ColumnSql -Params $Params -ParamName 'folderLike'
+    }
+    if ($FolderPaths.Count -eq 0) { throw 'No folder paths in scope.' }
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $FolderPaths.Count; $i++) {
+        $paramName = "scopeFolder$i"
+        $Params[$paramName] = $FolderPaths[$i]
+        $normCol = "REPLACE(LOWER(LTRIM(RTRIM(ISNULL($ColumnSql, '')))), '\', '/')"
+        $normParam = "REPLACE(LOWER(LTRIM(RTRIM(ISNULL(@$paramName, '')))), '\', '/')"
+        [void]$parts.Add("$normCol = $normParam")
+    }
+    if ($parts.Count -eq 1) { return $parts[0] }
+    return '(' + ($parts -join ' OR ') + ')'
 }
 
 function _RQCF-InPackageScope {
@@ -478,18 +669,24 @@ $params = @{
     targetState = $TargetState
 }
 $scopeIsQcPdfOnly = ($ScopeMode -eq 'QcPdf')
+$scopeFolderExactMatch = $script:_rqcfInteractiveFolderPick -or ($scopeUsesFolder -and $normFolders.Count -gt 1)
+$scopeFolderUseLike = $scopeUsesFolder -and -not $scopeFolderExactMatch
 
 if ($scopeUsesFolder) {
-    $params.folderLike = _RQCF-NormalizePathPattern -Pattern $normFolder
-    $siFolderClause = _RQCF-PathLikeClause -ColumnSql 'si.folder_path' -Params $params -ParamName 'folderLike'
+    $folderScopeArgs = @{
+        FolderPaths     = $normFolders
+        Params          = $params
+        UseLikePattern  = $scopeFolderUseLike
+    }
+    $siFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'si.folder_path' @folderScopeArgs
     $siLaneNameClause = _RQCF-GetLanePdfNameClause -DocumentNameColumn 'si.document_name'
-    $spFolderClause = _RQCF-PathLikeClause -ColumnSql 'sp.folder_path' -Params $params -ParamName 'folderLike'
-    $nlFolderClause = _RQCF-PathLikeClause -ColumnSql 'n.folder_path' -Params $params -ParamName 'folderLike'
-    $histFolderClause = _RQCF-PathLikeClause -ColumnSql 'h.folder_path' -Params $params -ParamName 'folderLike'
-    $trFolderClause = _RQCF-PathLikeClause -ColumnSql 't.folder_path' -Params $params -ParamName 'folderLike'
-    $actFolderClause = _RQCF-PathLikeClause -ColumnSql 'd.folder_path' -Params $params -ParamName 'folderLike'
-    $auditFolderClause = _RQCF-PathLikeClause -ColumnSql 'a.resolved_folder' -Params $params -ParamName 'folderLike'
-    $jobFolderClause = _RQCF-PathLikeClause -ColumnSql 'j.source_folder' -Params $params -ParamName 'folderLike'
+    $spFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'sp.folder_path' @folderScopeArgs
+    $nlFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'n.folder_path' @folderScopeArgs
+    $histFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'h.folder_path' @folderScopeArgs
+    $trFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 't.folder_path' @folderScopeArgs
+    $actFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'd.folder_path' @folderScopeArgs
+    $auditFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'a.resolved_folder' @folderScopeArgs
+    $jobFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'j.source_folder' @folderScopeArgs
 } else {
     $parsedFullPath = if ($parsed) { [string]$parsed.fullPath } else { _RQCF-ParsePwDocumentPath -Path $scopeInputPath | ForEach-Object { $_.fullPath } }
     $params.scopeFolder = $normFolder
@@ -543,10 +740,11 @@ if ($scopeUsesFolder) {
 $whereJobs = _RQCF-TelemetryScopeClause -FolderClause $jobFolderClause -PackageIdColumn 'j.sheet_package_id' @scopeArgs
 $whereCommentDoc = _RQCF-InDocumentScope -DocumentGuidColumn 'r.document_id' @scopeArgs
 if ($scopeUsesFolder) {
+    $pwPathFolderClause = _RQCF-BuildFolderScopeMatchClause -ColumnSql 'r.pw_path' -FolderPaths $normFolders -Params $params -UseLikePattern:$scopeFolderUseLike
     $commentRunSub = @"
 SELECT r.run_id FROM qc_comment_runs r
 WHERE ($whereCommentDoc)
-   OR REPLACE(LOWER(LTRIM(RTRIM(ISNULL(r.pw_path, '')))), '\', '/') LIKE @folderLike
+   OR ($pwPathFolderClause)
 "@
 } else {
     $commentRunSub = @"
@@ -557,16 +755,30 @@ WHERE ($whereCommentDoc)
 }
 
 $scopeLabel = switch ($ScopeMode) {
-    'Folder' { "folder: $normFolder" }
+    'Folder' {
+        if ($normFolders.Count -gt 1) {
+            $preview = ($normFolders | Select-Object -First 2) -join '; '
+            $suffix = if ($normFolders.Count -gt 2) { '; ...' } else { '' }
+            "folders ($($normFolders.Count)): $preview$suffix"
+        } else {
+            "folder: $normFolder"
+        }
+    }
     'Stem' { "stem: $normFolder\$scopeStem" }
     'QcPdf' { "qc pdf: $normFolder\$scopeDocName" }
 }
 Write-Host ("[Reset scope] {0} ({1})" -f $ScopeMode, $scopeLabel) -ForegroundColor Cyan
+if ($scopeUsesFolder -and $normFolders.Count -gt 1) {
+    foreach ($fp in $normFolders) {
+        Write-Host ("  - {0}" -f $fp) -ForegroundColor DarkGray
+    }
+}
 
 $summary = [ordered]@{
     dryRun            = $DryRun.IsPresent
     scopeMode         = $ScopeMode
     folderPath        = $normFolder
+    folderPaths       = @($normFolders)
     inputPath         = $scopeInputPath
     sheetStem         = $scopeStem
     documentName      = $scopeDocName
