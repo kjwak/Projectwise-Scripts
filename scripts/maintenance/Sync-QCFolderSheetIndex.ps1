@@ -52,14 +52,15 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Invoke-QCDatabaseQuery'
     'Write-QCSheetIndexBatch'
 ) -Context 'Sync-QCFolderSheetIndex bootstrap'
-Import-QCModuleGlobal -RelativePath 'Core\Core.Paths.psm1'
-Test-QCRequiredCommands -Names @('Normalize-QCDocumentsFolderPath') -Context 'Sync-QCFolderSheetIndex paths post-restore'
 # QC.StatusSet imports PW.Connection without -Global; re-import PW modules after foundation restore.
 Import-QCModuleGlobal -RelativePath 'Processing\QC.StatusSet.psm1'
 Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
 Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Discovery.psm1'
 Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
+# Paths must be last: PW/StatusSet re-imports clobber Normalize-QCDocumentsFolderPath session exports.
+Import-QCModuleGlobal -RelativePath 'Core\Core.Paths.psm1'
 Test-QCRequiredCommands -Names @(
+    'Normalize-QCDocumentsFolderPath'
     'Get-PWCredentialFromFile'
     'Connect-PW'
     'Disconnect-PW'
@@ -68,7 +69,7 @@ Test-QCRequiredCommands -Names @(
     'Build-PWSheetIndexRowsForPairedSheets'
     'Get-PWDocumentWorkflowStateMapByGuid'
     'Write-QCSheetIndexBatch'
-) -Context 'Sync-QCFolderSheetIndex PW post-restore'
+) -Context 'Sync-QCFolderSheetIndex session post-restore'
 
 foreach ($moduleName in @('pwps', 'pwps_dab')) {
     if (-not (Get-Module -Name $moduleName -ErrorAction SilentlyContinue)) {
