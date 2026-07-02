@@ -912,7 +912,11 @@ function _PWD-ResolveCanonicalProcessTypeForSync {
         [string]$RawValue,
         [hashtable]$Config = $null
     )
-    if ([string]::IsNullOrWhiteSpace($RawValue)) { return $null }
+    if (Get-Command -Name 'Test-QCProcessTypeUnsetValue' -ErrorAction SilentlyContinue) {
+        if (Test-QCProcessTypeUnsetValue -Value $RawValue) { return $null }
+    } elseif ([string]::IsNullOrWhiteSpace($RawValue)) {
+        return $null
+    }
     if (-not (Get-Command -Name 'Normalize-QCProcessType' -ErrorAction SilentlyContinue)) { return $null }
     return Normalize-QCProcessType -ProcessType ([string]$RawValue).Trim()
 }
@@ -950,6 +954,11 @@ function _PWD-LogProcessTypeUnknown {
         [string]$Source = ''
     )
     if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    if (Get-Command -Name 'Test-QCProcessTypeUnsetValue' -ErrorAction SilentlyContinue) {
+        if (Test-QCProcessTypeUnsetValue -Value $RawValue) { return }
+    } elseif ([string]::IsNullOrWhiteSpace($RawValue)) {
+        return
+    }
     Write-QCJsonLog -Flush -Level 'Warning' -Code 'QC_PROCESS_TYPE_UNKNOWN' `
         -Message 'Could not resolve canonical QC process type; no ProjectWise attribute write performed.' -Data @{
         documentGuid = [string]$DocumentGuid

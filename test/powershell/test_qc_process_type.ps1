@@ -17,6 +17,10 @@ Assert-Eq (Normalize-QCProcessType -ProcessType 'independent_check') 'check' 'in
 Assert-Eq (Normalize-QCProcessType -ProcessType 'Peer Review') 'review' 'Peer Review -> review'
 Assert-Eq (Normalize-QCProcessType -ProcessType 'peer_review') 'review' 'peer_review -> review'
 Assert-Null (Normalize-QCProcessType -ProcessType 'Unknown Type') 'Unknown fails'
+Assert-Null (Normalize-QCProcessType -ProcessType '0') 'PW unset sentinel 0 -> null'
+Assert-Null (Normalize-QCProcessType -ProcessType '' -AllowNullOnEmpty) 'empty with AllowNullOnEmpty -> null'
+Assert-Eq (Test-QCProcessTypeUnsetValue -Value '0') $true '0 is unset'
+Assert-Eq (Test-QCProcessTypeUnsetValue -Value ' Production ') $false 'Production is not unset'
 
 Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'production') 'prod' 'production suffix'
 Assert-Eq (Get-QCProcessTypePdfSuffix -ProcessType 'check') 'chk' 'check suffix'

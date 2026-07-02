@@ -52,6 +52,12 @@ InModuleScope -ModuleName PW.Discovery {
     Sync-PWAssociatedSheetReviewTypeAttributes -Config $legacyCfg -DocumentGuid '1' -DocumentName '0818000063ea500.pdf' `
         -FolderPath 'Drawings\X' -CanonicalReviewType 'not-a-real-type'
     Assert-True ($null -eq $script:attrWrite) 'unknown canonical must not default to Production'
+
+    $script:lastLog = $null
+    Sync-PWAssociatedSheetReviewTypeAttributes -Config $legacyCfg -DocumentGuid '1' -DocumentName '0818000063ea500.pdf' `
+        -FolderPath 'Drawings\X' -CanonicalReviewType '0'
+    Assert-True ($null -eq $script:attrWrite) 'unset canonical 0 must not write'
+    Assert-Eq $script:lastLog.Code 'QC_PROCESS_TYPE_SYNC_SKIPPED' 'unset 0 logs skip not unknown'
 }
 
 InModuleScope -ModuleName PW.Discovery {

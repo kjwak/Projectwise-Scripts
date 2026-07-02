@@ -10,6 +10,19 @@ function _QCPT-IsBlank([object]$Value) {
     return $false
 }
 
+function Test-QCProcessTypeUnsetValue {
+    <#
+    .SYNOPSIS
+    True when PW has not assigned a QC lane yet (blank or picklist sentinel 0).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Value
+    )
+    if (_QCPT-IsBlank $Value) { return $true }
+    return (([string]$Value).Trim() -eq '0')
+}
+
 function _QCPT-ToHashtable([object]$Value) {
     if ($null -eq $Value) { return $null }
     if ($Value -is [hashtable]) { return $Value }
@@ -137,6 +150,7 @@ function Normalize-QCProcessType {
     }
 
     foreach ($raw in $candidates) {
+        if (Test-QCProcessTypeUnsetValue -Value ([string]$raw)) { continue }
         $norm = ([string]$raw).Trim().ToLowerInvariant()
         switch -Regex ($norm) {
             '^production(\s+qc)?$|^production$|^qc$' { return 'production' }
@@ -148,10 +162,13 @@ function Normalize-QCProcessType {
 
     if ($AllowNullOnEmpty -and $candidates.Count -eq 0) { return $null }
 
-    $inputValue = if ($candidates.Count -gt 0) { $candidates[0] } else { '' }
+    $actionable = @($candidates | Where-Object { -not (Test-QCProcessTypeUnsetValue -Value $_) })
+    if ($actionable.Count -eq 0) { return $null }
+
+    $inputValue = [string]$actionable[0]
     _QCPT-Log -Code 'QC_PROCESS_TYPE_UNKNOWN' -Level 'Warning' `
         -Message 'Unknown QC process type value; normalization failed.' `
-        -Data @{ inputValue = $inputValue; candidateCount = $candidates.Count }
+        -Data @{ inputValue = $inputValue; candidateCount = $actionable.Count }
     return $null
 }
 
@@ -862,6 +879,7 @@ function Resolve-QCProcessTypeFromContext {
 
 Export-ModuleMember -Function `
     Get-QCProcessTypeSettings, `
+    Test-QCProcessTypeUnsetValue, `
     Normalize-QCProcessType, `
     Get-QCProcessTypeDisplayLabel, `
     Format-QCProcessTypeAttributeValue, `
