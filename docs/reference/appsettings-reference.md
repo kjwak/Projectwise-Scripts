@@ -205,7 +205,7 @@ Defers **audit-sourced** `STATUS_SET_GEN` work: the watcher marks Sheets folders
 | `maxFoldersPerRun` | `100` | Cap on folders evaluated per batch. |
 | `quietPeriodSeconds` | `120` | Folders with events newer than this are skipped until the quiet window passes. |
 | `staleWarningHours` | `24` | Warning-only: emit `STATUSSET_DIRTY_FOLDER_STALE` when `firstSeenUtc` exceeds this age. Does not block or remove folders. |
-| `dirtyFolderStorePath` | `runtime/statusset-dirty-folders.json` | Durable dirty-folder JSON (repo-relative unless absolute). Atomic writes. |
+| `dirtyFolderStorePath` | `_watcher/statusset-dirty-folders.json` | Durable dirty-folder JSON under `queue.rootDir` when set (e.g. `C:\QC_E2E_RealRun\queue\_watcher\statusset-dirty-folders.json`). Absolute paths accepted. Atomic writes. |
 | `processOnWatcherStart` | `false` | When `true`, tick 1 runs a batch immediately (still respects `quietPeriodSeconds`). |
 
 **Rollout note:** Audit-triggered `STATUS_SET_GEN` work is now delayed until the batching interval. With default settings, status-set cleanup may occur up to `intervalMinutes` plus `quietPeriodSeconds` after the triggering audit event. Set `statusSetBatching.enabled=false` to restore the old immediate audit-triggered behavior.

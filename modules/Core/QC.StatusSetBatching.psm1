@@ -31,6 +31,26 @@ function _SSB-ResolveRepoPath([string]$Path, [string]$RepoRoot) {
     return (Join-Path (_SSB-GetRepoRoot $RepoRoot) $p)
 }
 
+function _SSB-GetQueueRootFromConfig([hashtable]$Config) {
+    if (-not $Config) { return '' }
+    if ($Config.ContainsKey('queue') -and $Config.queue) {
+        $q = _SSB-ToHashtable $Config.queue
+        if ($q -and $q.ContainsKey('rootDir') -and $q.rootDir) { return [string]$q.rootDir }
+    }
+    return ''
+}
+
+function _SSB-ResolveDirtyFolderStorePath([string]$Path, [hashtable]$Config, [string]$RepoRoot) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $p = ([string]$Path).Trim()
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
+    $queueRoot = _SSB-GetQueueRootFromConfig -Config $Config
+    if (-not [string]::IsNullOrWhiteSpace($queueRoot)) {
+        return (Join-Path $queueRoot $p.TrimStart('\', '/'))
+    }
+    return _SSB-ResolveRepoPath -Path $p -RepoRoot $RepoRoot
+}
+
 function _SSB-NormalizeFolderKey([string]$FolderPath) {
     if ([string]::IsNullOrWhiteSpace($FolderPath)) { return '' }
     if (Get-Command -Name 'Normalize-QCDocumentsFolderPath' -ErrorAction SilentlyContinue) {
@@ -127,7 +147,7 @@ function Get-QCStatusSetBatchingSettings {
         maxFoldersPerRun = 100
         quietPeriodSeconds = 120
         staleWarningHours = 24
-        dirtyFolderStorePath = 'runtime/statusset-dirty-folders.json'
+        dirtyFolderStorePath = '_watcher/statusset-dirty-folders.json'
         processOnWatcherStart = $false
     }
 
@@ -153,7 +173,7 @@ function Get-QCStatusSetBatchingSettings {
     if ($settings.quietPeriodSeconds -lt 0) { $settings.quietPeriodSeconds = 0 }
     if ($settings.staleWarningHours -lt 1) { $settings.staleWarningHours = 1 }
 
-    $settings.dirtyFolderStorePath = _SSB-ResolveRepoPath -Path ([string]$settings.dirtyFolderStorePath) -RepoRoot $RepoRoot
+    $settings.dirtyFolderStorePath = _SSB-ResolveDirtyFolderStorePath -Path ([string]$settings.dirtyFolderStorePath) -Config $Config -RepoRoot $RepoRoot
     return $settings
 }
 

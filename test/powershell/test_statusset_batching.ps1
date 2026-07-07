@@ -89,6 +89,12 @@ try {
     Assert-Eq 24 $settings.staleWarningHours 'staleWarningHours default 24'
     Assert-Eq $storePath $settings.dirtyFolderStorePath 'store path resolved absolute'
 
+    $queueResolved = Get-QCStatusSetBatchingSettings -Config @{
+        queue = @{ rootDir = 'C:\QC_E2E_RealRun\queue' }
+        statusSetBatching = @{ dirtyFolderStorePath = '_watcher/statusset-dirty-folders.json' }
+    } -RepoRoot $repoRoot
+    Assert-Eq 'C:\QC_E2E_RealRun\queue\_watcher\statusset-dirty-folders.json' $queueResolved.dirtyFolderStorePath 'relative path resolves under queue.rootDir'
+
     $m1 = Mark-StatusSetDirtyFolder -Config $config -FolderPath $folder -DatasourceName 'ds' -FolderGuid 'folder-guid-1' -RepoRoot $repoRoot -LogCallback $logCb
     Assert-True $m1.IsSuccess 'first mark success'
     Assert-True ([bool]$m1.Data.isNew) 'first mark is new'
