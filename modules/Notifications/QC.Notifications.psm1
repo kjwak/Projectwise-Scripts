@@ -164,7 +164,7 @@ function Get-QCNotificationSettings {
         enabled = $false
         provider = 'Mock'
         dryRun = $true
-        rollbackWhenEmailAttributesMissing = $true
+        rollbackWhenEmailAttributesMissing = $false
         outputRoot = (Join-Path (_QCN-GetRepoRoot) 'notifications')
         dedupe = @{
             enabled = $true
@@ -3887,7 +3887,8 @@ function Get-QCWorkflowTransitionMissingEmailFields {
 function Test-QCPrependBlockedByMissingEmailAttributes {
     <#
     .SYNOPSIS
-    True when initial QC prepend must not run because required notification email attributes are missing.
+    Legacy gate hook retained for call-site compatibility. QC prepend is never blocked by missing
+    notification email attributes; missing role emails only skip the corresponding notification send.
     #>
     [CmdletBinding()]
     param(
@@ -3898,13 +3899,9 @@ function Test-QCPrependBlockedByMissingEmailAttributes {
         [object]$Document = $null
     )
 
-    $initiated = _QCN-GetQcInitiatedWorkflowStateName -Config $Config
-    $missing = @(Get-QCWorkflowTransitionMissingEmailFields -Config $Config -TargetStateName $initiated `
-        -Document $Document -DocumentName $SheetPdfName -DocumentGuid $DocumentGuid -FolderPath $FolderPath)
-
     return @{
-        blocked = ($missing.Count -gt 0)
-        missingFields = @($missing)
+        blocked = $false
+        missingFields = @()
         postPrependState = _QCN-GetInitialPrependPostStateName -Config $Config
     }
 }

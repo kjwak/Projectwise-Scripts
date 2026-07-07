@@ -287,10 +287,13 @@ $initiatedMissing = @(Get-QCWorkflowTransitionMissingEmailFields -Config $missin
     -Document (New-MockDocument '' ''))
 Assert-True ($initiatedMissing.Count -ge 2) 'QC Initiated should inherit Ready for QC email requirements'
 $prependBlock = Test-QCPrependBlockedByMissingEmailAttributes -Config $missingCfg -SheetPdfName 'sheet001.pdf'
-Assert-True $prependBlock.blocked 'Prepend should be blocked when notification emails are missing'
+Assert-True (-not $prependBlock.blocked) 'Prepend must not be blocked when notification emails are missing'
 $prependOk = Test-QCPrependBlockedByMissingEmailAttributes -Config $missingCfg -SheetPdfName 'sheet001.pdf' `
     -Document (New-MockDocument 'reviewer@company.com' 'designer@company.com')
 Assert-True (-not $prependOk.blocked) 'Prepend should proceed when notification emails are present'
+
+$defaultRollbackCfg = New-NotifyConfig -Enabled $true
+Assert-True (-not $defaultRollbackCfg.notifications.rollbackWhenEmailAttributesMissing) 'Default config should not rollback workflow on missing emails'
 
 # Rollback previous state falls back to production when sheet_index would match the blocked target
 $rollbackCfg = New-NotifyConfig -Enabled $true

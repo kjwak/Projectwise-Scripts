@@ -77,13 +77,21 @@ When `notifications.dedupe.enabled` is true, the same notification is not sent t
 
 Keys are stored in `notifications/dedupe/sent-keys.jsonl` and `notification_log`.
 
-## Missing email attributes on state change
+## Missing email attributes
 
-When `notifications.rollbackWhenEmailAttributesMissing` is **true** (default), a human `DOCUMENT_STATE` change to a state with an **enabled** `notifications.events` entry is validated before sibling sync runs. If required role emails cannot be resolved on the sheet:
+**QC processing always runs** when workflow states change or prepend is triggered. Missing `EM_Designer_Email`, `EM_Reviewer_Email`, or `EM_Checker_Email` values do **not** block prepend, rendition, workflow writeback, or state sync.
+
+When a configured notification fires but the resolved **To** audience for that event is empty (for example `Originated` with no reviewer email), the send is skipped with `QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS` and processing continues.
+
+### Optional rollback gate (legacy / opt-in)
+
+When `notifications.rollbackWhenEmailAttributesMissing` is **true**, a human `DOCUMENT_STATE` change to a state with an **enabled** `notifications.events` entry is validated before sibling sync runs. If required role emails cannot be resolved on the sheet:
 
 1. **DGN, sheet PDF, and lane QC PDFs** may be reverted to their prior workflow states (`sheet_index.pw_state_name`).
 2. The user who changed state receives a plain email listing missing attribute column names.
-3. Normal workflow notifications, prepend enqueue, and sibling alignment for that transition are skipped.
+3. Normal workflow notifications and sibling alignment for that transition are skipped.
+
+Committed production config sets this to **`false`**. Prepend is never blocked by missing emails even when rollback is enabled.
 
 Automation accounts (`auditPoller.workflowTriggers.automationPwUsernames`) are not gated. States without a configured notification event (for example **Initiate Origination**) are not gated.
 
