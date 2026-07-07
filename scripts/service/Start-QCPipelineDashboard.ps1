@@ -397,6 +397,7 @@ $state = @{
     passCount = 0
     passStartedAtUtc = $null
     lastPassDurationMs = $null
+    watcherContinuousTicks = $false
 
     pwFolderTotal = 0
     pwFolderIndex = 0
@@ -1032,6 +1033,120 @@ function _Read-LogFileFromPosition([string]$Path, [int64]$StartPos) {
     return @{ Text = [string]$text; NewPos = $newPos }
 }
 
+function _Test-ChildLogEventSeen {
+    param(
+        [hashtable]$Child,
+        [string]$EventKey
+    )
+    if (-not $Child -or [string]::IsNullOrWhiteSpace($EventKey)) { return $false }
+    $keys = $null
+    try { $keys = $Child.processedLogKeys } catch { $keys = $null }
+    if (-not $keys) { return $false }
+    return $keys.ContainsKey($EventKey)
+}
+
+function _Mark-ChildLogEventSeen {
+    param(
+        [hashtable]$Child,
+        [string]$EventKey
+    )
+    if (-not $Child -or [string]::IsNullOrWhiteSpace($EventKey)) { return }
+    if (-not $Child.processedLogKeys) {
+        $Child.processedLogKeys = @{}
+    }
+    $Child.processedLogKeys[$EventKey] = $true
+    try {
+        if ($Child.processedLogKeys.Count -gt 500) {
+            $drop = @($Child.processedLogKeys.Keys | Select-Object -First ($Child.processedLogKeys.Count - 400))
+            foreach ($k in $drop) { $Child.processedLogKeys.Remove($k) | Out-Null }
+        }
+    } catch { }
+}
+
+function _Get-ChildLogEventKey {
+    param([object]$LogObj)
+    if (-not $LogObj) { return $null }
+    try {
+        $ts = [string]$LogObj.ts
+        $code = [string]$LogObj.code
+        if ([string]::IsNullOrWhiteSpace($code)) { return $null }
+        if ([string]::IsNullOrWhiteSpace($ts)) { return $code }
+        return ("{0}|{1}" -f $ts, $code)
+    } catch {
+        return $null
+    }
+}
+
+function _Split-IncrementalLogLines {
+    param(
+        [string]$Buffer,
+        [string]$Tail
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $buffer = ([string]$Tail) + ([string]$Buffer)
+    $segStart = 0
+    for ($i = 0; $i -lt $buffer.Length; $i++) {
+        $ch = $buffer[$i]
+        if ($ch -eq "`n") {
+            $ln = $buffer.Substring($segStart, $i - $segStart)
+            if ($ln.Length -gt 0 -and $ln[$ln.Length - 1] -eq "`r") { $ln = $ln.Substring(0, $ln.Length - 1) }
+            $lines.Add($ln)
+            $segStart = $i + 1
+        }
+    }
+    $newTail = ''
+    if ($segStart -lt $buffer.Length) {
+        $newTail = $buffer.Substring($segStart)
+    }
+    return @{ Lines = @($lines); Tail = $newTail }
+}
+
+function _Poll-ChildLogFile {
+    <#
+    Incrementally reads a log file and dispatches JSON lines into dashboard state.
+    #>
+    param(
+        [hashtable]$Child,
+        [hashtable]$Cfg,
+        [string]$Kind,
+        [string]$Path,
+        [ref]$ReadPos,
+        [ref]$LineTail,
+        [switch]$DedupeEvents
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $read = _Read-LogFileFromPosition -Path $Path -StartPos ([int64]$ReadPos.Value)
+    if ($null -eq $LineTail.Value) { $LineTail.Value = '' }
+    if ($read.NewPos -lt $ReadPos.Value) {
+        $ReadPos.Value = 0
+        $LineTail.Value = ''
+        $read = _Read-LogFileFromPosition -Path $Path -StartPos 0
+    }
+    if ($read.Text.Length -le 0) { return $false }
+
+    $ReadPos.Value = [int64]$read.NewPos
+    $Child.lastLogActivityUtc = (Get-Date).ToUniversalTime()
+    $split = _Split-IncrementalLogLines -Buffer ([string]$read.Text) -Tail ([string]$LineTail.Value)
+    $LineTail.Value = [string]$split.Tail
+
+    foreach ($line in @($split.Lines)) {
+        $t = ($line -as [string]).Trim()
+        if (-not $t) { continue }
+        if (-not $t.StartsWith('{')) { continue }
+        try {
+            $o = ($t | ConvertFrom-Json -ErrorAction Stop)
+            if ($DedupeEvents) {
+                $eventKey = _Get-ChildLogEventKey -LogObj $o
+                if ($eventKey -and (_Test-ChildLogEventSeen -Child $Child -EventKey $eventKey)) { continue }
+                if ($eventKey) { _Mark-ChildLogEventSeen -Child $Child -EventKey $eventKey }
+            }
+            _Process-ChildJsonLogObject -Child $Child -Cfg $Cfg -Kind $Kind -LogObj $o
+        } catch { }
+    }
+    return $true
+}
+
 function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) {
     # JSON events go to hourly queue\_logs\{tag}_{yyyy-MM-dd_HH}.jsonl (QC_JSON_LOG_DIR).
     # Stderr and non-JSON stdout still land in small companion .err/.discard files.
@@ -1085,6 +1200,7 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         jsonLogTag = $tag
         lastLogHour = $hour
         lastStdoutLen = $initialLogPos
+        lastDiscardLen = [int64]0
         lastLogActivityUtc = $initialLogActivityUtc
         lastWatcherEventCode = ''
         lastWatcherEventUtc = $null
@@ -1092,6 +1208,8 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
         stallKillIssued = $false
         # Incomplete tail of log (JSON split across reads) — kept until a full line arrives.
         stdoutTail = ''
+        discardTail = ''
+        processedLogKeys = @{}
         lastHeartbeatAt = (Get-Date)
         scriptPath = $ScriptPath
     }
@@ -1196,379 +1314,386 @@ function _Invoke-WatcherStallRecovery {
     return $kill
 }
 
+function _Process-ChildJsonLogObject {
+    param(
+        [hashtable]$Child,
+        [hashtable]$Cfg,
+        [string]$Kind,
+        [object]$LogObj
+    )
+
+    $o = $LogObj
+    _State-PushError -LogObj $o
+
+    if ($Kind -eq 'watcher') {
+        try {
+            $evtUtc = _Parse-UtcIso -Value ([string]$o.ts)
+            $spawnedUtc = $null
+            try { if ($Child.spawnedAtUtc) { $spawnedUtc = $Child.spawnedAtUtc } } catch { }
+            if ($spawnedUtc -and $evtUtc -and $evtUtc -lt $spawnedUtc) {
+                # Ignore events from a prior watcher instance in the same hourly JSONL file.
+            } else {
+                $Child.lastWatcherEventCode = [string]$o.code
+                $Child.lastWatcherEventUtc = if ($evtUtc) { $evtUtc } else { (Get-Date).ToUniversalTime() }
+            }
+        } catch { }
+    }
+
+    if ($Kind -eq 'worker' -and $o.code -match '^WORKER_') {
+        $state.lastWorkerEvent = $o
+        try {
+            $wlbl = ''
+            $wpid = 0
+            if ($o.data) {
+                if ($o.data.workerLabel) { $wlbl = [string]$o.data.workerLabel }
+                if ($o.data.workerPid) { $wpid = [int]$o.data.workerPid }
+            }
+            if (-not $wlbl) { $wlbl = "W?$wpid" }
+            if (-not $state.workers.ContainsKey($wlbl)) {
+                $state.workers[$wlbl] = @{
+                    label = $wlbl
+                    pid = $wpid
+                    jobId = ''
+                    jobType = ''
+                    sourceFolder = ''
+                    projectName = ''
+                    state = 'IDLE'
+                    lastCode = [string]$o.code
+                    lastMessage = [string]$o.message
+                    stage = ''
+                    startedAtUtc = $null
+                    updatedAtUtc = Get-QCTimestamp
+                }
+            }
+            $w = $state.workers[$wlbl]
+            if ($wpid -gt 0) { $w.pid = $wpid }
+            $w.lastCode = [string]$o.code
+            $w.lastMessage = [string]$o.message
+            try { if ($o.data -and $o.data.stage) { $w.stage = [string]$o.data.stage } } catch { }
+            $w.updatedAtUtc = Get-QCTimestamp
+            switch ([string]$o.code) {
+                'WORKER_START'   { $w.state = 'IDLE' }
+                'WORKER_CLAIMING' {
+                    $w.state = 'CLAIMING'
+                    if ($o.data) {
+                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                        if ($o.data.sourceFolder) {
+                            $w.sourceFolder = [string]$o.data.sourceFolder
+                            try {
+                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                                $w.projectName = if ($pn) { [string]$pn } else { '' }
+                            } catch { }
+                        }
+                    }
+                    $w.stage = 'waiting for exclusive job lock'
+                }
+                'WORKER_SELECTED' {
+                    $w.state = 'RUNNING'
+                    if ($o.data) {
+                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                        if ($o.data.sourceFolder) { $w.sourceFolder = [string]$o.data.sourceFolder }
+                        $w.projectName = ''
+                        try {
+                            $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                            if ($pn) { $w.projectName = [string]$pn }
+                        } catch { }
+                    }
+                    $w.stage = 'selected job; preparing processor'
+                    $w.startedAtUtc = Get-QCTimestamp
+                }
+                'WORKER_STAGE' {
+                    if ($o.data) {
+                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
+                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
+                        if ($o.data.sourceFolder) {
+                            $w.sourceFolder = [string]$o.data.sourceFolder
+                            try {
+                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
+                                $w.projectName = if ($pn) { [string]$pn } else { '' }
+                            } catch { }
+                        }
+                    }
+                    $w.state = if ($w.jobId) { 'RUNNING' } else { 'IDLE' }
+                    if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = Get-QCTimestamp }
+                }
+                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
+                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
+                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'idle; waiting for pending jobs' }
+                'WORKER_LOCK_RACE' {
+                    $w.state = 'IDLE'
+                    $w.jobId = ''
+                    $w.jobType = ''
+                    $w.sourceFolder = ''
+                    $w.projectName = ''
+                    $w.startedAtUtc = $null
+                    $w.stage = 'lock race; trying next job'
+                }
+                'WORKER_BUDGET'    { $w.state = 'EXITING'; $w.stage = 'max-jobs budget reached' }
+                'WORKER_LEASE'     { $w.state = 'EXITING'; $w.stage = 'lease budget reached' }
+            }
+        } catch { }
+    }
+
+    # Scan context: ANY PW event with a folder should update Root/Proj/Path
+    # (including error events where scanning fails early).
+    try {
+        if ($o.data -and $o.data.folder) {
+            _State-SetScanContext -FolderPath ([string]$o.data.folder)
+        }
+    } catch { }
+
+    # Phase transitions (keep it simple + monotonic enough to avoid "stuck connecting")
+    if (($o.code -as [string]) -match '^WATCH_PW_') { $state.hasSeenPwScan = $true }
+    if ($o.code -eq 'WATCH_PW_CONNECT_START') {
+        if ([bool]$state.pwConnectOkSeen) {
+            $state.phase = 'Scanning folders...'
+            $state.currentScanStage = 'establishing PW session'
+        } else {
+            $state.phase = 'Connecting to ProjectWise...'
+            $state.currentScanStage = 'connecting to ProjectWise'
+        }
+    }
+    if ($o.code -eq 'WATCH_PW_CONNECT_OK') {
+        $state.currentScanStage = 'connected to ProjectWise'
+        $state.pwConnectOkSeen = $true
+    }
+    if ($o.code -eq 'WATCH_RECONCILE_START') {
+        $state.currentScanStage = 'reconciling local _StatusSet.pdf copies to ProjectWise'
+    }
+    if ($o.code -eq 'WATCH_RECONCILE_UPDATED') {
+        try {
+            $pf = ''
+            if ($o.data.pwFolder) { $pf = [string]$o.data.pwFolder }
+            elseif ($o.data.sheetsFolder) { $pf = [string]$o.data.sheetsFolder }
+            if ($pf) {
+                $state.currentScanStage = "reconciling status set: $pf"
+                _State-SetScanContext -FolderPath $pf
+            }
+        } catch { }
+    }
+    if ($o.code -eq 'WATCH_RECONCILE_DONE') {
+        $updated = 0
+        try { if ($o.data.counts) { $updated = [int]$o.data.counts.updated } } catch { }
+        $state.currentScanStage = if ($updated -gt 0) {
+            "status set reconcile done ($updated updated)"
+        } else {
+            'status set reconcile done'
+        }
+    }
+    if ($o.code -eq 'WATCH_RECONCILE_FAILED') {
+        $state.currentScanStage = 'status set reconcile failed (see watcher log)'
+    }
+    if ($o.code -eq 'WATCH_AUDIT_SCAN_START') {
+        $since = ''; $until = ''
+        try {
+            if ($o.data.since) { $since = [string]$o.data.since }
+            if ($o.data.until) { $until = [string]$o.data.until }
+        } catch { }
+        if ($since -and $until) {
+            $state.currentScanStage = "audit trail scan ($since to $until)"
+        } else {
+            $state.currentScanStage = 'audit trail scan starting'
+        }
+        try {
+            $stageUtc = _Parse-UtcIso -Value ([string]$o.ts)
+            $state.stageSinceUtc = if ($stageUtc) { $stageUtc.ToString('o') } else { Get-QCTimestamp }
+        } catch { $state.stageSinceUtc = Get-QCTimestamp }
+    }
+    if ($o.code -eq 'WATCH_AUDIT_SCAN_DONE') {
+        $rel = 0; $tot = 0; $cand = 0
+        try {
+            $rel = [int]$o.data.relevantEvents
+            $tot = [int]$o.data.totalEvents
+            $cand = [int]$o.data.candidates
+        } catch { }
+        $state.currentScanStage = "audit scan done ($rel relevant / $tot events, $cand candidates)"
+    }
+    if ($o.code -eq 'WATCH_AUDIT_SCAN_FAILED' -or $o.code -eq 'WATCH_AUDIT_SCAN_ERROR') {
+        $state.currentScanStage = 'audit trail scan failed (see watcher log)'
+    }
+    if ($o.code -eq 'WATCH_AUDIT_FALLBACK') {
+        $state.currentScanStage = 'audit scan failed; falling back to full folder scan'
+        $state.pwFoldersPreparedSeen = $false
+    }
+    if ($o.code -eq 'WATCH_RECONCILE_CYCLE') {
+        $stage = 'scheduled full folder scan'
+        try {
+            if ($o.data -and $o.data.scheduledTime) {
+                $stage = "scheduled full folder scan ($([string]$o.data.scheduledTime))"
+            } elseif ($o.data -and $o.data.reconcileEvery) {
+                $cn = [int]$o.data.cycleNum
+                $every = [int]$o.data.reconcileEvery
+                $stage = "scheduled full folder scan (cycle $cn, every $every)"
+            }
+        } catch { }
+        $state.currentScanStage = $stage
+        $state.pwFoldersPreparedSeen = $false
+    }
+    if ($o.code -eq 'WATCH_PW_ERROR') {
+        $em = ''
+        try { if ($o.data -and $o.data.errorMessage) { $em = [string]$o.data.errorMessage } } catch { }
+        $state.currentScanStage = if ($em) { "ProjectWise watch error: $em" } else { 'ProjectWise watch error (see watcher log)' }
+    }
+    if ($o.code -eq 'WATCH_PW_FOLDERS') {
+        $state.pwFoldersPreparedSeen = $true
+    }
+    if ($o.code -eq 'WATCH_PW_SCAN_START' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') { $state.phase = 'Scanning folders...' }
+    if ($o.code -eq 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS') {
+        $state.phase = 'Scanning folders...'
+        try {
+            $folder = if ($o.data.folder) { [string]$o.data.folder } else { '' }
+            $inProg = $false
+            try { $inProg = [bool]$o.data.inProgress } catch { $inProg = $false }
+            if ($inProg) {
+                $state.currentScanStage = if ($folder) { "listing discipline subfolders: $folder..." } else { 'listing discipline subfolders (Sheets)...' }
+            } elseif ($folder) {
+                $cn = 0
+                try { $cn = [int]$o.data.childCount } catch { $cn = 0 }
+                $state.currentScanStage = "listing discipline subfolders: $folder ($cn found)"
+            } else {
+                $state.currentScanStage = 'listing discipline subfolders (Sheets)'
+            }
+        } catch {
+            $state.currentScanStage = 'listing discipline subfolders (Sheets)'
+        }
+    }
+    # (phase is derived in renderer; keep these events for stage/context only)
+
+    # Pass tracking + progress
+    if ($o.code -eq 'WATCH_TICK_START') {
+        $state.watcherContinuousTicks = $true
+        try { $state.passStartedAtUtc = [string]$o.ts } catch { $state.passStartedAtUtc = Get-QCTimestamp }
+        $tickNum = 0
+        try { $tickNum = [int]$o.data.tick } catch { $tickNum = 0 }
+        if ($tickNum -gt 0) { $state.passCount = $tickNum }
+        elseif ([int]$state.passCount -le 0) { $state.passCount = 1 }
+        else { $state.passCount = ([int]$state.passCount + 1) }
+    }
+    if ($o.code -eq 'WATCH_START') {
+        $state.watcherContinuousTicks = $false
+        try { $state.passStartedAtUtc = [string]$o.ts } catch { $state.passStartedAtUtc = Get-QCTimestamp }
+        if ([int]$state.passCount -le 0) { $state.passCount = 1 } else { $state.passCount = ([int]$state.passCount + 1) }
+        $state.pwFolderTotal = 0
+        $state.pwFolderIndex = 0
+        $state.currentScanStage = 'watcher starting'
+        $state.pwConnectOkSeen = $false
+        $state.pwFoldersPreparedSeen = $false
+        try { $state.recentScanFolders.Clear() } catch { }
+    }
+    if ($o.code -eq 'WATCH_PW_FOLDERS') {
+        try { $state.pwFolderTotal = [int]$o.data.folderCount } catch { $state.pwFolderTotal = 0 }
+        $state.pwFolderIndex = 0
+        $state.currentScanStage = "prepared $($state.pwFolderTotal) PW folders"
+        try { $state.recentScanFolders.Clear() } catch { }
+        # If we have a sample list, prime Root/Proj/Path immediately instead of waiting
+        # for the first WATCH_PW_SCAN_START event.
+        try {
+            $sample0 = $null
+            if ($o.data -and $o.data.sample) { $sample0 = @($o.data.sample | Select-Object -First 1)[0] }
+            if ($sample0) { _State-SetScanContext -FolderPath ([string]$sample0) }
+        } catch { }
+    }
+    if ($o.code -eq 'WATCH_PW_SCAN_START') {
+        $state.currentScanStage = "starting folder: $([string]$o.data.folder)"
+        # Make progress match what user sees: 1-based index, update on start.
+        if ([int]$state.pwFolderTotal -gt 0) {
+            $state.pwFolderIndex = [Math]::Min([int]$state.pwFolderTotal, ([int]$state.pwFolderIndex + 1))
+        } else {
+            $state.pwFolderIndex = [int]$state.pwFolderIndex + 1
+        }
+        try {
+            if ($o.data -and $o.data.folder) {
+                $state.recentScanFolders.Add([string]$o.data.folder) | Out-Null
+                while ($state.recentScanFolders.Count -gt 20) { $state.recentScanFolders.RemoveAt(0) }
+            }
+        } catch { }
+    }
+    if ($o.code -eq 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT') {
+        $state.currentScanStage = "skipped (STATUS_SET_GEN in progress): $([string]$o.data.folder)"
+    }
+    if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_START') { $state.currentScanStage = "querying status set: $([string]$o.data.folder)" }
+    if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_DONE') { $state.currentScanStage = "status set done: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
+    if ($o.code -eq 'WATCH_PW_STATUSSET_INDEX_START') { $state.currentScanStage = "sheet index: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
+    if ($o.code -eq 'WATCH_ACCEPTED' -and [string]$o.data.jobType -eq 'STATUS_SET_GEN') {
+        $we = $false
+        try { $we = [bool]$o.data.wouldEnqueue } catch { }
+        $state.currentScanStage = if ($we) { "enqueued STATUS_SET_GEN: $([string]$o.data.sourceFolder)" } else { "STATUS_SET_GEN accepted (not enqueued): $([string]$o.data.enqueueSkippedReason)" }
+    }
+    if ($o.code -eq 'WATCH_PW_DOC_SCAN_START') { $state.currentScanStage = "querying documents: $([string]$o.data.folder)" }
+    if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.currentScanStage = "documents done: $([string]$o.data.folder) ($([int]$o.data.pdfCount) PDFs, $([int]$o.data.qcArchivistCount) tagged)" }
+    if ($o.code -eq 'WATCH_PW_FOLDER_DONE' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') {
+        $state.currentScanStage = if ($o.code -eq 'WATCH_PW_FOLDER_ERROR') {
+            $ph = ''
+            try { $ph = [string]$o.data.phase } catch { }
+            if ($ph) { "folder error ($ph): $([string]$o.data.folder)" } else { "folder error: $([string]$o.data.folder)" }
+        } else { "folder done: $([string]$o.data.folder)" }
+    }
+    if ($o.code -eq 'WATCH_DONE') {
+        try {
+            $tickMs = 0
+            try { if ($o.data -and $o.data.elapsedMs) { $tickMs = [int]$o.data.elapsedMs } } catch { }
+            if ($tickMs -gt 0) {
+                $state.lastPassDurationMs = $tickMs
+            } elseif ($state.passStartedAtUtc) {
+                $endTs = _Parse-UtcIso -Value ([string]$o.ts)
+                if (-not $endTs) { $endTs = (Get-Date).ToUniversalTime() }
+                $startTs = _Parse-UtcIso -Value ([string]$state.passStartedAtUtc)
+                if (-not $startTs) { $startTs = $endTs }
+                $state.lastPassDurationMs = [int]($endTs - $startTs).TotalMilliseconds
+            }
+        } catch { }
+        $state.passStartedAtUtc = $null
+        $state.pwFolderIndex = 0
+        $state.currentScanStage = 'watch pass completed'
+    }
+    if ($o.code -eq 'WATCH_PHASE_HEARTBEAT') {
+        try {
+            $phase = ''
+            if ($o.data -and $o.data.phase) { $phase = [string]$o.data.phase }
+            if ($phase) {
+                $stage = $phase -replace '_', ' '
+                if ($o.data.stage) { $stage = ("{0}: {1}" -f $stage, [string]$o.data.stage) }
+                $state.currentScanStage = $stage
+            }
+        } catch { }
+    }
+}
+
 function _Poll-Child([hashtable]$Child, [hashtable]$Cfg, [string]$Kind) {
     $p = $Child.process
     try { $p.Refresh() } catch { }
 
     $hour = Get-QCLogHourStamp
     if ($Child.jsonLogDir -and $Child.lastLogHour -and [string]$Child.lastLogHour -ne $hour) {
+        $prevPath = _Get-ChildJsonLogPath -Child $Child -HourStamp ([string]$Child.lastLogHour)
+        if ($prevPath) {
+            $null = _Poll-ChildLogFile -Child $Child -Cfg $Cfg -Kind $Kind -Path $prevPath `
+                -ReadPos ([ref]$Child.lastStdoutLen) -LineTail ([ref]$Child.stdoutTail)
+        }
         $Child.lastStdoutLen = 0
         $Child.stdoutTail = ''
     }
     $Child.lastLogHour = $hour
 
-    $logPath = $Child.stdoutPath
+    if ($null -eq $Child.stdoutTail) { $Child.stdoutTail = '' }
+    if ($null -eq $Child.discardTail) { $Child.discardTail = '' }
+    if ($null -eq $Child.lastDiscardLen) { $Child.lastDiscardLen = [int64]0 }
+
+    $jsonPath = $null
     if ($Child.jsonLogDir) {
         $jsonPath = _Get-ChildJsonLogPath -Child $Child -HourStamp $hour
-        if ($jsonPath) { $logPath = $jsonPath }
     }
+    $logPath = if ($jsonPath) { $jsonPath } else { $Child.stdoutPath }
 
-    $read = _Read-LogFileFromPosition -Path $logPath -StartPos ([int64]$Child.lastStdoutLen)
-    if ($null -eq $Child.stdoutTail) { $Child.stdoutTail = '' }
-    if ($read.NewPos -lt $Child.lastStdoutLen) {
-        $Child.lastStdoutLen = 0
-        $Child.stdoutTail = ''
-        $read = _Read-LogFileFromPosition -Path $logPath -StartPos 0
-    }
-    if ($read.Text.Length -gt 0) {
-        $delta = [string]$read.Text
-        $Child.lastStdoutLen = [int64]$read.NewPos
-        $Child.lastLogActivityUtc = (Get-Date).ToUniversalTime()
-        $buffer = ([string]$Child.stdoutTail) + $delta
+    $null = _Poll-ChildLogFile -Child $Child -Cfg $Cfg -Kind $Kind -Path $logPath `
+        -ReadPos ([ref]$Child.lastStdoutLen) -LineTail ([ref]$Child.stdoutTail)
 
-        $lines = New-Object System.Collections.Generic.List[string]
-        $segStart = 0
-        for ($i = 0; $i -lt $buffer.Length; $i++) {
-            $ch = $buffer[$i]
-            if ($ch -eq "`n") {
-                $ln = $buffer.Substring($segStart, $i - $segStart)
-                if ($ln.Length -gt 0 -and $ln[$ln.Length - 1] -eq "`r") { $ln = $ln.Substring(0, $ln.Length - 1) }
-                $lines.Add($ln)
-                $segStart = $i + 1
-            }
-        }
-        if ($segStart -lt $buffer.Length) {
-            $Child.stdoutTail = $buffer.Substring($segStart)
-        } else {
-            $Child.stdoutTail = ''
-        }
-
-        foreach ($line in @($lines)) {
-            $t = ($line -as [string]).Trim()
-            if (-not $t) { continue }
-            if ($t.StartsWith('{')) {
-                try {
-                    $o = ($t | ConvertFrom-Json -ErrorAction Stop)
-                    _State-PushError -LogObj $o
-
-                    if ($Kind -eq 'watcher') {
-                        try {
-                            $evtUtc = _Parse-UtcIso -Value ([string]$o.ts)
-                            $spawnedUtc = $null
-                            try { if ($Child.spawnedAtUtc) { $spawnedUtc = $Child.spawnedAtUtc } } catch { }
-                            if ($spawnedUtc -and $evtUtc -and $evtUtc -lt $spawnedUtc) {
-                                # Ignore events from a prior watcher instance in the same hourly JSONL file.
-                            } else {
-                                $Child.lastWatcherEventCode = [string]$o.code
-                                $Child.lastWatcherEventUtc = if ($evtUtc) { $evtUtc } else { (Get-Date).ToUniversalTime() }
-                            }
-                        } catch { }
-                    }
-
-                    if ($Kind -eq 'worker' -and $o.code -match '^WORKER_') {
-                        $state.lastWorkerEvent = $o
-                        try {
-                            $wlbl = ''
-                            $wpid = 0
-                            if ($o.data) {
-                                if ($o.data.workerLabel) { $wlbl = [string]$o.data.workerLabel }
-                                if ($o.data.workerPid) { $wpid = [int]$o.data.workerPid }
-                            }
-                            if (-not $wlbl) { $wlbl = "W?$wpid" }
-                            if (-not $state.workers.ContainsKey($wlbl)) {
-                                $state.workers[$wlbl] = @{
-                                    label = $wlbl
-                                    pid = $wpid
-                                    jobId = ''
-                                    jobType = ''
-                                    sourceFolder = ''
-                                    projectName = ''
-                                    state = 'IDLE'
-                                    lastCode = [string]$o.code
-                                    lastMessage = [string]$o.message
-                                    stage = ''
-                                    startedAtUtc = $null
-                                    updatedAtUtc = Get-QCTimestamp
-                                }
-                            }
-                            $w = $state.workers[$wlbl]
-                            if ($wpid -gt 0) { $w.pid = $wpid }
-                            $w.lastCode = [string]$o.code
-                            $w.lastMessage = [string]$o.message
-                            try { if ($o.data -and $o.data.stage) { $w.stage = [string]$o.data.stage } } catch { }
-                            $w.updatedAtUtc = Get-QCTimestamp
-                            switch ([string]$o.code) {
-                                'WORKER_START'   { $w.state = 'IDLE' }
-                                'WORKER_CLAIMING' {
-                                    $w.state = 'CLAIMING'
-                                    if ($o.data) {
-                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
-                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
-                                        if ($o.data.sourceFolder) {
-                                            $w.sourceFolder = [string]$o.data.sourceFolder
-                                            try {
-                                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
-                                                $w.projectName = if ($pn) { [string]$pn } else { '' }
-                                            } catch { }
-                                        }
-                                    }
-                                    $w.stage = 'waiting for exclusive job lock'
-                                }
-                                'WORKER_SELECTED' {
-                                    $w.state = 'RUNNING'
-                                    if ($o.data) {
-                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
-                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
-                                        if ($o.data.sourceFolder) { $w.sourceFolder = [string]$o.data.sourceFolder }
-                                        $w.projectName = ''
-                                        try {
-                                            $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
-                                            if ($pn) { $w.projectName = [string]$pn }
-                                        } catch { }
-                                    }
-                                    $w.stage = 'selected job; preparing processor'
-                                    $w.startedAtUtc = Get-QCTimestamp
-                                }
-                                'WORKER_STAGE' {
-                                    if ($o.data) {
-                                        if ($o.data.jobId)        { $w.jobId        = [string]$o.data.jobId }
-                                        if ($o.data.jobType)      { $w.jobType      = [string]$o.data.jobType }
-                                        if ($o.data.sourceFolder) {
-                                            $w.sourceFolder = [string]$o.data.sourceFolder
-                                            try {
-                                                $pn = _TryGet-ProjectNameFromFolder -Cfg $script:_DashCfg -FolderPath ([string]$w.sourceFolder)
-                                                $w.projectName = if ($pn) { [string]$pn } else { '' }
-                                            } catch { }
-                                        }
-                                    }
-                                    $w.state = if ($w.jobId) { 'RUNNING' } else { 'IDLE' }
-                                    if (-not $w.startedAtUtc -and $w.jobId) { $w.startedAtUtc = Get-QCTimestamp }
-                                }
-                                'WORKER_SUCCEEDED' { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'completed job; polling queue'; $w.startedAtUtc = $null }
-                                'WORKER_FAILED'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'job failed; polling queue'; $w.startedAtUtc = $null }
-                                'WORKER_NO_JOB'    { $w.state = 'IDLE'; $w.jobId = ''; $w.jobType = ''; $w.sourceFolder = ''; $w.projectName = ''; $w.stage = 'idle; waiting for pending jobs' }
-                                'WORKER_LOCK_RACE' {
-                                    $w.state = 'IDLE'
-                                    $w.jobId = ''
-                                    $w.jobType = ''
-                                    $w.sourceFolder = ''
-                                    $w.projectName = ''
-                                    $w.startedAtUtc = $null
-                                    $w.stage = 'lock race; trying next job'
-                                }
-                                'WORKER_BUDGET'    { $w.state = 'EXITING'; $w.stage = 'max-jobs budget reached' }
-                                'WORKER_LEASE'     { $w.state = 'EXITING'; $w.stage = 'lease budget reached' }
-                            }
-                        } catch { }
-                    }
-
-                    # Scan context: ANY PW event with a folder should update Root/Proj/Path
-                    # (including error events where scanning fails early).
-                    try {
-                        if ($o.data -and $o.data.folder) {
-                            _State-SetScanContext -FolderPath ([string]$o.data.folder)
-                        }
-                    } catch { }
-
-                    # Phase transitions (keep it simple + monotonic enough to avoid "stuck connecting")
-                    if (($o.code -as [string]) -match '^WATCH_PW_') { $state.hasSeenPwScan = $true }
-                    if ($o.code -eq 'WATCH_PW_CONNECT_START') {
-                        if ([bool]$state.pwConnectOkSeen) {
-                            $state.phase = 'Scanning folders...'
-                            $state.currentScanStage = 'establishing PW session'
-                        } else {
-                            $state.phase = 'Connecting to ProjectWise...'
-                            $state.currentScanStage = 'connecting to ProjectWise'
-                        }
-                    }
-                    if ($o.code -eq 'WATCH_PW_CONNECT_OK') {
-                        $state.currentScanStage = 'connected to ProjectWise'
-                        $state.pwConnectOkSeen = $true
-                    }
-                    if ($o.code -eq 'WATCH_RECONCILE_START') {
-                        $state.currentScanStage = 'reconciling local _StatusSet.pdf copies to ProjectWise'
-                    }
-                    if ($o.code -eq 'WATCH_RECONCILE_UPDATED') {
-                        try {
-                            $pf = ''
-                            if ($o.data.pwFolder) { $pf = [string]$o.data.pwFolder }
-                            elseif ($o.data.sheetsFolder) { $pf = [string]$o.data.sheetsFolder }
-                            if ($pf) {
-                                $state.currentScanStage = "reconciling status set: $pf"
-                                _State-SetScanContext -FolderPath $pf
-                            }
-                        } catch { }
-                    }
-                    if ($o.code -eq 'WATCH_RECONCILE_DONE') {
-                        $updated = 0
-                        try { if ($o.data.counts) { $updated = [int]$o.data.counts.updated } } catch { }
-                        $state.currentScanStage = if ($updated -gt 0) {
-                            "status set reconcile done ($updated updated)"
-                        } else {
-                            'status set reconcile done'
-                        }
-                    }
-                    if ($o.code -eq 'WATCH_RECONCILE_FAILED') {
-                        $state.currentScanStage = 'status set reconcile failed (see watcher log)'
-                    }
-                    if ($o.code -eq 'WATCH_AUDIT_SCAN_START') {
-                        $since = ''; $until = ''
-                        try {
-                            if ($o.data.since) { $since = [string]$o.data.since }
-                            if ($o.data.until) { $until = [string]$o.data.until }
-                        } catch { }
-                        if ($since -and $until) {
-                            $state.currentScanStage = "audit trail scan ($since to $until)"
-                        } else {
-                            $state.currentScanStage = 'audit trail scan starting'
-                        }
-                        try {
-                            $stageUtc = _Parse-UtcIso -Value ([string]$o.ts)
-                            $state.stageSinceUtc = if ($stageUtc) { $stageUtc.ToString('o') } else { Get-QCTimestamp }
-                        } catch { $state.stageSinceUtc = Get-QCTimestamp }
-                    }
-                    if ($o.code -eq 'WATCH_AUDIT_SCAN_DONE') {
-                        $rel = 0; $tot = 0; $cand = 0
-                        try {
-                            $rel = [int]$o.data.relevantEvents
-                            $tot = [int]$o.data.totalEvents
-                            $cand = [int]$o.data.candidates
-                        } catch { }
-                        $state.currentScanStage = "audit scan done ($rel relevant / $tot events, $cand candidates)"
-                    }
-                    if ($o.code -eq 'WATCH_AUDIT_SCAN_FAILED' -or $o.code -eq 'WATCH_AUDIT_SCAN_ERROR') {
-                        $state.currentScanStage = 'audit trail scan failed (see watcher log)'
-                    }
-                    if ($o.code -eq 'WATCH_AUDIT_FALLBACK') {
-                        $state.currentScanStage = 'audit scan failed; falling back to full folder scan'
-                        $state.pwFoldersPreparedSeen = $false
-                    }
-                    if ($o.code -eq 'WATCH_RECONCILE_CYCLE') {
-                        $stage = 'scheduled full folder scan'
-                        try {
-                            if ($o.data -and $o.data.scheduledTime) {
-                                $stage = "scheduled full folder scan ($([string]$o.data.scheduledTime))"
-                            } elseif ($o.data -and $o.data.reconcileEvery) {
-                                $cn = [int]$o.data.cycleNum
-                                $every = [int]$o.data.reconcileEvery
-                                $stage = "scheduled full folder scan (cycle $cn, every $every)"
-                            }
-                        } catch { }
-                        $state.currentScanStage = $stage
-                        $state.pwFoldersPreparedSeen = $false
-                    }
-                    if ($o.code -eq 'WATCH_PW_ERROR') {
-                        $em = ''
-                        try { if ($o.data -and $o.data.errorMessage) { $em = [string]$o.data.errorMessage } } catch { }
-                        $state.currentScanStage = if ($em) { "ProjectWise watch error: $em" } else { 'ProjectWise watch error (see watcher log)' }
-                    }
-                    if ($o.code -eq 'WATCH_PW_FOLDERS') {
-                        $state.pwFoldersPreparedSeen = $true
-                    }
-                    if ($o.code -eq 'WATCH_PW_SCAN_START' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') { $state.phase = 'Scanning folders...' }
-                    if ($o.code -eq 'WATCH_PW_ONELEVEL_EXPAND_PROGRESS') {
-                        $state.phase = 'Scanning folders...'
-                        try {
-                            $folder = if ($o.data.folder) { [string]$o.data.folder } else { '' }
-                            $inProg = $false
-                            try { $inProg = [bool]$o.data.inProgress } catch { $inProg = $false }
-                            if ($inProg) {
-                                $state.currentScanStage = if ($folder) { "listing discipline subfolders: $folder..." } else { 'listing discipline subfolders (Sheets)...' }
-                            } elseif ($folder) {
-                                $cn = 0
-                                try { $cn = [int]$o.data.childCount } catch { $cn = 0 }
-                                $state.currentScanStage = "listing discipline subfolders: $folder ($cn found)"
-                            } else {
-                                $state.currentScanStage = 'listing discipline subfolders (Sheets)'
-                            }
-                        } catch {
-                            $state.currentScanStage = 'listing discipline subfolders (Sheets)'
-                        }
-                    }
-                    # (phase is derived in renderer; keep these events for stage/context only)
-
-                    # Pass tracking + progress
-                    if ($o.code -eq 'WATCH_START') {
-                        # Use the event timestamp (already UTC) for consistent timing.
-                        try { $state.passStartedAtUtc = [string]$o.ts } catch { $state.passStartedAtUtc = Get-QCTimestamp }
-                        # Every WATCH_START is a new pass.
-                        if ([int]$state.passCount -le 0) { $state.passCount = 1 } else { $state.passCount = ([int]$state.passCount + 1) }
-                        $state.pwFolderTotal = 0
-                        $state.pwFolderIndex = 0
-                        $state.currentScanStage = 'watcher starting'
-                        # Fresh PW session indicators each pass so status line progresses Connect → Folders → Scan again.
-                        $state.pwConnectOkSeen = $false
-                        $state.pwFoldersPreparedSeen = $false
-                        try { $state.recentScanFolders.Clear() } catch { }
-                        # Do not override phase here; watcher may still be connecting.
-                    }
-                    if ($o.code -eq 'WATCH_PW_FOLDERS') {
-                        try { $state.pwFolderTotal = [int]$o.data.folderCount } catch { $state.pwFolderTotal = 0 }
-                        $state.pwFolderIndex = 0
-                        $state.currentScanStage = "prepared $($state.pwFolderTotal) PW folders"
-                        try { $state.recentScanFolders.Clear() } catch { }
-                        # If we have a sample list, prime Root/Proj/Path immediately instead of waiting
-                        # for the first WATCH_PW_SCAN_START event.
-                        try {
-                            $sample0 = $null
-                            if ($o.data -and $o.data.sample) { $sample0 = @($o.data.sample | Select-Object -First 1)[0] }
-                            if ($sample0) { _State-SetScanContext -FolderPath ([string]$sample0) }
-                        } catch { }
-                    }
-                    if ($o.code -eq 'WATCH_PW_SCAN_START') {
-                        $state.currentScanStage = "starting folder: $([string]$o.data.folder)"
-                        # Make progress match what user sees: 1-based index, update on start.
-                        if ([int]$state.pwFolderTotal -gt 0) {
-                            $state.pwFolderIndex = [Math]::Min([int]$state.pwFolderTotal, ([int]$state.pwFolderIndex + 1))
-                        } else {
-                            $state.pwFolderIndex = [int]$state.pwFolderIndex + 1
-                        }
-                        try {
-                            if ($o.data -and $o.data.folder) {
-                                $state.recentScanFolders.Add([string]$o.data.folder) | Out-Null
-                                while ($state.recentScanFolders.Count -gt 20) { $state.recentScanFolders.RemoveAt(0) }
-                            }
-                        } catch { }
-                    }
-                    if ($o.code -eq 'WATCH_PW_STATUSSET_SKIP_IN_FLIGHT') {
-                        $state.currentScanStage = "skipped (STATUS_SET_GEN in progress): $([string]$o.data.folder)"
-                    }
-                    if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_START') { $state.currentScanStage = "querying status set: $([string]$o.data.folder)" }
-                    if ($o.code -eq 'WATCH_PW_STATUSSET_SCAN_DONE') { $state.currentScanStage = "status set done: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
-                    if ($o.code -eq 'WATCH_PW_STATUSSET_INDEX_START') { $state.currentScanStage = "sheet index: $([string]$o.data.folder) ($([int]$o.data.pairedCount) pairs)" }
-                    if ($o.code -eq 'WATCH_ACCEPTED' -and [string]$o.data.jobType -eq 'STATUS_SET_GEN') {
-                        $we = $false
-                        try { $we = [bool]$o.data.wouldEnqueue } catch { }
-                        $state.currentScanStage = if ($we) { "enqueued STATUS_SET_GEN: $([string]$o.data.sourceFolder)" } else { "STATUS_SET_GEN accepted (not enqueued): $([string]$o.data.enqueueSkippedReason)" }
-                    }
-                    if ($o.code -eq 'WATCH_PW_DOC_SCAN_START') { $state.currentScanStage = "querying documents: $([string]$o.data.folder)" }
-                    if ($o.code -eq 'WATCH_PW_DOC_SCAN') { $state.currentScanStage = "documents done: $([string]$o.data.folder) ($([int]$o.data.pdfCount) PDFs, $([int]$o.data.qcArchivistCount) tagged)" }
-                    if ($o.code -eq 'WATCH_PW_FOLDER_DONE' -or $o.code -eq 'WATCH_PW_FOLDER_ERROR') {
-                        $state.currentScanStage = if ($o.code -eq 'WATCH_PW_FOLDER_ERROR') {
-                            $ph = ''
-                            try { $ph = [string]$o.data.phase } catch { }
-                            if ($ph) { "folder error ($ph): $([string]$o.data.folder)" } else { "folder error: $([string]$o.data.folder)" }
-                        } else { "folder done: $([string]$o.data.folder)" }
-                    }
-                    if ($o.code -eq 'WATCH_DONE') {
-                        try {
-                            if ($state.passStartedAtUtc) {
-                                $endTs = _Parse-UtcIso -Value ([string]$o.ts)
-                                if (-not $endTs) { $endTs = (Get-Date).ToUniversalTime() }
-                                $startTs = _Parse-UtcIso -Value ([string]$state.passStartedAtUtc)
-                                if (-not $startTs) { $startTs = $endTs }
-                                $ms = [int]($endTs - $startTs).TotalMilliseconds
-                                $state.lastPassDurationMs = $ms
-                            }
-                        } catch { }
-                        # Mark the pass as completed; keep last-pass info visible until next WATCH_START.
-                        $state.passStartedAtUtc = $null
-                        $state.pwFolderIndex = 0
-                        $state.currentScanStage = 'watch pass completed'
-                    }
-                } catch { }
-            }
-        }
+    # Watcher events may fall back to stdout when hourly JSONL sink is unavailable.
+    if ($Kind -eq 'watcher' -and $Child.stdoutPath -and $logPath -and ([string]$Child.stdoutPath -ne [string]$logPath)) {
+        $null = _Poll-ChildLogFile -Child $Child -Cfg $Cfg -Kind $Kind -Path ([string]$Child.stdoutPath) `
+            -ReadPos ([ref]$Child.lastDiscardLen) -LineTail ([ref]$Child.discardTail) -DedupeEvents
     }
 
     $now = Get-Date
@@ -1822,6 +1947,8 @@ while ($true) {
             $state.awaitingWatcherSpawn = $false
             $state.watcherAlive = $true
             $state.passPipelineActive = $true
+            $state.watcherContinuousTicks = $false
+            $state.passStartedAtUtc = $null
             try { $state.watcherPid = [int]$watcherChild.process.Id } catch { $state.watcherPid = 0 }
             _Render-Dashboard -Cfg $cfg -Force
         }

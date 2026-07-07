@@ -32,3 +32,19 @@ def test_production_view_contains_only_critical_sections() -> None:
 def test_detailed_view_is_documented() -> None:
     assert "-DashboardView Production" in README
     assert "-DashboardView Detailed" in README
+
+
+def test_dashboard_watcher_pass_tracking_ingests_discard_and_ticks() -> None:
+    for token in (
+        "function _Poll-ChildLogFile",
+        "function _Process-ChildJsonLogObject",
+        "WATCH_TICK_START",
+        "lastDiscardLen",
+        "discardTail",
+        "-DedupeEvents",
+        "hourly JSONL sink is unavailable",
+        "$o.data.elapsedMs",
+    ):
+        assert token in DASHBOARD
+    assert "if ($Child.jsonLogDir -and $Child.lastLogHour -and [string]$Child.lastLogHour -ne $hour)" in DASHBOARD
+    assert "$prevPath = _Get-ChildJsonLogPath -Child $Child -HourStamp ([string]$Child.lastLogHour)" in DASHBOARD
