@@ -303,6 +303,7 @@ $script:WatchModuleLoadOrder = @(
     'Processing\QC.Rendition.psm1'
     'Processing\QC.Processors.psm1'
     'Core\QC.WatcherOrchestration.psm1'
+    'Core\QC.StatusSetBatching.psm1'
     'Processing\QC.StatusSet.psm1'
     'Workflow\QC.ProcessType.psm1'
     'ProjectWise\PW.Connection.psm1'
@@ -320,6 +321,7 @@ $script:WatchModuleRestoreOrder = @(
     'Core\Core.Hashing.psm1'
     'Database\Core.Database.psm1'
     'Notifications\QC.Notifications.psm1'
+    'Core\QC.StatusSetBatching.psm1'
     'Processing\QC.StatusSet.psm1'
     'Workflow\QC.ProcessType.psm1'
     'ProjectWise\PW.Connection.psm1'
@@ -369,6 +371,9 @@ $script:WatchRequiredCommands = @(
     'Get-StatusSetPWFolderState'
     'Get-StatusSetLocalFolderState'
     'Test-StatusSetWatcherShouldEnqueue'
+    'Get-QCStatusSetBatchingSettings'
+    'Mark-StatusSetDirtyFolder'
+    'Invoke-StatusSetDirtyFolderBatch'
     'Invoke-StatusSetReconcile'
     'Get-PWCredentialFromFile'
     'Connect-PW'
@@ -540,6 +545,7 @@ Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Notifications\QC.WatcherAlerts.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Telemetry.psm1') -Force -WarningAction SilentlyContinue
 _Watch-RestoreFoundationModules
@@ -706,6 +712,27 @@ try {
 $statusRuleObj = $null
 if ($statusSetRules.Count -gt 0) {
     $statusRuleObj = ($statusSetRules | Sort-Object -Property @{ Expression = { [int]$_.priority }; Descending = $true } | Select-Object -First 1)
+}
+
+$statusSetBatchingSettings = Get-QCStatusSetBatchingSettings -Config $config -RepoRoot $repoRoot
+$statusSetBatchingEnabled = [bool]$statusSetBatchingSettings.enabled
+_Watch-WriteJsonLog -Flush -Level 'Information' -Code 'STATUSSET_BATCHING_SETTINGS' -Message (
+    'STATUSSET_BATCHING_SETTINGS enabled={0} intervalMinutes={1} maxFoldersPerRun={2} quietPeriodSeconds={3} processOnWatcherStart={4} staleWarningHours={5} dirtyFolderStorePath="{6}"' -f `
+        $statusSetBatchingEnabled, `
+        [int]$statusSetBatchingSettings.intervalMinutes, `
+        [int]$statusSetBatchingSettings.maxFoldersPerRun, `
+        [int]$statusSetBatchingSettings.quietPeriodSeconds, `
+        ([bool]$statusSetBatchingSettings.processOnWatcherStart), `
+        [int]$statusSetBatchingSettings.staleWarningHours, `
+        [string]$statusSetBatchingSettings.dirtyFolderStorePath
+) -Data @{
+    enabled = $statusSetBatchingEnabled
+    intervalMinutes = [int]$statusSetBatchingSettings.intervalMinutes
+    maxFoldersPerRun = [int]$statusSetBatchingSettings.maxFoldersPerRun
+    quietPeriodSeconds = [int]$statusSetBatchingSettings.quietPeriodSeconds
+    processOnWatcherStart = [bool]$statusSetBatchingSettings.processOnWatcherStart
+    staleWarningHours = [int]$statusSetBatchingSettings.staleWarningHours
+    dirtyFolderStorePath = [string]$statusSetBatchingSettings.dirtyFolderStorePath
 }
 
 $watcherTick = 0
@@ -1398,6 +1425,20 @@ if ($statusSetRules.Count -ge 0) {
 
                                     $acOneLevelDeep = $true
                                     try { if ($null -ne $ac.oneLevelDeep) { $acOneLevelDeep = [bool]$ac.oneLevelDeep } } catch { }
+
+                                    if ($statusSetBatchingEnabled) {
+                                        $markRes = Mark-StatusSetDirtyFolder -Config $config -FolderPath $fp -DatasourceName $ds `
+                                            -OneLevelDeep:$acOneLevelDeep -TriggerSource 'audit_trail' -RepoRoot $repoRoot `
+                                            -LogCallback {
+                                                param($Code, $Message, $Data, $Level)
+                                                _Watch-WriteJsonLog -Level $Level -Code $Code -Message $Message -Data $Data
+                                            }
+                                        if (-not $markRes.IsSuccess) {
+                                            $auditCandidateRetryable = $true
+                                            $auditCandidateOutcome = 'retryableError'
+                                            $auditCandidateReason = 'status_set_dirty_mark_failed'
+                                        }
+                                    } else {
                                     $acInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
                                     if ($acInFlightRes.IsSuccess -and [bool]$acInFlightRes.Data.inFlight) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_STATUSSET_SKIP_IN_FLIGHT' -Message 'Audit STATUS_SET_GEN skipped: job already pending or running for folder.' -Data @{
@@ -1521,6 +1562,7 @@ if ($statusSetRules.Count -ge 0) {
                                     }
                                     }
                                     }
+                                    } # end: immediate STATUS_SET_GEN (batching disabled)
                                 }
 
                                 # QC_PREPEND: paired sheet PDFs — QC Initiated state and/or QC_Archivist description tag.
@@ -2663,6 +2705,32 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             } # end if ($runFullScan)
+
+            if ($statusSetBatchingEnabled -and $statusRuleObj -and $pwSessionOpen) {
+                $forceStatusSetBatch = ($watcherTick -eq 1 -and [bool]$statusSetBatchingSettings.processOnWatcherStart)
+                try {
+                    $batchRes = Invoke-StatusSetDirtyFolderBatch -Config $config -StatusRule $statusRuleObj -DatasourceName $ds `
+                        -DryRun:$isDryRun -RepoRoot $repoRoot -Force:$forceStatusSetBatch `
+                        -LogCallback {
+                            param($Code, $Message, $Data, $Level)
+                            _Watch-WriteJsonLog -Flush -Level $Level -Code $Code -Message $Message -Data $Data
+                        }
+                    if ($batchRes.IsSuccess -and $batchRes.Data) {
+                        $statusSetBatchStats = $batchRes.Data
+                        if ($statusSetBatchStats.jobsQueued) { $enqueued += [int]$statusSetBatchStats.jobsQueued }
+                        elseif ($statusSetBatchStats.enqueued) { $enqueued += [int]$statusSetBatchStats.enqueued }
+                        if ($statusSetBatchStats.duplicates) { $duplicates += [int]$statusSetBatchStats.duplicates }
+                        if ($statusSetBatchStats.foldersSucceeded) { $accepted += [int]$statusSetBatchStats.foldersSucceeded }
+                        elseif ($statusSetBatchStats.succeeded) { $accepted += [int]$statusSetBatchStats.succeeded }
+                    }
+                } catch {
+                    $errors++
+                    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'STATUSSET_BATCH_INTERVAL_FAILED' -Message $_.Exception.Message -Data @{
+                        tick = $watcherTick
+                        error = [string]$_.Exception.Message
+                    }
+                }
+            }
 
             if (-not $watcherContinuous) {
                 Disconnect-PW | Out-Null

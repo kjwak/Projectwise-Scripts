@@ -36,6 +36,7 @@ $script:QCModulePathMap = @{
     'Core.Hashing.psm1' = 'Core\Core.Hashing.psm1'
     'Core.Telemetry.psm1' = 'Core\Core.Telemetry.psm1'
     'QC.WatcherOrchestration.psm1' = 'Core\QC.WatcherOrchestration.psm1'
+    'QC.StatusSetBatching.psm1' = 'Core\QC.StatusSetBatching.psm1'
     'Core.Database.psm1' = 'Database\Core.Database.psm1'
     'QC.Queue.Json.psm1' = 'Queue\QC.Queue.Json.psm1'
     'QC.JobFactory.psm1' = 'Queue\QC.JobFactory.psm1'

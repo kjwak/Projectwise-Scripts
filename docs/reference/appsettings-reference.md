@@ -34,6 +34,7 @@ Optional: other machine-only paths in `appsettings.local.json` or `appsettings.t
 | `qcPrepend` | QC_PREPEND overlay paths |
 | `qcRendition` | QC_RENDITION profiles + Ready for QC notification gate |
 | `statusSet` | STATUS_SET_GEN merge + manifest + PW upload |
+| `statusSetBatching` | Defer audit STATUS_SET_GEN to dirty-folder batch runs |
 | `qcWorkflow` | Optional PW workflow/attributes after QC |
 | `qcReporting` | QC_REPORTING_SCAN metrics |
 | `watcher` | Audit vs full-scan orchestration |
@@ -190,6 +191,28 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 | `enableOverlay` | Use `qc_overlay_prepend.exe` when available. |
 | `qpdfExePath` | Path to qpdf binary. |
 | `overlayExePath` | Path to `qc_overlay_prepend.exe` (default `dist\qc_overlay_prepend\qc_overlay_prepend.exe`). |
+
+---
+
+## statusSetBatching
+
+Defers **audit-sourced** `STATUS_SET_GEN` work: the watcher marks Sheets folders dirty instead of scanning PW and enqueueing on every audit event. A batch pass runs on a timer while the ProjectWise session is open.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | When `true`, audit status-set triggers call `Mark-StatusSetDirtyFolder` instead of immediate enqueue. Set `false` to restore legacy per-event folder evaluation. |
+| `intervalMinutes` | `15` | Minimum minutes between batch runs (`STATUSSET_BATCH_INTERVAL_*` logs). Raise to `60` after rollout validation if desired. |
+| `maxFoldersPerRun` | `100` | Cap on folders evaluated per batch. |
+| `quietPeriodSeconds` | `120` | Folders with events newer than this are skipped until the quiet window passes. |
+| `staleWarningHours` | `24` | Warning-only: emit `STATUSSET_DIRTY_FOLDER_STALE` when `firstSeenUtc` exceeds this age. Does not block or remove folders. |
+| `dirtyFolderStorePath` | `runtime/statusset-dirty-folders.json` | Durable dirty-folder JSON (repo-relative unless absolute). Atomic writes. |
+| `processOnWatcherStart` | `false` | When `true`, tick 1 runs a batch immediately (still respects `quietPeriodSeconds`). |
+
+**Rollout note:** Audit-triggered `STATUS_SET_GEN` work is now delayed until the batching interval. With default settings, status-set cleanup may occur up to `intervalMinutes` plus `quietPeriodSeconds` after the triggering audit event. Set `statusSetBatching.enabled=false` to restore the old immediate audit-triggered behavior.
+
+**Unchanged:** scheduled full-folder reconciliation scans still evaluate folders directly. Queue dedupe (`Test-QCDuplicateJob`) and `Test-StatusSetWatcherShouldEnqueue` run at batch evaluation time.
+
+**Log codes:** `STATUSSET_BATCHING_SETTINGS`, `STATUSSET_DIRTY_FOLDER_MARKED`, `STATUSSET_DIRTY_FOLDER_STALE`, `STATUSSET_BATCH_INTERVAL_START`, `STATUSSET_BATCH_FOLDER_START`, `STATUSSET_BATCH_FOLDER_EVALUATED`, `STATUSSET_BATCH_FOLDER_FAILED`, `STATUSSET_BATCH_INTERVAL_DONE`.
 
 ---
 
