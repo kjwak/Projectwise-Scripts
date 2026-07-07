@@ -257,12 +257,13 @@ Assert-Eq $send.Data.eventType 'QC_RECEIVED' 'State should map to QC_RECEIVED'
 $mockFiles = @(Get-ChildItem -LiteralPath (Join-Path $mockRoot 'mock') -Filter '*.json')
 Assert-True ($mockFiles.Count -ge 1) 'Mock provider should create a payload file'
 
-# Missing recipients -> skipped/failure without crash
+# Missing recipients -> quiet skip without failing the worker job
 $noRecipientCfg = New-NotifyConfig -Enabled $true
 $noRecipients = Invoke-QCNotificationForStateChange -Config $noRecipientCfg -PreviousState 'In Production' -CurrentState 'QC Received' `
     -Document (New-MockDocument '' '')
 Assert-True ($null -ne $noRecipients) 'Missing recipients should return a result object'
-Assert-True (-not $noRecipients.Data.success) 'Missing recipients should not report success'
+Assert-True $noRecipients.IsSuccess 'Missing recipients should complete without job failure'
+Assert-True $noRecipients.Data.skipped 'Missing recipients should be marked skipped'
 
 # Missing email attributes for configured state -> field list
 $missingCfg = New-NotifyConfig -Enabled $true

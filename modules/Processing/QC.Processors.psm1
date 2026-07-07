@@ -2712,6 +2712,9 @@ function Invoke-QCNotificationProcessor {
     if ($res.IsSuccess) {
         return New-QCSuccessResult -Code 'QC_NOTIFICATION_JOB_OK' -Message 'Notification job completed.' -Data @{ notification = $res.Data }
     }
+    if ($res.Code -eq 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS') {
+        return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Message ([string]$res.Message) -Data @{ notification = $res.Data; skipped = $true }
+    }
     return New-QCFailureResult -Code 'QC_NOTIFICATION_JOB_FAILED' -Message ([string]$res.Message) -Data @{ notificationCode = [string]$res.Code }
 }
 

@@ -81,7 +81,9 @@ Keys are stored in `notifications/dedupe/sent-keys.jsonl` and `notification_log`
 
 **QC processing always runs** when workflow states change or prepend is triggered. Missing `EM_Designer_Email`, `EM_Reviewer_Email`, or `EM_Checker_Email` values do **not** block prepend, rendition, workflow writeback, or state sync.
 
-When a configured notification fires but the resolved **To** audience for that event is empty (for example `Originated` with no reviewer email), the send is skipped with `QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS` and processing continues.
+When a configured notification fires but the resolved **To** audience for that event is empty (for example `Redlines Received` with no designer email), the send is skipped with `QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS` at information level. The worker job succeeds and QC processing is unaffected.
+
+Recipient resolution order: ProjectWise `EM_*` attributes on DGN and sheet PDF (via `Get-PWQcPrependRoleFieldsFromSourcePdf`), then the lane QC PDF (`*-prod.pdf` / `*-rev.pdf` / `*-chk.pdf`), then `sheet_index`, then `sheet_packages`.
 
 ### Optional rollback gate (legacy / opt-in)
 

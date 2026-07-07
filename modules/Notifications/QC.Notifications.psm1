@@ -1017,6 +1017,65 @@ function _QCN-GetQcReviewerEmailAttributeName {
     return $col
 }
 
+function _QCN-MergeRoleEmailValues {
+    param(
+        [string]$Designer = '',
+        [string]$Reviewer = '',
+        [string]$Checker = '',
+        [hashtable]$Incoming = $null
+    )
+
+    if (-not $Incoming) { return @{ designerEmail = $Designer; reviewerEmail = $Reviewer; checkerEmail = $Checker } }
+    if (_QCN-IsBlank $Designer -and -not (_QCN-IsBlank $Incoming.designerEmail)) { $Designer = [string]$Incoming.designerEmail }
+    if (_QCN-IsBlank $Reviewer -and -not (_QCN-IsBlank $Incoming.reviewerEmail)) { $Reviewer = [string]$Incoming.reviewerEmail }
+    if (_QCN-IsBlank $Checker -and -not (_QCN-IsBlank $Incoming.checkerEmail)) { $Checker = [string]$Incoming.checkerEmail }
+    return @{ designerEmail = $Designer; reviewerEmail = $Reviewer; checkerEmail = $Checker }
+}
+
+function _QCN-GetRoleEmailsFromSheetPackage {
+    param(
+        [hashtable]$Config,
+        [string]$FolderPath = '',
+        [string]$SourceDocumentName = ''
+    )
+
+    if (-not (Get-Command -Name 'Test-QCDatabaseEnabled' -ErrorAction SilentlyContinue)) { return $null }
+    if (-not (Test-QCDatabaseEnabled -Config $Config)) { return $null }
+    if (_QCN-IsBlank $SourceDocumentName) { return $null }
+
+    $sheetStem = ''
+    if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
+        try { $sheetStem = [string](Get-PWSheetStemFromDocumentName -DocumentName $SourceDocumentName) } catch { }
+    }
+    if (_QCN-IsBlank $sheetStem) {
+        $sheetStem = [System.IO.Path]::GetFileNameWithoutExtension([string]$SourceDocumentName)
+    }
+    if (_QCN-IsBlank $sheetStem) { return $null }
+
+    try {
+        $sql = @"
+SELECT designer_email, reviewer_email, checker_email
+FROM sheet_packages
+WHERE LOWER(sheet_stem) = LOWER(@sheetStem)
+"@
+        $params = @{ sheetStem = [string]$sheetStem }
+        if (-not (_QCN-IsBlank $FolderPath)) {
+            $sql += "`n  AND LOWER(folder_path) = LOWER(@folderPath)"
+            $params['folderPath'] = [string]$FolderPath
+        }
+        $res = Invoke-QCDatabaseQuery -Config $Config -Sql $sql -Parameters $params
+        if ($res.IsSuccess -and $res.Data.table -and $res.Data.table.Rows.Count -gt 0) {
+            $r = $res.Data.table.Rows[0]
+            return @{
+                designerEmail = if ($r.designer_email -is [DBNull]) { '' } else { [string]$r.designer_email }
+                reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
+                checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
+            }
+        }
+    } catch { return $null }
+    return $null
+}
+
 function _QCN-GetRoleEmailsFromSheetIndex {
     param(
         [hashtable]$Config,
@@ -1042,7 +1101,7 @@ WHERE document_guid = @docGuid
                     reviewerEmail = if ($r.reviewer_email -is [DBNull]) { '' } else { [string]$r.reviewer_email }
                     checkerEmail = if ($r.checker_email -is [DBNull]) { '' } else { [string]$r.checker_email }
                 }
-                if (-not (_QCN-IsBlank $roles.reviewerEmail) -or -not (_QCN-IsBlank $roles.designerEmail)) {
+                if (-not (_QCN-IsBlank $roles.reviewerEmail) -or -not (_QCN-IsBlank $roles.designerEmail) -or -not (_QCN-IsBlank $roles.checkerEmail)) {
                     return $roles
                 }
             }
@@ -1062,15 +1121,18 @@ WHERE document_guid = @docGuid
             $res2 = Invoke-QCDatabaseQuery -Config $Config -Sql @"
 SELECT designer_email, reviewer_email, checker_email
 FROM sheet_index
-WHERE folder_path = @folderPath
+WHERE LOWER(folder_path) = LOWER(@folderPath)
   AND LOWER(document_name) = LOWER(@srcName)
 "@ -Parameters @{ folderPath = [string]$FolderPath; srcName = $srcName }
             if ($res2.IsSuccess -and $res2.Data.table -and $res2.Data.table.Rows.Count -gt 0) {
                 $r2 = $res2.Data.table.Rows[0]
-                return @{
+                $roles2 = @{
                     designerEmail = if ($r2.designer_email -is [DBNull]) { '' } else { [string]$r2.designer_email }
                     reviewerEmail = if ($r2.reviewer_email -is [DBNull]) { '' } else { [string]$r2.reviewer_email }
                     checkerEmail = if ($r2.checker_email -is [DBNull]) { '' } else { [string]$r2.checker_email }
+                }
+                if (-not (_QCN-IsBlank $roles2.reviewerEmail) -or -not (_QCN-IsBlank $roles2.designerEmail) -or -not (_QCN-IsBlank $roles2.checkerEmail)) {
+                    return $roles2
                 }
             }
         }
@@ -1894,6 +1956,8 @@ function _QCN-ResolveNotificationRoleEmails {
             if ($mdRole -and $mdRole.roleSourceDocumentName) { $sourceName = [string]$mdRole.roleSourceDocumentName }
         }
     }
+    $laneDocumentName = [string]$SourceDocumentName
+    if (_QCN-IsBlank $laneDocumentName) { $laneDocumentName = [string](_QCN-GetProp -Object $Document -Names @('Name','DocumentName','FileName')) }
     if (-not (_QCN-IsBlank $sourceName) -and (Test-QCIsQcPdfDocumentName -DocumentName $sourceName)) {
         if (Get-Command -Name 'Get-PWSheetStemFromDocumentName' -ErrorAction SilentlyContinue) {
             try {
@@ -1918,6 +1982,21 @@ function _QCN-ResolveNotificationRoleEmails {
             }
         }
     }
+    if ($Config -and -not (_QCN-IsBlank $folderPath) -and -not (_QCN-IsBlank $laneDocumentName) `
+            -and (Test-QCIsQcPdfDocumentName -DocumentName $laneDocumentName) `
+            -and (Get-Command -Name 'Get-PWDocumentEmailContacts' -ErrorAction SilentlyContinue)) {
+        $needLanePw = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
+        if ($needLanePw) {
+            try {
+                $laneContacts = Get-PWDocumentEmailContacts -FolderPath $folderPath -DocumentName $laneDocumentName
+                if ($laneContacts.found) {
+                    if (_QCN-IsBlank $designer -and -not (_QCN-IsBlank $laneContacts.designerEmail)) { $designer = [string]$laneContacts.designerEmail }
+                    if (_QCN-IsBlank $reviewer -and -not (_QCN-IsBlank $laneContacts.reviewerEmail)) { $reviewer = [string]$laneContacts.reviewerEmail }
+                    if (_QCN-IsBlank $checker -and -not (_QCN-IsBlank $laneContacts.checkerEmail)) { $checker = [string]$laneContacts.checkerEmail }
+                }
+            } catch { }
+        }
+    }
     if (_QCN-IsBlank $designer) { $designer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $designerField) }
     if (_QCN-IsBlank $reviewer) { $reviewer = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $reviewerField) }
     if (_QCN-IsBlank $checker) { $checker = [string](_QCN-GetAttributeValue -Document $Document -AttributeName $checkerField) }
@@ -1938,12 +2017,24 @@ function _QCN-ResolveNotificationRoleEmails {
     if ($Config -and ((-not (_QCN-IsBlank $DocumentGuid)) -or ((-not (_QCN-IsBlank $folderPath)) -and (-not (_QCN-IsBlank $sourceName))))) {
         $needIndex = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
         if ($needIndex) {
+            $roleSourceName = if (-not (_QCN-IsBlank $laneDocumentName)) { $laneDocumentName } else { $sourceName }
             $idx = _QCN-GetRoleEmailsFromSheetIndex -Config $Config -DocumentGuid $DocumentGuid `
-                -FolderPath $folderPath -SourceDocumentName $sourceName
+                -FolderPath $folderPath -SourceDocumentName $roleSourceName
             if ($idx) {
-                if (_QCN-IsBlank $designer) { $designer = [string]$idx.designerEmail }
-                if (_QCN-IsBlank $reviewer) { $reviewer = [string]$idx.reviewerEmail }
-                if (_QCN-IsBlank $checker) { $checker = [string]$idx.checkerEmail }
+                $merged = _QCN-MergeRoleEmailValues -Designer $designer -Reviewer $reviewer -Checker $checker -Incoming $idx
+                $designer = [string]$merged.designerEmail
+                $reviewer = [string]$merged.reviewerEmail
+                $checker = [string]$merged.checkerEmail
+            }
+            $needPackage = (_QCN-IsBlank $designer) -or (_QCN-IsBlank $reviewer) -or (_QCN-IsBlank $checker)
+            if ($needPackage) {
+                $pkg = _QCN-GetRoleEmailsFromSheetPackage -Config $Config -FolderPath $folderPath -SourceDocumentName $roleSourceName
+                if ($pkg) {
+                    $mergedPkg = _QCN-MergeRoleEmailValues -Designer $designer -Reviewer $reviewer -Checker $checker -Incoming $pkg
+                    $designer = [string]$mergedPkg.designerEmail
+                    $reviewer = [string]$mergedPkg.reviewerEmail
+                    $checker = [string]$mergedPkg.checkerEmail
+                }
             }
         }
     }
@@ -2529,7 +2620,7 @@ function Test-QCNotificationResultSent {
     $data = _QCN-ToHashtable $Result.Data
     if ($data -and $data.ContainsKey('skipped') -and [bool]$data.skipped) { return $false }
     $code = if ($Result.Code) { [string]$Result.Code } else { '' }
-    if ($code -in @('QC_NOTIFICATION_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUED')) { return $false }
+    if ($code -in @('QC_NOTIFICATION_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUE_SKIPPED_DUPLICATE', 'QC_NOTIFICATION_ENQUEUED', 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS')) { return $false }
     if ($code -match '^QC_NOTIFICATION_(SENT|MOCK|GRAPH|JOB_OK)$') { return $true }
     if ($Result.IsSuccess -and $data -and $data.success -eq $true) { return $true }
     return $false
@@ -3373,8 +3464,8 @@ function Send-QCNotification {
             message = 'Notification skipped: no To recipients resolved.'
             timestampUtc = Get-QCTimestamp
         }
-        Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Level 'Warning' -Message $result.message -Result $result -Event $Event
-        return New-QCFailureResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Message $result.message -Data $result
+        Write-QCNotificationResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Level 'Information' -Message $result.message -Result $result -Event $Event
+        return New-QCSuccessResult -Code 'QC_NOTIFICATION_SKIPPED_NO_RECIPIENTS' -Message $result.message -Data $result
     }
 
     $eventCfg = @{}
