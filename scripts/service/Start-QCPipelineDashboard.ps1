@@ -1107,7 +1107,9 @@ function _Invoke-WatcherStallRecovery {
     param(
         [hashtable]$Cfg,
         [hashtable]$Child,
-        [hashtable]$StallResult
+        [hashtable]$StallResult,
+        [Nullable[datetime]]$LastLogActivityUtc = $null,
+        [string]$LastWatcherEventCode = ''
     )
 
     if (-not $Child -or -not $StallResult -or -not $StallResult.stalled) { return $null }
@@ -1149,7 +1151,30 @@ function _Invoke-WatcherStallRecovery {
     }
     _State-PushError -LogObj $evt
 
-    if ([bool]$stallSettings.sendSessionAlert -and (Get-Command -Name 'Send-QCWatcherSessionLostAlert' -ErrorAction SilentlyContinue)) {
+    $lastLogUtcText = ''
+    try {
+        if ($LastLogActivityUtc) { $lastLogUtcText = $LastLogActivityUtc.ToUniversalTime().ToString('o') }
+    } catch { }
+
+    $restartResult = if ([bool]$kill.killed) { 'killed for respawn' } elseif ([bool]$kill.alreadyExited) { 'process already exited' } else { 'unknown' }
+
+    if ([bool]$stallSettings.sendStallAlert -and (Get-Command -Name 'Send-QCWatcherStallRecoveryAlert' -ErrorAction SilentlyContinue)) {
+        try {
+            Send-QCWatcherStallRecoveryAlert -Config $Cfg -Details @{
+                detectedUtc = $ts
+                reason = 'watcher_child_stalled'
+                stallReason = [string]$StallResult.reason
+                secondsSilent = [int]$StallResult.seconds
+                lastLogActivityUtc = $lastLogUtcText
+                lastEventCode = if ($StallResult.lastEventCode) { [string]$StallResult.lastEventCode } elseif ($LastWatcherEventCode) { [string]$LastWatcherEventCode } else { '' }
+                watcherPid = [int]$kill.pid
+                killed = [bool]$kill.killed
+                alreadyExited = [bool]$kill.alreadyExited
+                restartResult = $restartResult
+                errorMessage = $msg
+            } | Out-Null
+        } catch { }
+    } elseif ([bool]$stallSettings.sendSessionAlert -and (Get-Command -Name 'Send-QCWatcherSessionLostAlert' -ErrorAction SilentlyContinue)) {
         try {
             Send-QCWatcherSessionLostAlert -Config $Cfg -Details @{
                 detectedUtc = $ts
@@ -1851,7 +1876,9 @@ while ($true) {
                         -StageSinceUtc $stageSince
 
                     if ($stall.stalled) {
-                        _Invoke-WatcherStallRecovery -Cfg $cfg -Child $watcherChild -StallResult $stall | Out-Null
+                        _Invoke-WatcherStallRecovery -Cfg $cfg -Child $watcherChild -StallResult $stall `
+                            -LastLogActivityUtc $lastLogUtc `
+                            -LastWatcherEventCode ([string]$watcherChild.lastWatcherEventCode) | Out-Null
                         _Stop-Child -Child $watcherChild
                         $watcherChild = $null
                         $state.watcherAlive = $false

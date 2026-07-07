@@ -99,6 +99,7 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Write-QCJsonLog'
     'Get-QCWatcherSessionAlertSettings'
     'Send-QCWatcherSessionLostAlert'
+    'Send-QCWatcherStallRecoveryAlert'
 ) -Context 'Test-QCWatcherSessionAlert bootstrap test'
 
 Write-Host '=== DB maintenance chain ===' -ForegroundColor Cyan

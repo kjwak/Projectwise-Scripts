@@ -187,6 +187,55 @@ function New-QCWatcherSessionLostEmailBody {
 "@
 }
 
+function _QCWA-SendWatcherOperationalEmail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$Subject,
+        [Parameter(Mandatory)][string]$HtmlBody,
+        [Parameter(Mandatory)][string]$EventType,
+        [Parameter(Mandatory)][string]$Importance,
+        [Parameter(Mandatory)][string[]]$Recipients
+    )
+
+    $notif = _QCWA-ToHashtable $Config.notifications
+    if (-not $notif) { $notif = @{} }
+    $provider = if ($notif.provider) { [string]$notif.provider } else { 'Mock' }
+    $dryRun = $false
+    if ($null -ne $notif.dryRun) { try { $dryRun = [bool]$notif.dryRun } catch { } }
+    if ($Config.ContainsKey('dryRun') -and [bool]$Config.dryRun) { $dryRun = $true }
+
+    $payload = @{
+        eventType = $EventType
+        documentName = 'QC Watcher'
+        subject = $Subject
+        htmlBody = $HtmlBody
+        importance = $Importance
+        to = @($Recipients)
+        cc = @()
+        logoPath = if ($notif.email -and $notif.email.logoPath) { [string]$notif.email.logoPath } else { 'email/typsalogo.png.webp' }
+    }
+
+    if ($provider -eq 'MicrosoftGraph' -and (Get-Command -Name 'Send-QCNotificationGraph' -ErrorAction SilentlyContinue)) {
+        $graph = _QCWA-ToHashtable $notif.graph
+        if (-not $graph) { $graph = @{} }
+        return Send-QCNotificationGraph -GraphSettings $graph -Payload $payload -DryRun:$dryRun
+    }
+
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationMock.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
+    if (Get-Command -Name 'Send-QCNotificationMock' -ErrorAction SilentlyContinue) {
+        $outputRoot = if ($notif.outputRoot) { [string]$notif.outputRoot } else { 'notifications' }
+        if (-not [System.IO.Path]::IsPathRooted($outputRoot)) {
+            $outputRoot = Join-Path (_QCWA-GetRepoRoot) $outputRoot
+        }
+        $mockPayload = $payload.Clone()
+        $mockPayload['body'] = $HtmlBody
+        return Send-QCNotificationMock -Payload $mockPayload -OutputRoot $outputRoot -DryRun:$dryRun
+    }
+
+    return New-QCFailureResult -Code 'QC_WATCHER_ALERT_PROVIDER_UNAVAILABLE' -Message 'No notification provider available for watcher operational alert.' -Data @{ provider = $provider }
+}
+
 function Send-QCWatcherSessionLostAlert {
     <#
     .SYNOPSIS
@@ -200,6 +249,11 @@ function Send-QCWatcherSessionLostAlert {
         [hashtable]$Details,
         [switch]$Force
     )
+
+    $alertReason = ([string]$Details.reason).Trim().ToLowerInvariant()
+    if ($alertReason -eq 'watcher_child_stalled') {
+        return New-QCSuccessResult -Code 'QC_WATCHER_ALERT_SKIPPED_WRONG_CHANNEL' -Message 'Stall recovery alerts must use Send-QCWatcherStallRecoveryAlert.' -Data @{ skipped = $true; reason = $alertReason }
+    }
 
     $settings = Get-QCWatcherSessionAlertSettings -Config $Config
     if (-not [bool]$settings.enabled) {
@@ -218,54 +272,19 @@ function Send-QCWatcherSessionLostAlert {
         }
     }
 
-    $notif = _QCWA-ToHashtable $Config.notifications
-    if (-not $notif) { $notif = @{} }
-    $provider = if ($notif.provider) { [string]$notif.provider } else { 'Mock' }
-    $dryRun = $false
-    if ($null -ne $notif.dryRun) { try { $dryRun = [bool]$notif.dryRun } catch { } }
-    if ($Config.ContainsKey('dryRun') -and [bool]$Config.dryRun) { $dryRun = $true }
-
     $importance = [string]$settings.importance
     if ([string]::IsNullOrWhiteSpace($importance)) { $importance = 'high' }
 
     $subject = '[QC Watcher] URGENT: ProjectWise session lost'
     $htmlBody = New-QCWatcherSessionLostEmailBody -Details $Details
-    $payload = @{
-        eventType = 'QC_WATCHER_PW_SESSION_LOST'
-        documentName = 'QC Watcher'
-        subject = $subject
-        htmlBody = $htmlBody
-        importance = $importance
-        to = $recipients
-        cc = @()
-        logoPath = if ($notif.email -and $notif.email.logoPath) { [string]$notif.email.logoPath } else { 'email/typsalogo.png.webp' }
-    }
-
-    $sendResult = $null
-    if ($provider -eq 'MicrosoftGraph' -and (Get-Command -Name 'Send-QCNotificationGraph' -ErrorAction SilentlyContinue)) {
-        $graph = _QCWA-ToHashtable $notif.graph
-        if (-not $graph) { $graph = @{} }
-        $sendResult = Send-QCNotificationGraph -GraphSettings $graph -Payload $payload -DryRun:$dryRun
-    } else {
-        Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Notifications/QC.NotificationMock.psm1') -Force -ErrorAction SilentlyContinue | Out-Null
-        if (Get-Command -Name 'Send-QCNotificationMock' -ErrorAction SilentlyContinue) {
-            $outputRoot = if ($notif.outputRoot) { [string]$notif.outputRoot } else { 'notifications' }
-            if (-not [System.IO.Path]::IsPathRooted($outputRoot)) {
-                $outputRoot = Join-Path (_QCWA-GetRepoRoot) $outputRoot
-            }
-            $mockPayload = $payload.Clone()
-            $mockPayload['body'] = $htmlBody
-            $sendResult = Send-QCNotificationMock -Payload $mockPayload -OutputRoot $outputRoot -DryRun:$dryRun
-        } else {
-            return New-QCFailureResult -Code 'QC_WATCHER_ALERT_PROVIDER_UNAVAILABLE' -Message 'No notification provider available for watcher session alert.' -Data @{ provider = $provider }
-        }
-    }
+    $sendResult = _QCWA-SendWatcherOperationalEmail -Config $Config -Subject $subject -HtmlBody $htmlBody `
+        -EventType 'QC_WATCHER_PW_SESSION_LOST' -Importance $importance -Recipients $recipients
 
     if ($sendResult.IsSuccess) {
         Set-QCWatcherSessionAlertSent -Config $Config -Reason ([string]$Details.reason) -Details $Details
         return New-QCSuccessResult -Code 'QC_WATCHER_ALERT_SENT' -Message 'Watcher session lost alert sent.' -Data @{
-            provider = $provider
-            dryRun = $dryRun
+            provider = if ($Config.notifications -and $Config.notifications.provider) { [string]$Config.notifications.provider } else { 'Mock' }
+            dryRun = [bool]$Config.dryRun
             to = $recipients
             importance = $importance
             send = $sendResult.Data
@@ -273,7 +292,176 @@ function Send-QCWatcherSessionLostAlert {
     }
 
     return New-QCFailureResult -Code 'QC_WATCHER_ALERT_SEND_FAILED' -Message ([string]$sendResult.Message) -Data @{
-        provider = $provider
+        sendCode = [string]$sendResult.Code
+    }
+}
+
+function Get-QCWatcherStallAlertStatePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $root = _QCWA-GetRepoRoot
+    if ($Config.notifications -and $Config.notifications.outputRoot) {
+        $out = [string]$Config.notifications.outputRoot
+        if (-not [System.IO.Path]::IsPathRooted($out)) {
+            $out = Join-Path $root $out
+        }
+        return (Join-Path $out 'stall-alerts\last-sent.json')
+    }
+    return (Join-Path $root 'notifications\stall-alerts\last-sent.json')
+}
+
+function Test-QCWatcherStallAlertDue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [string]$Reason = 'watcher_child_stalled'
+    )
+
+    $settings = Get-QCWatcherSessionAlertSettings -Config $Config
+    if (-not [bool]$settings.enabled) {
+        return @{ due = $false; reason = 'disabled' }
+    }
+
+    $path = Get-QCWatcherStallAlertStatePath -Config $Config
+    if (-not (Test-Path -LiteralPath $path)) {
+        return @{ due = $true; reason = $Reason; statePath = $path }
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $lastUtc = [string]$obj.lastSentUtc
+        if ([string]::IsNullOrWhiteSpace($lastUtc)) {
+            return @{ due = $true; reason = $Reason; statePath = $path }
+        }
+        $last = [DateTime]::Parse($lastUtc, $null, [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal)
+        $ageMin = ((Get-Date).ToUniversalTime() - $last).TotalMinutes
+        if ($ageMin -ge [double]$settings.dedupeMinutes) {
+            return @{ due = $true; reason = $Reason; statePath = $path; minutesSinceLast = [math]::Round($ageMin, 1) }
+        }
+        return @{ due = $false; reason = 'deduped'; statePath = $path; minutesSinceLast = [math]::Round($ageMin, 1) }
+    } catch {
+        return @{ due = $true; reason = $Reason; statePath = $path; readError = [string]$_.Exception.Message }
+    }
+}
+
+function Set-QCWatcherStallAlertSent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [string]$Reason = 'watcher_child_stalled',
+        [hashtable]$Details = @{}
+    )
+
+    $path = Get-QCWatcherStallAlertStatePath -Config $Config
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $payload = @{
+        lastSentUtc = (Get-Date).ToUniversalTime().ToString('o')
+        reason = $Reason
+        details = $Details
+    }
+    Set-Content -LiteralPath $path -Value ($payload | ConvertTo-Json -Depth 8) -Encoding UTF8
+}
+
+function New-QCWatcherStallRecoveryEmailBody {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Details
+    )
+
+    $restartResult = if ($Details.restartResult) { [string]$Details.restartResult } else { '' }
+    if ([string]::IsNullOrWhiteSpace($restartResult)) {
+        if ($null -ne $Details.killed) {
+            $restartResult = if ([bool]$Details.killed) { 'killed for respawn' } else { 'process already exited' }
+        }
+    }
+
+    $rows = @(
+        @{ label = 'Detected (UTC)'; value = [string]$Details.detectedUtc }
+        @{ label = 'Recovery reason'; value = [string]$Details.stallReason }
+        @{ label = 'No-log duration (seconds)'; value = [string]$Details.secondsSilent }
+        @{ label = 'Last log activity (UTC)'; value = [string]$Details.lastLogActivityUtc }
+        @{ label = 'Last event code'; value = [string]$Details.lastEventCode }
+        @{ label = 'Watcher PID'; value = [string]$Details.watcherPid }
+        @{ label = 'Restart result'; value = $restartResult }
+        @{ label = 'Details'; value = [string]$Details.errorMessage }
+    )
+
+    $htmlRows = ($rows | ForEach-Object {
+        if ([string]::IsNullOrWhiteSpace($_.value)) { return }
+        $label = [System.Net.WebUtility]::HtmlEncode([string]$_.label)
+        $value = [System.Net.WebUtility]::HtmlEncode([string]$_.value)
+        "<tr><td style=""padding:6px 12px;font-weight:600;vertical-align:top;"">$label</td><td style=""padding:6px 12px;"">$value</td></tr>"
+    }) -join ''
+
+    return @"
+<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1a1a1a;">
+  <p style="margin:0 0 12px 0;"><strong>The QC watcher child was restarted after a stall.</strong></p>
+  <p style="margin:0 0 16px 0;">The dashboard killed and respawned the watcher because JSONL progress stopped. ProjectWise may still be connected; verify the dashboard and watcher logs if triggers were missed during the stall window.</p>
+  <table style="border-collapse:collapse;border:1px solid #d0d0d0;">$htmlRows</table>
+</div>
+"@
+}
+
+function Send-QCWatcherStallRecoveryAlert {
+    <#
+    .SYNOPSIS
+    Sends an operational email when the dashboard kills and respawns a wedged watcher child.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [Parameter(Mandatory)]
+        [hashtable]$Details,
+        [switch]$Force
+    )
+
+    $settings = Get-QCWatcherSessionAlertSettings -Config $Config
+    if (-not [bool]$settings.enabled) {
+        return New-QCSuccessResult -Code 'QC_WATCHER_STALL_ALERT_SKIPPED_DISABLED' -Message 'Watcher operational alerts are disabled.' -Data @{ skipped = $true }
+    }
+
+    $recipients = @($settings.recipients)
+    if ($recipients.Count -eq 0) {
+        return New-QCFailureResult -Code 'QC_WATCHER_STALL_ALERT_NO_RECIPIENTS' -Message 'No stall alert recipients configured.' -Data @{ skipped = $true }
+    }
+
+    if (-not $Force) {
+        $due = Test-QCWatcherStallAlertDue -Config $Config -Reason ([string]$Details.reason)
+        if (-not $due.due) {
+            return New-QCSuccessResult -Code 'QC_WATCHER_STALL_ALERT_SKIPPED_DEDUPED' -Message 'Stall alert suppressed by dedupe window.' -Data $due
+        }
+    }
+
+    $importance = [string]$settings.importance
+    if ([string]::IsNullOrWhiteSpace($importance)) { $importance = 'high' }
+
+    $subject = '[QC Watcher] Watcher child restarted after stall'
+    $htmlBody = New-QCWatcherStallRecoveryEmailBody -Details $Details
+    $sendResult = _QCWA-SendWatcherOperationalEmail -Config $Config -Subject $subject -HtmlBody $htmlBody `
+        -EventType 'QC_WATCHER_STALL_RECOVERY' -Importance $importance -Recipients $recipients
+
+    if ($sendResult.IsSuccess) {
+        Set-QCWatcherStallAlertSent -Config $Config -Reason ([string]$Details.reason) -Details $Details
+        return New-QCSuccessResult -Code 'QC_WATCHER_STALL_ALERT_SENT' -Message 'Watcher stall recovery alert sent.' -Data @{
+            to = $recipients
+            importance = $importance
+            send = $sendResult.Data
+        }
+    }
+
+    return New-QCFailureResult -Code 'QC_WATCHER_STALL_ALERT_SEND_FAILED' -Message ([string]$sendResult.Message) -Data @{
         sendCode = [string]$sendResult.Code
     }
 }
@@ -342,6 +530,11 @@ Export-ModuleMember -Function @(
     'Test-QCWatcherSessionAlertDue',
     'Set-QCWatcherSessionAlertSent',
     'Send-QCWatcherSessionLostAlert',
+    'Get-QCWatcherStallAlertStatePath',
+    'Test-QCWatcherStallAlertDue',
+    'Set-QCWatcherStallAlertSent',
+    'Send-QCWatcherStallRecoveryAlert',
     'Test-QCWatcherAuditActivityStalled',
-    'New-QCWatcherSessionLostEmailBody'
+    'New-QCWatcherSessionLostEmailBody',
+    'New-QCWatcherStallRecoveryEmailBody'
 )

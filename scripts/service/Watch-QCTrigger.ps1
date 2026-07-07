@@ -2135,12 +2135,34 @@ if ($statusSetRules.Count -ge 0) {
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
 
+            $reconcileHeartbeat = [ref]@{
+                lastUtc = [DateTime]::MinValue
+                startedUtc = (Get-Date).ToUniversalTime()
+            }
+            if (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue) {
+                Write-QCWatcherPhaseHeartbeat -Phase 'full_reconciliation_scan' `
+                    -Message 'Full reconciliation folder scan in progress.' `
+                    -Data @{ folderCount = [int]$pwFolders.Count; scheduledTime = [string]$fullScanPlan.scheduledTime } `
+                    -IntervalSeconds 0 -HeartbeatState $reconcileHeartbeat | Out-Null
+            }
+
             foreach ($entry in @($pwFolders)) {
                 $folderPhase = 'folder_init'
                 try {
                     $fp = [string]$entry.FolderPath
                     if ([string]::IsNullOrWhiteSpace($fp)) { continue }
                     $pwFoldersScanned++
+
+                    if (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue) {
+                        Write-QCWatcherPhaseHeartbeat -Phase 'full_reconciliation_scan' `
+                            -Message 'Full reconciliation folder scan in progress.' `
+                            -Data @{
+                                folder = $fp
+                                folderIndex = [int]$pwFoldersScanned
+                                folderTotal = [int]$pwFolders.Count
+                            } `
+                            -IntervalSeconds 180 -HeartbeatState $reconcileHeartbeat | Out-Null
+                    }
 
                     $oneLevelDeep = $false
                     $enableQcPrepend = $false
@@ -2313,56 +2335,68 @@ if ($statusSetRules.Count -ge 0) {
                                     reconciliationCycle = [bool]$isReconciliationCycle
                                     scheduledTime = [string]$fullScanPlan.scheduledTime
                                 }
-                                $stateGuids = @()
-                                foreach ($ps in @($state.pairedSheets)) {
-                                    if ($ps.pdf -and $ps.pdf.documentGuid) { $stateGuids += [string]$ps.pdf.documentGuid }
-                                    if ($ps.dgn -and $ps.dgn.documentGuid) { $stateGuids += [string]$ps.dgn.documentGuid }
-                                }
-                                $stateByGuid = @{}
-                                if ($stateGuids.Count -gt 0) {
-                                    try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $stateGuids } catch { }
-                                }
+                                $indexRowCount = 0
+                                $indexWork = {
+                                    $stateGuids = @()
+                                    foreach ($ps in @($state.pairedSheets)) {
+                                        if ($ps.pdf -and $ps.pdf.documentGuid) { $stateGuids += [string]$ps.pdf.documentGuid }
+                                        if ($ps.dgn -and $ps.dgn.documentGuid) { $stateGuids += [string]$ps.dgn.documentGuid }
+                                    }
+                                    $stateByGuid = @{}
+                                    if ($stateGuids.Count -gt 0) {
+                                        try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $stateGuids } catch { }
+                                    }
 
-                                $sheetIndexRows = @(Build-PWSheetIndexRowsForPairedSheets -Config $config `
-                                    -FolderPath $fp `
-                                    -WatchRoot ([string]$entry.FolderPath) `
-                                    -PairedSheets @($state.pairedSheets) `
-                                    -StateByGuid $stateByGuid)
+                                    $sheetIndexRows = @(Build-PWSheetIndexRowsForPairedSheets -Config $config `
+                                        -FolderPath $fp `
+                                        -WatchRoot ([string]$entry.FolderPath) `
+                                        -PairedSheets @($state.pairedSheets) `
+                                        -StateByGuid $stateByGuid)
 
-                                $indexRowCount = $sheetIndexRows.Count
-                                if ($indexRowCount -gt 0) {
-                                    try {
-                                        Write-QCSheetIndexBatch -Config $config -Rows @($sheetIndexRows)
-                                    } catch { }
-                                }
-
-                                if ($state.qcPdfDocs) {
-                                    foreach ($qc in @($state.qcPdfDocs)) {
+                                    $rowCount = $sheetIndexRows.Count
+                                    if ($rowCount -gt 0) {
                                         try {
-                                            $qcStem = [string]$qc.stem
-                                            $srcSheet = $null
-                                            foreach ($row in @($state.pairedSheets)) {
-                                                $rowStem = $null
-                                                if ($row -is [hashtable] -and $row.ContainsKey('stem')) { $rowStem = [string]$row['stem'] }
-                                                elseif ($row -and $row.PSObject) { try { $rowStem = [string]$row.stem } catch { } }
-                                                if ($rowStem -and $rowStem -eq $qcStem) { $srcSheet = $row; break }
-                                            }
-                                            if ($srcSheet) {
-                                                if ($srcSheet.pdf -and $srcSheet.pdf.documentGuid) {
-                                                    Update-QCSheetQcPdf -Config $config `
-                                                        -SourceDocumentGuid ([string]$srcSheet.pdf.documentGuid) `
-                                                        -QcPdfGuid ([string]$qc.documentGuid) `
-                                                        -QcPdfName ([string]$qc.name)
-                                                }
-                                                if ($srcSheet.dgn -and $srcSheet.dgn.documentGuid) {
-                                                    Update-QCSheetQcPdf -Config $config `
-                                                        -SourceDocumentGuid ([string]$srcSheet.dgn.documentGuid) `
-                                                        -QcPdfGuid ([string]$qc.documentGuid) `
-                                                        -QcPdfName ([string]$qc.name)
-                                                }
-                                            }
+                                            Write-QCSheetIndexBatch -Config $config -Rows @($sheetIndexRows)
                                         } catch { }
                                     }
+
+                                    if ($state.qcPdfDocs) {
+                                        foreach ($qc in @($state.qcPdfDocs)) {
+                                            try {
+                                                $qcStem = [string]$qc.stem
+                                                $srcSheet = $null
+                                                foreach ($row in @($state.pairedSheets)) {
+                                                    $rowStem = $null
+                                                    if ($row -is [hashtable] -and $row.ContainsKey('stem')) { $rowStem = [string]$row['stem'] }
+                                                    elseif ($row -and $row.PSObject) { try { $rowStem = [string]$row.stem } catch { } }
+                                                    if ($rowStem -and $rowStem -eq $qcStem) { $srcSheet = $row; break }
+                                                }
+                                                if ($srcSheet) {
+                                                    if ($srcSheet.pdf -and $srcSheet.pdf.documentGuid) {
+                                                        Update-QCSheetQcPdf -Config $config `
+                                                            -SourceDocumentGuid ([string]$srcSheet.pdf.documentGuid) `
+                                                            -QcPdfGuid ([string]$qc.documentGuid) `
+                                                            -QcPdfName ([string]$qc.name)
+                                                    }
+                                                    if ($srcSheet.dgn -and $srcSheet.dgn.documentGuid) {
+                                                        Update-QCSheetQcPdf -Config $config `
+                                                            -SourceDocumentGuid ([string]$srcSheet.dgn.documentGuid) `
+                                                            -QcPdfGuid ([string]$qc.documentGuid) `
+                                                            -QcPdfName ([string]$qc.name)
+                                                    }
+                                                }
+                                            } catch { }
+                                        }
+                                    }
+                                    return [int]$rowCount
+                                }
+                                if (Get-Command -Name 'Invoke-QCWatcherLongRunningWork' -ErrorAction SilentlyContinue) {
+                                    $indexRowCount = [int](Invoke-QCWatcherLongRunningWork -Phase 'statusset_sheet_index' -Data @{
+                                        folder = $fp
+                                        pairedCount = [int]$state.pairedCount
+                                    } -HeartbeatIntervalSeconds 180 -Work $indexWork)
+                                } else {
+                                    $indexRowCount = [int](& $indexWork)
                                 }
                                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_DONE' -Message 'Sheet index update completed.' -Data @{
                                     folder = $fp

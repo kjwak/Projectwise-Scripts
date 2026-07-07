@@ -1336,6 +1336,21 @@ function Get-QCAuditCacheWarmFolderPathCandidates {
     return @(_AuditPoller-GetPwFolderPathCandidatesForCmdlet -FolderPath $FolderPath)
 }
 
+function _AuditPoller-WriteWarmHeartbeat {
+    param(
+        [ref]$HeartbeatState,
+        [string]$Stage,
+        [hashtable]$Data = @{}
+    )
+
+    if (-not (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue)) { return }
+    $payload = @{ stage = $Stage }
+    foreach ($key in @($Data.Keys)) { $payload[$key] = $Data[$key] }
+    Write-QCWatcherPhaseHeartbeat -Phase 'audit_folder_guid_cache_warm' `
+        -Message "Audit folder GUID cache warm: $Stage" `
+        -Data $payload -IntervalSeconds 180 -HeartbeatState $HeartbeatState | Out-Null
+}
+
 function Sync-AuditPollerWatchFolderGuidCache {
     <#
     .SYNOPSIS
@@ -1393,6 +1408,15 @@ function Sync-AuditPollerWatchFolderGuidCache {
 
     [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
 
+    $warmHeartbeat = [ref]@{
+        lastUtc = [DateTime]::MinValue
+        startedUtc = (Get-Date).ToUniversalTime()
+    }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'starting' -Data @{
+        watchRootCount = @($normalized).Count
+        warmSheets = [bool]$warmSheets
+    }
+
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
@@ -1444,10 +1468,23 @@ function Sync-AuditPollerWatchFolderGuidCache {
 
         foreach ($entry in @($discoveryEntries)) {
             if ($sheetsBudgetUsed -ge $maxSheets) { break }
+            _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'registering_sheets_folder' -Data @{
+                sheetsBudgetUsed = [int]$sheetsBudgetUsed
+                maxSheets = [int]$maxSheets
+                rootGuidCount = [int]$rootGuidCount
+                sheetsParentGuidCount = [int]$sheetsParentGuidCount
+            }
             _AuditPoller-RegisterAuditCacheSheetsFolderEntry -Config $Config -Entry $entry -WatchRoot $rootPath `
                 -SeenPaths $seenPaths -StatsRef $statsRef -MaxSheets $maxSheets -SheetsBudgetUsed ([ref]$sheetsBudgetUsed) `
                 -SheetsParentGuidCount ([ref]$sheetsParentGuidCount) -OneLevelChildGuidCount ([ref]$oneLevelChildGuidCount) `
                 -DebugLogPaths $debugLogPaths -DebugPaths $debugPaths -WarmDiag $warmDiagRef | Out-Null
+        }
+
+        _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'root_processed' -Data @{
+            rootPath = $rootPath
+            rootGuidCount = [int]$rootGuidCount
+            sheetsParentGuidCount = [int]$sheetsParentGuidCount
+            oneLevelChildGuidCount = [int]$oneLevelChildGuidCount
         }
     }
 
@@ -1455,6 +1492,10 @@ function Sync-AuditPollerWatchFolderGuidCache {
         foreach ($folderEntry in @(_AuditPoller-GetWatchListFolderEntriesFromConfig -Config $Config)) {
             if ($sheetsBudgetUsed -ge $maxSheets) { break }
             $discoveryEntryCount++
+            _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'registering_watchlist_folder' -Data @{
+                sheetsBudgetUsed = [int]$sheetsBudgetUsed
+                maxSheets = [int]$maxSheets
+            }
             $watchRoot = ''
             try { if ($folderEntry.watchRoot) { $watchRoot = [string]$folderEntry.watchRoot } } catch { }
             _AuditPoller-RegisterAuditCacheSheetsFolderEntry -Config $Config -Entry $folderEntry -WatchRoot $watchRoot `

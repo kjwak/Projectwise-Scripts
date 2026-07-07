@@ -83,6 +83,8 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Clear-QCWatcherActive'
     'Read-AppConfig'
     'Send-QCWatcherSessionLostAlert'
+    'Send-QCWatcherStallRecoveryAlert'
+    'Write-QCWatcherPhaseHeartbeat'
 ) -Context 'dashboard entrypoint test'
 
 Write-Host '=== run_prepend_qc -NoDashboard bootstrap (shared restore helper) ===' -ForegroundColor Cyan

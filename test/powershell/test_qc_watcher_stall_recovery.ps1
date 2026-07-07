@@ -16,6 +16,7 @@ $config = @{
             enabled = $true
             noLogActivitySeconds = 600
             auditScanMaxSeconds = 300
+            sendStallAlert = $true
         }
     }
 }
@@ -23,6 +24,8 @@ $config = @{
 $settings = Get-QCWatcherStallRecoverySettings -Config $config
 Assert-Eq $settings.auditScanMaxSeconds 300 'audit scan threshold from config'
 Assert-Eq $settings.noLogActivitySeconds 600 'no-log threshold from config'
+Assert-True $settings.sendStallAlert 'sendStallAlert default true when configured'
+Assert-True (-not $settings.sendSessionAlert) 'sendSessionAlert default false'
 
 $now = [datetime]'2026-06-18T13:40:00Z'
 $healthy = Test-QCWatcherChildStalled -Settings $settings -WatcherAlive $true `
@@ -61,5 +64,11 @@ $replay = Test-QCWatcherChildStalled -Settings $settings -WatcherAlive $true `
     -WatcherSpawnedAtUtc $spawned `
     -NowUtc $now
 Assert-True (-not $replay.stalled) 'pre-spawn audit events should not trigger stall on respawn'
+
+$hbState = [ref]@{ lastUtc = [DateTime]::MinValue; startedUtc = (Get-Date).ToUniversalTime() }
+$hb1 = Write-QCWatcherPhaseHeartbeat -Phase 'statusset_sheet_index' -Data @{ folder = 'Documents\Test\Sheets' } -IntervalSeconds 0 -HeartbeatState $hbState
+Assert-True $hb1 'first heartbeat should emit'
+$hb2 = Write-QCWatcherPhaseHeartbeat -Phase 'statusset_sheet_index' -Data @{ folder = 'Documents\Test\Sheets' } -IntervalSeconds 180 -HeartbeatState $hbState
+Assert-True (-not $hb2) 'second heartbeat should be throttled within interval'
 
 Write-Host 'OK: QC watcher stall recovery tests passed.' -ForegroundColor Green

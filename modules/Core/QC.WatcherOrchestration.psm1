@@ -689,7 +689,8 @@ function Get-QCWatcherStallRecoverySettings {
         enabled = $true
         noLogActivitySeconds = 600
         auditScanMaxSeconds = 300
-        sendSessionAlert = $true
+        sendSessionAlert = $false
+        sendStallAlert = $true
         postKillCooldownSeconds = 120
     }
 
@@ -706,6 +707,7 @@ function Get-QCWatcherStallRecoverySettings {
         if ($stall.ContainsKey('noLogActivitySeconds') -and $null -ne $stall.noLogActivitySeconds) { try { $settings.noLogActivitySeconds = [int]$stall.noLogActivitySeconds } catch { } }
         if ($stall.ContainsKey('auditScanMaxSeconds') -and $null -ne $stall.auditScanMaxSeconds) { try { $settings.auditScanMaxSeconds = [int]$stall.auditScanMaxSeconds } catch { } }
         if ($stall.ContainsKey('sendSessionAlert') -and $null -ne $stall.sendSessionAlert) { try { $settings.sendSessionAlert = [bool]$stall.sendSessionAlert } catch { } }
+        if ($stall.ContainsKey('sendStallAlert') -and $null -ne $stall.sendStallAlert) { try { $settings.sendStallAlert = [bool]$stall.sendStallAlert } catch { } }
         if ($stall.ContainsKey('postKillCooldownSeconds') -and $null -ne $stall.postKillCooldownSeconds) { try { $settings.postKillCooldownSeconds = [int]$stall.postKillCooldownSeconds } catch { } }
     }
 
@@ -804,6 +806,116 @@ function Test-QCWatcherChildStalled {
     return @{ stalled = $false; reason = 'healthy' }
 }
 
+function Write-QCWatcherPhaseHeartbeat {
+    <#
+    .SYNOPSIS
+    Emits a throttled INFO heartbeat during long-running watcher phases so the dashboard stall detector sees log activity.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Phase,
+        [string]$Message = '',
+        [hashtable]$Data = @{},
+        [int]$IntervalSeconds = 180,
+        [ref]$HeartbeatState
+    )
+
+    if ($IntervalSeconds -lt 0) { $IntervalSeconds = 0 }
+    $now = (Get-Date).ToUniversalTime()
+    if (-not $HeartbeatState.Value) {
+        $HeartbeatState.Value = @{
+            lastUtc = [DateTime]::MinValue
+            startedUtc = $now
+        }
+    }
+
+    $last = $HeartbeatState.Value.lastUtc
+    if ($IntervalSeconds -gt 0 -and $last -ne [DateTime]::MinValue) {
+        if (($now - $last).TotalSeconds -lt [double]$IntervalSeconds) {
+            return $false
+        }
+    }
+
+    $HeartbeatState.Value.lastUtc = $now
+    $started = $HeartbeatState.Value.startedUtc
+    if (-not $started -or $started -eq [DateTime]::MinValue) {
+        $started = $now
+        $HeartbeatState.Value.startedUtc = $now
+    }
+
+    $payload = @{
+        phase = $Phase
+        elapsedSeconds = [math]::Round(($now - $started).TotalSeconds, 1)
+    }
+    foreach ($key in @($Data.Keys)) {
+        $payload[$key] = $Data[$key]
+    }
+
+    $msg = if ([string]::IsNullOrWhiteSpace($Message)) {
+        "Watcher phase in progress: $Phase"
+    } else {
+        $Message
+    }
+
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Flush -Level 'Information' -Code 'WATCH_PHASE_HEARTBEAT' -Message $msg -Data $payload
+    } else {
+        $line = (@{
+            ts = (Get-Date).ToString('o')
+            level = 'Information'
+            code = 'WATCH_PHASE_HEARTBEAT'
+            message = $msg
+            data = $payload
+        } | ConvertTo-Json -Compress -Depth 8)
+        [Console]::Out.WriteLine($line)
+        [Console]::Out.Flush()
+    }
+    return $true
+}
+
+function Invoke-QCWatcherLongRunningWork {
+    <#
+    .SYNOPSIS
+    Runs a script block while emitting periodic WATCH_PHASE_HEARTBEAT logs (default every 3 minutes).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Phase,
+        [hashtable]$Data = @{},
+        [int]$HeartbeatIntervalSeconds = 180,
+        [Parameter(Mandatory)][scriptblock]$Work
+    )
+
+    if ($HeartbeatIntervalSeconds -lt 60) { $HeartbeatIntervalSeconds = 60 }
+
+    $stateRef = [ref]@{
+        lastUtc = [DateTime]::MinValue
+        startedUtc = (Get-Date).ToUniversalTime()
+    }
+    $ctx = @{
+        Phase = $Phase
+        Data = $Data
+        StateRef = $stateRef
+    }
+
+    $callback = [System.Threading.TimerCallback]{
+        param($state)
+        try {
+            $c = $state
+            if ($null -eq $c) { return }
+            Write-QCWatcherPhaseHeartbeat -Phase $c.Phase -Data $c.Data -IntervalSeconds 0 -HeartbeatState $c.StateRef | Out-Null
+        } catch { }
+    }
+
+    $timer = New-Object System.Threading.Timer($callback, $ctx, ($HeartbeatIntervalSeconds * 1000), ($HeartbeatIntervalSeconds * 1000))
+    try {
+        Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $Data -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
+        return (& $Work)
+    } finally {
+        try { $timer.Dispose() } catch { }
+    }
+}
+
 function Stop-QCWatcherChildForStall {
     [CmdletBinding()]
     param(
@@ -850,4 +962,4 @@ function Stop-QCWatcherChildForStall {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Stop-QCWatcherChildForStall
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall

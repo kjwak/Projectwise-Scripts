@@ -59,8 +59,35 @@ $send1 = Send-QCWatcherSessionLostAlert -Config $config -Details @{
 }
 Assert-True $send1.IsSuccess "alert send should succeed: $($send1.Message)"
 
+$wrongChannel = Send-QCWatcherSessionLostAlert -Config $config -Details @{
+    detectedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    reason = 'watcher_child_stalled'
+    errorMessage = 'should not use session channel'
+}
+Assert-Eq $wrongChannel.Code 'QC_WATCHER_ALERT_SKIPPED_WRONG_CHANNEL' 'stall recovery must not use session-lost alert'
+
+$stallDue1 = Test-QCWatcherStallAlertDue -Config $config
+Assert-True $stallDue1.due 'first stall alert should be due'
+
+$stallSend1 = Send-QCWatcherStallRecoveryAlert -Config $config -Details @{
+    detectedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    reason = 'watcher_child_stalled'
+    stallReason = 'no_log_activity'
+    secondsSilent = 3600
+    lastLogActivityUtc = '2026-07-06T05:21:01Z'
+    lastEventCode = 'WATCH_AUDIT_SCAN_START'
+    watcherPid = 12345
+    killed = $true
+    restartResult = 'killed for respawn'
+    errorMessage = 'Watcher child stalled (no_log_activity, 3600s); killed pid=12345 for respawn.'
+}
+Assert-True $stallSend1.IsSuccess "stall alert send should succeed: $($stallSend1.Message)"
+
+$stallDue2 = Test-QCWatcherStallAlertDue -Config $config
+Assert-True (-not $stallDue2.due) 'second stall alert should be deduped within window'
+
 $due2 = Test-QCWatcherSessionAlertDue -Config $config
-Assert-True (-not $due2.due) 'second alert should be deduped within window'
+Assert-True (-not $due2.due) 'second session alert should be deduped within window'
 
 Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
 $graphMsg = New-QCGraphEmailMessage -ToRecipients @('jflint@aztec.us') -Subject 'Test' -HtmlBody '<p>hi</p>' `
