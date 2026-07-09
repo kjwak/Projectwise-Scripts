@@ -162,6 +162,18 @@ function New-QCAutomationEventDedupeKey {
     }
 }
 
+function _QCT-TruncatePayload {
+    # Local helper — do not call Core.Database private _QDB-* from this module
+    # (private functions are not visible across module boundaries).
+    param(
+        [string]$Text,
+        [int]$MaxLength = 32000
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    if ($Text.Length -le $MaxLength) { return $Text }
+    return $Text.Substring(0, $MaxLength)
+}
+
 function Write-QCAutomationEvent {
     <#
     .SYNOPSIS
@@ -216,7 +228,7 @@ function Write-QCAutomationEvent {
         data = $Data
     }
     $dataJson = ($payload | ConvertTo-Json -Depth 25 -Compress)
-    $dataJson = _QDB-TruncateTelemetryPayload -Text $dataJson -MaxLength 32000
+    $dataJson = _QCT-TruncatePayload -Text $dataJson -MaxLength 32000
 
     if ([string]::IsNullOrWhiteSpace($DedupeKey)) {
         $DedupeKey = New-QCAutomationEventDedupeKey -Timestamp $ts -ProcessName $proc -Code $Code -Message $Message -JobId $jobId -RunId $run
@@ -252,7 +264,14 @@ INSERT INTO automation_events (
             dataJson = $dataJson
             dedupeKey = if ($DedupeKey) { $DedupeKey } else { [DBNull]::Value }
         }
-        [void](Invoke-QCDatabaseNonQuery -Config $cfg -Sql $sql -Parameters $params)
+        $nq = Invoke-QCDatabaseNonQuery -Config $cfg -Sql $sql -Parameters $params
+        if (-not $nq.IsSuccess) {
+            $msg = [string]$nq.Message
+            if ($msg -match '(?i)duplicate|unique|2627|2601|UX_automation_events_dedupe') {
+                return New-QCSuccessResult -Code 'AUTOMATION_EVENT_DUPLICATE' -Message 'Duplicate automation event skipped.' -Data @{ written = $false; duplicate = $true; dedupeKey = $DedupeKey }
+            }
+            return New-QCFailureResult -Code 'AUTOMATION_EVENT_WRITE_FAILED' -Message $msg -Data @{ written = $false; error = $msg }
+        }
         return New-QCSuccessResult -Code 'AUTOMATION_EVENT_WRITTEN' -Message 'Event persisted to automation_events.' -Data @{ written = $true; dedupeKey = $DedupeKey }
     } catch {
         $msg = [string]$_.Exception.Message

@@ -39,6 +39,13 @@ $res = Write-QCAutomationEvent -Level 'Information' -Code 'WORKER_START' -Messag
 Assert-True ($res.IsSuccess) 'disabled db returns success result'
 Assert-True ($res.Data.skipped) 'disabled db skips write'
 
+# Regression: Write-QCAutomationEvent must not call Core.Database private helpers
+# (_QDB-TruncateTelemetryPayload is module-private and was silently breaking all inserts).
+Import-Module (Join-Path $repoRoot 'modules\Database\Core.Database.psm1') -Force
+$truncateProbe = Write-QCAutomationEvent -Level 'Information' -Code 'WORKER_START' -Message ('truncate-probe-' + [guid]::NewGuid().ToString('n')) -Config @{ database = @{ enabled = $false } }
+Assert-True ($truncateProbe.IsSuccess) 'truncate path must not throw CommandNotFound across modules'
+Assert-True ($truncateProbe.Code -ne 'AUTOMATION_EVENT_WRITE_FAILED') 'truncate path must not fail when db disabled'
+
 # JSONL import line preserves payload intent
 $line = '{"ts":"2026-06-15T10:00:00-07:00","level":"Information","code":"WORKER_SUCCEEDED","message":"ok","data":{"jobId":"j1","documentGuid":"g1"}}'
 $parsed = $line | ConvertFrom-Json

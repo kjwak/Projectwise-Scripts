@@ -156,6 +156,7 @@ $script:_QCJsonLogWriterHour = $null
 $script:_QCJsonLogWriterPath = $null
 $script:_QCJsonLogFileLock = [object]::new()
 $script:_QCJsonLogConfig = $null
+$script:_QCAutomationEventWriteWarned = $false
 $script:_QCJsonLogRetentionDays = 7
 $script:_QCJsonLogMaxFileMb = 50
 $script:_QCJsonLogRetentionLastHour = ''
@@ -581,9 +582,32 @@ function Write-QCJsonLog {
         $telemetryCmd = Get-Command -Name 'Write-QCAutomationEvent' -ErrorAction SilentlyContinue
         if ($telemetryCmd) {
             $cfg = if ($script:_QCJsonLogConfig) { $script:_QCJsonLogConfig } else { @{} }
-            & $telemetryCmd -Level $Level -Code $Code -Message $Message -Data $Data -Timestamp $ts -Config $cfg | Out-Null
+            $telemRes = & $telemetryCmd -Level $Level -Code $Code -Message $Message -Data $Data -Timestamp $ts -Config $cfg
+            if ($telemRes -and -not $telemRes.IsSuccess -and -not $script:_QCAutomationEventWriteWarned) {
+                $script:_QCAutomationEventWriteWarned = $true
+                $warnLine = (@{
+                    ts = $ts
+                    level = 'Warning'
+                    code = 'AUTOMATION_EVENT_WRITE_FAILED'
+                    message = ('automation_events write failed (further failures suppressed this process): ' + [string]$telemRes.Message)
+                    data = @{ originalCode = $Code; originalLevel = $Level }
+                } | ConvertTo-Json -Depth 8 -Compress)
+                try { [void](Write-QCJsonLogFileLine -Line $warnLine) } catch { }
+            }
         }
-    } catch { }
+    } catch {
+        if (-not $script:_QCAutomationEventWriteWarned) {
+            $script:_QCAutomationEventWriteWarned = $true
+            $warnLine = (@{
+                ts = $ts
+                level = 'Warning'
+                code = 'AUTOMATION_EVENT_WRITE_FAILED'
+                message = ('automation_events write threw (further failures suppressed this process): ' + [string]$_.Exception.Message)
+                data = @{ originalCode = $Code; originalLevel = $Level }
+            } | ConvertTo-Json -Depth 8 -Compress)
+            try { [void](Write-QCJsonLogFileLine -Line $warnLine) } catch { }
+        }
+    }
 
     if ($fileSink) { return }
 
