@@ -146,7 +146,7 @@ if ([string]::IsNullOrWhiteSpace($apiFolder)) { $apiFolder = $FolderPath }
 $scanFolder = [string]$apiFolder
 $scanSuffix = [string]$LaneSuffix
 $candidates = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-    $docs = @(Get-PWDocumentsInFolder -FolderPath $scanFolder -JustThisFolder -ErrorAction Stop)
+    $docs = @(Get-PWDocumentsInFolder -FolderPath $scanFolder -ErrorAction Stop)
     $suffix = [string]$scanSuffix
     $rows = @()
     foreach ($d in $docs) {
