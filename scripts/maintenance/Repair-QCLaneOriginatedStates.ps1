@@ -142,10 +142,12 @@ if ([string]::IsNullOrWhiteSpace($ds) -or [string]::IsNullOrWhiteSpace($credPath
 $apiFolder = ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath
 if ([string]::IsNullOrWhiteSpace($apiFolder)) { $apiFolder = $FolderPath }
 
-$laneSuffixLocal = $LaneSuffix
+# Local scriptblock (not remoting): close over copies; do not use $using:.
+$scanFolder = [string]$apiFolder
+$scanSuffix = [string]$LaneSuffix
 $candidates = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-    $docs = @(Get-PWDocumentsInFolder -FolderPath $using:apiFolder -JustThisFolder -ErrorAction Stop)
-    $suffix = [string]$using:laneSuffixLocal
+    $docs = @(Get-PWDocumentsInFolder -FolderPath $scanFolder -JustThisFolder -ErrorAction Stop)
+    $suffix = [string]$scanSuffix
     $rows = @()
     foreach ($d in $docs) {
         $name = [string]$d.Name
@@ -167,7 +169,7 @@ $candidates = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath 
         }
         if ([string]::IsNullOrWhiteSpace($state) -and (Get-Command -Name 'Get-PWDocumentWorkflowStateName' -ErrorAction SilentlyContinue)) {
             try {
-                $state = [string](Get-PWDocumentWorkflowStateName -FolderPath $using:apiFolder -DocumentName $name -DocumentGuid $guid)
+                $state = [string](Get-PWDocumentWorkflowStateName -FolderPath $scanFolder -DocumentName $name -DocumentGuid $guid)
             } catch { }
         }
         $rows += [pscustomobject]@{
