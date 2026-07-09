@@ -10,3 +10,5 @@ When investigating ProjectWise workflow behavior, QC automation, notifications, 
 3. Identify where the workflow chain breaks.
 4. Only then inspect source code.
 5. Do not propose fixes without supporting MCP evidence.
+
+When debugging job enqueue/run/fail/lock/stale/duplicate issues, inspect the live queue/log share first via Show-QCQueueDiag. Then use pw-qc-debug MCP to validate SQL, ProjectWise, audit, notifications, and package integrity.

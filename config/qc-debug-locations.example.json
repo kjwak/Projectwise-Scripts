@@ -1,0 +1,4 @@
+{
+  "queueRoot": "\\\\192.168.22.90\\QC_Queue",
+  "logDir": "\\\\192.168.22.90\\QC_Queue\\_logs"
+}

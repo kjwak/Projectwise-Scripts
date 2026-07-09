@@ -101,6 +101,14 @@ If your change affects any of the following, update the **relevant** docs in the
 
 Also update `AGENTS.md` if agent-facing assumptions change.
 
+## Laptop queue/log share (read-only diagnostics)
+
+Live execution queue and service logs are exposed read-only at `\\192.168.22.90\QC_Queue` (logs under `_logs`). This is **not** production `queue.rootDir` (`C:\QC_E2E_RealRun\queue` on the worker) and must not be used as a write target.
+
+- Resolver: `scripts/diagnostics/Resolve-QCDebugLocations.ps1` — precedence: `-QueueRoot` → `$env:QC_DEBUG_QUEUE_ROOT` → `config/qc-debug-locations.local.json` → default UNC.
+- Snapshot: `scripts/diagnostics/Show-QCQueueDiag.ps1` (optional `-NoLogs`).
+- Copy `config/qc-debug-locations.example.json` → `config/qc-debug-locations.local.json` (gitignored) for laptop overrides.
+
 ## Verification honesty
 
 - **Do not claim** end-to-end verification of ProjectWise writeback, SQL telemetry, Graph email, or prepend output unless you ran it on a Windows worker with live PW/SQL/Graph access.

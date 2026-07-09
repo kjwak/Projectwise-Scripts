@@ -45,7 +45,8 @@ Diagnostic and discovery scripts live under `scripts/diagnostics/`. Compatibilit
 - **Purpose**: read-only queue snapshot (counts + recent jobs).
 
 ### `diagnostics/Show-QCQueueDiag.ps1` (wrapper: `Show-QCQueueDiag.ps1`)
-- **Purpose**: deeper queue health view (running ages, lock owner PID liveness, orphan analysis).
+- **Purpose**: deeper queue health view (running ages, lock owner PID liveness, orphan analysis, bounded Warning/Error log scan).
+- **Locations**: uses `Resolve-QCDebugLocations.ps1` (env / `config/qc-debug-locations.local.json` / default `\\192.168.22.90\QC_Queue`); does not default to production `queue.rootDir`. Pass `-NoLogs` to skip log scan; `-UseAppSettingsQueueRoot` for old local-queue debugging.
 
 ### `diagnostics/Test-PWConnection.ps1` (wrapper: `Test-PWConnection.ps1`)
 - **Purpose**: connect/disconnect smoke test using `appsettings.json` credentials.

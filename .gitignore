@@ -27,6 +27,10 @@ appsettings.test.json
 appsettings.*.local.json
 !appsettings.test.json.example
 !appsettings.secrets.json.example
+
+# Laptop-only diagnostics queue/log share override (see config/qc-debug-locations.example.json)
+config/qc-debug-locations.local.json
+
 tools/pw-qc-mcp/
 reports/
 tools/overlay/build/
