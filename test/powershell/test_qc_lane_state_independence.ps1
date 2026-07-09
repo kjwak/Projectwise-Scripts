@@ -196,6 +196,90 @@ InModuleScope -ModuleName PW.Discovery {
     Assert-Eq $stemWrites.Count 0 'chk DOCUMENT_STATE must not write stem PDF state'
 }
 
+# Stem DOCUMENT_STATE must never overwrite lane *-prod.pdf when legacy sibling sync is off
+# (regression: estimating_deliverables 2026-07-09 — Originated lane PDFs forced back to In Development).
+InModuleScope -ModuleName PW.Discovery {
+    Assert-True (_PWD-TestAutomationLanePdfSiblingSyncWriteBlocked -TriggerDocumentName 'sheet.pdf' `
+        -TargetDocumentName 'sheet-prod.pdf' -LegacySiblingSyncEnabled:$false) `
+        'stem trigger blocks lane PDF write when legacy sync off'
+    Assert-False (_PWD-TestAutomationLanePdfSiblingSyncWriteBlocked -TriggerDocumentName 'sheet.pdf' `
+        -TargetDocumentName 'sheet-prod.pdf' -LegacySiblingSyncEnabled:$true) `
+        'legacy sync still allows stem->lane when explicitly enabled'
+    Assert-False (_PWD-TestAutomationLanePdfSiblingSyncWriteBlocked -TriggerDocumentName 'sheet-prod.pdf' `
+        -TargetDocumentName 'sheet-prod.pdf' -LegacySiblingSyncEnabled:$false) `
+        'lane self-trigger is not blocked by sibling guard'
+}
+
+InModuleScope -ModuleName PW.Discovery {
+    $script:stateWrites = @()
+    $script:laneSkipLogs = 0
+    function Get-PWDocumentWorkflowStateName { param($FolderPath, $DocumentName, $DocumentGuid) return 'In Development' }
+    function _PWD-GetSheetIndexPwStateName { param($Config, $DocumentGuid)
+        if ($DocumentGuid -eq 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') { return 'Originated' }
+        return 'In Development'
+    }
+    function _PWD-GetSheetIndexStateSnapshot { param($Config, $DocumentGuid)
+        if ($DocumentGuid -eq 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') {
+            return @{ pwStateName = 'Originated'; lastAuditEventAt = $null }
+        }
+        return @{ pwStateName = 'In Development'; lastAuditEventAt = $null }
+    }
+    function _PWD-TestShouldBlockStaleRestartOverwrite { return $false }
+    function Test-QCDatabaseEnabled { return $false }
+    function _PWD-WriteDocumentStateLiveVerificationLog { }
+    function Test-QCDocumentStateAuditEventIsStale { return @{ isStale = $false } }
+    function Invoke-QCWorkflowStateEmailAttributeGate { return @{ blocked = $false } }
+    function Test-QCShouldSuppressAuditSheetStateSync { return $false }
+    function _PWD-InvokeSetPwDocumentState {
+        param($Document, $StateName, $GuardContext)
+        $script:stateWrites += [pscustomobject]@{
+            documentName = [string]$GuardContext.documentName
+            stateName = [string]$StateName
+        }
+        return @{ applied = $true; verified = $true; readBackState = $StateName }
+    }
+    function Get-PWAssociatedSheetMembers {
+        return @(
+            @{ documentGuid = '33333333-3333-3333-3333-333333333333'; documentName = 'sheet.pdf'; document = $null }
+            @{ documentGuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; documentName = 'sheet-prod.pdf'; document = $null }
+            @{ documentGuid = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; documentName = 'sheet.dgn'; document = $null }
+        )
+    }
+    # Simulate the regression: lane-independent path incorrectly expands to stem+prod.
+    function _PWD-GetLaneIndependentAuditMembers {
+        param($AllMembers, $TriggerDocumentGuid, $TriggerDocumentName)
+        return @(
+            @{ documentGuid = '33333333-3333-3333-3333-333333333333'; documentName = 'sheet.pdf'; document = $null }
+            @{ documentGuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; documentName = 'sheet-prod.pdf'; document = $null }
+        )
+    }
+    function _PWD-TestLegacySiblingStateSyncEnabled { return $false }
+    function _PWD-LogLaneStateIndependentTelemetry { }
+    function _PWD-LogAutomationLanePdfSiblingSyncWriteBlocked { param($Operation, $DocumentName, $DocumentGuid, $FolderPath, $CallSite, $TargetState, $TriggerDocumentName, $TriggerDocumentGuid) $script:laneSkipLogs++ }
+    function Get-PWDocumentWorkflowStateMapByGuid {
+        return @{
+            '33333333-3333-3333-3333-333333333333' = 'In Development'
+            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' = 'Originated'
+        }
+    }
+    function Invoke-QCSheetGroupWorkflowTransition { return @{ members = @() } }
+    function _PWD-EnqueuePrependJobsFromAssociatedQcPdfState { }
+    function Test-QCWorkflowStateIsQcInitiated { return $false }
+    function _PWD-InvokeStaleSheetIndexAuditStateTriggers { }
+
+    $script:stateWrites = @()
+    $script:laneSkipLogs = 0
+    Sync-PWAssociatedSheetWorkflowState -Config @{} -DocumentGuid '33333333-3333-3333-3333-333333333333' `
+        -DocumentName 'sheet.pdf' -FolderPath 'Documents\X' -LastAuditEventAt '2026-07-09 10:53:11'
+    $laneWrites = @($script:stateWrites | Where-Object { $_.documentName -match '(?i)-prod\.pdf$' })
+    Assert-Eq $laneWrites.Count 0 'stem DOCUMENT_STATE must not write lane *-prod.pdf when legacy sync off'
+}
+
+Assert-True ($discoveryText -match 'WATCH_SHEET_STATE_SYNC_LANE_SKIPPED') `
+    'stem->lane sibling sync skip is logged'
+Assert-True ($discoveryText -match '_PWD-TestAutomationLanePdfSiblingSyncWriteBlocked') `
+    'lane sibling sync write guard is present'
+
 # Resolve-SheetPackageFromDocument: lane PDFs are qc_pdf role with shared stem
 InModuleScope -ModuleName Core.Database {
     $prod = Resolve-SheetPackageFromDocument -DocumentName 'CA001-prod.pdf' -FolderPath 'Documents\X'

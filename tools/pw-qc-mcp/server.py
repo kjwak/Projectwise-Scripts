@@ -1,4 +1,11 @@
-"""MCP stdio server for pw-qc-debug. Tool calls delegate to PowerShell QC.DebugMcp modules."""
+"""MCP stdio server for pw-qc-debug. Tool calls delegate to PowerShell QC.DebugMcp modules.
+
+The PowerShell worker speaks a line-oriented JSON protocol. Every request carries a
+unique ``id``; responses echo that ``id`` (and ``tool``). This prevents one-behind
+desync when the MCP host cancels or overlaps tool calls — a common failure mode that
+previously returned an unrelated prior payload (often sheet-identity) for
+get_recent_errors / get_process_health / get_audit_scan_history.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,7 @@ import os
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +25,12 @@ _REPO = Path(os.environ.get("PWQC_REPO_ROOT", _DIR.parent.parent))
 _WORKER_PS1 = _DIR / "pw_qc_worker.ps1"
 _POWERSHELL = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
 
+# Discard at most this many non-matching stdout lines before restarting the worker.
+_MAX_STALE_DISCARDS = 32
+
 mcp = FastMCP("pw-qc-debug")
 
-_worker_lock = threading.RLock()
+_worker_lock = threading.Lock()
 _worker: subprocess.Popen[str] | None = None
 
 
@@ -76,31 +87,113 @@ def _start_worker() -> subprocess.Popen[str]:
     return proc
 
 
-def _get_worker() -> subprocess.Popen[str]:
+def _kill_worker() -> None:
     global _worker
+    proc = _worker
+    _worker = None
+    if proc is None:
+        return
+    try:
+        if proc.stdin:
+            proc.stdin.close()
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _get_worker(*, restart: bool = False) -> subprocess.Popen[str]:
+    global _worker
+    if restart:
+        _kill_worker()
     if _worker is None or _worker.poll() is not None:
         _worker = _start_worker()
     return _worker
 
 
-def invoke_ps(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Run a tool via the persistent PowerShell worker."""
-    with _worker_lock:
-        proc = _get_worker()
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        req = json.dumps({"tool": tool, "arguments": arguments}, separators=(",", ":"))
-        proc.stdin.write(req + "\n")
-        proc.stdin.flush()
+def _read_matched_response(
+    proc: subprocess.Popen[str],
+    *,
+    request_id: str,
+    tool: str,
+) -> dict[str, Any]:
+    """Read stdout until a JSON line matching request_id arrives; discard stale lines."""
+    assert proc.stdout is not None
+    discarded = 0
+    while discarded <= _MAX_STALE_DISCARDS:
         line = proc.stdout.readline()
         if not line:
-            err = proc.stderr.read() if proc.stderr else ""
-            raise RuntimeError(f"PowerShell worker closed stdout: {err}")
-        resp = json.loads(line)
-        if not resp.get("ok"):
-            raise RuntimeError(resp.get("error") or "Tool call failed")
-        data = resp.get("data")
-        return data if isinstance(data, dict) else {"result": data}
+            err = ""
+            try:
+                if proc.stderr:
+                    err = proc.stderr.read()
+            except Exception:
+                pass
+            raise RuntimeError(f"PowerShell worker closed stdout while waiting for {tool}: {err}")
+        try:
+            resp = json.loads(line)
+        except json.JSONDecodeError as exc:
+            discarded += 1
+            continue
+
+        resp_id = resp.get("id")
+        if resp_id is None:
+            # Legacy worker without correlation — accept only if we have not discarded
+            # anything yet (strict FIFO). Otherwise treat as stale noise.
+            if discarded == 0:
+                return resp
+            discarded += 1
+            continue
+
+        if str(resp_id) != str(request_id):
+            discarded += 1
+            continue
+
+        resp_tool = resp.get("tool")
+        if resp_tool is not None and str(resp_tool) != tool:
+            raise RuntimeError(
+                f"Worker response tool mismatch: expected {tool!r}, got {resp_tool!r} (id={request_id})"
+            )
+        return resp
+
+    raise RuntimeError(
+        f"Too many stale worker responses while waiting for {tool} (id={request_id}); "
+        "worker will be restarted on next call."
+    )
+
+
+def invoke_ps(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Run a tool via the persistent PowerShell worker (request/response correlated by id)."""
+    request_id = uuid.uuid4().hex
+    req = json.dumps(
+        {"id": request_id, "tool": tool, "arguments": arguments},
+        separators=(",", ":"),
+    )
+
+    with _worker_lock:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                proc = _get_worker(restart=(attempt > 0))
+                assert proc.stdin is not None
+                proc.stdin.write(req + "\n")
+                proc.stdin.flush()
+                resp = _read_matched_response(proc, request_id=request_id, tool=tool)
+                if not resp.get("ok"):
+                    raise RuntimeError(resp.get("error") or "Tool call failed")
+                data = resp.get("data")
+                return data if isinstance(data, dict) else {"result": data}
+            except Exception as exc:
+                last_error = exc
+                _kill_worker()
+        assert last_error is not None
+        raise last_error
 
 
 def _prewarm_worker() -> None:

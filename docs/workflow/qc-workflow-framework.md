@@ -26,6 +26,8 @@ Each sheet stem can have up to three lane QC PDFs in ProjectWise:
 
 Lane states are **independent** by default (`QCProcess.EnableLegacySiblingStateSync: false`). Post-initial-prepend lane split is handled by `Sync-PWPostInitialPrependLaneStates` in `PW.Discovery.psm1`.
 
+When legacy sibling sync is off, stem/DGN `DOCUMENT_STATE` audit handling must **not** copy the stem state onto lane QC PDFs (`*-prod/-chk/-rev`). `Sync-PWAssociatedSheetWorkflowState` filters lane members out of the sync set and skips any remaining lane write attempts (`WATCH_SHEET_STATE_SYNC_LANE_SKIPPED`). This prevents a successful post-prepend **Originated** lane state from being overwritten when a delayed stem audit still shows **In Development**.
+
 **Lane-independent prepend telemetry** (`Invoke-QCSheetGroupWorkflowTransition` with `laneIndependentInitialPrepend`):
 
 - Only the **active** lane PDF and (on initial prepend) stem/DGN reference members receive `transition_events` / `qc_workflow_events`.

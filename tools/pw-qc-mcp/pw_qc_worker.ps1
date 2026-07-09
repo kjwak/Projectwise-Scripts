@@ -11,6 +11,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$VerbosePreference = 'SilentlyContinue'
 
 $repoRoot = $env:PWQC_REPO_ROOT
 if ([string]::IsNullOrWhiteSpace($repoRoot)) {
@@ -22,23 +24,33 @@ $script:ContextReady = $false
 
 function Initialize-WorkerContext {
     if ($script:ContextReady) { return }
-    . (Join-Path $scriptsRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
-    Import-QCModuleBootstrapSet -FeatureModules @(
-        'Diagnostics\QC.DebugMcp.psm1'
-        'Core\Core.Telemetry.psm1'
-    ) -RequiredCommands @(
-        'Initialize-QCDebugMcpContext'
-        'Get-QCAppSettingsConfig'
-        'Search-QCDebugSheet'
-    ) -Context 'pw-qc-mcp worker'
-    Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
-    Test-QCRequiredCommands -Names @('Invoke-PWAuthenticatedCommand') -Context 'pw-qc-mcp worker ProjectWise'
-    $appSettings = $env:PWQC_APPSETTINGS
-    if ([string]::IsNullOrWhiteSpace($appSettings)) {
-        $appSettings = Join-Path $repoRoot 'appsettings.json'
+    # Keep bootstrap chatter off the JSON stdout pipe used by server.py.
+    $prevInfo = $InformationPreference
+    $prevVerbose = $VerbosePreference
+    $InformationPreference = 'SilentlyContinue'
+    $VerbosePreference = 'SilentlyContinue'
+    try {
+        . (Join-Path $scriptsRoot 'Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
+        Import-QCModuleBootstrapSet -FeatureModules @(
+            'Diagnostics\QC.DebugMcp.psm1'
+            'Core\Core.Telemetry.psm1'
+        ) -RequiredCommands @(
+            'Initialize-QCDebugMcpContext'
+            'Get-QCAppSettingsConfig'
+            'Search-QCDebugSheet'
+        ) -Context 'pw-qc-mcp worker'
+        Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
+        Test-QCRequiredCommands -Names @('Invoke-PWAuthenticatedCommand') -Context 'pw-qc-mcp worker ProjectWise'
+        $appSettings = $env:PWQC_APPSETTINGS
+        if ([string]::IsNullOrWhiteSpace($appSettings)) {
+            $appSettings = Join-Path $repoRoot 'appsettings.json'
+        }
+        Initialize-QCDebugMcpContext -AppSettingsPath $appSettings | Out-Null
+        $script:ContextReady = $true
+    } finally {
+        $InformationPreference = $prevInfo
+        $VerbosePreference = $prevVerbose
     }
-    Initialize-QCDebugMcpContext -AppSettingsPath $appSettings | Out-Null
-    $script:ContextReady = $true
 }
 
 function ConvertTo-WorkerHashtable {
@@ -94,8 +106,10 @@ function Invoke-McpWarmProjectWiseSession {
     if ([string]::IsNullOrWhiteSpace($ds) -or [string]::IsNullOrWhiteSpace($credPath)) {
         throw 'projectWise.datasourceName or credentialPath missing in appsettings.'
     }
+    # Local scriptblock (not remoting): do not use $using:; close over a local copy.
+    $connectedDs = $ds
     $result = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {
-        return @{ datasourceName = $using:ds; connected = $true }
+        return @{ datasourceName = $connectedDs; connected = $true }
     }
     return @{
         source_tables = @()
@@ -174,9 +188,16 @@ function Write-WorkerResponse {
     param(
         [bool]$Ok,
         $Data = $null,
-        [string]$Error = ''
+        [string]$Error = '',
+        [string]$Id = '',
+        [string]$Tool = ''
     )
+    # Correlation fields (id/tool) let server.py discard stale stdout lines after
+    # cancelled or overlapped MCP tool calls — without them, responses desync and
+    # callers receive an unrelated prior payload (often sheet-identity).
     $payload = if ($Ok) { @{ ok = $true; data = $Data } } else { @{ ok = $false; error = $Error } }
+    if (-not [string]::IsNullOrWhiteSpace($Id)) { $payload['id'] = $Id }
+    if (-not [string]::IsNullOrWhiteSpace($Tool)) { $payload['tool'] = $Tool }
     $json = $payload | ConvertTo-Json -Depth 80 -Compress
     [Console]::Out.WriteLine($json)
     [Console]::Out.Flush()
@@ -185,31 +206,34 @@ function Write-WorkerResponse {
 function Handle-WorkerRequest {
     param([string]$Line)
     if ([string]::IsNullOrWhiteSpace($Line)) { return }
+    $requestId = ''
+    $tool = ''
     try {
         $req = ConvertTo-WorkerHashtable ($Line | ConvertFrom-Json)
+        if ($req.ContainsKey('id') -and $null -ne $req.id) { $requestId = [string]$req.id }
         $tool = [string]$req.tool
         $arguments = @{}
         if ($req.arguments) {
             $arguments = ConvertTo-WorkerHashtable $req.arguments
         }
         $data = Invoke-QcDebugTool -Name $tool -Arguments $arguments
-        Write-WorkerResponse -Ok $true -Data $data
+        Write-WorkerResponse -Ok $true -Data $data -Id $requestId -Tool $tool
     } catch {
-        Write-WorkerResponse -Ok $false -Error $_.Exception.Message
+        Write-WorkerResponse -Ok $false -Error $_.Exception.Message -Id $requestId -Tool $tool
     }
 }
 
 if ($Worker) {
     try {
         Initialize-WorkerContext
-        Write-WorkerResponse -Ok $true -Data @{ ready = $true }
+        Write-WorkerResponse -Ok $true -Data @{ ready = $true } -Tool 'worker_ready'
         while ($true) {
             $line = [Console]::In.ReadLine()
             if ($null -eq $line) { break }
             Handle-WorkerRequest -Line $line
         }
     } catch {
-        Write-WorkerResponse -Ok $false -Error $_.Exception.Message
+        Write-WorkerResponse -Ok $false -Error $_.Exception.Message -Tool 'worker_ready'
         exit 1
     }
     exit 0
@@ -225,8 +249,8 @@ try {
     $arguments = ConvertTo-WorkerHashtable ($ArgumentsJson | ConvertFrom-Json)
     if (-not $arguments) { $arguments = @{} }
     $data = Invoke-QcDebugTool -Name $ToolName -Arguments $arguments
-    Write-WorkerResponse -Ok $true -Data $data
+    Write-WorkerResponse -Ok $true -Data $data -Tool $ToolName
 } catch {
-    Write-WorkerResponse -Ok $false -Error $_.Exception.Message
+    Write-WorkerResponse -Ok $false -Error $_.Exception.Message -Tool $ToolName
     exit 1
 }

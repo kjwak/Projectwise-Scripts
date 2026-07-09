@@ -1309,6 +1309,51 @@ function _PWD-LogAutomationStemPdfWriteBlocked {
     } | Out-Null
 }
 
+function _PWD-TestAutomationLanePdfSiblingSyncWriteBlocked {
+    <#
+    When legacy sibling sync is off, stem/DGN DOCUMENT_STATE must never overwrite lane QC PDFs
+    (*-prod/-chk/-rev). Lane PDFs keep independent workflow state after prepend (Originated, etc.).
+    #>
+    param(
+        [string]$TriggerDocumentName = '',
+        [string]$TargetDocumentName = '',
+        [hashtable]$Config = $null,
+        [bool]$LegacySiblingSyncEnabled = $false
+    )
+    if ($LegacySiblingSyncEnabled) { return $false }
+    if ([string]::IsNullOrWhiteSpace($TargetDocumentName)) { return $false }
+    if (-not (_PWD-TestTriggerIsLaneQcPdf -DocumentName $TargetDocumentName)) { return $false }
+    # Lane-triggered DOCUMENT_STATE uses the dedicated lane path; this guard is for stem/other triggers.
+    if (_PWD-TestTriggerIsLaneQcPdf -DocumentName $TriggerDocumentName) { return $false }
+    return $true
+}
+
+function _PWD-LogAutomationLanePdfSiblingSyncWriteBlocked {
+    param(
+        [string]$Operation = '',
+        [string]$DocumentName = '',
+        [string]$DocumentGuid = '',
+        [string]$FolderPath = '',
+        [string]$CallSite = '',
+        [string]$TargetState = '',
+        [string]$TriggerDocumentName = '',
+        [string]$TriggerDocumentGuid = ''
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    Write-QCJsonLog -Level 'Information' -Code 'WATCH_SHEET_STATE_SYNC_LANE_SKIPPED' `
+        -Message 'Skipped copying stem/sibling DOCUMENT_STATE onto lane QC PDF (lane-independent mode).' -Data @{
+        operation = [string]$Operation
+        documentName = [string]$DocumentName
+        documentGuid = [string]$DocumentGuid
+        folderPath = [string]$FolderPath
+        callSite = [string]$CallSite
+        targetState = [string]$TargetState
+        triggerDocumentName = [string]$TriggerDocumentName
+        triggerDocumentGuid = [string]$TriggerDocumentGuid
+        reason = 'lane_independent_sibling_sync'
+    } | Out-Null
+}
+
 function _PWD-TestAutomationWritesQcProcessTypeOnAttributes {
     param(
         [hashtable]$Attributes,
@@ -1760,6 +1805,11 @@ function Get-PWAssociatedSheetSyncMembers {
             -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
         return @()
     }
+    if (-not (_PWD-TestLegacySiblingStateSyncEnabled -Config $Config)) {
+        _PWD-LogLaneStateIndependentTelemetry -AllMembers $all -FolderPath $FolderPath -TriggerSource $TriggerSource `
+            -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
+        return @()
+    }
     $syncNames = @{}
     $stem = Get-PWSheetStemFromDocumentName -DocumentName $DocumentName
     foreach ($n in @(Get-PWAssociatedSheetSyncDocumentNames -SheetStem $stem)) {
@@ -1767,13 +1817,31 @@ function Get-PWAssociatedSheetSyncMembers {
     }
     $sync = @($all | Where-Object {
         $dn = [string]$_.documentName
-        $dn -and $syncNames.ContainsKey($dn.ToLowerInvariant()) -and -not (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn)
+        if (-not $dn) { return $false }
+        if (_PWD-TestAutomationDgnProtectedDocument -DocumentName $dn) { return $false }
+        if (-not $syncNames.ContainsKey($dn.ToLowerInvariant())) { return $false }
+        # Even with legacy sync enabled, honor per-lane SyncWithSiblingSheets (default false).
+        if (_PWD-TestTriggerIsLaneQcPdf -DocumentName $dn) {
+            $lane = ''
+            if (Get-Command -Name 'Get-PWQcPdfLaneFromDocumentName' -ErrorAction SilentlyContinue) {
+                try { $lane = [string](Get-PWQcPdfLaneFromDocumentName -DocumentName $dn) } catch { }
+            }
+            if (-not $lane -and $dn -match '(?i)-(prod|chk|rev)\.pdf$') {
+                $lane = $Matches[1].ToLowerInvariant()
+                if ($lane -eq 'prod') { $lane = 'production' }
+                elseif ($lane -eq 'chk') { $lane = 'check' }
+                elseif ($lane -eq 'rev') { $lane = 'review' }
+            }
+            if ($lane -and (Get-Command -Name 'Test-QCProcessTypeSyncsWithSiblingSheets' -ErrorAction SilentlyContinue)) {
+                if (-not (Test-QCProcessTypeSyncsWithSiblingSheets -ProcessType $lane -Config $Config)) {
+                    return $false
+                }
+            } else {
+                return $false
+            }
+        }
+        return $true
     })
-    if (-not (_PWD-TestLegacySiblingStateSyncEnabled -Config $Config)) {
-        _PWD-LogLaneStateIndependentTelemetry -AllMembers $all -FolderPath $FolderPath -TriggerSource $TriggerSource `
-            -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
-        return @()
-    }
     return $sync
 }
 
@@ -4542,6 +4610,23 @@ function Sync-PWAssociatedSheetWorkflowState {
             -TriggerSource 'user_audit' -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
         $members = @(_PWD-GetLaneIndependentAuditMembers -AllMembers $allMembers `
             -TriggerDocumentGuid $DocumentGuid -TriggerDocumentName $DocumentName)
+        # Defense in depth: stem/DGN triggers must never expand to lane QC PDFs when legacy sync is off.
+        # A prior regression copied stem "In Development" onto *-prod.pdf after successful Originated writeback.
+        if (-not (_PWD-TestTriggerIsLaneQcPdf -DocumentName $DocumentName)) {
+            $filtered = [System.Collections.Generic.List[object]]::new()
+            foreach ($m in @($members)) {
+                $dn = [string]$m.documentName
+                if (_PWD-TestTriggerIsLaneQcPdf -DocumentName $dn) {
+                    _PWD-LogAutomationLanePdfSiblingSyncWriteBlocked -Operation 'audit_state_sync_member_filter' `
+                        -DocumentName $dn -DocumentGuid ([string]$m.documentGuid) -FolderPath $FolderPath `
+                        -CallSite 'Sync-PWAssociatedSheetWorkflowState.members' -TargetState $canonicalState `
+                        -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
+                    continue
+                }
+                $filtered.Add($m) | Out-Null
+            }
+            $members = @($filtered)
+        }
     }
     if ($members.Count -eq 0) {
         if (-not $legacySiblingSync) {
@@ -4754,6 +4839,14 @@ function Sync-PWAssociatedSheetWorkflowState {
             _PWD-LogAutomationStemPdfWriteBlocked -Operation 'audit_state_sync' -DocumentName $dn -DocumentGuid $dg `
                 -FolderPath $FolderPath -CallSite 'Sync-PWAssociatedSheetWorkflowState' `
                 -TargetState $canonicalState -TriggerDocumentName $DocumentName
+            continue
+        }
+        if (_PWD-TestAutomationLanePdfSiblingSyncWriteBlocked -TriggerDocumentName $DocumentName `
+                -TargetDocumentName $dn -Config $Config -LegacySiblingSyncEnabled:$legacySiblingSync) {
+            _PWD-LogAutomationLanePdfSiblingSyncWriteBlocked -Operation 'audit_state_sync' `
+                -DocumentName $dn -DocumentGuid $dg -FolderPath $FolderPath `
+                -CallSite 'Sync-PWAssociatedSheetWorkflowState' -TargetState $canonicalState `
+                -TriggerDocumentName $DocumentName -TriggerDocumentGuid $DocumentGuid
             continue
         }
         if (-not $dg) { continue }
