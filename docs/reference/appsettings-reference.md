@@ -189,6 +189,7 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 | `projectWiseScriptPath` | Optional override for the ProjectWise prepend script (default `scripts\processing\Invoke-QCPrependPw.ps1`). |
 | `legacyScriptPath` | Deprecated alias for `projectWiseScriptPath`. |
 | `enableOverlay` | Use `qc_overlay_prepend.exe` when available. |
+| `overlaySkipIncomingAboveMb` | When `> 0`, skip layered overlay if the **incoming** PDF is larger than this many megabytes (`Mb * 1024 * 1024`); fall back to qpdf simple prepend + stamps (no Old/New/Current layers). Default `5`. Set `0` to disable the size gate. |
 | `qpdfExePath` | Path to qpdf binary. |
 | `overlayExePath` | Path to `qc_overlay_prepend.exe` (default `dist\qc_overlay_prepend\qc_overlay_prepend.exe`). |
 

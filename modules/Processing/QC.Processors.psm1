@@ -9,6 +9,7 @@ Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Comme
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.ReviewStamp.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.Rendition.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Processing/QC.PrependOverlayPolicy.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.AuditTriggers.psm1') -Force -ErrorAction SilentlyContinue
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
@@ -1470,6 +1471,9 @@ function Invoke-QCPrependProcessor {
         if (-not (_QCP-IsNullOrWhiteSpace $logDir)) { $args += @('-LogDir', $logDir) }
         if (Test-Path -LiteralPath $qpdfExe) { $args += @('-QpdfExe', $qpdfExe) }
         if (Test-Path -LiteralPath $overlayExe) { $args += @('-QcOverlayExe', $overlayExe) }
+        $enableOverlayPw = $true
+        if ($qc.ContainsKey('enableOverlay')) { try { $enableOverlayPw = [bool]$qc.enableOverlay } catch { $enableOverlayPw = $true } }
+        if (-not $enableOverlayPw) { $args += '-NoOverlayLayers' }
         $args += @('-OverlayOldFromHistoryOnly', ([string]$ovOldFromHistoryOnly), '-OverlaySheetWorkDir', ([string]$ovSheetWorkDir))
         $appsettingsPath = Join-Path $repoRoot 'appsettings.json'
         if ($Config.ContainsKey('appsettingsPath') -and $Config.appsettingsPath) {
@@ -1624,6 +1628,28 @@ function Invoke-QCPrependProcessor {
     $enableOverlay = $false
     if ($qc.ContainsKey('enableOverlay')) { $enableOverlay = [bool]$qc.enableOverlay }
     $overlayExePath = if ($qc.ContainsKey('overlayExePath') -and $qc.overlayExePath) { [string]$qc.overlayExePath } else { (Join-Path (_QCP-GetRepoRoot) 'dist\qc_overlay_prepend\qc_overlay_prepend.exe') }
+
+    # Size gate (parity with Invoke-QCPrependPw): skip overlay when incoming exceeds threshold.
+    $overlaySkipDecision = $null
+    if ($enableOverlay -and (Get-Command -Name 'Test-QCOverlaySkipByIncomingSize' -ErrorAction SilentlyContinue)) {
+        $incomingLen = [long]0
+        try { $incomingLen = [long](Get-Item -LiteralPath $sourcePdf -ErrorAction Stop).Length } catch { $incomingLen = [long]0 }
+        $overlaySkipDecision = Test-QCOverlaySkipByIncomingSize -QcPrepend $qc -IncomingBytes $incomingLen
+        if ($overlaySkipDecision.Skip) {
+            $enableOverlay = $false
+            if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                Write-QCJsonLog -Level 'Information' -Code 'OVERLAY_SKIPPED_INCOMING_SIZE' `
+                    -Message 'Skipping layered overlay; incoming PDF exceeds size threshold (qpdf prepend).' -Data @{
+                    jobId = [string]$Job.id
+                    incomingBytes = $overlaySkipDecision.IncomingBytes
+                    thresholdMb = $overlaySkipDecision.ThresholdMb
+                    thresholdBytes = $overlaySkipDecision.ThresholdBytes
+                    reason = $overlaySkipDecision.Reason
+                    sourcePdf = $sourcePdf
+                } | Out-Null
+            }
+        }
+    }
 
     # Output path for overlay results (optional)
     $outputRoot = if ($qc.ContainsKey('outputRoot') -and $qc.outputRoot) { [string]$qc.outputRoot } else { '' }
@@ -1795,6 +1821,46 @@ function Invoke-QCPrependProcessor {
         # 2) Update history (production lane only):
         #    history.pdf = source + oldHistory  (or init from source)
         if (-not $isProductionLane) {
+            # Size-skipped overlay: still produce lane PDF via stamped copy of incoming (no Old/New/Current layers).
+            if ($overlaySkipDecision -and $overlaySkipDecision.Skip) {
+                if (_QCP-IsNullOrWhiteSpace $overlayOutPdf) {
+                    return New-QCFailureResult -Code 'QC_OVERLAY_OUTPUT_MISSING' -Message 'qcPrepend.outputRoot is required to produce QC output when overlay is size-skipped.' -Data @{}
+                }
+                try {
+                    Copy-Item -LiteralPath $sourcePdf -Destination $tmpQcOut -Force -ErrorAction Stop
+                    _QCP-FsThrottle
+                } catch {
+                    return New-QCFailureResult -Code 'QC_PREPEND_QC_WRITE_FAILED' -Message 'Failed to stage size-skipped lane PDF.' -Data @{ sourcePdf = $sourcePdf; tmpQcOut = $tmpQcOut; errorMessage = $_.Exception.Message }
+                }
+                $stampCfg = if (Get-Command -Name 'Get-QCReviewStampSettings' -ErrorAction SilentlyContinue) {
+                    Get-QCReviewStampSettings -Config $Config
+                } else { $null }
+                if ($stampCfg) {
+                    $stampRes = _QCP-TryApplyReviewStampFromJob -PdfPath $tmpQcOut -Job $Job -Config $Config `
+                        -FolderPath ([string]$Job.sourceFolder) -SourceDocumentName ([string]$Job.sourceName) `
+                        -OverlayExe $overlayExePath
+                    $jobRt = _QCP-GetJobMetadataValue -Job $Job -Keys @('reviewType', 'qcReviewType')
+                    if (_QCP-IsNullOrWhiteSpace $jobRt) { $jobRt = [string]$stampRes.reviewType }
+                    if (_QCP-ReviewStampRequiredForReviewType -StampSettings $stampCfg -ReviewType $jobRt -ProcessType $processType -and -not $stampRes.skipped -and -not $stampRes.applied) {
+                        return New-QCFailureResult -Code 'QC_REVIEW_STAMP_FAILED' -Message 'Review stamp failed on QC PDF.' -Data $stampRes
+                    }
+                }
+                try {
+                    Move-Item -LiteralPath $tmpQcOut -Destination $overlayOutPdf -Force -ErrorAction Stop
+                    _QCP-FsThrottle
+                } catch {
+                    return New-QCFailureResult -Code 'QC_PREPEND_QC_WRITE_FAILED' -Message 'Failed to write size-skipped QC output PDF.' -Data @{ tmpQcOut = $tmpQcOut; qcOutputPdf = $overlayOutPdf; errorMessage = $_.Exception.Message }
+                }
+                $laneSuccess = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND lane PDF updated (overlay size-skipped).' -Data @{
+                    jobId = [string]$Job.id
+                    sourcePdf = $sourcePdf
+                    qcOutputPdf = $overlayOutPdf
+                    qcProcessType = $processType
+                    overlayEnabled = $false
+                    overlaySkipReason = $overlaySkipDecision.Reason
+                }
+                return (_QCP-AppendWorkflowWriteback -Result $laneSuccess -Job $Job -Config $Config -SourcePath $sourcePdf -OutputPath $overlayOutPdf -HistoryPath $null)
+            }
             return New-QCFailureResult -Code 'QC_PREPEND_LANE_HISTORY_SKIPPED' -Message 'Non-production lane requires overlay output.' -Data @{ qcProcessType = $processType }
         }
         if (-not $historyExists) {

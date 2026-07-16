@@ -820,6 +820,39 @@ if (-not $isPdf) {
 }
 Write-Log "Local incoming file: $localIncoming"
 
+# Size gate: skip layered overlay for large incoming PDFs (qpdf prepend + stamps still run).
+if ($haveOverlay) {
+  $overlayPolicyMod = Join-Path $prependQcRepoRoot 'modules\Processing\QC.PrependOverlayPolicy.psm1'
+  if (Test-Path -LiteralPath $overlayPolicyMod) {
+    Import-Module $overlayPolicyMod -Force -ErrorAction SilentlyContinue | Out-Null
+  }
+  if (Get-Command -Name 'Test-QCOverlaySkipByIncomingSize' -ErrorAction SilentlyContinue) {
+    $cfgForOverlay = Get-PrependQcConfig
+    $qcPrependCfg = @{}
+    if ($cfgForOverlay -and $cfgForOverlay.qcPrepend) {
+      if ($cfgForOverlay.qcPrepend -is [hashtable]) {
+        $qcPrependCfg = $cfgForOverlay.qcPrepend
+      } else {
+        try {
+          $qcPrependCfg = @{}
+          foreach ($p in $cfgForOverlay.qcPrepend.PSObject.Properties) {
+            $qcPrependCfg[$p.Name] = $p.Value
+          }
+        } catch { $qcPrependCfg = @{} }
+      }
+    }
+    $sizeDecision = Test-QCOverlaySkipByIncomingSize -QcPrepend $qcPrependCfg -IncomingBytes ([long]$fi.Length)
+    if ($sizeDecision.Skip) {
+      $haveOverlay = $false
+      Write-Log ("OVERLAY_SKIPPED_INCOMING_SIZE incomingBytes={0} thresholdMb={1} thresholdBytes={2} -> qpdf" -f `
+        $sizeDecision.IncomingBytes, $sizeDecision.ThresholdMb, $sizeDecision.ThresholdBytes)
+    } else {
+      Write-Log ("Overlay size gate: keep overlay (incomingBytes={0} thresholdMb={1} reason={2})" -f `
+        $sizeDecision.IncomingBytes, $sizeDecision.ThresholdMb, $sizeDecision.Reason)
+    }
+  }
+}
+
 # Resolve history doc (exact name search)
 Write-Log "Checking for existing history document..."
 $historyDoc = Get-PWDocumentsBySearch -FolderPath $IncomingFolderPath -JustThisFolder -DocumentName $HistoryDocName -PopulatePath
