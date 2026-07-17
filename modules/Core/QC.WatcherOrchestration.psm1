@@ -580,6 +580,219 @@ function Set-QCFullScanScheduleSlotComplete {
             $ok = $true
         } catch { }
     }
+    try { [void](Clear-QCFullScanProgress -Config $Config -SlotKey $SlotKey -QueueRoot $QueueRoot) } catch { }
+    return $ok
+}
+
+function Get-QCFullScanPreemptSettings {
+    <#
+    .SYNOPSIS
+    Cooperative preemption settings for scheduled full-folder reconciliation.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $defaults = @{
+        enabled = $true
+        checkEveryNFolders = 1
+    }
+    $ap = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'auditPoller'
+    $sched = $null
+    if ($ap -and $ap.ContainsKey('fullScanSchedule') -and $ap.fullScanSchedule) {
+        $sched = _QCWO-ToHashtable $ap.fullScanSchedule
+    }
+    $preempt = $null
+    if ($sched -and $sched.ContainsKey('preempt') -and $sched.preempt) {
+        $preempt = _QCWO-ToHashtable $sched.preempt
+    }
+    $out = @{
+        enabled = [bool]$defaults.enabled
+        checkEveryNFolders = [int]$defaults.checkEveryNFolders
+    }
+    if ($preempt) {
+        if ($preempt.ContainsKey('enabled') -and $null -ne $preempt.enabled) {
+            try { $out.enabled = [bool]$preempt.enabled } catch { }
+        }
+        if ($preempt.ContainsKey('checkEveryNFolders') -and $null -ne $preempt.checkEveryNFolders) {
+            try { $out.checkEveryNFolders = [int]$preempt.checkEveryNFolders } catch { }
+        }
+    }
+    if ($out.checkEveryNFolders -lt 1) { $out.checkEveryNFolders = 1 }
+    return $out
+}
+
+function _QCWO-GetFullScanProgressPath {
+    param([hashtable]$Config, [string]$QueueRoot)
+    $root = $QueueRoot
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        $q = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'queue'
+        if ($q -and $q.ContainsKey('rootDir') -and $q.rootDir) { $root = [string]$q.rootDir }
+    }
+    if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+    return Join-Path (Join-Path $root '_watcher') 'full-scan-progress.json'
+}
+
+function Get-QCFullScanProgress {
+    <#
+    .SYNOPSIS
+    Loads in-flight full-scan folder progress for a schedule slot (file + optional watcher_state mirror).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$QueueRoot = '',
+        [string]$SlotKey = ''
+    )
+
+    $empty = @{
+        slotKey = ''
+        completedFolders = @()
+        folderQueue = @()
+        updatedAt = $null
+    }
+
+    $path = _QCWO-GetFullScanProgressPath -Config $Config -QueueRoot $QueueRoot
+    $doc = $null
+    if ($path -and (Test-Path -LiteralPath $path)) {
+        try {
+            $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $doc = $raw | ConvertFrom-Json
+            }
+        } catch { }
+    }
+
+    if (-not $doc -and (Get-Command -Name 'Get-QCWatcherStateValue' -ErrorAction SilentlyContinue)) {
+        $stateKey = if (-not [string]::IsNullOrWhiteSpace($SlotKey)) {
+            "full_scan_progress|$SlotKey"
+        } else {
+            'full_scan_progress'
+        }
+        $v = Get-QCWatcherStateValue -Config $Config -StateKey $stateKey
+        if (-not [string]::IsNullOrWhiteSpace($v)) {
+            try { $doc = $v | ConvertFrom-Json } catch { }
+        }
+    }
+
+    if (-not $doc) { return $empty }
+
+    $completed = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in @($doc.completedFolders)) {
+        $p = [string]$f
+        if (-not [string]::IsNullOrWhiteSpace($p)) { [void]$completed.Add($p) }
+    }
+    $queue = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($entry in @($doc.folderQueue)) {
+        $h = _QCWO-ToHashtable $entry
+        if ($h -and $h.ContainsKey('FolderPath') -and -not [string]::IsNullOrWhiteSpace([string]$h.FolderPath)) {
+            [void]$queue.Add($h)
+        }
+    }
+
+    $loadedSlot = if ($doc.slotKey) { [string]$doc.slotKey } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($SlotKey) -and $loadedSlot -and ($loadedSlot -ne $SlotKey)) {
+        return $empty
+    }
+
+    return @{
+        slotKey = $loadedSlot
+        completedFolders = @($completed)
+        folderQueue = @($queue)
+        updatedAt = if ($doc.updatedAt) { [string]$doc.updatedAt } else { $null }
+    }
+}
+
+function Set-QCFullScanProgress {
+    <#
+    .SYNOPSIS
+    Persists full-scan progress (completed folders + remaining queue) for resume after restart.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$SlotKey,
+        [string[]]$CompletedFolders = @(),
+        [object[]]$FolderQueue = @(),
+        [string]$QueueRoot = ''
+    )
+
+    $updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+    $completed = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($f in @($CompletedFolders)) {
+        $p = [string]$f
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        if ($seen.Add($p)) { [void]$completed.Add($p) }
+    }
+    $queue = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($entry in @($FolderQueue)) {
+        $h = _QCWO-ToHashtable $entry
+        if (-not $h) { continue }
+        $fp = if ($h.ContainsKey('FolderPath')) { [string]$h.FolderPath } else { '' }
+        if ([string]::IsNullOrWhiteSpace($fp)) { continue }
+        [void]$queue.Add(@{
+            FolderPath = $fp
+            OneLevelDeep = if ($h.ContainsKey('OneLevelDeep')) { [bool]$h.OneLevelDeep } else { $false }
+            EnableQcPrepend = if ($h.ContainsKey('EnableQcPrepend')) { [bool]$h.EnableQcPrepend } else { $false }
+            EnableQcCommentSync = if ($h.ContainsKey('EnableQcCommentSync')) { [bool]$h.EnableQcCommentSync } else { $false }
+            EnableStatusSet = if ($h.ContainsKey('EnableStatusSet')) { [bool]$h.EnableStatusSet } else { $false }
+            ScanReason = if ($h.ContainsKey('ScanReason')) { [string]$h.ScanReason } else { 'full_reconciliation' }
+            ParentFolderPath = if ($h.ContainsKey('ParentFolderPath')) { [string]$h.ParentFolderPath } else { '' }
+        })
+    }
+
+    $payload = @{
+        slotKey = $SlotKey
+        completedFolders = @($completed)
+        folderQueue = @($queue)
+        updatedAt = $updatedAt
+    }
+    $json = $payload | ConvertTo-Json -Depth 8 -Compress
+    $ok = $false
+
+    $path = _QCWO-GetFullScanProgressPath -Config $Config -QueueRoot $QueueRoot
+    if ($path) {
+        try {
+            $dir = Split-Path -Parent $path
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            Set-Content -LiteralPath $path -Value $json -Encoding UTF8
+            $ok = $true
+        } catch { }
+    }
+
+    if (Get-Command -Name 'Set-QCWatcherStateValue' -ErrorAction SilentlyContinue) {
+        $stateOk = [bool](Set-QCWatcherStateValue -Config $Config -StateKey ("full_scan_progress|$SlotKey") -StateValue $json)
+        if ($stateOk) { $ok = $true }
+        [void](Set-QCWatcherStateValue -Config $Config -StateKey 'full_scan_progress' -StateValue $json)
+    }
+
+    return $ok
+}
+
+function Clear-QCFullScanProgress {
+    <#
+    .SYNOPSIS
+    Clears full-scan progress after a schedule slot completes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$SlotKey = '',
+        [string]$QueueRoot = ''
+    )
+
+    $ok = $false
+    $path = _QCWO-GetFullScanProgressPath -Config $Config -QueueRoot $QueueRoot
+    if ($path -and (Test-Path -LiteralPath $path)) {
+        try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop; $ok = $true } catch { }
+    }
+    if (Get-Command -Name 'Set-QCWatcherStateValue' -ErrorAction SilentlyContinue) {
+        if (-not [string]::IsNullOrWhiteSpace($SlotKey)) {
+            [void](Set-QCWatcherStateValue -Config $Config -StateKey ("full_scan_progress|$SlotKey") -StateValue '')
+        }
+        [void](Set-QCWatcherStateValue -Config $Config -StateKey 'full_scan_progress' -StateValue '')
+        $ok = $true
+    }
     return $ok
 }
 
@@ -876,7 +1089,12 @@ function Write-QCWatcherPhaseHeartbeat {
 function Invoke-QCWatcherLongRunningWork {
     <#
     .SYNOPSIS
-    Runs a script block while emitting periodic WATCH_PHASE_HEARTBEAT logs (default every 3 minutes).
+    Runs a script block with same-runspace WATCH_PHASE_HEARTBEAT progress (no System.Threading.Timer).
+
+    .DESCRIPTION
+    Background Timer callbacks into PowerShell/Write-QCJsonLog are unsafe and have crashed the
+    watcher mid statusset_sheet_index (~180s). Progress is emitted on the calling runspace only:
+    start/end always, and optionally when $Work invokes the Progress callback passed as its first argument.
     #>
     [CmdletBinding()]
     param(
@@ -892,27 +1110,26 @@ function Invoke-QCWatcherLongRunningWork {
         lastUtc = [DateTime]::MinValue
         startedUtc = (Get-Date).ToUniversalTime()
     }
-    $ctx = @{
-        Phase = $Phase
-        Data = $Data
-        StateRef = $stateRef
-    }
+    $phaseName = $Phase
+    $baseData = if ($Data) { $Data } else { @{} }
+    $intervalSec = $HeartbeatIntervalSeconds
 
-    $callback = [System.Threading.TimerCallback]{
-        param($state)
-        try {
-            $c = $state
-            if ($null -eq $c) { return }
-            Write-QCWatcherPhaseHeartbeat -Phase $c.Phase -Data $c.Data -IntervalSeconds 0 -HeartbeatState $c.StateRef | Out-Null
-        } catch { }
-    }
+    # Same-runspace progress helper for $Work. Call as: & $Progress @{ step = '...' }
+    $progress = {
+        param([hashtable]$Extra = @{})
+        $merged = @{}
+        foreach ($key in @($baseData.Keys)) { $merged[$key] = $baseData[$key] }
+        if ($Extra) {
+            foreach ($key in @($Extra.Keys)) { $merged[$key] = $Extra[$key] }
+        }
+        Write-QCWatcherPhaseHeartbeat -Phase $phaseName -Data $merged -IntervalSeconds $intervalSec -HeartbeatState $stateRef | Out-Null
+    }.GetNewClosure()
 
-    $timer = New-Object System.Threading.Timer($callback, $ctx, ($HeartbeatIntervalSeconds * 1000), ($HeartbeatIntervalSeconds * 1000))
     try {
-        Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $Data -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
-        return (& $Work)
+        Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $baseData -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
+        return (& $Work $progress)
     } finally {
-        try { $timer.Dispose() } catch { }
+        Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $baseData -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
     }
 }
 
@@ -962,4 +1179,84 @@ function Stop-QCWatcherChildForStall {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall
+function Invoke-QCWatcherAuditTick {
+    <#
+    .SYNOPSIS
+    Runs one audit ingest pass (poll window + dms_audt scan). Caller advances watermark and evaluates/enqueues candidates.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [object[]]$WatchRootConfigs = @(),
+        [int]$LookbackSeconds = 120,
+        [switch]$UseRestartOverlap,
+        [scriptblock]$ProgressCallback
+    )
+
+    if (-not (Get-Command -Name 'Invoke-AuditTrailScan' -ErrorAction SilentlyContinue)) {
+        return New-QCFailureResult -Code 'AUDIT_TICK_UNAVAILABLE' -Message 'Invoke-AuditTrailScan is not loaded.'
+    }
+    if (-not (Get-Command -Name 'Get-AuditTrailPollWindow' -ErrorAction SilentlyContinue)) {
+        return New-QCFailureResult -Code 'AUDIT_TICK_UNAVAILABLE' -Message 'Get-AuditTrailPollWindow is not loaded.'
+    }
+
+    $watermarkPath = Join-Path (Join-Path $QueueRoot '_watcher') 'audit-capture-watermark.txt'
+    $pollWindow = Get-AuditTrailPollWindow -Config $Config -WatermarkPath $watermarkPath -LookbackSeconds $LookbackSeconds -UseRestartOverlap:$UseRestartOverlap
+    $since = $pollWindow.since
+    $until = $pollWindow.until
+
+    $watermarkAgeSeconds = $null
+    try { $watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $Config -WatermarkPath $watermarkPath } catch { }
+
+    if ($ProgressCallback) {
+        try {
+            & $ProgressCallback @{
+                phase = 'audit_scan_start'
+                sinceUtc = $pollWindow.sinceUtc
+                untilUtc = $pollWindow.untilUtc
+                sinceDisplay = $pollWindow.sinceDisplay
+                untilDisplay = $pollWindow.untilDisplay
+                watermarkBefore = $pollWindow.watermarkBefore
+                isFirstCapture = [bool]$pollWindow.isFirstCapture
+                overlapSecondsUsed = if ($null -ne $pollWindow.overlapSecondsUsed) { [int]$pollWindow.overlapSecondsUsed } else { 0 }
+                restartOverlapUsed = if ($null -ne $pollWindow.restartOverlapUsed) { [bool]$pollWindow.restartOverlapUsed } else { $false }
+                watermarkAgeSeconds = $watermarkAgeSeconds
+            }
+        } catch { }
+    }
+
+    $auditRes = Invoke-AuditTrailScan -Config $Config -Since $since -Until $until -WatchRootConfigs $WatchRootConfigs -ProgressCallback $ProgressCallback
+    if (-not $auditRes.IsSuccess) {
+        return New-QCFailureResult -Code $auditRes.Code -Message $auditRes.Message -Data @{
+            pollWindow = $pollWindow
+            watermarkPath = $watermarkPath
+            watermarkAgeSeconds = $watermarkAgeSeconds
+            audit = $auditRes.Data
+        }
+    }
+
+    $auditData = $auditRes.Data
+    if ($ProgressCallback) {
+        try {
+            & $ProgressCallback @{
+                phase = 'audit_scan_done'
+                candidates = @($auditData.candidates).Count
+                totalEvents = if ($auditData.stats) { [int]$auditData.stats.totalEvents } else { 0 }
+                pagesFetched = if ($auditData.stats) { [int]$auditData.stats.pagesFetched } else { 0 }
+            }
+        } catch { }
+    }
+
+    return New-QCSuccessResult -Code 'AUDIT_TICK_OK' -Message 'Audit tick ingest completed.' -Data @{
+        pollWindow = $pollWindow
+        watermarkPath = $watermarkPath
+        watermarkAgeSeconds = $watermarkAgeSeconds
+        candidates = @($auditData.candidates)
+        stats = $auditData.stats
+        auditData = $auditData
+        watermarkAfter = $auditData.watermarkAfter
+    }
+}
+
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick

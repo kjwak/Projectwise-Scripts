@@ -357,6 +357,8 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
 | `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
+| `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. |
+| `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Folders per continuous tick during an unpaid scheduled full scan. |
 | `reconcileEveryNCycles` | — | Legacy fallback when `fullScanSchedule.times` is empty. |
 | `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events, enqueue `QC_PREPEND` when workflow state is **Initiate Origination** and/or when description has `QC_Archivist` (state must still be **Initiate Origination** for the tag path). |
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on lane QC PDFs. |

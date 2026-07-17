@@ -2414,7 +2414,8 @@ function Invoke-AuditTrailScan {
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][DateTime]$Since,
         [Parameter()][DateTime]$Until = [DateTime]::Now,
-        [array]$WatchRootConfigs = @()
+        [array]$WatchRootConfigs = @(),
+        [scriptblock]$ProgressCallback
     )
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -2520,6 +2521,18 @@ function Invoke-AuditTrailScan {
             if ($null -eq $cursorGuid) { $cursorGuid = '' }
             try { $cursorAction = [int](_AuditPoller-GetRowValue -Row $last -Name 'o_action') } catch { $cursorAction = 0 }
             try { $cursorObjNo = [int](_AuditPoller-GetRowValue -Row $last -Name 'o_objno') } catch { $cursorObjNo = 0 }
+            if ($ProgressCallback) {
+                try {
+                    & $ProgressCallback @{
+                        phase = 'audit_page'
+                        pageNum = $pageNum
+                        batchCount = [int]$batch.Count
+                        totalFetchedRaw = [int]$stats.totalFetchedRaw
+                        eventsKept = [int]$allEvents.Count
+                        cursorSince = $cursorSince
+                    }
+                } catch { }
+            }
             if ($batch.Count -lt $pageSize) { break }
         }
         if ($pageNum -ge $maxPages -and [int]$stats.totalFetchedRaw -gt 0) {

@@ -244,12 +244,47 @@ function Write-QCJsonLogFileLine {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$Line
+        [string]$Line,
+        [string]$Tag = ''
     )
     if ([string]::IsNullOrWhiteSpace($env:QC_JSON_LOG_DIR)) { return $false }
     $hour = Get-QCLogHourStamp
-    $path = Get-QCJsonLogFilePath -HourStamp $hour
+    $path = Get-QCJsonLogFilePath -HourStamp $hour -Tag $Tag
     if (-not $path) { return $false }
+
+    # Secondary tags (e.g. Watch-QCTrigger-Reconcile) use a separate writer map so the primary stream stays intact.
+    $useAlt = -not [string]::IsNullOrWhiteSpace($Tag) -and $Tag -ne $(if ($env:QC_JSON_LOG_TAG) { [string]$env:QC_JSON_LOG_TAG } else { 'qc' })
+    if ($useAlt) {
+        if (-not $script:_QCJsonLogAltWriters) { $script:_QCJsonLogAltWriters = @{} }
+        $key = "$Tag|$hour"
+        [System.Threading.Monitor]::Enter($script:_QCJsonLogFileLock)
+        try {
+            $entry = $script:_QCJsonLogAltWriters[$key]
+            if (-not $entry) {
+                $parent = Split-Path -Parent $path
+                if (-not (Test-Path -LiteralPath $parent)) {
+                    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+                }
+                $writer = New-Object System.IO.StreamWriter($path, $true, [System.Text.UTF8Encoding]::new($false))
+                $writer.AutoFlush = $true
+                $script:_QCJsonLogAltWriters[$key] = @{ Writer = $writer; Hour = $hour; Path = $path; Tag = $Tag }
+                $entry = $script:_QCJsonLogAltWriters[$key]
+            }
+            $entry.Writer.WriteLine($Line)
+        } catch {
+            try {
+                if ($script:_QCJsonLogAltWriters.ContainsKey($key) -and $script:_QCJsonLogAltWriters[$key].Writer) {
+                    $script:_QCJsonLogAltWriters[$key].Writer.Dispose()
+                }
+            } catch { }
+            if ($script:_QCJsonLogAltWriters.ContainsKey($key)) { $script:_QCJsonLogAltWriters.Remove($key) }
+            return $false
+        } finally {
+            [System.Threading.Monitor]::Exit($script:_QCJsonLogFileLock)
+        }
+        return $true
+    }
+
     [System.Threading.Monitor]::Enter($script:_QCJsonLogFileLock)
     try {
         if ($script:_QCJsonLogWriterHour -ne $hour) {
@@ -555,7 +590,9 @@ function Write-QCJsonLog {
         [hashtable]$Data,
         [string]$WorkerLabel = '',
         [switch]$IncludeWorkerPid,
-        [switch]$Flush
+        [switch]$Flush,
+        [string]$Tag = '',
+        [string]$AlsoTag = ''
     )
 
     if (-not $Data) { $Data = @{} }
@@ -575,8 +612,12 @@ function Write-QCJsonLog {
 
     $fileSink = $false
     try {
-        $fileSink = [bool](Write-QCJsonLogFileLine -Line $payload)
+        $fileSink = [bool](Write-QCJsonLogFileLine -Line $payload -Tag $Tag)
     } catch { }
+
+    if (-not [string]::IsNullOrWhiteSpace($AlsoTag)) {
+        try { [void](Write-QCJsonLogFileLine -Line $payload -Tag $AlsoTag) } catch { }
+    }
 
     try {
         $telemetryCmd = Get-Command -Name 'Write-QCAutomationEvent' -ErrorAction SilentlyContinue

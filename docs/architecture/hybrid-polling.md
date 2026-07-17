@@ -43,6 +43,12 @@ At each configured wall-clock time (`auditPoller.fullScanSchedule.times`, e.g. `
 
 Full folder reconciliation runs once per schedule slot per calendar day (after the configured time), not on the first audit tick.
 
+**Cooperative preemption (July 2026):** With `fullScanSchedule.preempt.enabled` (default on), each continuous tick processes at most `checkEveryNFolders` folders, then yields so the next tick can run audit again before more folders. Progress is stored in `queue/_watcher/full-scan-progress.json` (and `watcher_state` when DB is enabled) so a restart resumes mid-slot instead of rewalking from the top. The schedule slot is marked complete only when the remaining folder queue is empty.
+
+**Crash fix:** `Invoke-QCWatcherLongRunningWork` no longer uses `System.Threading.Timer` heartbeats (those crashed the watcher ~180s into large `statusset_sheet_index` work). Progress is same-runspace only.
+
+Per-folder reconcile noise goes to `Watch-QCTrigger-Reconcile_{yyyy-MM-dd_HH}.jsonl`; lifecycle events (`WATCH_RECONCILE_CYCLE`, `WATCH_FULL_SCAN_PREEMPT` / `RESUME`, slot done/failed) stay in the main watcher JSONL.
+
 ### Fallback Behavior
 
 If `Invoke-AuditTrailScan` fails (database unreachable, PW SQL error, etc.) and `auditPoller.fallbackToFullScan` is `true`, the watcher automatically falls back to a full folder scan for that tick.
@@ -77,10 +83,12 @@ The watcher orchestrates audit scanning and scheduled reconciliation (`QC.Watche
 
 ```
 Each tick (typical production config):
-  1. Invoke-AuditTrailScan (primary steady-state path)
+  1. Invoke-QCWatcherAuditTick → Invoke-AuditTrailScan (primary steady-state path; page heartbeats during long ingest)
   2. Process candidates (STATUS_SET_GEN, QC_PREPEND, QC_COMMENT_STATUS_SYNC, etc.)
-  3. At configured wall-clock times (auditPoller.fullScanSchedule.times):
-       → Full folder scan (reconciliation only — once per slot per calendar day)
+  3. At configured wall-clock times (auditPoller.fullScanSchedule.times), while slot unpaid:
+       → Process up to checkEveryNFolders Sheets folders (reconciliation chunk)
+       → Checkpoint progress; yield so next tick repeats step 1 before more folders
+       → Mark slot complete only when the folder queue is empty
   4. Invoke-QCQueueStartupCheck — queue stats + stale/orphan running\ recovery
   5. Write poll_runs telemetry to database
 ```
@@ -107,7 +115,10 @@ Committed production excerpt (see `appsettings.json` for full `auditPoller` bloc
 {
   "auditPoller": {
     "lookbackSeconds": 120,
-    "fullScanSchedule": { "times": ["06:00", "18:00"] },
+    "fullScanSchedule": {
+      "times": ["06:00", "18:00"],
+      "preempt": { "enabled": true, "checkEveryNFolders": 1 }
+    },
     "fallbackToFullScan": false
   }
 }
@@ -117,6 +128,8 @@ Committed production excerpt (see `appsettings.json` for full `auditPoller` bloc
 |-----|-----------|-------------|
 | `lookbackSeconds` | 120 | How far back to look on first poll when no watermark exists |
 | `fullScanSchedule.times` | `06:00`, `18:00` | Wall-clock full reconciliation (preferred over `reconcileEveryNCycles`) |
+| `fullScanSchedule.preempt.enabled` | true | Yield between folder chunks so audit/QC events run each tick |
+| `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Max Sheets folders processed per continuous tick during an unpaid slot |
 | `reconcileEveryNCycles` | (unset) | **Legacy:** full scan every N ticks when `fullScanSchedule.times` is empty |
 | `fallbackToFullScan` | **false** | When **true**, fall back to full folder scan if audit trail query fails for that tick |
 

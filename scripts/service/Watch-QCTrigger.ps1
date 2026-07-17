@@ -355,6 +355,11 @@ $script:WatchRequiredCommands = @(
     'Test-QCStatusSetSourceDocument'
     'Invoke-QCReconcileOutputs'
     'Set-QCFullScanScheduleSlotComplete'
+    'Get-QCFullScanPreemptSettings'
+    'Get-QCFullScanProgress'
+    'Set-QCFullScanProgress'
+    'Clear-QCFullScanProgress'
+    'Invoke-QCWatcherAuditTick'
     'Get-OrderedTriggerRules'
     'Test-QCPathAllowed'
     'Test-QCTriggerCandidate'
@@ -477,7 +482,8 @@ function _Watch-WriteJsonLog {
         [hashtable]$Data,
         [string]$WorkerLabel = '',
         [switch]$IncludeWorkerPid,
-        [switch]$Flush
+        [switch]$Flush,
+        [string]$AlsoTag = ''
     )
 
     if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
@@ -494,6 +500,7 @@ function _Watch-WriteJsonLog {
         if ($WorkerLabel) { $invoke['WorkerLabel'] = $WorkerLabel }
         if ($IncludeWorkerPid) { $invoke['IncludeWorkerPid'] = $true }
         if ($Flush) { $invoke['Flush'] = $true }
+        if ($AlsoTag) { $invoke['AlsoTag'] = $AlsoTag }
         & $cmd @invoke
         return
     }
@@ -511,6 +518,38 @@ function _Watch-WriteJsonLog {
     } else {
         Write-Host $payload
     }
+}
+
+function _Watch-WriteReconcileOnlyJsonLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Level,
+        [Parameter(Mandatory)][string]$Code,
+        [Parameter(Mandatory)][string]$Message,
+        [hashtable]$Data,
+        [switch]$Flush
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        [void](_Watch-EnsureJsonLog)
+    }
+    if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+        Write-QCJsonLog -Level $Level -Code $Code -Message $Message -Data $Data -Flush:$Flush -Tag 'Watch-QCTrigger-Reconcile'
+    } else {
+        _Watch-WriteJsonLog -Level $Level -Code $Code -Message $Message -Data $Data -Flush:$Flush
+    }
+}
+
+function _Watch-IsReconcileNoiseCode {
+    param([string]$Code)
+    if ([string]::IsNullOrWhiteSpace($Code)) { return $false }
+    $c = $Code.Trim().ToUpperInvariant()
+    if ($c -eq 'WATCH_PHASE_HEARTBEAT') { return $true }
+    if ($c -like 'WATCH_PW_SCAN_*') { return $true }
+    if ($c -like 'WATCH_PW_FOLDER_*') { return $true }
+    if ($c -like 'WATCH_PW_STATUSSET_*') { return $true }
+    if ($c -like 'WATCH_PW_DOC_*') { return $true }
+    if ($c -eq 'WATCH_PW_FOLDERS' -or $c -eq 'WATCH_PW_FOLDER_DEDUPED') { return $true }
+    return $false
 }
 
 Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force -WarningAction SilentlyContinue
@@ -984,41 +1023,76 @@ if ($statusSetRules.Count -ge 0) {
                         try { $lookbackSeconds = [int]$auditPollerCfg.lookbackSeconds } catch { $lookbackSeconds = 120 }
                     }
 
-                    $watermarkPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
-                    $useRestartOverlap = (-not $script:auditRestartOverlapDone)
-                    if ($useRestartOverlap) { $script:auditRestartOverlapDone = $true }
-                    $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds -UseRestartOverlap:$useRestartOverlap
-                    $since = $pollWindow.since
-                    $until = $pollWindow.until
-
                     $watchRootConfigs = @()
                     if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
                         $watchRootConfigs = @($watchList.roots | ForEach-Object { ConvertTo-HashtableDeep -Value $_ })
                     }
 
-                    $watermarkAgeSeconds = $null
-                    try { $watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { }
-                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
-                        sinceUtc = $pollWindow.sinceUtc
-                        untilUtc = $pollWindow.untilUtc
-                        sinceDisplay = $pollWindow.sinceDisplay
-                        untilDisplay = $pollWindow.untilDisplay
-                        watermarkBefore = $pollWindow.watermarkBefore
-                        isFirstCapture = [bool]$pollWindow.isFirstCapture
-                        overlapSecondsUsed = if ($null -ne $pollWindow.overlapSecondsUsed) { [int]$pollWindow.overlapSecondsUsed } else { 0 }
-                        restartOverlapUsed = if ($null -ne $pollWindow.restartOverlapUsed) { [bool]$pollWindow.restartOverlapUsed } else { $false }
-                        watermarkAgeSeconds = $watermarkAgeSeconds
-                        cycleNum = $cycleNum
-                        fullScanScheduleTimes = @($fullScanPlan.scheduledTimes)
-                        fullScanScheduleDue = [bool]$fullScanPlan.due
-                    }
+                    $useRestartOverlap = (-not $script:auditRestartOverlapDone)
+                    if ($useRestartOverlap) { $script:auditRestartOverlapDone = $true }
 
                     $runMode = 'audit'
                     if (-not (_Watch-EnsureAllModuleExports)) {
                         $missingAudit = @(_Watch-GetMissingRequiredCommands)
                         throw ('Required module exports unavailable before audit trail scan: ' + ($missingAudit -join ', '))
                     }
-                    $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
+
+                    $auditTickProgress = {
+                        param($info)
+                        if (-not $info) { return }
+                        $phase = [string]$info.phase
+                        if ($phase -eq 'audit_scan_start') {
+                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data $info
+                        } elseif ($phase -eq 'audit_page') {
+                            if (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue) {
+                                if (-not $script:auditScanHeartbeatState) {
+                                    $script:auditScanHeartbeatState = [ref]@{ lastUtc = [DateTime]::MinValue; startedUtc = (Get-Date).ToUniversalTime() }
+                                }
+                                Write-QCWatcherPhaseHeartbeat -Phase 'audit_trail_scan' -Data $info -IntervalSeconds 60 -HeartbeatState $script:auditScanHeartbeatState | Out-Null
+                            }
+                        }
+                    }
+
+                    $tickRes = $null
+                    if (Get-Command -Name 'Invoke-QCWatcherAuditTick' -ErrorAction SilentlyContinue) {
+                        $script:auditScanHeartbeatState = [ref]@{ lastUtc = [DateTime]::MinValue; startedUtc = (Get-Date).ToUniversalTime() }
+                        $tickRes = Invoke-QCWatcherAuditTick -Config $config -QueueRoot $queueRoot -WatchRootConfigs $watchRootConfigs `
+                            -LookbackSeconds $lookbackSeconds -UseRestartOverlap:$useRestartOverlap -ProgressCallback $auditTickProgress
+                    }
+
+                    if ($tickRes -and $tickRes.IsSuccess) {
+                        $pollWindow = $tickRes.Data.pollWindow
+                        $watermarkPath = [string]$tickRes.Data.watermarkPath
+                        $watermarkAgeSeconds = $tickRes.Data.watermarkAgeSeconds
+                        $auditRes = New-QCSuccessResult -Code 'AUDIT_SCAN_OK' -Message 'Audit trail scan completed.' -Data $tickRes.Data.auditData
+                        $since = $pollWindow.since
+                        $until = $pollWindow.until
+                    } elseif ($tickRes -and -not $tickRes.IsSuccess) {
+                        $pollWindow = $tickRes.Data.pollWindow
+                        $watermarkPath = [string]$tickRes.Data.watermarkPath
+                        if (-not $pollWindow) {
+                            $watermarkPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
+                            $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds -UseRestartOverlap:$useRestartOverlap
+                        }
+                        $auditRes = New-QCFailureResult -Code $tickRes.Code -Message $tickRes.Message -Data $tickRes.Data
+                    } else {
+                        # Fallback if Invoke-QCWatcherAuditTick is unavailable
+                        $watermarkPath = Join-Path (Join-Path $queueRoot '_watcher') 'audit-capture-watermark.txt'
+                        $pollWindow = Get-AuditTrailPollWindow -Config $config -WatermarkPath $watermarkPath -LookbackSeconds $lookbackSeconds -UseRestartOverlap:$useRestartOverlap
+                        $since = $pollWindow.since
+                        $until = $pollWindow.until
+                        $watermarkAgeSeconds = $null
+                        try { $watermarkAgeSeconds = Get-QCAuditWatermarkAgeSeconds -Config $config -WatermarkPath $watermarkPath } catch { }
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_AUDIT_SCAN_START' -Message 'Audit trail scan starting.' -Data @{
+                            sinceUtc = $pollWindow.sinceUtc
+                            untilUtc = $pollWindow.untilUtc
+                            watermarkBefore = $pollWindow.watermarkBefore
+                            watermarkAgeSeconds = $watermarkAgeSeconds
+                            cycleNum = $cycleNum
+                        }
+                        $auditRes = Invoke-AuditTrailScan -Config $config -Since $since -Until $until -WatchRootConfigs $watchRootConfigs
+                    }
+
                     if (-not $auditRes.IsSuccess) {
                         _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_AUDIT_SCAN_FAILED' -Message "Audit scan failed: $($auditRes.Message)" -Data @{ code = $auditRes.Code }
                         $wmAfterFail = $pollWindow.watermarkBefore
@@ -2172,10 +2246,61 @@ if ($statusSetRules.Count -ge 0) {
                 $dedupedFolders += $prepared
             }
             $pwFolders = $dedupedFolders
-            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
+            _Watch-WriteReconcileOnlyJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDERS' -Message 'ProjectWise watch folders prepared.' -Data @{
                 folderCount = [int]$pwFolders.Count
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
+
+            $preemptSettings = @{ enabled = $true; checkEveryNFolders = 1 }
+            if (Get-Command -Name 'Get-QCFullScanPreemptSettings' -ErrorAction SilentlyContinue) {
+                $preemptSettings = Get-QCFullScanPreemptSettings -Config $config
+            }
+            $slotKeyForProgress = [string]$script:fullScanScheduleInFlightSlotKey
+            $completedFolders = [System.Collections.Generic.List[string]]::new()
+            $progressLoaded = $null
+            if ($slotKeyForProgress -and (Get-Command -Name 'Get-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
+                $progressLoaded = Get-QCFullScanProgress -Config $config -QueueRoot $queueRoot -SlotKey $slotKeyForProgress
+                if ($progressLoaded -and $progressLoaded.slotKey -eq $slotKeyForProgress) {
+                    foreach ($cf in @($progressLoaded.completedFolders)) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$cf)) { [void]$completedFolders.Add([string]$cf) }
+                    }
+                    if (@($progressLoaded.folderQueue).Count -gt 0) {
+                        $pwFolders = @($progressLoaded.folderQueue)
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Resuming full reconciliation from checkpoint.' -Data @{
+                            slotKey = $slotKeyForProgress
+                            remainingFolders = [int]$pwFolders.Count
+                            completedFolders = [int]$completedFolders.Count
+                        } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    }
+                }
+            }
+
+            if ($completedFolders.Count -gt 0 -and (-not $progressLoaded -or @($progressLoaded.folderQueue).Count -eq 0)) {
+                $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                foreach ($cf in $completedFolders) { [void]$completedSet.Add($cf) }
+                $pwFolders = @($pwFolders | Where-Object {
+                    $p = [string]$_.FolderPath
+                    -not [string]::IsNullOrWhiteSpace($p) -and -not $completedSet.Contains($p)
+                })
+                if ($completedFolders.Count -gt 0) {
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Skipping folders already completed for this schedule slot.' -Data @{
+                        slotKey = $slotKeyForProgress
+                        remainingFolders = [int]$pwFolders.Count
+                        completedFolders = [int]$completedFolders.Count
+                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                }
+            }
+
+            if ($slotKeyForProgress -and (Get-Command -Name 'Set-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
+                [void](Set-QCFullScanProgress -Config $config -SlotKey $slotKeyForProgress -CompletedFolders @($completedFolders) -FolderQueue @($pwFolders) -QueueRoot $queueRoot)
+            }
+
+            $foldersThisTickLimit = [int]$pwFolders.Count
+            if ([bool]$preemptSettings.enabled) {
+                $foldersThisTickLimit = [Math]::Max(1, [int]$preemptSettings.checkEveryNFolders)
+            }
+            $foldersProcessedThisTick = 0
+            $yieldedForPreempt = $false
 
             $reconcileHeartbeat = [ref]@{
                 lastUtc = [DateTime]::MinValue
@@ -2184,16 +2309,25 @@ if ($statusSetRules.Count -ge 0) {
             if (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue) {
                 Write-QCWatcherPhaseHeartbeat -Phase 'full_reconciliation_scan' `
                     -Message 'Full reconciliation folder scan in progress.' `
-                    -Data @{ folderCount = [int]$pwFolders.Count; scheduledTime = [string]$fullScanPlan.scheduledTime } `
+                    -Data @{ folderCount = [int]$pwFolders.Count; scheduledTime = [string]$fullScanPlan.scheduledTime; foldersThisTickLimit = $foldersThisTickLimit } `
                     -IntervalSeconds 0 -HeartbeatState $reconcileHeartbeat | Out-Null
             }
 
+            $remainingAfterTick = [System.Collections.Generic.List[hashtable]]::new()
             foreach ($entry in @($pwFolders)) {
+                if ($foldersProcessedThisTick -ge $foldersThisTickLimit) {
+                    $h = if ($entry -is [hashtable]) { $entry } else { ConvertTo-HashtableDeep -Value $entry }
+                    if ($h) { [void]$remainingAfterTick.Add($h) }
+                    $yieldedForPreempt = $true
+                    continue
+                }
+
                 $folderPhase = 'folder_init'
                 try {
                     $fp = [string]$entry.FolderPath
                     if ([string]::IsNullOrWhiteSpace($fp)) { continue }
                     $pwFoldersScanned++
+                    $foldersProcessedThisTick++
 
                     if (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue) {
                         Write-QCWatcherPhaseHeartbeat -Phase 'full_reconciliation_scan' `
@@ -2203,7 +2337,7 @@ if ($statusSetRules.Count -ge 0) {
                                 folderIndex = [int]$pwFoldersScanned
                                 folderTotal = [int]$pwFolders.Count
                             } `
-                            -IntervalSeconds 180 -HeartbeatState $reconcileHeartbeat | Out-Null
+                            -IntervalSeconds 60 -HeartbeatState $reconcileHeartbeat | Out-Null
                     }
 
                     $oneLevelDeep = $false
@@ -2220,7 +2354,7 @@ if ($statusSetRules.Count -ge 0) {
                     try { if ($entry.ParentFolderPath) { $parentFolderPath = [string]$entry.ParentFolderPath } } catch { }
 
                     # Emit a "scan start" event even if filters later skip the folder.
-                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
+                    _Watch-WriteReconcileOnlyJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_SCAN_START' -Message 'PW scanning folder.' -Data @{
                         folder = $fp
                         folderPath = $fp
                         oneLevelDeep = $oneLevelDeep
@@ -2237,11 +2371,17 @@ if ($statusSetRules.Count -ge 0) {
                         if (-not $allowRes.IsSuccess) { throw $allowRes.Message }
                         if (-not [bool]$allowRes.Data.allowed) {
                             $filtered++
-                            _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
+                            _Watch-WriteReconcileOnlyJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder skipped by filters.' -Data @{
                                 folder = $fp
                                 reason = 'filtered'
                                 enableQcPrepend = $enableQcPrepend
                                 enableStatusSet = $enableStatusSet
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace($fp)) { [void]$completedFolders.Add($fp) }
+                            if ($slotKeyForProgress -and (Get-Command -Name 'Set-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
+                                $stillQueued = [System.Collections.Generic.List[hashtable]]::new()
+                                # Remaining = unprocessed from current pwFolders after this index is handled at tick end.
+                                [void](Set-QCFullScanProgress -Config $config -SlotKey $slotKeyForProgress -CompletedFolders @($completedFolders) -FolderQueue @($pwFolders | Select-Object -Skip $foldersProcessedThisTick) -QueueRoot $queueRoot)
                             }
                             continue
                         }
@@ -2379,6 +2519,12 @@ if ($statusSetRules.Count -ge 0) {
                                 }
                                 $indexRowCount = 0
                                 $indexWork = {
+                                    param($Progress)
+                                    $hb = {
+                                        param([hashtable]$Extra = @{})
+                                        if ($Progress) { & $Progress $Extra }
+                                    }
+                                    & $hb @{ step = 'workflow_state_map'; pairedCount = [int]$state.pairedCount }
                                     $stateGuids = @()
                                     foreach ($ps in @($state.pairedSheets)) {
                                         if ($ps.pdf -and $ps.pdf.documentGuid) { $stateGuids += [string]$ps.pdf.documentGuid }
@@ -2389,6 +2535,7 @@ if ($statusSetRules.Count -ge 0) {
                                         try { $stateByGuid = Get-PWDocumentWorkflowStateMapByGuid -DocumentGuids $stateGuids } catch { }
                                     }
 
+                                    & $hb @{ step = 'build_sheet_index_rows'; guidCount = $stateGuids.Count }
                                     $sheetIndexRows = @(Build-PWSheetIndexRowsForPairedSheets -Config $config `
                                         -FolderPath $fp `
                                         -WatchRoot ([string]$entry.FolderPath) `
@@ -2396,6 +2543,7 @@ if ($statusSetRules.Count -ge 0) {
                                         -StateByGuid $stateByGuid)
 
                                     $rowCount = $sheetIndexRows.Count
+                                    & $hb @{ step = 'write_sheet_index_batch'; rowCount = $rowCount }
                                     if ($rowCount -gt 0) {
                                         try {
                                             Write-QCSheetIndexBatch -Config $config -Rows @($sheetIndexRows)
@@ -2403,7 +2551,13 @@ if ($statusSetRules.Count -ge 0) {
                                     }
 
                                     if ($state.qcPdfDocs) {
+                                        $qcIdx = 0
+                                        $qcTotal = @($state.qcPdfDocs).Count
                                         foreach ($qc in @($state.qcPdfDocs)) {
+                                            $qcIdx++
+                                            if (($qcIdx % 25) -eq 0 -or $qcIdx -eq $qcTotal) {
+                                                & $hb @{ step = 'qc_pdf_link'; qcIndex = $qcIdx; qcTotal = $qcTotal }
+                                            }
                                             try {
                                                 $qcStem = [string]$qc.stem
                                                 $srcSheet = $null
@@ -2436,9 +2590,9 @@ if ($statusSetRules.Count -ge 0) {
                                     $indexRowCount = [int](Invoke-QCWatcherLongRunningWork -Phase 'statusset_sheet_index' -Data @{
                                         folder = $fp
                                         pairedCount = [int]$state.pairedCount
-                                    } -HeartbeatIntervalSeconds 180 -Work $indexWork)
+                                    } -HeartbeatIntervalSeconds 60 -Work $indexWork)
                                 } else {
-                                    $indexRowCount = [int](& $indexWork)
+                                    $indexRowCount = [int](& $indexWork $null)
                                 }
                                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_DONE' -Message 'Sheet index update completed.' -Data @{
                                     folder = $fp
@@ -2668,11 +2822,12 @@ if ($statusSetRules.Count -ge 0) {
                             }
                         }
                     }
-                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
+                    _Watch-WriteReconcileOnlyJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_FOLDER_DONE' -Message 'PW folder processing completed.' -Data @{
                         folder = $fp
                         enableQcPrepend = $enableQcPrepend
                         enableStatusSet = $enableStatusSet
                     }
+                    if (-not [string]::IsNullOrWhiteSpace($fp)) { [void]$completedFolders.Add($fp) }
                 } catch {
                     $errors++
                     $ex = $_.Exception
@@ -2684,17 +2839,40 @@ if ($statusSetRules.Count -ge 0) {
                         errorMessage = [string]$_.Exception.Message
                         errorType = if ($ex) { [string]$ex.GetType().FullName } else { '' }
                         scriptStackTrace = [string]$_.ScriptStackTrace
-                    }
+                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    # Keep failed folder in the queue for retry on a later tick.
+                    $failEntry = if ($entry -is [hashtable]) { $entry } else { ConvertTo-HashtableDeep -Value $entry }
+                    if ($failEntry) { [void]$remainingAfterTick.Add($failEntry) }
                 }
             }
 
-            if ($script:fullScanScheduleInFlightSlotKey) {
+            # Persist remaining queue (yielded + failed) and optionally mark slot complete.
+            $finalRemaining = [System.Collections.Generic.List[hashtable]]::new()
+            foreach ($r in @($remainingAfterTick)) {
+                if ($r) { [void]$finalRemaining.Add($r) }
+            }
+            if ($slotKeyForProgress -and (Get-Command -Name 'Set-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
+                [void](Set-QCFullScanProgress -Config $config -SlotKey $slotKeyForProgress -CompletedFolders @($completedFolders) -FolderQueue @($finalRemaining) -QueueRoot $queueRoot)
+            }
+
+            if ($yieldedForPreempt -or $finalRemaining.Count -gt 0) {
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_PREEMPT' -Message 'Yielding full reconciliation so the next tick can run audit before more folders.' -Data @{
+                    slotKey = $slotKeyForProgress
+                    foldersProcessedThisTick = [int]$foldersProcessedThisTick
+                    foldersThisTickLimit = [int]$foldersThisTickLimit
+                    remainingFolders = [int]$finalRemaining.Count
+                    completedFolders = [int]$completedFolders.Count
+                    preemptEnabled = [bool]$preemptSettings.enabled
+                } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                # Keep slot in-flight; do not mark complete.
+            } elseif ($script:fullScanScheduleInFlightSlotKey) {
                 try {
                     $slotDone = Set-QCFullScanScheduleSlotComplete -Config $config -SlotKey $script:fullScanScheduleInFlightSlotKey -QueueRoot $queueRoot
                     _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
                         slotKey = $script:fullScanScheduleInFlightSlotKey
                         persisted = [bool]$slotDone
-                    }
+                        completedFolders = [int]$completedFolders.Count
+                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
                 } catch {
                     _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_FAILED' -Message 'Could not persist full-scan schedule slot completion.' -Data @{
                         slotKey = $script:fullScanScheduleInFlightSlotKey
