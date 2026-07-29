@@ -1127,7 +1127,11 @@ function Invoke-QCWatcherLongRunningWork {
 
     try {
         Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $baseData -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
-        return (& $Work $progress)
+        # Work blocks often call cmdlets that emit result objects onto the pipeline.
+        # Keep only the last output as the intended return value (typically from `return`).
+        $outputs = @(& $Work $progress)
+        if ($outputs.Count -eq 0) { return $null }
+        return $outputs[-1]
     } finally {
         Write-QCWatcherPhaseHeartbeat -Phase $Phase -Data $baseData -IntervalSeconds 0 -HeartbeatState $stateRef | Out-Null
     }

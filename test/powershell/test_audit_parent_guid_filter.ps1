@@ -4,6 +4,7 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force
 
 function _Assert($cond, $msg) {
@@ -11,7 +12,7 @@ function _Assert($cond, $msg) {
 }
 
 $v = Get-AuditPollerLogicVersion
-_Assert ($v -eq '2026-06-05-parent-guid-cache-gate-v10') "Expected parent-guid gate logic version, got: $v"
+_Assert ($v -eq '2026-07-29-parent-guid-cache-gate-v11') "Expected parent-guid gate logic version, got: $v"
 
 $watchGuid = '9475dfe8-1a85-46de-8986-3e59744591ca'
 $otherGuid = '00000000-0000-0000-0000-000000000099'
@@ -61,11 +62,28 @@ _Assert ($emptyGate.skipped.Count -eq 0) 'empty input should return empty skippe
 $uncachedParent = '00000000-0000-0000-0000-000000000099'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = ''; o_itemname = 'a.dgn' }) -eq 'skipped_unknown_parent') 'blank parent'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'template.itl' }) -eq 'skipped_non_source_extension') 'itl'
-_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '0818000063ea502-qc.pdf' }) -eq 'skipped_qc_artifact') 'dash-qc pdf'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '0818000063ea502-qc.pdf' }) -eq 'skipped_legacy_qc_artifact') 'dash-qc pdf (legacy)'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'sheet_qc.pdf' }) -eq 'skipped_qc_artifact') 'underscore-qc pdf'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '_StatusSet.pdf' }) -eq 'skipped_status_set_output') 'status set output'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'e1eb559eef1b9bb9_2265_001_of_001.PwPerfDoNotUse' }) -eq 'skipped_pw_perf') 'PwPerfDoNotUse'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '080J082001ab001.dgn' }) -eq 'skipped_parent_not_cached') 'dgn uncached parent'
 _Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = '080J082001ab001.pdf' }) -eq 'skipped_parent_not_cached') 'normal pdf uncached parent'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = 'foo|bar.pdf' }) -eq 'skipped_illegal_item_name') 'pipe in name must not throw'
+_Assert ((Get-QCAuditParentGuidFilterSkipReason -Row @{ o_parentguid = $uncachedParent; o_itemname = "foo`"bar.dgn" }) -eq 'skipped_illegal_item_name') 'quote in name must not throw'
+
+# Illegal item names must skip (not throw) through the gate and surface in diagnostics/samples
+$illegalRows = @(
+    @{ o_action = 1007; o_parentguid = $uncachedParent; o_itemname = 'bad|name.pdf' },
+    @{ o_action = 1007; o_parentguid = $watchGuid; o_itemname = 'ok.pdf' }
+)
+$illegalStats = @{}
+$illegalGate = Invoke-QCAuditParentGuidCacheGate -Rows $illegalRows -Config $cfg -Stats $illegalStats
+_Assert ($illegalGate.kept.Count -eq 1) 'cached parent with legal name kept'
+_Assert ($illegalGate.skipped.Count -eq 1) 'illegal name skipped'
+_Assert ($illegalGate.diagnostics.skipped_illegal_item_name -eq 1) 'illegal counter'
+_Assert ($illegalGate.diagnostics.skippedSamples[0].reason -eq 'skipped_illegal_item_name') 'illegal sample reason'
+_Assert ($illegalGate.diagnostics.skippedSamples[0].itemName -eq 'bad|name.pdf') 'illegal sample preserves item name'
+_Assert ($illegalStats.skipped_illegal_item_name -eq 1) 'stats mirror skipped_illegal_item_name'
 
 # Gate diagnostics counters and samples (behavior unchanged)
 $mixedRows = @(

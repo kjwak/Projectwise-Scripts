@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-06-05-parent-guid-cache-gate-v10'
+$script:AuditPollerLogicVersion = '2026-07-29-parent-guid-cache-gate-v11'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -657,6 +657,7 @@ function _AuditPoller-NewParentGuidFilterDiagnostics {
         skipped_unknown_parent = 0
         skipped_parent_not_cached = 0
         skipped_non_source_extension = 0
+        skipped_illegal_item_name = 0
         skipped_qc_artifact = 0
         skipped_status_set_output = 0
         skipped_pw_perf = 0
@@ -673,10 +674,35 @@ function _AuditPoller-GetParentGuidFilterItemName {
     return $itemName
 }
 
+function _AuditPoller-TryGetPathExtensionLower {
+    <#
+    .SYNOPSIS
+    Safe Path.GetExtension wrapper. Returns $null when the name has illegal path characters
+    (which would otherwise throw and abort the entire audit scan).
+    #>
+    param([AllowNull()][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    try {
+        return ([System.IO.Path]::GetExtension($Name)).ToLowerInvariant()
+    } catch {
+        return $null
+    }
+}
+
+function _AuditPoller-TryGetFileNameWithoutExtension {
+    param([AllowNull()][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    try {
+        return [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    } catch {
+        return $null
+    }
+}
+
 function _AuditPoller-GetParentGuidFilterSkipReason {
     <#
     Classifies a row skipped by the parent GUID cache gate using row fields only (no PW resolution).
-    Precedence: unknown parent > PwPerfDoNotUse > status set output > QC artifact > non-source extension > parent not cached.
+    Precedence: unknown parent > illegal item name > PwPerfDoNotUse > status set output > QC artifact > non-source extension > parent not cached.
     #>
     param(
         $Row,
@@ -687,15 +713,20 @@ function _AuditPoller-GetParentGuidFilterSkipReason {
     $name = _AuditPoller-GetParentGuidFilterItemName -Row $Row
     if ([string]::IsNullOrWhiteSpace($name)) { return 'skipped_non_source_extension' }
 
-    $ext = ([System.IO.Path]::GetExtension($name)).ToLowerInvariant()
+    $ext = _AuditPoller-TryGetPathExtensionLower -Name $name
+    if ($null -eq $ext) { return 'skipped_illegal_item_name' }
     if ($ext -eq '.pwperfdonotuse') { return 'skipped_pw_perf' }
     if ($name -match '(?i)^_StatusSet\.pdf$') { return 'skipped_status_set_output' }
     if ($name -match '(?i)^status_set_replace_.*\.pdf$') { return 'skipped_status_set_output' }
 
     if ($ext -eq '.pdf') {
-        if (Test-QCLegacyQcPdfDocumentName -DocumentName $name) { return 'skipped_legacy_qc_artifact' }
+        if ((Get-Command -Name 'Test-QCLegacyQcPdfDocumentName' -ErrorAction SilentlyContinue) -and
+            (Test-QCLegacyQcPdfDocumentName -DocumentName $name)) {
+            return 'skipped_legacy_qc_artifact'
+        }
         if ($name -match '(?i)_qc\.pdf$') { return 'skipped_qc_artifact' }
-        $stem = [System.IO.Path]::GetFileNameWithoutExtension($name)
+        $stem = _AuditPoller-TryGetFileNameWithoutExtension -Name $name
+        if ($null -eq $stem) { return 'skipped_illegal_item_name' }
         if ($stem -and $stem.EndsWith('_QC', [StringComparison]::OrdinalIgnoreCase)) { return 'skipped_qc_artifact' }
         return 'skipped_parent_not_cached'
     }
@@ -724,7 +755,9 @@ function _AuditPoller-AddParentGuidFilterSkipSample {
     $itemName = _AuditPoller-GetParentGuidFilterItemName -Row $Row
     $ext = ''
     if (-not [string]::IsNullOrWhiteSpace($itemName)) {
-        $ext = ([System.IO.Path]::GetExtension($itemName)).ToLowerInvariant()
+        $safeExt = _AuditPoller-TryGetPathExtensionLower -Name $itemName
+        if ($null -eq $safeExt) { $ext = '<illegal>' }
+        else { $ext = $safeExt }
     }
     $actionCode = _AuditPoller-GetTriggerActionCode -Row $Row
     $parentGuid = [string](_AuditPoller-GetParentGuidFromRow -Row $Row)
@@ -750,7 +783,7 @@ function _AuditPoller-ApplyParentGuidFilterDiagnosticsToStats {
     if ($null -eq $Stats -or $null -eq $Diagnostics) { return }
     foreach ($k in @(
         'skipped_unknown_parent', 'skipped_parent_not_cached', 'skipped_non_source_extension',
-        'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
+        'skipped_illegal_item_name', 'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
         'passed_exempt_action', 'passed_parent_cached'
     )) {
         $Stats[$k] = [int]$Diagnostics[$k]
@@ -839,12 +872,21 @@ function Invoke-QCAuditParentGuidCacheGate {
         skipped_unknown_parent = [int]$diagnostics.skipped_unknown_parent
         skipped_parent_not_cached = [int]$diagnostics.skipped_parent_not_cached
         skipped_non_source_extension = [int]$diagnostics.skipped_non_source_extension
+        skipped_illegal_item_name = [int]$diagnostics.skipped_illegal_item_name
         skipped_qc_artifact = [int]$diagnostics.skipped_qc_artifact
         skipped_status_set_output = [int]$diagnostics.skipped_status_set_output
         skipped_pw_perf = [int]$diagnostics.skipped_pw_perf
         passed_exempt_action = [int]$diagnostics.passed_exempt_action
         passed_parent_cached = [int]$diagnostics.passed_parent_cached
         skippedSamples = @($diagnostics.skippedSamples.ToArray())
+    }
+
+    if ([int]$diagnosticsOut.skipped_illegal_item_name -gt 0 -and (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) {
+        $illegalSamples = @($diagnosticsOut.skippedSamples | Where-Object { [string]$_.reason -eq 'skipped_illegal_item_name' })
+        Write-QCJsonLog -Flush -Level 'Warning' -Code 'AUDIT_PARENT_GUID_ILLEGAL_ITEM_NAME' -Message 'Skipped audit row(s) whose item name has illegal path characters (GetExtension would throw).' -Data @{
+            count = [int]$diagnosticsOut.skipped_illegal_item_name
+            samples = $illegalSamples
+        }
     }
 
     if ($Stats) {
@@ -2591,7 +2633,7 @@ function Invoke-AuditTrailScan {
         if ($ingestGate.diagnostics) {
             foreach ($dk in @(
                 'skipped_unknown_parent', 'skipped_parent_not_cached', 'skipped_non_source_extension',
-                'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
+                'skipped_illegal_item_name', 'skipped_qc_artifact', 'skipped_status_set_output', 'skipped_pw_perf',
                 'passed_exempt_action', 'passed_parent_cached'
             )) {
                 $filterLogData[$dk] = [int]$ingestGate.diagnostics[$dk]

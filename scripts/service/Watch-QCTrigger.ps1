@@ -2546,7 +2546,9 @@ if ($statusSetRules.Count -ge 0) {
                                     & $hb @{ step = 'write_sheet_index_batch'; rowCount = $rowCount }
                                     if ($rowCount -gt 0) {
                                         try {
-                                            Write-QCSheetIndexBatch -Config $config -Rows @($sheetIndexRows)
+                                            # [void]: Write-QCSheetIndexBatch / Update-QCSheetQcPdf emit result objects;
+                                            # without suppression they pollute the work pipeline and break [int] cast below.
+                                            [void](Write-QCSheetIndexBatch -Config $config -Rows @($sheetIndexRows))
                                         } catch { }
                                     }
 
@@ -2569,16 +2571,16 @@ if ($statusSetRules.Count -ge 0) {
                                                 }
                                                 if ($srcSheet) {
                                                     if ($srcSheet.pdf -and $srcSheet.pdf.documentGuid) {
-                                                        Update-QCSheetQcPdf -Config $config `
+                                                        [void](Update-QCSheetQcPdf -Config $config `
                                                             -SourceDocumentGuid ([string]$srcSheet.pdf.documentGuid) `
                                                             -QcPdfGuid ([string]$qc.documentGuid) `
-                                                            -QcPdfName ([string]$qc.name)
+                                                            -QcPdfName ([string]$qc.name))
                                                     }
                                                     if ($srcSheet.dgn -and $srcSheet.dgn.documentGuid) {
-                                                        Update-QCSheetQcPdf -Config $config `
+                                                        [void](Update-QCSheetQcPdf -Config $config `
                                                             -SourceDocumentGuid ([string]$srcSheet.dgn.documentGuid) `
                                                             -QcPdfGuid ([string]$qc.documentGuid) `
-                                                            -QcPdfName ([string]$qc.name)
+                                                            -QcPdfName ([string]$qc.name))
                                                     }
                                                 }
                                             } catch { }
@@ -2592,7 +2594,8 @@ if ($statusSetRules.Count -ge 0) {
                                         pairedCount = [int]$state.pairedCount
                                     } -HeartbeatIntervalSeconds 60 -Work $indexWork)
                                 } else {
-                                    $indexRowCount = [int](& $indexWork $null)
+                                    $indexFallbackOutputs = @(& $indexWork $null)
+                                    $indexRowCount = if ($indexFallbackOutputs.Count -gt 0) { [int]$indexFallbackOutputs[-1] } else { 0 }
                                 }
                                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_DONE' -Message 'Sheet index update completed.' -Data @{
                                     folder = $fp

@@ -73,6 +73,17 @@ $result = Invoke-QCWatcherLongRunningWork -Phase 'unit_test_phase' -Data @{ fold
 Assert-Eq $result 42 'work return value'
 Assert-Eq $progressHits.Value 1 'progress callback invoked once from work'
 
+# Pipeline pollution from incidental cmdlet output must not change the intended return value
+$pollutedWork = {
+    param($Progress)
+    [pscustomobject]@{ IsSuccess = $true; Code = 'SIDE_EFFECT' }
+    [pscustomobject]@{ IsSuccess = $true; Code = 'SIDE_EFFECT_2' }
+    return 406
+}
+$pollutedResult = Invoke-QCWatcherLongRunningWork -Phase 'unit_test_pollution' -Data @{} -HeartbeatIntervalSeconds 60 -Work $pollutedWork
+Assert-Eq $pollutedResult 406 'polluted pipeline still returns last (intended) value'
+Assert-True ($pollutedResult -is [int] -or $pollutedResult -is [long]) 'polluted result is scalar numeric, not Object[]'
+
 # Ensure no System.Threading.Timer is constructed by the helper
 $fn = Get-Command Invoke-QCWatcherLongRunningWork
 $def = $fn.ScriptBlock.ToString()
