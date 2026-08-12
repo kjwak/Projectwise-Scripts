@@ -89,11 +89,6 @@ Assert-True (-not $stallDue2.due) 'second stall alert should be deduped within w
 $due2 = Test-QCWatcherSessionAlertDue -Config $config
 Assert-True (-not $due2.due) 'second session alert should be deduped within window'
 
-Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
-$graphMsg = New-QCGraphEmailMessage -ToRecipients @('jflint@aztec.us') -Subject 'Test' -HtmlBody '<p>hi</p>' `
-    -LogoPath (Join-Path $repoRoot 'email/typsalogo.png.webp') -Importance 'high'
-Assert-Eq $graphMsg.message.importance 'high' 'Graph message should carry high importance'
-
 $stallDisabled = Test-QCWatcherAuditActivityStalled -Config $config `
     -MaxPwActTimeUtc '2026-06-10 07:17:22' `
     -PollUntilUtc '2026-06-10 07:24:00' `
@@ -106,5 +101,42 @@ $stallEnabled = Test-QCWatcherAuditActivityStalled -Config $config `
     -PollUntilUtc '2026-06-10 07:24:00' `
     -LastMaxPwActChangeUtc ([datetime]'2026-06-10T07:17:22Z')
 Assert-True $stallEnabled.stalled 'audit stall heuristic should detect lag when explicitly enabled'
+
+# --- sessionReconnect ---
+$reconnectDefaults = Get-QCWatcherSessionReconnectSettings -Config @{ watcher = @{} }
+Assert-True (-not $reconnectDefaults.enabled) 'sessionReconnect defaults to disabled'
+Assert-Eq $reconnectDefaults.intervalMinutes 360 'default interval is 6 hours'
+
+$config.watcher.sessionReconnect = @{
+    enabled = $true
+    intervalMinutes = 5
+    minIntervalMinutes = 15
+}
+$reconnectClamped = Get-QCWatcherSessionReconnectSettings -Config $config
+Assert-True $reconnectClamped.enabled 'sessionReconnect can be enabled'
+Assert-Eq $reconnectClamped.intervalMinutes 15 'intervalMinutes clamps to minIntervalMinutes'
+
+$now = [datetime]::SpecifyKind([datetime]'2026-08-12T18:00:00', [System.DateTimeKind]::Utc)
+$notDue = Test-QCWatcherSessionReconnectDue -Config $config `
+    -LastConnectUtc ([datetime]::SpecifyKind([datetime]'2026-08-12T17:50:00', [System.DateTimeKind]::Utc)) `
+    -NowUtc $now
+Assert-True (-not $notDue.due) 'reconnect should wait until interval elapses'
+
+$due = Test-QCWatcherSessionReconnectDue -Config $config `
+    -LastConnectUtc ([datetime]::SpecifyKind([datetime]'2026-08-12T17:00:00', [System.DateTimeKind]::Utc)) `
+    -NowUtc $now
+Assert-True $due.due 'reconnect should be due after interval'
+Assert-Eq $due.reason 'interval_elapsed' 'due reason should be interval_elapsed'
+
+$disabledDue = Test-QCWatcherSessionReconnectDue -Config @{ watcher = @{ sessionReconnect = @{ enabled = $false; intervalMinutes = 1 } } } `
+    -LastConnectUtc ([datetime]::SpecifyKind([datetime]'2026-08-12T10:00:00', [System.DateTimeKind]::Utc)) `
+    -NowUtc $now
+Assert-True (-not $disabledDue.due) 'disabled reconnect is never due'
+
+Import-Module "$repoRoot/modules/Notifications/QC.NotificationGraph.psm1" -Force
+$graphMsg = New-QCGraphEmailMessage -ToRecipients @('jflint@aztec.us') -Subject 'Test' -HtmlBody '<p>hi</p>' `
+    -LogoPath (Join-Path $repoRoot 'email/typsalogo.png.webp') -Importance 'high'
+# New-QCGraphEmailMessage returns the Graph message hashtable directly (importance at top level).
+Assert-Eq ([string]$graphMsg.importance) 'high' 'Graph message should carry high importance'
 
 Write-Host 'OK: QC watcher session alert tests passed.' -ForegroundColor Green

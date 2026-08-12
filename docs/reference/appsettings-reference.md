@@ -334,6 +334,21 @@ Prepend does **not** change ProjectWise state unless `mode` is `StateAndAttribut
 |-----|-------------|
 | `continuous` | One PW connection, loop until stopped. |
 | `idleSleepMs` | Ms between ticks when `continuous: true`. |
+| `sessionAlerts` | Email + health probe when the watcher loses its ProjectWise session. |
+| `sessionReconnect` | Proactive PW disconnect/reconnect on a wall-clock interval (see below). |
+| `stallRecovery` | Dashboard kills/respawns a wedged watcher child when JSONL progress stops. |
+
+### watcher.sessionReconnect
+
+Proactive re-login for the continuous watcher. Prefer this over `CredentialExpirationPolicy = NoExpiration` on Bentley-hosted datasources: keep the account on **Server default** credential expiry, and reconnect under the ~10h login-token window so the client can silently re-auth instead of showing an interactive session-expired dialog.
+
+| Key | Description |
+|-----|-------------|
+| `enabled` | When true, closes and reopens the PW session after `intervalMinutes`. |
+| `intervalMinutes` | Minutes between reconnects (default `360` = 6h). Keep below server `UserLoginTokenTimeout` (~10h). |
+| `minIntervalMinutes` | Floor for `intervalMinutes` (default `15`) to avoid thrashing. |
+
+Logs: `WATCH_PW_PROACTIVE_RECONNECT` then the normal `WATCH_PW_CONNECT_*` path.
 
 ---
 

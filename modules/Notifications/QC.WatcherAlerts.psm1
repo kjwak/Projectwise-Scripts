@@ -77,6 +77,116 @@ function Get-QCWatcherSessionAlertSettings {
     return $settings
 }
 
+function Get-QCWatcherSessionReconnectSettings {
+    <#
+    .SYNOPSIS
+    Resolves watcher.sessionReconnect settings for proactive ProjectWise re-login.
+    .DESCRIPTION
+    On Bentley-hosted datasources, long-lived watcher sessions can still be severed even when
+    CredentialExpirationPolicy is NoExpiration. Periodic disconnect/reconnect under the server
+    login-token window (~10h default) prefers silent re-auth over interactive session-expired dialogs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+
+    $defaults = @{
+        enabled = $false
+        intervalMinutes = 360
+        minIntervalMinutes = 15
+    }
+
+    $watcher = _QCWA-ToHashtable $Config.watcher
+    $reconnect = $null
+    if ($watcher -and $watcher.ContainsKey('sessionReconnect')) {
+        $reconnect = _QCWA-ToHashtable $watcher.sessionReconnect
+    }
+
+    $settings = @{}
+    foreach ($key in @($defaults.Keys)) {
+        $settings[$key] = $defaults[$key]
+    }
+    if ($reconnect) {
+        if ($null -ne $reconnect.enabled) { try { $settings.enabled = [bool]$reconnect.enabled } catch { } }
+        if ($null -ne $reconnect.intervalMinutes) { try { $settings.intervalMinutes = [int]$reconnect.intervalMinutes } catch { } }
+        if ($null -ne $reconnect.minIntervalMinutes) { try { $settings.minIntervalMinutes = [int]$reconnect.minIntervalMinutes } catch { } }
+    }
+
+    if ($settings.minIntervalMinutes -lt 1) { $settings.minIntervalMinutes = 1 }
+    if ($settings.intervalMinutes -lt [int]$settings.minIntervalMinutes) {
+        $settings.intervalMinutes = [int]$settings.minIntervalMinutes
+    }
+
+    return $settings
+}
+
+function Test-QCWatcherSessionReconnectDue {
+    <#
+    .SYNOPSIS
+    Returns whether a proactive ProjectWise reconnect is due based on wall-clock age.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [AllowNull()]
+        [object]$LastConnectUtc = $null,
+        [datetime]$NowUtc = ([datetime]::UtcNow)
+    )
+
+    $settings = Get-QCWatcherSessionReconnectSettings -Config $Config
+    if (-not [bool]$settings.enabled) {
+        return @{ due = $false; reason = 'disabled'; settings = $settings; ageMinutes = $null }
+    }
+    if ($null -eq $LastConnectUtc -or [string]::IsNullOrWhiteSpace([string]$LastConnectUtc)) {
+        return @{ due = $false; reason = 'no_prior_connect'; settings = $settings; ageMinutes = $null }
+    }
+
+    try {
+        $last = [datetime]$LastConnectUtc
+    } catch {
+        return @{ due = $false; reason = 'invalid_last_connect'; settings = $settings; ageMinutes = $null }
+    }
+    if ($last.Kind -eq [System.DateTimeKind]::Unspecified) {
+        $last = [datetime]::SpecifyKind($last, [System.DateTimeKind]::Utc)
+    } elseif ($last.Kind -eq [System.DateTimeKind]::Local) {
+        $last = $last.ToUniversalTime()
+    }
+
+    $now = $NowUtc
+    if ($now.Kind -eq [System.DateTimeKind]::Unspecified) {
+        $now = [datetime]::SpecifyKind($now, [System.DateTimeKind]::Utc)
+    } elseif ($now.Kind -eq [System.DateTimeKind]::Local) {
+        $now = $now.ToUniversalTime()
+    }
+
+    $age = $now - $last
+    if ($age.TotalMinutes -lt 0) {
+        return @{ due = $false; reason = 'clock_skew'; settings = $settings; ageMinutes = [math]::Round($age.TotalMinutes, 2) }
+    }
+
+    $interval = [int]$settings.intervalMinutes
+    if ($age.TotalMinutes -ge $interval) {
+        return @{
+            due = $true
+            reason = 'interval_elapsed'
+            settings = $settings
+            ageMinutes = [math]::Round($age.TotalMinutes, 2)
+            intervalMinutes = $interval
+        }
+    }
+
+    return @{
+        due = $false
+        reason = 'within_interval'
+        settings = $settings
+        ageMinutes = [math]::Round($age.TotalMinutes, 2)
+        intervalMinutes = $interval
+    }
+}
+
 function Get-QCWatcherSessionAlertStatePath {
     [CmdletBinding()]
     param(
@@ -526,6 +636,8 @@ function Test-QCWatcherAuditActivityStalled {
 
 Export-ModuleMember -Function @(
     'Get-QCWatcherSessionAlertSettings',
+    'Get-QCWatcherSessionReconnectSettings',
+    'Test-QCWatcherSessionReconnectDue',
     'Get-QCWatcherSessionAlertStatePath',
     'Test-QCWatcherSessionAlertDue',
     'Set-QCWatcherSessionAlertSent',

@@ -781,6 +781,7 @@ $script:watchLastMaxPwActTimeUtc = $null
 $script:watchLastMaxPwActChangeUtc = $null
 $script:watchLastPwHealthProbeTick = 0
 $script:watchLastPwConnectTick = 0
+$script:watchLastPwConnectUtc = $null
 
 function _Watch-HandlePwSessionLost {
     param(
@@ -865,6 +866,7 @@ function _Watch-HandlePwSessionLost {
         }
     }
     $PwSessionOpenRef.Value = $false
+    $script:watchLastPwConnectUtc = $null
     $script:pwConnectFailureStreak++
     $script:pwSessionLossHandled = $true
     if ($ErrorsRef) { $ErrorsRef.Value++ }
@@ -900,6 +902,33 @@ if ($statusSetRules.Count -ge 0) {
             }
             $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
             if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+
+            # Proactive reconnect: close a long-lived session before the hosted login-token
+            # window forces an interactive "session expired" dialog mid-PW call.
+            if ($pwSessionOpen -and (Get-Command -Name 'Test-QCWatcherSessionReconnectDue' -ErrorAction SilentlyContinue)) {
+                $reconnectDue = Test-QCWatcherSessionReconnectDue -Config $config -LastConnectUtc $script:watchLastPwConnectUtc
+                if ($reconnectDue.due) {
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_PROACTIVE_RECONNECT' -Message 'Proactive ProjectWise reconnect due; closing session before reconnect.' -Data @{
+                        tick = $watcherTick
+                        datasourceName = $ds
+                        ageMinutes = $reconnectDue.ageMinutes
+                        intervalMinutes = $reconnectDue.intervalMinutes
+                        lastConnectUtc = if ($script:watchLastPwConnectUtc) { ([datetime]$script:watchLastPwConnectUtc).ToUniversalTime().ToString('o') } else { $null }
+                        reason = [string]$reconnectDue.reason
+                    }
+                    try {
+                        Disconnect-PW | Out-Null
+                    } catch {
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_PROACTIVE_RECONNECT_DISCONNECT_FAILED' -Message 'Proactive reconnect disconnect failed; forcing session closed for reconnect attempt.' -Data @{
+                            tick = $watcherTick
+                            errorMessage = [string]$_.Exception.Message
+                        }
+                    }
+                    $pwSessionOpen = $false
+                    $script:watchLastPwConnectUtc = $null
+                }
+            }
+
             if (-not $pwSessionOpen) {
                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_START' -Message 'Connecting to ProjectWise.' -Data @{
                     datasourceName = $ds
@@ -916,10 +945,12 @@ if ($statusSetRules.Count -ge 0) {
                 $pwSessionOpen = $true
                 $script:pwConnectFailureStreak = 0
                 $script:watchLastPwConnectTick = $watcherTick
+                $script:watchLastPwConnectUtc = [datetime]::UtcNow
                 _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_CONNECT_OK' -Message 'Connected to ProjectWise.' -Data @{
                     datasourceName = $ds
                     userName = if ($credRes.Data -and $credRes.Data.userName) { [string]$credRes.Data.userName } else { '' }
                     continuous = $watcherContinuous
+                    connectedUtc = $script:watchLastPwConnectUtc.ToString('o')
                 }
             }
 
@@ -2916,6 +2947,7 @@ if ($statusSetRules.Count -ge 0) {
             if (-not $watcherContinuous) {
                 Disconnect-PW | Out-Null
                 $pwSessionOpen = $false
+                $script:watchLastPwConnectUtc = $null
             }
         } catch {
             if (-not $script:pwSessionLossHandled) {
@@ -2930,6 +2962,7 @@ if ($statusSetRules.Count -ge 0) {
                         }
                     }
                     $pwSessionOpen = $false
+                    $script:watchLastPwConnectUtc = $null
                     if ($_.Exception.Message -match 'PW_CONNECT_FAILED') {
                         $script:pwConnectFailureStreak++
                     }
@@ -3362,6 +3395,7 @@ if ($pwSessionOpen) {
         _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_PW_DISCONNECT_FAILED' -Message 'ProjectWise disconnect failed on watcher exit.' -Data @{ error = [string]$_.Exception.Message }
     }
     $pwSessionOpen = $false
+    $script:watchLastPwConnectUtc = $null
 }
 
 exit 0

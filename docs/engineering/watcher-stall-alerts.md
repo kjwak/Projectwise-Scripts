@@ -21,6 +21,10 @@ Both channels honor `watcher.sessionAlerts.enabled`, recipients, importance, and
     "enabled": true,
     "dedupeMinutes": 60
   },
+  "sessionReconnect": {
+    "enabled": true,
+    "intervalMinutes": 360
+  },
   "stallRecovery": {
     "enabled": true,
     "noLogActivitySeconds": 3600,
@@ -30,6 +34,7 @@ Both channels honor `watcher.sessionAlerts.enabled`, recipients, importance, and
 }
 ```
 
+- **`sessionReconnect`** — proactive PW disconnect/reconnect on a wall-clock interval (default 6h) so the continuous watcher stays under the hosted login-token window. Does not send session-lost email.
 - **`sendSessionAlert`** — deprecated; when true, still sends the old session-lost template on stall kill (avoid in production).
 - **`sendStallAlert`** — sends the dedicated stall-recovery template.
 - **`noLogActivitySeconds`** — raised to 60 minutes so legitimate long phases are less likely to trip recovery.
