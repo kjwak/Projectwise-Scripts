@@ -30,6 +30,7 @@ This patch follows the minimal/medium path: keep PowerShell as orchestrator and 
 - Existing `_StatusSet.pdf` files are preserved in `_history` during replacement.
 - Export scratch folders are no longer deleted at the start/end of every job by default.
 - Cleanup is retention-based and disabled by default; when enabled, only expired staging/render files are removed.
+- `_history` PDFs and manifest `.bak_*` copies are thinned during reconcile / scheduled full-scan (`statusSet.historyRetention`), not after every rebuild.
 - Dry-run results include an operation report listing planned downloads, writes, replacements, deletes, and skips.
 
 ## Longer-term recommendation

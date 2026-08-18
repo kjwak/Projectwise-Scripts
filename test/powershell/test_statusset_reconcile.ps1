@@ -141,6 +141,7 @@ try {
     $cb = { param($e) [void]$events.Add($e) }
     $rRec = Invoke-StatusSetReconcile -Config $config -LogCallback $cb
     _Assert ($rRec.IsSuccess)                                                "reconcile succeeds"
+    _Assert ($null -ne $rRec.Data.historyRetention)                           "historyRetention attached"
     _Assert ([int]$rRec.Data.counts.considered -eq 2)                        "considered = 2 (good + new)"
     _Assert ([int]$rRec.Data.counts.inSync -eq 1)                            "inSync = 1"
     _Assert ([int]$rRec.Data.counts.updated -eq 1)                           "updated = 1"

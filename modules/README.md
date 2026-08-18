@@ -103,8 +103,8 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
   - state: `Get-StatusSetLocalFolderState`, `Get-StatusSetPWFolderState`
   - workspace/manifest: `Get-StatusSetWorkspaceDirectory`, `Get-StatusSetManifestPath`, `Read-StatusSetManifestFile`, `Write-StatusSetManifestFile`, `New-StatusSetManifestObject`
   - decisions: `Test-StatusSetRebuildNeeded`, `Test-StatusSetWatcherShouldEnqueue`
-  - operations: `Merge-StatusSetPdfWithQpdf`, `Export-StatusSetPdfToFolder`, `Invoke-StatusSetNativeJob`, `Sync-StatusSetWorkspaceToPw`, `Invoke-StatusSetReconcile`
-- **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; retention-based staging cleanup instead of per-job scratch deletion.
+  - operations: `Merge-StatusSetPdfWithQpdf`, `Export-StatusSetPdfToFolder`, `Invoke-StatusSetNativeJob`, `Sync-StatusSetWorkspaceToPw`, `Invoke-StatusSetHistoryRetention`, `Invoke-StatusSetReconcile`
+- **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; calendar thinning of `_history` and manifest backups during reconcile (not per-job); retention-based staging cleanup instead of per-job scratch deletion.
 
 ### Comment-status sync (`QC_COMMENT_STATUS_SYNC`)
 

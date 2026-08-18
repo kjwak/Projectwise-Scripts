@@ -41,7 +41,7 @@ At each configured wall-clock time (`auditPoller.fullScanSchedule.times`, e.g. `
 - Populates the `sheet_index` database table with document metadata.
 - Runs STATUS_SET_GEN manifest comparison for all watched folders.
 
-Full folder reconciliation runs once per schedule slot per calendar day (after the configured time), not on the first audit tick.
+Full folder reconciliation runs once per schedule slot per calendar day (after the configured time), not on the first audit tick. At the start of each slot the watcher also thins status-set `_history` PDFs and manifest `.bak_*` copies (`statusSet.historyRetention`; once per slot, including preempted scans).
 
 **Cooperative preemption (July 2026):** With `fullScanSchedule.preempt.enabled` (default on), each continuous tick processes at most `checkEveryNFolders` folders, then yields so the next tick can run audit again before more folders. Progress is stored in `queue/_watcher/full-scan-progress.json` (and `watcher_state` when DB is enabled) so a restart resumes mid-slot instead of rewalking from the top. The schedule slot is marked complete only when the remaining folder queue is empty.
 

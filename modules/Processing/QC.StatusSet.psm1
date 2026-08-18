@@ -152,6 +152,302 @@ function _SSS-GetHashtableInt([hashtable]$Map, [string]$Name, [int]$Default) {
     try { return [int]$Map[$Name] } catch { return $Default }
 }
 
+function _SSS-CoerceMap([object]$Value) {
+    if ($null -eq $Value) { return @{} }
+    if ($Value -is [hashtable]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $h = @{}
+        foreach ($k in @($Value.Keys)) { $h[[string]$k] = $Value[$k] }
+        return $h
+    }
+    $h = @{}
+    if ($Value.PSObject -and $Value.PSObject.Properties) {
+        foreach ($p in $Value.PSObject.Properties) { $h[$p.Name] = $p.Value }
+    }
+    return $h
+}
+
+function _SSS-GetStatusSetConfigMap([hashtable]$Config) {
+    if (-not $Config -or -not $Config.ContainsKey('statusSet') -or -not $Config.statusSet) { return @{} }
+    return _SSS-CoerceMap $Config.statusSet
+}
+
+function _SSS-GetHistoryRetentionSettings([hashtable]$Config) {
+    $ss = _SSS-GetStatusSetConfigMap $Config
+    $hr = @{}
+    if ($ss.ContainsKey('historyRetention') -and $ss.historyRetention) {
+        $hr = _SSS-CoerceMap $ss.historyRetention
+    }
+    $enabled = $true
+    if ($hr.ContainsKey('enabled') -and $null -ne $hr['enabled']) {
+        $enabled = _SSS-GetHashtableBool -Map $hr -Name 'enabled' -Default $true
+    }
+    $keepRecent = _SSS-GetHashtableInt -Map $hr -Name 'keepRecentCount' -Default 8
+    if ($keepRecent -lt 1) { $keepRecent = 1 }
+    $dailyDays = _SSS-GetHashtableInt -Map $hr -Name 'dailyDays' -Default 7
+    if ($dailyDays -lt 0) { $dailyDays = 0 }
+    $weeklyWeeks = _SSS-GetHashtableInt -Map $hr -Name 'weeklyWeeks' -Default 26
+    if ($weeklyWeeks -lt 0) { $weeklyWeeks = 0 }
+    $maxGb = 10.0
+    if ($hr.ContainsKey('maxGbPerFolder') -and $null -ne $hr['maxGbPerFolder']) {
+        try { $maxGb = [double]$hr['maxGbPerFolder'] } catch { $maxGb = 10.0 }
+    }
+    if ($maxGb -lt 0) { $maxGb = 0 }
+    $maxBytes = [long]0
+    if ($maxGb -gt 0) {
+        $maxBytes = [long][Math]::Round($maxGb * 1GB)
+    }
+    if ($hr.ContainsKey('maxBytesPerFolder') -and $null -ne $hr['maxBytesPerFolder']) {
+        try { $maxBytes = [long]$hr['maxBytesPerFolder'] } catch { }
+        if ($maxBytes -lt 0) { $maxBytes = 0 }
+    }
+    return @{
+        enabled = $enabled
+        keepRecentCount = $keepRecent
+        dailyDays = $dailyDays
+        weeklyWeeks = $weeklyWeeks
+        maxGbPerFolder = $maxGb
+        maxBytesPerFolder = $maxBytes
+    }
+}
+
+function _SSS-ParseHistoryTimestampFromName([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    $raw = $null
+    if ($Name -match '(\d{8})_(\d{6})') {
+        $raw = $Matches[1] + $Matches[2]
+    } elseif ($Name -match 'bak_(\d{14})') {
+        $raw = $Matches[1]
+    } elseif ($Name -match '(\d{14})') {
+        $raw = $Matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    try {
+        return [datetime]::ParseExact($raw, 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        return $null
+    }
+}
+
+function _SSS-GetIsoWeekKey([datetime]$dt) {
+    $d = $dt.Date
+    $dow = [int]$d.DayOfWeek
+    $daysFromMonday = ($dow + 6) % 7
+    $monday = $d.AddDays(-1 * $daysFromMonday)
+    $thursday = $monday.AddDays(3)
+    $year = $thursday.Year
+    $jan4 = New-Object datetime $year, 1, 4
+    $jan4Dow = [int]$jan4.DayOfWeek
+    $jan4FromMon = ($jan4Dow + 6) % 7
+    $week1Monday = $jan4.AddDays(-1 * $jan4FromMon)
+    $week = [int][Math]::Floor(($monday - $week1Monday).TotalDays / 7) + 1
+    return ('{0:D4}-W{1:D2}' -f $year, $week)
+}
+
+function _SSS-NewHistoryArtifact {
+    param(
+        [Parameter(Mandatory)][System.IO.FileInfo]$FileInfo,
+        [Parameter(Mandatory)][ValidateSet('pdf','manifest')][string]$Kind
+    )
+    $stamp = _SSS-ParseHistoryTimestampFromName $FileInfo.Name
+    if ($null -eq $stamp) {
+        $utc = $FileInfo.LastWriteTimeUtc
+        if ($utc.Kind -ne [DateTimeKind]::Utc) { $utc = $utc.ToUniversalTime() }
+        $stamp = [TimeZoneInfo]::ConvertTimeFromUtc($utc, (Get-QCDisplayTimeZone))
+    }
+    return @{
+        path = [string]$FileInfo.FullName
+        name = [string]$FileInfo.Name
+        length = [long]$FileInfo.Length
+        stamp = [datetime]$stamp
+        kind = $Kind
+    }
+}
+
+function _SSS-CollectStatusSetHistoryArtifacts {
+    param(
+        [Parameter(Mandatory)][string]$WorkspaceDir,
+        [Parameter(Mandatory)][string]$ManifestFileName,
+        [Parameter(Mandatory)][string]$StatusSetPdfName
+    )
+    $items = @()
+    $currentPdf = Join-Path $WorkspaceDir $StatusSetPdfName
+    $currentMan = Join-Path $WorkspaceDir $ManifestFileName
+    $histDir = Join-Path $WorkspaceDir '_history'
+    if (Test-Path -LiteralPath $histDir -PathType Container) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $histDir -File -Force -ErrorAction SilentlyContinue)) {
+            if ($f.FullName -eq $currentPdf -or $f.FullName -eq $currentMan) { continue }
+            $ext = $f.Extension
+            if ($ext -eq '.pdf') {
+                $items += _SSS-NewHistoryArtifact -FileInfo $f -Kind 'pdf'
+            } elseif ($ext -eq '.json') {
+                $items += _SSS-NewHistoryArtifact -FileInfo $f -Kind 'manifest'
+            }
+        }
+    }
+    $bakFilter = $ManifestFileName + '.bak_*'
+    foreach ($f in @(Get-ChildItem -LiteralPath $WorkspaceDir -File -Filter $bakFilter -Force -ErrorAction SilentlyContinue)) {
+        if ($f.FullName -eq $currentMan) { continue }
+        $items += _SSS-NewHistoryArtifact -FileInfo $f -Kind 'manifest'
+    }
+    return $items
+}
+
+function _SSS-SelectHistoryRetentionKeepSet {
+    param(
+        [object[]]$Artifacts = @(),
+        [Parameter(Mandatory)][datetime]$Now,
+        [Parameter(Mandatory)][int]$KeepRecentCount,
+        [Parameter(Mandatory)][int]$DailyDays,
+        [Parameter(Mandatory)][int]$WeeklyWeeks
+    )
+    $keep = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (-not $Artifacts -or @($Artifacts).Count -eq 0) { return $keep }
+    $sorted = @($Artifacts | Sort-Object { $_.stamp } -Descending)
+    $n = [Math]::Min($KeepRecentCount, $sorted.Count)
+    for ($i = 0; $i -lt $n; $i++) {
+        [void]$keep.Add([string]$sorted[$i].path)
+    }
+    $dailyCutoff = $Now.Date.AddDays(-1 * $DailyDays)
+    $weeklyCutoff = $Now.Date.AddDays(-7 * $WeeklyWeeks)
+    $daysHave = @{}
+    $weeksHave = @{}
+    foreach ($a in $sorted) {
+        $path = [string]$a.path
+        if (-not $keep.Contains($path)) { continue }
+        if ($a.stamp -ge $dailyCutoff) { $daysHave[$a.stamp.ToString('yyyy-MM-dd')] = $true }
+        if ($a.stamp -ge $weeklyCutoff) {
+            $wkHave = _SSS-GetIsoWeekKey $a.stamp
+            $weeksHave[$wkHave] = $true
+        }
+    }
+    foreach ($a in $sorted) {
+        $path = [string]$a.path
+        if ($keep.Contains($path)) { continue }
+        if ($a.stamp -ge $dailyCutoff) {
+            $dk = $a.stamp.ToString('yyyy-MM-dd')
+            if (-not $daysHave.ContainsKey($dk)) {
+                $daysHave[$dk] = $true
+                [void]$keep.Add($path)
+            }
+        } elseif ($a.stamp -ge $weeklyCutoff) {
+            $wk = _SSS-GetIsoWeekKey $a.stamp
+            if (-not $weeksHave.ContainsKey($wk)) {
+                $weeksHave[$wk] = $true
+                [void]$keep.Add($path)
+            }
+        }
+    }
+    return $keep
+}
+
+function _SSS-TryRemoveHistoryFile([string]$Path) {
+    try {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function _SSS-ApplyHistoryRetentionToWorkspace {
+    param(
+        [Parameter(Mandatory)][string]$WorkspaceDir,
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][datetime]$Now,
+        [Parameter(Mandatory)][string]$ManifestFileName,
+        [Parameter(Mandatory)][string]$StatusSetPdfName,
+        [Parameter(Mandatory)][bool]$DryRun
+    )
+    $result = @{
+        workspaceDir = $WorkspaceDir
+        considered = 0
+        kept = 0
+        deleted = 0
+        skippedLocked = 0
+        bytesDeleted = [long]0
+        bytesKept = [long]0
+        overCap = $false
+    }
+    if (-not (Test-Path -LiteralPath $WorkspaceDir -PathType Container)) { return $result }
+
+    $artifacts = @(_SSS-CollectStatusSetHistoryArtifacts -WorkspaceDir $WorkspaceDir -ManifestFileName $ManifestFileName -StatusSetPdfName $StatusSetPdfName)
+    $result.considered = @($artifacts).Count
+    if ($result.considered -le 0) { return $result }
+
+    $pdfs = @($artifacts | Where-Object { $_.kind -eq 'pdf' })
+    $manifests = @($artifacts | Where-Object { $_.kind -eq 'manifest' })
+    $keepPdf = _SSS-SelectHistoryRetentionKeepSet -Artifacts $pdfs -Now $Now -KeepRecentCount ([int]$Settings.keepRecentCount) -DailyDays ([int]$Settings.dailyDays) -WeeklyWeeks ([int]$Settings.weeklyWeeks)
+    $keepMan = _SSS-SelectHistoryRetentionKeepSet -Artifacts $manifests -Now $Now -KeepRecentCount ([int]$Settings.keepRecentCount) -DailyDays ([int]$Settings.dailyDays) -WeeklyWeeks ([int]$Settings.weeklyWeeks)
+
+    $protected = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($group in @($pdfs, $manifests)) {
+        $sorted = @($group | Sort-Object { $_.stamp } -Descending)
+        $n = [Math]::Min([int]$Settings.keepRecentCount, $sorted.Count)
+        for ($i = 0; $i -lt $n; $i++) { [void]$protected.Add([string]$sorted[$i].path) }
+    }
+
+    $keptList = @()
+    $deleteList = @()
+    foreach ($a in $artifacts) {
+        $path = [string]$a.path
+        if (($a.kind -eq 'pdf' -and $keepPdf.Contains($path)) -or ($a.kind -eq 'manifest' -and $keepMan.Contains($path))) {
+            $keptList += $a
+        } else {
+            $deleteList += $a
+        }
+    }
+
+    $maxBytes = [long]$Settings.maxBytesPerFolder
+    $bytesKept = [long]0
+    foreach ($a in $keptList) { $bytesKept += [long]$a.length }
+    if ($maxBytes -gt 0 -and $bytesKept -gt $maxBytes) {
+        $capDrop = New-Object 'System.Collections.Generic.HashSet[string]'
+        $oldestFirst = @($keptList | Sort-Object { $_.stamp })
+        foreach ($a in $oldestFirst) {
+            if ($bytesKept -le $maxBytes) { break }
+            $path = [string]$a.path
+            if ($protected.Contains($path)) { continue }
+            [void]$capDrop.Add($path)
+            $bytesKept -= [long]$a.length
+        }
+        if ($capDrop.Count -gt 0) {
+            $deleteList = @($deleteList) + @($keptList | Where-Object { $capDrop.Contains([string]$_.path) })
+            $keptList = @($keptList | Where-Object { -not $capDrop.Contains([string]$_.path) })
+        }
+        if ($bytesKept -gt $maxBytes) { $result.overCap = $true }
+    }
+
+    $currentPdf = Join-Path $WorkspaceDir $StatusSetPdfName
+    $currentMan = Join-Path $WorkspaceDir $ManifestFileName
+    $deleted = 0
+    $skippedLocked = 0
+    $bytesDeleted = [long]0
+    foreach ($a in $deleteList) {
+        $path = [string]$a.path
+        if ($path -eq $currentPdf -or $path -eq $currentMan) { continue }
+        if ($DryRun) {
+            $deleted++
+            $bytesDeleted += [long]$a.length
+            continue
+        }
+        if (_SSS-TryRemoveHistoryFile $path) {
+            $deleted++
+            $bytesDeleted += [long]$a.length
+        } else {
+            $skippedLocked++
+            $bytesKept += [long]$a.length
+        }
+    }
+
+    $result.kept = @($keptList).Count
+    $result.deleted = $deleted
+    $result.skippedLocked = $skippedLocked
+    $result.bytesDeleted = $bytesDeleted
+    $result.bytesKept = $bytesKept
+    return $result
+}
+
 function _SSS-NewStatusSetOperationReport {
     param(
         [Parameter(Mandatory)]
@@ -3044,10 +3340,96 @@ function Sync-StatusSetWorkspaceToPw {
     }
 }
 
+function Invoke-StatusSetHistoryRetention {
+    <#
+    .SYNOPSIS
+    Thin per-workspace _history PDFs and manifest backups using calendar tiers plus a size cap.
+    .DESCRIPTION
+    Keeps the newest keepRecentCount copies, then one per calendar day for dailyDays,
+    then one per ISO week for weeklyWeeks (display time zone). Remaining files are
+    deleted. If kept history still exceeds maxGbPerFolder, oldest non-recent files
+    are dropped. Live _StatusSet.pdf and the current manifest are never deleted.
+    Runs against every child folder of statusSet.localRoot, including incomplete
+    workspaces. Does not use the 2s AV file-op throttle; locked files are skipped.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [Parameter(Mandatory = $false)]
+        [string]$WorkspaceDir = '',
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun
+    )
+
+    $settings = _SSS-GetHistoryRetentionSettings $Config
+    $ss = _SSS-GetStatusSetConfigMap $Config
+    $localRoot = if ($ss.ContainsKey('localRoot') -and $ss.localRoot) { [string]$ss.localRoot } else { 'C:\PW_QC_LOCAL' }
+    $manifestName = if ($ss.ContainsKey('manifestFileName') -and $ss.manifestFileName) { [string]$ss.manifestFileName } else { '_statusset.manifest.json' }
+    $statusPdfName = if ($ss.ContainsKey('statusSetPdfName') -and $ss.statusSetPdfName) { [string]$ss.statusSetPdfName } else { '_StatusSet.pdf' }
+
+    $isDry = [bool]$DryRun
+    if (-not $isDry -and $Config.ContainsKey('dryRun')) {
+        try { $isDry = [bool]$Config.dryRun } catch { $isDry = $false }
+    }
+
+    $summary = @{
+        enabled = [bool]$settings.enabled
+        dryRun = $isDry
+        localRoot = $localRoot
+        settings = $settings
+        workspaces = 0
+        considered = 0
+        kept = 0
+        deleted = 0
+        skippedLocked = 0
+        bytesDeleted = [long]0
+        bytesKept = [long]0
+        overCapWorkspaces = 0
+        workspaceDetails = @()
+    }
+
+    if (-not $settings.enabled) {
+        return New-QCSuccessResult -Code 'STATUS_SET_HISTORY_RETENTION_SKIPPED' -Message 'Status-set history retention is disabled.' -Data $summary
+    }
+
+    $targets = @()
+    if (-not (_SSS-IsNullOrWhiteSpace $WorkspaceDir)) {
+        $targets = @($WorkspaceDir)
+    } elseif (Test-Path -LiteralPath $localRoot -PathType Container) {
+        $targets = @(Get-ChildItem -LiteralPath $localRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+
+    $now = Get-QCWallClockNow
+    $details = @()
+    foreach ($ws in $targets) {
+        if ([string]::IsNullOrWhiteSpace($ws)) { continue }
+        $summary.workspaces++
+        $one = _SSS-ApplyHistoryRetentionToWorkspace -WorkspaceDir $ws -Settings $settings -Now $now -ManifestFileName $manifestName -StatusSetPdfName $statusPdfName -DryRun $isDry
+        $summary.considered += [int]$one.considered
+        $summary.kept += [int]$one.kept
+        $summary.deleted += [int]$one.deleted
+        $summary.skippedLocked += [int]$one.skippedLocked
+        $summary.bytesDeleted += [long]$one.bytesDeleted
+        $summary.bytesKept += [long]$one.bytesKept
+        if ($one.overCap) { $summary.overCapWorkspaces++ }
+        if ([int]$one.deleted -gt 0 -or [bool]$one.overCap -or [int]$one.skippedLocked -gt 0) { $details += $one }
+    }
+    $summary.workspaceDetails = $details
+
+    $msg = if ($isDry) {
+        'Status-set history retention dry-run completed.'
+    } else {
+        'Status-set history retention completed.'
+    }
+    return New-QCSuccessResult -Code 'STATUS_SET_HISTORY_RETENTION_DONE' -Message $msg -Data $summary
+}
+
 function Invoke-StatusSetReconcile {
     <#
     .SYNOPSIS
-    On startup, sync every locally-built _StatusSet.pdf back to ProjectWise.
+    On startup, sync every locally-built _StatusSet.pdf back to ProjectWise
+    and thin _history PDFs plus manifest .bak_* copies (statusSet.historyRetention).
     .DESCRIPTION
     Walks statusSet.localRoot for workspaces that have both a manifest and a
     local _StatusSet.pdf. For each, compares to the PW copy and uploads when
@@ -3126,11 +3508,35 @@ function Invoke-StatusSetReconcile {
             } catch { }
         }
     }
+
+    $historyRetention = $null
+    try {
+        $isDryRun = $false
+        if ($Config.ContainsKey('dryRun')) { try { $isDryRun = [bool]$Config.dryRun } catch { $isDryRun = $false } }
+        $hist = Invoke-StatusSetHistoryRetention -Config $Config -DryRun:$isDryRun
+        if ($hist.IsSuccess) {
+            $historyRetention = $hist.Data
+        } else {
+            $historyRetention = @{
+                isSuccess = $false
+                code = [string]$hist.Code
+                message = [string]$hist.Message
+            }
+        }
+    } catch {
+        $historyRetention = @{
+            isSuccess = $false
+            code = 'STATUS_SET_HISTORY_RETENTION_THREW'
+            message = [string]$_.Exception.Message
+        }
+    }
+
     return New-QCSuccessResult -Code 'STATUS_SET_RECONCILE_DONE' -Message 'Status set reconciliation completed.' -Data @{
         localRoot = $localRoot
         counts    = $counts
         failures  = $failures
         skipped   = $walk.Data.skipped
+        historyRetention = $historyRetention
     }
 }
 
@@ -3247,5 +3653,6 @@ Export-ModuleMember -Function @(
     'Invoke-StatusSetNativeJob',
     'Get-StatusSetWorkspaceManifests',
     'Sync-StatusSetWorkspaceToPw',
+    'Invoke-StatusSetHistoryRetention',
     'Invoke-StatusSetReconcile'
 )

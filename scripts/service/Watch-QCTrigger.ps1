@@ -379,6 +379,7 @@ $script:WatchRequiredCommands = @(
     'Get-QCStatusSetBatchingSettings'
     'Mark-StatusSetDirtyFolder'
     'Invoke-StatusSetDirtyFolderBatch'
+    'Invoke-StatusSetHistoryRetention'
     'Invoke-StatusSetReconcile'
     'Get-PWCredentialFromFile'
     'Connect-PW'
@@ -664,6 +665,7 @@ $queueRoot = _Get-WatcherQueueRoot -Config $config
 
 $script:auditRestartOverlapDone = $false
 $script:startupOutputsReconcileDone = $false
+$script:statusSetHistoryRetentionSlotKey = $null
 try {
     $startupRes = Invoke-QCRecoverQueue -Config $config -ClearWatcherActive
     $startupData = if ($startupRes.IsSuccess) { $startupRes.Data } else { @{} }
@@ -2113,6 +2115,19 @@ if ($statusSetRules.Count -ge 0) {
                     scheduledTime = [string]$fullScanPlan.scheduledTime
                     scheduledTimes = @($fullScanPlan.scheduledTimes)
                     slotKey = [string]$fullScanPlan.slotKey
+                }
+                $histSlotKey = if ($fullScanPlan.slotKey) { [string]$fullScanPlan.slotKey } else { 'cycle|{0}' -f $cycleNum }
+                if ($script:statusSetHistoryRetentionSlotKey -ne $histSlotKey) {
+                    $script:statusSetHistoryRetentionSlotKey = $histSlotKey
+                    try {
+                        $histRes = Invoke-StatusSetHistoryRetention -Config $config
+                        $histLevel = if ($histRes.IsSuccess) { 'Information' } else { 'Warning' }
+                        $histCode = if ($histRes.IsSuccess) { 'WATCH_STATUSSET_HISTORY_RETENTION' } else { 'WATCH_STATUSSET_HISTORY_RETENTION_FAILED' }
+                        $histData = if ($histRes.Data) { $histRes.Data } else { @{ code = [string]$histRes.Code } }
+                        _Watch-WriteJsonLog -Flush -Level $histLevel -Code $histCode -Message ([string]$histRes.Message) -Data $histData
+                    } catch {
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_STATUSSET_HISTORY_RETENTION_FAILED' -Message ('History retention threw: ' + $_.Exception.Message) -Data @{}
+                    }
                 }
                 $runFullScan = $true
                 if ($fullScanPlan.mode -eq 'cycle') {

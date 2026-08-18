@@ -7,6 +7,7 @@ $tests = @(
     'test\powershell\test_orphan_lock_recovery.ps1',
     'test\powershell\test_merge_statusset_qpdf.ps1',
     'test\powershell\test_statusset_workspace_dir.ps1',
+    'test\powershell\test_statusset_history_retention.ps1',
     'test\powershell\test_blacklist_pw_uri.ps1',
     'test\powershell\test_statusset_processor_default.ps1',
     'test\powershell\test_pw_writeback_failure.ps1',

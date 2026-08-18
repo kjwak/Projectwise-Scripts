@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
 Walks every locally-built _StatusSet.pdf manifest under statusSet.localRoot and
-re-syncs it to ProjectWise. Use this on application restart to catch up any
-status sets that finished locally but never made it to PW (legacy parity:
-every startup re-checks every manifest against the PW copy).
+re-syncs it to ProjectWise. Also thins per-workspace _history PDFs and manifest
+.bak_* copies using statusSet.historyRetention. Use this on application restart
+to catch up any status sets that finished locally but never made it to PW
+(legacy parity: every startup re-checks every manifest against the PW copy).
 
 .DESCRIPTION
 For each workspace under localRoot that contains both _statusset.manifest.json
@@ -39,6 +40,7 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Read-QCAppSettings'
     'Write-QCJsonLog'
     'Invoke-StatusSetReconcile'
+    'Invoke-StatusSetHistoryRetention'
 ) -Context 'Reconcile-QCStatusSets bootstrap'
 
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
@@ -91,6 +93,8 @@ try {
             considered = [int]$walk.Data.recordCount
             skipped    = [int]$walk.Data.skipCount
         }
+        $hist = Invoke-StatusSetHistoryRetention -Config $config -DryRun
+        Write-QCJsonLog 'Information' 'RECONCILE_HISTORY_RETENTION_DRYRUN' ([string]$hist.Message) $(if ($hist.Data) { $hist.Data } else { @{ code = [string]$hist.Code } })
     } else {
         $cb = {
             param($evt)
@@ -110,6 +114,7 @@ try {
             counts   = $res.Data.counts
             failures = $res.Data.failures
             skipped  = $res.Data.skipped
+            historyRetention = $res.Data.historyRetention
         }
     }
 } finally {

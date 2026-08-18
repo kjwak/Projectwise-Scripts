@@ -63,6 +63,10 @@ Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are
 
 `qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 
+### Status-set local history
+
+Each workspace under `statusSet.localRoot` keeps rollback copies in `_history` (`_StatusSet_yyyyMMdd_HHmmss.pdf`) and manifest `.bak_*` files. These are **not** a second scheduler. Thinning runs during `Invoke-StatusSetReconcile` and once per scheduled full-scan slot (`statusSet.historyRetention`: recent copies + daily/weekly calendar tiers + `maxGbPerFolder`). Do not delete `_history` from `STATUS_SET_GEN` itself (AV file-churn). Live `_StatusSet.pdf` and the current manifest are never deleted.
+
 ## Documentation map
 
 Start at `docs/README.md`. Key paths:

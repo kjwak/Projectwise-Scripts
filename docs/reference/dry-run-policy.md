@@ -18,6 +18,7 @@ At startup, `Watch-QCTrigger.ps1` and `Run-QCProcessor.ps1` emit a structured lo
 | Notifications | `notifications.enabled` + `notifications.dryRun` | enabled / `false` | Graph send gated separately from global dry run. |
 | Database | `database.enabled` + `database.allowWritesInDryRun` | enabled / `false` | SQL telemetry off during global dry run unless explicitly allowed. |
 | Status set | `statusSet.writeBackToPW` | `true` | Upload `_StatusSet.pdf` to PW after native build (worker only). |
+| Status set history | `statusSet.historyRetention.enabled` | `true` | Delete aged `_history` PDFs and manifest `.bak_*` during reconcile / scheduled full-scan. Global `dryRun` skips deletes. |
 
 **Independent:** Global `dryRun: true` does **not** imply `qcWorkflow.dryRunWriteback: true` or `notifications.dryRun: true`.
 

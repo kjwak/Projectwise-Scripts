@@ -49,7 +49,7 @@ Optional: other machine-only paths in `appsettings.local.json` or `appsettings.t
 | Script | When to use |
 |--------|-------------|
 | `scripts/Combine-StatusSet.ps1` | One Sheets folder: rebuild `_StatusSet.pdf` from PW sheets (`-ForceRebuild`). |
-| `scripts/Reconcile-QCStatusSets.ps1` | All workspaces: upload **local** `_StatusSet.pdf` if newer than PW (no sheet re-merge). |
+| `scripts/Reconcile-QCStatusSets.ps1` | All workspaces: upload **local** `_StatusSet.pdf` if newer than PW (no sheet re-merge). Also thins `_history` / manifest backups. |
 | `scripts/Reconcile-QCSheetOwnership.ps1` | Sync designer/reviewer emails and states across DGN / sheet PDF / QC PDF. |
 
 ---
@@ -229,8 +229,23 @@ Defers **audit-sourced** `STATUS_SET_GEN` work: the watcher marks Sheets folders
 | `manifestFileName` | Default `_statusset.manifest.json`. |
 | `statusSetPdfName` | Default `_StatusSet.pdf`. |
 | `dryRunOperationReport` | Log planned PW ops without executing. |
+| `historyRetention` | Thin `_history` PDFs and manifest `.bak_*` copies during `Invoke-StatusSetReconcile` and each scheduled full-scan slot. See below. |
 
 **Manifest gate:** Watcher skips `STATUS_SET_GEN` when `folderStateHash` in manifest matches live PW (`WATCH_PW_STATUSSET_SKIP_CURRENT`). Wrong PW copy with matching hash requires `-ForceRebuild` or `Combine-StatusSet.ps1`.
+
+### statusSet.historyRetention
+
+Local rollback copies only. Live `_StatusSet.pdf` and the current `_statusset.manifest.json` are never deleted. PDF history and manifest backups are thinned independently, then a per-folder byte cap applies to both.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Skip thinning when false. |
+| `keepRecentCount` | `8` | Newest copies to keep per kind (PDF / manifest). |
+| `dailyDays` | `7` | One copy per calendar day (display time zone) for this many days. |
+| `weeklyWeeks` | `26` | One copy per ISO week for this many weeks. |
+| `maxGbPerFolder` | `10` | Cap on kept history bytes per workspace. `0` disables the cap. Oldest non-recent copies drop first. |
+
+Preview with `.\scripts\maintenance\Reconcile-QCStatusSets.ps1 -DryRun`. Global `dryRun: true` also skips deletes.
 
 ---
 
@@ -357,7 +372,7 @@ Logs: `WATCH_PW_PROACTIVE_RECONNECT` then the normal `WATCH_PW_CONNECT_*` path.
 | Key | Description |
 |-----|-------------|
 | `enabled` | Policy in `Get-QCReconciliationPlan` (hybrid downtime). |
-| `reconcileStatusSetsOnStart` | Startup `Invoke-StatusSetReconcile` (local PDF → PW only). |
+| `reconcileStatusSetsOnStart` | Startup `Invoke-StatusSetReconcile` (local PDF → PW, plus `_history` thinning). |
 | `downtimeThresholdSeconds` | `0` = off; else audit lag triggers full scan in hybrid/recovery. |
 
 **Note:** Scheduled full scans (`fullScanSchedule.times`) are separate from `reconcileStatusSetsOnStart`.
