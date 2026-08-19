@@ -124,3 +124,28 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 - Do not remove legacy compatibility code or flat module shims without a tracked deprecation plan.
 - Do not change production `appsettings.json` defaults to enable PW writes, notifications, or native prepend without operator sign-off.
 - Do not treat SQL as a job queue replacement without an explicit design change.
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent VM is **Linux**, but production is Windows + PowerShell + ProjectWise. Live PW/SQL/Graph and the watcher/worker/dashboard services **cannot run here** (no Bentley stack, no TYPSA network, no SQL Server). Validate the parts that are cross-platform: the Python overlay tooling (`tools/overlay/`) and the two test suites.
+
+### What the update script provisions
+
+- A Python venv at `.venv` (repo root, gitignored) with `tools/overlay/requirements-dev.txt` (pymupdf, pikepdf, pytest, pytest-cov). Activate with `source .venv/bin/activate` before running Python tools/tests.
+- System deps `pwsh` (PowerShell 7.x) and `python3.12-venv` are baked into the base snapshot, not the update script. `pwsh` is the Linux PowerShell binary — there is **no** `powershell` on PATH.
+
+### Tests
+
+- **Python:** `python -m pytest -q` from repo root (uses root `pytest.ini`). Pre-existing failure unrelated to setup: `test/python/test_sheet_index_attr_sync_static.py::test_reconciliation_scan_uses_full_attribute_batch_builder` asserts `sheetParamsPerRow = 12` while `modules/Database/Core.Database.psm1` has `13`. The pwsh-backed tests in `test_qc_workflow_config_defaults.py` load the real PowerShell modules and pass on Linux via `pwsh`.
+- **PowerShell:** tests are standalone assertion scripts (not Pester) that `throw` and exit non-zero on failure. `run_focus_tests.ps1` and `test/README.md` hardcode `powershell`; on Linux run individual tests with `pwsh -NoProfile -File test/powershell/<name>.ps1`. Pure-logic module tests pass (e.g. `test_job_factory.ps1`, `test_foundation_modules.ps1`, `test_effective_dry_run_policy.ps1`); tests that touch Windows paths, ProjectWise, or SQL will not. `test_module_inventory.ps1` fails on a pre-existing `modules/FILES.md` sync mismatch.
+
+### Run / hello-world (core overlay engine)
+
+The overlay prepend CLI is the pure-Python core of the QC prepend. It layers a new revision over the previous QC history (Old=red, New=green, Current=black OCG layers) and prepends the diff page:
+
+```bash
+source .venv/bin/activate
+python tools/overlay/qc_overlay_prepend.py <incoming.pdf> <qc_history.pdf> -o <out.pdf> -v
+```
+
+Output PDF has a prepended overlay page carrying three named OCG layers (`Old`/`New`/`Current`); the "difference view" toggles `Old`+`New` on and `Current` off.
