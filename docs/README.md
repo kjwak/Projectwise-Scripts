@@ -60,6 +60,7 @@ Project documentation for the Prepend PDF QC pipeline. For a quick repo overview
 | [`engineering/scripts-organization-review.md`](engineering/scripts-organization-review.md) | Script organization review (historical) |
 | [`engineering/dashboard-upgrade-options.md`](engineering/dashboard-upgrade-options.md) | Terminal dashboard improvements |
 | [`engineering/status-set-av-refactor.md`](engineering/status-set-av-refactor.md) | Status set AV churn notes |
+| [`engineering/remote-worker-architecture-intent.md`](engineering/remote-worker-architecture-intent.md) | **Intent:** remote QC workers on modelling PC while server coordinates queue |
 
 ---
 
