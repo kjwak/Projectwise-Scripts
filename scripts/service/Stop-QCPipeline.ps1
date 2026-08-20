@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Forcibly terminates every PowerShell process that looks like a QC pipeline component
-(dashboard, watcher, or worker) for this repository. Useful when stale dashboards
+(dashboard, remote worker host, watcher, or worker) for this repository. Useful when stale dashboards
 are running and Fortinet is throwing blocks because of the high concurrency.
 
 .PARAMETER WhatIf
@@ -15,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 
 $patterns = @(
     'Start-QCPipelineDashboard',
+    'Start-QCRemoteWorkerHost',
     'Watch-QCTrigger',
     'Run-QCProcessor',
     'run_prepend_qc'

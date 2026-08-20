@@ -10,9 +10,11 @@ This clone on the drainage modelling workstation (AZTEC002799) is a **processor 
 | Allowed | Not allowed |
 |---------|-------------|
 | `Run-QCProcessor.ps1` (after host-aware locks are live on the **QC server**) | `Watch-QCTrigger.ps1` |
-| Future `Start-QCRemoteWorkerHost.ps1` supervisor | `Start-QCPipelineDashboard.ps1` (full pipeline) |
+| `Start-QCRemoteWorkerHost.ps1` (processor-only supervisor) | `Start-QCPipelineDashboard.ps1` (full pipeline) |
 | Local `qcPrepend` temp/output on fast disk (E: / F:) | Audit polling, enqueue, reconciliation sweeps |
-| Read-only diagnostics (`Show-QCQueueDiag.ps1`) | Treating `\\192.168.22.90\QC_Queue` as a write target until slice 1 is deployed on the server |
+| Read-only diagnostics (`Show-QCQueueDiag.ps1`) | UNC claims without `-AllowUncQueue` / `workers.remoteHost.allowUncQueue` |
+
+Restrict this host with gitignored `workers.enabledJobTypes` (modelling PC: `["QC_PREPEND"]` so `STATUS_SET_GEN` stays on the QC server). Empty/omitted `enabledJobTypes` means all types — do not set that in committed `appsettings.json`.
 
 ## Config
 
@@ -24,7 +26,7 @@ This clone on the drainage modelling workstation (AZTEC002799) is a **processor 
 
 ## Lock safety
 
-Queue lock files must include `machineName` plus `pid`. The same fields are stamped onto the job JSON at claim (`running/`) and kept when the file moves to `succeeded/` or `failed/`. Recover-to-pending clears them. SQL `processing_jobs` mirrors `worker_machine_name` / `worker_pid` (schema 1.22.0). Do **not** point this host at the live UNC queue until the QC server is running the same host-aware lock code. Local PID-only liveness will steal (or fail to recover) jobs across machines.
+Queue lock files must include `machineName` plus `pid`. The same fields are stamped onto the job JSON at claim (`running/`) and kept when the file moves to `succeeded/` or `failed/`. Recover-to-pending clears them. SQL `processing_jobs` mirrors `worker_machine_name` / `worker_pid` (schema 1.22.0). Local PID-only liveness will steal (or fail to recover) jobs across machines if the QC server is not running the same host-aware lock code.
 
 See `modules/Queue/QC.Queue.Json.psm1` (`_QCQJ-IsLockOwnerDead`, `Recover-QCStaleJobs`). Job `machineName` is attribution only — lock files remain the ownership primitive.
 

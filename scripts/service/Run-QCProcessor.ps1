@@ -32,7 +32,10 @@ param(
     [int]$IdleSleepMs = 0,
 
     [Parameter(Mandatory = $false)]
-    [string]$WorkerLabel = ''
+    [string]$WorkerLabel = '',
+
+    [Parameter(Mandatory = $false)]
+    [switch]$AllowUncQueue
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +58,8 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
 ) -RequiredCommands @(
     'Read-QCAppSettings'
     'Get-NextQCJob'
+    'Get-QCEnabledJobTypes'
+    'Test-QCUncQueueClaimAllowed'
     'Lock-QCJob'
     'Move-QCJob'
     'Move-QCJobWithLockRetries'
@@ -69,6 +74,12 @@ $script:WorkerLabel = $WorkerLabel
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
+
+if (-not (Test-QCUncQueueClaimAllowed -Config $config -AllowUncQueue:$AllowUncQueue.IsPresent)) {
+    throw "Queue root is a UNC path. Pass -AllowUncQueue or set workers.remoteHost.allowUncQueue in appsettings.local.json before claiming jobs from this host."
+}
+
+$enabledJobTypes = @(Get-QCEnabledJobTypes -Config $config)
 
 $telemetryRunId = Set-QCAutomationTelemetryContext -Config $config -ProcessName 'Run-QCProcessor'
 
@@ -115,6 +126,8 @@ Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Infor
     leaseSeconds = $LeaseSeconds
     idleSleepMs = $IdleSleepMs
     loopMode = $loopMode
+    enabledJobTypes = $enabledJobTypes
+    machineName = $env:COMPUTERNAME
 }
 if (Get-Command -Name 'Write-QCEffectiveDryRunPolicyLog' -ErrorAction SilentlyContinue) {
     Write-QCEffectiveDryRunPolicyLog -Config $config -Role 'worker' -WorkerLabel $script:WorkerLabel -IncludeWorkerPid
@@ -610,7 +623,7 @@ while ($true) {
     # pass exited starved workers during long sweeps. QC_PREPEND was always
     # immediately eligible.
     Write-WorkerStage -Stage 'polling queue for pending job'
-    $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip)
+    $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip) -IncludeJobTypes $enabledJobTypes
     if (-not $next.IsSuccess) { throw $next.Message }
     if (-not $next.Data.job) {
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_NO_JOB' -Message 'No pending jobs.' -Data @{

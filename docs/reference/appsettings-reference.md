@@ -160,6 +160,8 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 | `maxJobsPerWorker` | Jobs per process before exit. |
 | `leaseSeconds` | Stale `running` job recovery threshold. |
 | `idleSleepMs` | Sleep when queue empty (also watcher default if `watcher.idleSleepMs` unset). |
+| `enabledJobTypes` | Optional allow-list of job types this host will claim (e.g. `["QC_PREPEND"]`). Empty or omitted = all types (server default). Combined with `Get-NextQCJob -ExcludeJobTypes`. |
+| `remoteHost.allowUncQueue` | Remote processor hosts only. When `false` (default), `Run-QCProcessor.ps1` / `Start-QCRemoteWorkerHost.ps1` refuse a UNC `queue.rootDir` unless `-AllowUncQueue` is passed. Do not set this in committed `appsettings.json`. |
 
 ---
 

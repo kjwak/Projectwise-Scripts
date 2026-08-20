@@ -29,7 +29,7 @@ if (-not (Test-Path -LiteralPath $workerResolved)) {
 }
 
 Write-Host '--- 9.1 Running QC pipeline processes ---' -ForegroundColor Cyan
-$patterns = 'Start-QCPipelineDashboard|Watch-QCTrigger|Run-QCProcessor'
+$patterns = 'Start-QCPipelineDashboard|Start-QCRemoteWorkerHost|Watch-QCTrigger|Run-QCProcessor'
 $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and ($_.CommandLine -match $patterns) })
 if ($procs.Count -eq 0) {
@@ -57,7 +57,7 @@ try {
             $a = $_.Actions
             [PSCustomObject]@{ Task = $_.TaskName; Execute = $a.Execute; Arguments = $a.Arguments }
         } |
-        Where-Object { $_.Arguments -match 'QC|Prepend|Watch-QCTrigger|Run-QCProcessor|Start-QCPipeline' })
+        Where-Object { $_.Arguments -match 'QC|Prepend|Watch-QCTrigger|Run-QCProcessor|Start-QCPipeline|Start-QCRemoteWorkerHost' })
     if ($tasks.Count -eq 0) {
         Write-Host '  (no matching scheduled tasks)'
     } else {

@@ -678,6 +678,10 @@ function Get-NextQCJob {
     .PARAMETER ExcludeJobTypes
     Optional list of job-type strings to skip during selection (e.g. 'STATUS_SET_GEN'
     while the watcher pass is still in progress).
+    .PARAMETER IncludeJobTypes
+    Optional allow-list of job types. Empty or omitted means all types are eligible
+    (`workers.enabledJobTypes` unset). When set, jobs whose type is not in the list
+    are skipped. Combined with ExcludeJobTypes: a job must be included and not excluded.
     .OUTPUTS
     PSCustomObject with shape: IsSuccess [bool], Code [string], Message [string], Data [object].
     .NOTES
@@ -690,7 +694,9 @@ function Get-NextQCJob {
         [Parameter(Mandatory = $false)]
         [string[]]$ExcludeJobIds = @(),
         [Parameter(Mandatory = $false)]
-        [string[]]$ExcludeJobTypes = @()
+        [string[]]$ExcludeJobTypes = @(),
+        [Parameter(Mandatory = $false)]
+        [string[]]$IncludeJobTypes = @()
     )
 
     try {
@@ -705,6 +711,11 @@ function Get-NextQCJob {
         foreach ($t in @($ExcludeJobTypes)) {
             if (-not [string]::IsNullOrWhiteSpace($t)) { $excludeTypeSet[([string]$t).Trim()] = $true }
         }
+        $includeTypeSet = @{}
+        foreach ($t in @($IncludeJobTypes)) {
+            if (-not [string]::IsNullOrWhiteSpace($t)) { $includeTypeSet[([string]$t).Trim()] = $true }
+        }
+        $includeActive = $includeTypeSet.Count -gt 0
 
         $pendingDir = Join-Path $root 'pending'
         $files = @(Get-ChildItem -LiteralPath $pendingDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object -Property LastWriteTimeUtc, Name)
@@ -762,6 +773,7 @@ function Get-NextQCJob {
             $jt = ''
             try { $jt = [string]$job.type } catch { $jt = '' }
             if ($excludeTypeSet.ContainsKey($jt)) { continue }
+            if ($includeActive -and -not $includeTypeSet.ContainsKey($jt)) { continue }
 
             if (-not $firstEligible) {
                 $firstEligible = @{ job = $job; jobId = $jobId; state = 'pending' }
@@ -790,6 +802,129 @@ function Get-NextQCJob {
     } catch {
         return New-QCFailureResult -Code 'QUEUE_GET_NEXT_ERROR' -Message 'Failed to select next job.' -Data @{ error = $_ }
     }
+}
+
+function Get-QCEnabledJobTypes {
+    <#
+    .SYNOPSIS
+    Returns workers.enabledJobTypes, or an empty array when unrestricted (all types).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+    $out = New-Object System.Collections.Generic.List[string]
+    $raw = $null
+    try {
+        if ($Config.ContainsKey('workers') -and $Config.workers) {
+            $w = $Config.workers
+            if ($w -is [hashtable] -and $w.ContainsKey('enabledJobTypes')) { $raw = $w.enabledJobTypes }
+            elseif ($w.PSObject -and $w.PSObject.Properties['enabledJobTypes']) { $raw = $w.enabledJobTypes }
+        }
+    } catch { $raw = $null }
+    foreach ($t in @($raw)) {
+        $s = ([string]$t).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($s) -and -not $out.Contains($s)) { [void]$out.Add($s) }
+    }
+    return @($out.ToArray())
+}
+
+function Test-QCQueueRootIsUnc {
+    <#
+    .SYNOPSIS
+    True when a queue root is a Windows UNC path (\\server\share).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $p = $Path.Trim()
+    if ($p.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($p.StartsWith('\\') -and -not $p.StartsWith('\\?\')) { return $true }
+    return $false
+}
+
+function Get-QCRemoteWorkerHostSettings {
+    <#
+    .SYNOPSIS
+    Supervisor settings from workers / workers.remoteHost. Missing keys keep dashboard-compatible defaults.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config
+    )
+    $maxParallel = 1
+    $maxJobsPerWorker = 25
+    $leaseSeconds = 600
+    $idleSleepMs = 400
+    $spawnStaggerMs = 150
+    $allowUncQueue = $false
+    try {
+        if ($Config.ContainsKey('workers') -and $Config.workers) {
+            $w = $Config.workers
+            if ($w.maxParallel) { $maxParallel = [int]$w.maxParallel }
+            if ($w.maxJobsPerWorker) { $maxJobsPerWorker = [int]$w.maxJobsPerWorker }
+            if ($w.leaseSeconds) { $leaseSeconds = [int]$w.leaseSeconds }
+            if ($w.idleSleepMs) { $idleSleepMs = [int]$w.idleSleepMs }
+            if ($w.spawnStaggerMs) { $spawnStaggerMs = [int]$w.spawnStaggerMs }
+            $rh = $null
+            if ($w -is [hashtable] -and $w.ContainsKey('remoteHost')) { $rh = $w.remoteHost }
+            elseif ($w.PSObject -and $w.PSObject.Properties['remoteHost']) { $rh = $w.remoteHost }
+            if ($rh) {
+                $flag = $null
+                if ($rh -is [hashtable] -and $rh.ContainsKey('allowUncQueue')) { $flag = $rh.allowUncQueue }
+                elseif ($rh.PSObject -and $rh.PSObject.Properties['allowUncQueue']) { $flag = $rh.allowUncQueue }
+                if ($null -ne $flag) { $allowUncQueue = [bool]$flag }
+            }
+        }
+    } catch { }
+    if ($maxParallel -lt 1) { $maxParallel = 1 }
+    if ($maxJobsPerWorker -lt 1) { $maxJobsPerWorker = 1 }
+    if ($leaseSeconds -lt 0) { $leaseSeconds = 0 }
+    if ($idleSleepMs -lt 0) { $idleSleepMs = 0 }
+    if ($spawnStaggerMs -lt 0) { $spawnStaggerMs = 0 }
+    return @{
+        maxParallel = $maxParallel
+        maxJobsPerWorker = $maxJobsPerWorker
+        leaseSeconds = $leaseSeconds
+        idleSleepMs = $idleSleepMs
+        spawnStaggerMs = $spawnStaggerMs
+        allowUncQueue = $allowUncQueue
+        enabledJobTypes = @(Get-QCEnabledJobTypes -Config $Config)
+    }
+}
+
+function Test-QCUncQueueClaimAllowed {
+    <#
+    .SYNOPSIS
+    False when queue.rootDir is UNC and the caller has not opted in.
+    .DESCRIPTION
+    Local queue paths always allowed. UNC claims require -AllowUncQueue or
+    workers.remoteHost.allowUncQueue. Server dashboard workers use a local
+    C:\ queue path, so this does not change production coordinator behavior.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Config,
+        [switch]$AllowUncQueue
+    )
+    $root = $null
+    try {
+        if ($Config.ContainsKey('queue') -and $Config.queue) {
+            if ($Config.queue.rootDir) { $root = [string]$Config.queue.rootDir }
+            elseif ($Config.queue.root) { $root = [string]$Config.queue.root }
+            elseif ($Config.queue.path) { $root = [string]$Config.queue.path }
+        }
+    } catch { $root = $null }
+    if (-not (Test-QCQueueRootIsUnc -Path $root)) { return $true }
+    if ($AllowUncQueue.IsPresent) { return $true }
+    $rh = Get-QCRemoteWorkerHostSettings -Config $Config
+    return [bool]$rh.allowUncQueue
 }
 
 function Get-QCWatcherActiveFlagPath {

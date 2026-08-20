@@ -1,6 +1,6 @@
 # Remote Worker Architecture — Intent
 
-**Status:** Planning / not yet implemented  
+**Status:** Phase 1 in repo (supervisor + `enabledJobTypes`); UNC claims still opt-in per host  
 **Date:** 2026-06-24  
 **Primary deployment target:** Drainage team modelling workstation (shared hydraulic modelling PC)
 
@@ -89,7 +89,7 @@ This repo clone on the modelling workstation is intended to become a **remote wo
 
 | Runs on modelling PC | Does not run on modelling PC |
 |----------------------|------------------------------|
-| `Start-QCRemoteWorkerHost.ps1` (planned supervisor) | `Watch-QCTrigger.ps1` |
+| `Start-QCRemoteWorkerHost.ps1` (processor-only supervisor) | `Watch-QCTrigger.ps1` |
 | One or more `Run-QCProcessor.ps1` children | `Start-QCPipelineDashboard.ps1` (full pipeline) |
 | Local `qcPrepend` temp/output paths (fast disk) | Watcher audit polling / enqueue |
 
@@ -158,19 +158,20 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 
 | Resource | Purpose |
 |----------|---------|
-| [`docs/engineering/remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md) | Modelling-PC clone: processor host only; no UNC claims until this lock code is on the server |
+| [`docs/engineering/remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md) | Modelling-PC clone: processor host only; UNC claims need `-AllowUncQueue` |
 | [`AGENTS.md`](../../AGENTS.md) | Production constraints, entrypoints, queue invariants |
 | [`docs/data/database-telemetry.md`](../data/database-telemetry.md) | SQL vs JSON queue roles |
 | [`docs/reference/appsettings-reference.md`](../reference/appsettings-reference.md) | Current `workers` config |
 | [`modules/Queue/QC.Queue.Json.psm1`](../../modules/Queue/QC.Queue.Json.psm1) | Queue, locks, recovery |
-| [`scripts/service/Run-QCProcessor.ps1`](../../scripts/service/Run-QCProcessor.ps1) | Worker entrypoint (unchanged contract) |
+| [`scripts/service/Run-QCProcessor.ps1`](../../scripts/service/Run-QCProcessor.ps1) | Worker entrypoint (`enabledJobTypes`, `-AllowUncQueue`) |
+| [`scripts/service/Start-QCRemoteWorkerHost.ps1`](../../scripts/service/Start-QCRemoteWorkerHost.ps1) | Processor-only supervisor |
 | [`test/powershell/test_worker_pool_dispatch.ps1`](../../test/powershell/test_worker_pool_dispatch.ps1) | Parallel worker safety test |
 
 ---
 
 ## Next steps
 
-1. Deploy host-aware locks to the QC server before any UNC worker claims.
-2. Implement Phase 1 supervisor and `enabledJobTypes` filtering behind config defaults that preserve current behavior.
-3. Add `appsettings.local.json` on the modelling PC (from `appsettings.remote-worker.example.json`) with queue UNC, SQL connection, local temp roots, and throttle rules.
-4. Document operational runbook (enable/disable remote workers, rollback to server-only processing).
+1. Keep host-aware locks on the QC server before any UNC worker claims.
+2. On the modelling PC, set gitignored `appsettings.local.json` from `appsettings.remote-worker.example.json` with `workers.enabledJobTypes: ["QC_PREPEND"]`.
+3. Start claims with `Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` only when ready to process live prepend jobs.
+4. Resource-aware throttling remains Phase 4.

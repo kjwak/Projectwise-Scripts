@@ -7,12 +7,20 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 ### `Start-QCPipelineDashboard.ps1`
 - **Purpose**: unified pipeline runner + live terminal dashboard.
 - **Runs**: `Watch-QCTrigger.ps1` (enqueue) + `Run-QCProcessor.ps1` (dequeue/process) concurrently.
+- **Host**: QC server only. Do not run this on the modelling PC.
 - **Key behaviors**:
   - Production dashboard view by default (`-DashboardView Production`) that shows only critical health, queue, watcher, worker, and warning/error information.
   - Detailed operations view remains available with `-DashboardView Detailed` for recent job tables, scan paths, and processor activity.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
   - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.
+
+### `Start-QCRemoteWorkerHost.ps1`
+- **Purpose**: processor-only supervisor for a remote worker host.
+- **Runs**: one or more `Run-QCProcessor.ps1` children. Does **not** start the watcher or dashboard.
+- **Job types**: honors `workers.enabledJobTypes` (empty/omitted = all types).
+- **UNC**: refuses `\\server\share` queue roots unless `-AllowUncQueue` or `workers.remoteHost.allowUncQueue`.
+- **Stop**: `Stop-QCPipeline.ps1` (also matches this supervisor).
 
 ### `Watch-QCTrigger.ps1`
 - **Purpose**: one-shot watcher tick (detect → filter → trigger → job → dedupe → enqueue).
@@ -30,6 +38,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
   - one-shot: default (`-MaxJobs 1`)
   - long-running: use `-MaxJobs`, `-LeaseSeconds`, and/or `-IdleSleepMs`
 - **Dispatch**: `modules/Processing/QC.Processors.psm1` (`QC_PREPEND`, `STATUS_SET_GEN`).
+- **Job types**: `workers.enabledJobTypes` allow-list (empty/omitted = all). UNC queue roots require `-AllowUncQueue`.
 - **Observability**: logs JSON lines like `WORKER_SELECTED`, `WORKER_SUCCEEDED`, `WORKER_FAILED`.
 
 ### `run_prepend_qc.ps1`

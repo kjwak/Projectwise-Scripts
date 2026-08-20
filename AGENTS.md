@@ -15,7 +15,8 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 |--------|---------|
 | `scripts/service/Watch-QCTrigger.ps1` | Watcher: audit/reconcile, filters, triggers, enqueue |
 | `scripts/service/Run-QCProcessor.ps1` | Worker: dequeue, lock, dispatch processor, transition job state |
-| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI |
+| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI (QC server only) |
+| `scripts/service/Start-QCRemoteWorkerHost.ps1` | Processor-only supervisor for a remote host (no watcher/dashboard) |
 
 Pass `-AppSettingsPath` to override config (e.g. `.\appsettings.test.json` for safe local runs).
 
@@ -121,9 +122,9 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 
 ## Remote worker host (modelling PC)
 
-This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, and temp roots go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
+This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, temp roots, and `workers.enabledJobTypes` go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
 
-Do not claim jobs from the live UNC queue until **host-aware locks** (`machineName` + PID) are deployed on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md).
+Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md).
 
 ## Safe change boundaries (unless explicitly requested)
 

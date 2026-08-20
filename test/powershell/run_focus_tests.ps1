@@ -4,6 +4,7 @@ $tests = @(
     'test\powershell\test_host_aware_locks.ps1',
     'test\powershell\test_recover_orphan_pid.ps1',
     'test\powershell\test_get_next_excludes.ps1',
+    'test\powershell\test_enabled_job_types.ps1',
     'test\powershell\test_queue_json.ps1',
     'test\powershell\test_orphan_lock_recovery.ps1',
     'test\powershell\test_merge_statusset_qpdf.ps1',
