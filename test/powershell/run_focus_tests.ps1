@@ -1,6 +1,7 @@
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tests = @(
     'test\powershell\test_lock_steal_dead_pid.ps1',
+    'test\powershell\test_host_aware_locks.ps1',
     'test\powershell\test_recover_orphan_pid.ps1',
     'test\powershell\test_get_next_excludes.ps1',
     'test\powershell\test_queue_json.ps1',

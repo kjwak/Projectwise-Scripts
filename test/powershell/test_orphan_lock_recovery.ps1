@@ -107,6 +107,7 @@ try {
     # The new lock should now belong to OUR pid.
     $payload = Get-Content -LiteralPath $deadLock -Raw | ConvertFrom-Json
     _Assert ([int]$payload.pid -eq $PID) ("new lock pid is ours ({0})" -f $PID)
+    _Assert ([string]$payload.machineName -eq $env:COMPUTERNAME) 'new lock records machineName'
 
     # Job should have been transitioned to running\.
     $runningPath = Join-Path (Join-Path $qroot 'running') ($jobId + '.json')

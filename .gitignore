@@ -31,7 +31,13 @@ appsettings.*.local.json
 # Laptop-only diagnostics queue/log share override (see config/qc-debug-locations.example.json)
 config/qc-debug-locations.local.json
 
-tools/pw-qc-mcp/
+# Machine-specific Cursor MCP launch paths. Copy .cursor/mcp.json.example → .cursor/mcp.json
+.cursor/mcp.json
+
+# MCP inspector dumps / local venv. Server source under tools/pw-qc-mcp/ stays tracked.
+tools/pw-qc-mcp/_*.json
+tools/pw-qc-mcp/_*.txt
+tools/pw-qc-mcp/.venv/
 reports/
 tools/overlay/build/
 build/

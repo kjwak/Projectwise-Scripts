@@ -185,35 +185,175 @@ function _QCQJ-UpdateDedupeIndexForJob([hashtable]$Config, [string]$Root, [strin
     _QCQJ-WriteDedupeIndexAtomic -Path $path -Index $idx
 }
 
-function _QCQJ-IsLockOwnerDead([string]$LockPath) {
-    # Returns $true only if we can read the lock file, parse a non-zero owner PID,
-    # AND that PID is no longer alive. Returns $false on any uncertainty so we
-    # never steal a lock from a live owner.
-    $payload = $null
-    try { $payload = Get-Content -LiteralPath $LockPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { return $false }
-    if (-not $payload) { return $false }
-    $ownerPid = 0
-    try {
-        if ($payload.PSObject -and $payload.PSObject.Properties['pid']) { $ownerPid = [int]$payload.pid }
-    } catch { return $false }
-    if ($ownerPid -le 0) { return $false }
-    if ($ownerPid -eq $PID) { return $false }   # never steal from our own process
-    $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
-    return (-not $proc)
+function _QCQJ-GetLocalMachineName {
+    $n = [string]$env:COMPUTERNAME
+    if ([string]::IsNullOrWhiteSpace($n)) { return '' }
+    return $n.Trim()
 }
 
-function _QCQJ-AcquireLockFile([string]$LockPath, [int]$TimeoutMs = 30000, [int]$SleepMs = 150) {
+function _QCQJ-GetCrossHostLockStaleSeconds([hashtable]$Config) {
+    $sec = 90
+    if ($Config -and $Config.ContainsKey('queue') -and $Config.queue) {
+        $q = $Config.queue
+        $recover = $null
+        if ($q -is [hashtable] -and $q.ContainsKey('recover')) { $recover = $q.recover }
+        elseif ($q.PSObject -and $q.PSObject.Properties['recover']) { $recover = $q.recover }
+        if ($recover) {
+            $val = $null
+            if ($recover -is [hashtable] -and $recover.ContainsKey('crossHostLockStaleSeconds')) {
+                $val = $recover['crossHostLockStaleSeconds']
+            } elseif ($recover.PSObject -and $recover.PSObject.Properties['crossHostLockStaleSeconds']) {
+                $val = $recover.crossHostLockStaleSeconds
+            }
+            if ($null -ne $val) {
+                try { $sec = [int]$val } catch { }
+            }
+        }
+    }
+    if ($sec -lt 15) { $sec = 15 }
+    if ($sec -gt 3600) { $sec = 3600 }
+    return $sec
+}
+
+function _QCQJ-ReadLockPayload([string]$LockPath) {
+    $raw = $null
+    try { $raw = Get-Content -LiteralPath $LockPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { return $null }
+    if (-not $raw) { return $null }
+    $pidVal = 0
+    try {
+        if ($raw.PSObject -and $raw.PSObject.Properties['pid']) { $pidVal = [int]$raw.pid }
+    } catch { $pidVal = 0 }
+    $machine = ''
+    try {
+        if ($raw.PSObject -and $raw.PSObject.Properties['machineName'] -and $null -ne $raw.machineName) {
+            $machine = ([string]$raw.machineName).Trim()
+        }
+    } catch { $machine = '' }
+    $created = $null
+    try {
+        if ($raw.PSObject -and $raw.PSObject.Properties['createdAtUtc'] -and $raw.createdAtUtc) {
+            $created = [DateTime]::Parse([string]$raw.createdAtUtc).ToUniversalTime()
+        }
+    } catch { $created = $null }
+    return @{
+        pid = $pidVal
+        machineName = $machine
+        createdAtUtc = $created
+        raw = $raw
+    }
+}
+
+function _QCQJ-LockPayloadIsLocalHost($Payload) {
+    # Legacy locks (pid only) are treated as local so single-server recovery stays immediate.
+    if (-not $Payload) { return $true }
+    $mn = [string]$Payload.machineName
+    if ([string]::IsNullOrWhiteSpace($mn)) { return $true }
+    $local = _QCQJ-GetLocalMachineName
+    if ([string]::IsNullOrWhiteSpace($local)) { return $true }
+    return ($mn.ToUpperInvariant() -eq $local.ToUpperInvariant())
+}
+
+function _QCQJ-LockCreatedAgeSeconds($Payload) {
+    if (-not $Payload -or -not $Payload.createdAtUtc) { return $null }
+    try { return ([DateTime]::UtcNow - [DateTime]$Payload.createdAtUtc).TotalSeconds } catch { return $null }
+}
+
+function _QCQJ-IsQueueWriteLockPath([string]$LockPath) {
+    $leaf = [System.IO.Path]::GetFileName($LockPath)
+    return ($leaf -ieq '_queue_write.lock')
+}
+
+function _QCQJ-NewLockPayloadJson {
+    $ts = Get-QCTimestamp
+    $payload = @{
+        pid = $PID
+        machineName = (_QCQJ-GetLocalMachineName)
+        createdAtUtc = $ts
+        heartbeatUtc = $ts
+    }
+    return ($payload | ConvertTo-Json -Depth 5 -Compress)
+}
+
+function _QCQJ-IsLockOwnerDead {
+    <#
+    Same-host (or legacy pid-only) locks: dead when owner PID is gone.
+    Other-host per-job locks: never stolen here (Recover uses job heartbeat).
+    Other-host _queue_write.lock: dead when createdAtUtc is older than crossHostLockStaleSeconds.
+    Returns $false on uncertainty so we never steal a live owner.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LockPath,
+        [hashtable]$Config = $null
+    )
+    $payload = _QCQJ-ReadLockPayload -LockPath $LockPath
+    if (-not $payload) { return $false }
+    $ownerPid = [int]$payload.pid
+    $isLocal = _QCQJ-LockPayloadIsLocalHost -Payload $payload
+    if ($isLocal) {
+        if ($ownerPid -le 0) { return $false }
+        if ($ownerPid -eq $PID) { return $false }
+        $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+        return (-not $proc)
+    }
+    if (-not (_QCQJ-IsQueueWriteLockPath -LockPath $LockPath)) { return $false }
+    $age = _QCQJ-LockCreatedAgeSeconds -Payload $payload
+    if ($null -eq $age) { return $false }
+    $stale = _QCQJ-GetCrossHostLockStaleSeconds -Config $Config
+    return ($age -ge $stale)
+}
+
+function _QCQJ-ShouldReclaimAbandonedLock {
+    <#
+    Pending / dangling per-job locks (job is not in running\): reclaim same-host
+    dead PID immediately, or other-host locks whose createdAtUtc is stale.
+    Never used by AcquireLockFile on a running job's lock.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LockPath,
+        [hashtable]$Config = $null
+    )
+    if (_QCQJ-IsLockOwnerDead -LockPath $LockPath -Config $Config) { return $true }
+    $payload = _QCQJ-ReadLockPayload -LockPath $LockPath
+    if (-not $payload) { return $false }
+    if (_QCQJ-LockPayloadIsLocalHost -Payload $payload) { return $false }
+    if (_QCQJ-IsQueueWriteLockPath -LockPath $LockPath) { return $false }
+    $age = _QCQJ-LockCreatedAgeSeconds -Payload $payload
+    if ($null -eq $age) { return $false }
+    $stale = _QCQJ-GetCrossHostLockStaleSeconds -Config $Config
+    return ($age -ge $stale)
+}
+
+function _QCQJ-GetRunningLockOrphanInfo {
+    param(
+        [Parameter(Mandatory)][string]$LockPath
+    )
+    if (-not (Test-Path -LiteralPath $LockPath)) {
+        return @{ isOrphan = $true; reason = 'NO_LOCK_FILE' }
+    }
+    $payload = _QCQJ-ReadLockPayload -LockPath $LockPath
+    if (-not $payload) {
+        return @{ isOrphan = $false; reason = $null }
+    }
+    if (-not (_QCQJ-LockPayloadIsLocalHost -Payload $payload)) {
+        return @{ isOrphan = $false; reason = $null }
+    }
+    $ownerPid = [int]$payload.pid
+    if ($ownerPid -le 0) { return @{ isOrphan = $false; reason = $null } }
+    if ($ownerPid -eq $PID) { return @{ isOrphan = $false; reason = $null } }
+    $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    if (-not $proc) { return @{ isOrphan = $true; reason = ("DEAD_PID({0})" -f $ownerPid) } }
+    return @{ isOrphan = $false; reason = $null }
+}
+
+function _QCQJ-AcquireLockFile([string]$LockPath, [int]$TimeoutMs = 30000, [int]$SleepMs = 150, [hashtable]$Config = $null) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stealAttempted = $false
     while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
         try {
             $fs = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
             try {
-                $payload = @{
-                    pid = $PID
-                    createdAtUtc = (Get-QCTimestamp)
-                } | ConvertTo-Json -Depth 5
-                $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+                $json = _QCQJ-NewLockPayloadJson
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
                 $fs.Write($bytes, 0, $bytes.Length)
                 $fs.Flush()
             } finally {
@@ -227,10 +367,11 @@ function _QCQJ-AcquireLockFile([string]$LockPath, [int]$TimeoutMs = 30000, [int]
             # per-job .lock stuck on disk forever and every subsequent worker
             # spins on QUEUE_LOCK_TIMEOUT until the dashboard restarts and
             # Recover-QCStaleJobs sweeps it. We only attempt the steal once per
-            # call to keep the cost bounded.
+            # call to keep the cost bounded. Other-host per-job locks are never
+            # stolen here (PID is meaningless across machines).
             if (-not $stealAttempted) {
                 $stealAttempted = $true
-                if (_QCQJ-IsLockOwnerDead -LockPath $LockPath) {
+                if (_QCQJ-IsLockOwnerDead -LockPath $LockPath -Config $Config) {
                     try { Remove-Item -LiteralPath $LockPath -Force -ErrorAction Stop } catch { }
                     continue
                 }
@@ -569,17 +710,13 @@ function Get-NextQCJob {
         } catch { $preferTypes = @() }
 
         # Helper: returns $true only if the per-job lock blocks selection.
-        # A lock blocks selection only when the owner is still alive. If the
-        # owner PID is dead we self-heal here by deleting the orphan lock so
-        # the job becomes selectable again. Without this, a worker that
-        # crashed mid-Lock-QCJob (or that wrote a per-job lock and then died)
-        # would orphan the job in pending\ forever, since this function would
-        # always skip it via Test-Path.
+        # A lock blocks selection only when the owner is still alive on this host.
+        # Dead local PIDs and stale other-host pending locks are self-healed here.
         $isJobLockedAlive = {
             param([string]$JobId)
             $lockPath = _QCQJ-LockFilePath -Root $root -JobId $JobId
             if (-not (Test-Path -LiteralPath $lockPath)) { return $false }
-            if (_QCQJ-IsLockOwnerDead -LockPath $lockPath) {
+            if (_QCQJ-ShouldReclaimAbandonedLock -LockPath $lockPath -Config $Config) {
                 try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { }
                 return $false
             }
@@ -1126,14 +1263,14 @@ function Lock-QCJob {
         # the queue (the original cause of "WORKER_LOCK_RACE" hot-spinning
         # after a crashed worker). Live owners are still respected because the
         # acquire loop only steals when _QCQJ-IsLockOwnerDead returns true.
-        if (-not (_QCQJ-AcquireLockFile -LockPath $jobLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
+        if (-not (_QCQJ-AcquireLockFile -LockPath $jobLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs -Config $Config)) {
             return New-QCFailureResult -Code 'QUEUE_LOCK_TIMEOUT' -Message 'Timed out acquiring job lock.' -Data @{ jobId = $JobId; lockPath = $jobLock }
         }
         $jobLockHeld = $true
 
         # Transition pending -> running on lock acquire (prevents repeated selection).
         $lockPath = _QCQJ-QueueWriteLockPath -Root $root
-        if (-not (_QCQJ-AcquireLockFile -LockPath $lockPath -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
+        if (-not (_QCQJ-AcquireLockFile -LockPath $lockPath -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs -Config $Config)) {
             _QCQJ-ReleaseLockFile -LockPath $jobLock
             return New-QCFailureResult -Code 'QUEUE_LOCK_TIMEOUT' -Message 'Timed out acquiring queue write lock.' -Data @{ lockPath = $lockPath }
         }
@@ -1306,23 +1443,9 @@ function Recover-QCStaleJobs {
             $age = ($now - $reference).TotalSeconds
 
             $lockPathJob = _QCQJ-LockFilePath -Root $root -JobId $jobId
-            $isOrphan = $false
-            $orphanReason = $null
-            if (-not (Test-Path -LiteralPath $lockPathJob)) {
-                $isOrphan = $true
-                $orphanReason = 'NO_LOCK_FILE'
-            } else {
-                $payload = $null
-                try { $payload = Get-Content -LiteralPath $lockPathJob -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { $payload = $null }
-                $ownerPid = 0
-                if ($payload -and $payload.PSObject.Properties.Name -contains 'pid') {
-                    try { $ownerPid = [int]$payload.pid } catch { $ownerPid = 0 }
-                }
-                if ($ownerPid -gt 0) {
-                    $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
-                    if (-not $proc) { $isOrphan = $true; $orphanReason = "DEAD_PID($ownerPid)" }
-                }
-            }
+            $orphanInfo = _QCQJ-GetRunningLockOrphanInfo -LockPath $lockPathJob
+            $isOrphan = [bool]$orphanInfo.isOrphan
+            $orphanReason = $orphanInfo.reason
 
             if (-not $isOrphan -and $age -lt $staleSeconds) {
                 $result.skippedNotStale++
@@ -1335,7 +1458,7 @@ function Recover-QCStaleJobs {
         # Phase 2: one short global write-lock window per job so Move-QCJob / workers can interleave.
         foreach ($pair in $recoverCandidates) {
             $jobId = [string]$pair[1]
-            if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
+            if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs -Config $Config)) {
                 $result.writeLockAcquireFailures++
                 $result.details += @{ jobId = $jobId; action = 'skipped_lock_timeout' }
                 continue
@@ -1359,23 +1482,9 @@ function Recover-QCStaleJobs {
                 $age2 = ($now - $reference2).TotalSeconds
 
                 $lockPathJob2 = _QCQJ-LockFilePath -Root $root -JobId $jobId
-                $isOrphan2 = $false
-                $orphanReason2 = $null
-                if (-not (Test-Path -LiteralPath $lockPathJob2)) {
-                    $isOrphan2 = $true
-                    $orphanReason2 = 'NO_LOCK_FILE'
-                } else {
-                    $payload2 = $null
-                    try { $payload2 = Get-Content -LiteralPath $lockPathJob2 -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { $payload2 = $null }
-                    $ownerPid2 = 0
-                    if ($payload2 -and $payload2.PSObject.Properties.Name -contains 'pid') {
-                        try { $ownerPid2 = [int]$payload2.pid } catch { $ownerPid2 = 0 }
-                    }
-                    if ($ownerPid2 -gt 0) {
-                        $proc2 = Get-Process -Id $ownerPid2 -ErrorAction SilentlyContinue
-                        if (-not $proc2) { $isOrphan2 = $true; $orphanReason2 = "DEAD_PID($ownerPid2)" }
-                    }
-                }
+                $orphanInfo2 = _QCQJ-GetRunningLockOrphanInfo -LockPath $lockPathJob2
+                $isOrphan2 = [bool]$orphanInfo2.isOrphan
+                $orphanReason2 = $orphanInfo2.reason
 
                 if (-not $isOrphan2 -and $age2 -lt $staleSeconds) { continue }
 
@@ -1431,12 +1540,12 @@ function Recover-QCStaleJobs {
             foreach ($lf in $lockFiles) {
                 $name = $lf.Name
                 if ($name -ieq '_queue_write.lock') {
-                    if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
+                    if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs -Config $Config)) {
                         $result.writeLockAcquireFailures++
                         continue
                     }
                     try {
-                        if (_QCQJ-IsLockOwnerDead -LockPath $lf.FullName) {
+                        if (_QCQJ-IsLockOwnerDead -LockPath $lf.FullName -Config $Config) {
                             try { Remove-Item -LiteralPath $lf.FullName -Force -ErrorAction Stop; $result.orphanLocksRemoved++ } catch { }
                         }
                     } finally {
@@ -1447,8 +1556,8 @@ function Recover-QCStaleJobs {
                 $jobIdL = [System.IO.Path]::GetFileNameWithoutExtension($name)
                 $runningPath = _QCQJ-JobFilePath -Root $root -State 'running' -JobId $jobIdL
                 if (Test-Path -LiteralPath $runningPath) { continue }
-                if (-not (_QCQJ-IsLockOwnerDead -LockPath $lf.FullName)) { continue }
-                if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs)) {
+                if (-not (_QCQJ-ShouldReclaimAbandonedLock -LockPath $lf.FullName -Config $Config)) { continue }
+                if (-not (_QCQJ-AcquireLockFile -LockPath $writeLock -TimeoutMs $lk.TimeoutMs -SleepMs $lk.SleepMs -Config $Config)) {
                     $result.writeLockAcquireFailures++
                     continue
                 }

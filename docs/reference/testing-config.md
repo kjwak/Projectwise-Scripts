@@ -22,7 +22,7 @@ Use a **test profile** so queue folders, dry-run behavior, and optional SQL tele
 
 The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/data/database-telemetry.md`.
 
-`appsettings.test.json`, `appsettings.local.json`, and `appsettings.secrets.json` are **gitignored**. Only `*.example` templates are committed.
+`appsettings.test.json`, `appsettings.local.json`, and `appsettings.secrets.json` are **gitignored**. Only `*.example` templates are committed. For the modelling PC, start from `appsettings.remote-worker.example.json` (copy keys into `appsettings.local.json`; do not point at the live UNC queue until host-aware locks are on the QC server).
 
 ## How merge works
 

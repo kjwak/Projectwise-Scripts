@@ -34,7 +34,7 @@ Remote workers must **not** take over watcher responsibilities, enqueue jobs, or
 | Component | Today |
 |-----------|--------|
 | Watcher | `Watch-QCTrigger.ps1` on QC server |
-| Queue | JSON folders (`pending/`, `running/`, `succeeded/`, `failed/`, `_locks/`) |
+| Queue | JSON folders (`pending/`, `running/`, `succeeded/`, `failed/`, `locks/`) |
 | Workers | `Run-QCProcessor.ps1`, spawned by `Start-QCPipelineDashboard.ps1` on the server |
 | Job claim | `Get-NextQCJob` + `Lock-QCJob` with file locks and local PID liveness |
 | SQL | Telemetry only (`processing_jobs` mirrors outcomes; not a job scheduler) |
@@ -79,7 +79,7 @@ flowchart LR
 3. **Backward compatibility** — existing `Run-QCProcessor.ps1` entrypoint and server dashboard behavior must keep working when remote workers are disabled.
 4. **No interactive session required** — processors run as a scheduled task (or later a service) under a dedicated account, not the shared D-Team login.
 5. **Safe queue mutation only** — remote workers use existing `Lock-QCJob` / `Move-QCJob` paths; no uncoordinated file edits.
-6. **Cross-machine locking must be solved before production** — today lock liveness uses **local PID** only; a lock from the modelling PC can look “dead” on the server unless we add host-aware locks and worker heartbeats.
+6. **Cross-machine locking** — lock files include `machineName` + `pid`. Same-host liveness still uses PID. Other-host per-job locks are never stolen via local `Get-Process`; `Recover-QCStaleJobs` uses job `heartbeatUtc`. Deploy this lock code on the QC server **before** the modelling PC claims the UNC queue. See [`remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md).
 
 ---
 
@@ -158,6 +158,7 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 
 | Resource | Purpose |
 |----------|---------|
+| [`docs/engineering/remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md) | Modelling-PC clone: processor host only; no UNC claims until this lock code is on the server |
 | [`AGENTS.md`](../../AGENTS.md) | Production constraints, entrypoints, queue invariants |
 | [`docs/data/database-telemetry.md`](../data/database-telemetry.md) | SQL vs JSON queue roles |
 | [`docs/reference/appsettings-reference.md`](../reference/appsettings-reference.md) | Current `workers` config |
@@ -169,7 +170,7 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 
 ## Next steps
 
-1. Implement Phase 1 supervisor and `enabledJobTypes` filtering behind config defaults that preserve current behavior.
-2. Extend lock payload and liveness for cross-host safety before enabling UNC queue on the modelling PC.
-3. Add `appsettings.local.json` on the modelling PC with queue UNC, SQL connection, local temp roots, and throttle rules.
+1. Deploy host-aware locks to the QC server before any UNC worker claims.
+2. Implement Phase 1 supervisor and `enabledJobTypes` filtering behind config defaults that preserve current behavior.
+3. Add `appsettings.local.json` on the modelling PC (from `appsettings.remote-worker.example.json`) with queue UNC, SQL connection, local temp roots, and throttle rules.
 4. Document operational runbook (enable/disable remote workers, rollback to server-only processing).

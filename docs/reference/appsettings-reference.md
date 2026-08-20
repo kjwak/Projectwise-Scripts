@@ -132,8 +132,10 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 | Key | Description |
 |-----|-------------|
-| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `_locks`, `_watcher`. |
+| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `locks`, `_watcher`. |
 | `recover.maxAttempts` | Failed jobs retried up to this count. |
+| `recover.staleSeconds` | Requeue `running` jobs whose heartbeat is older than this (default 900). Cross-host jobs use this instead of local PID. |
+| `recover.crossHostLockStaleSeconds` | Age after which another host's abandoned `_queue_write.lock` or pending per-job lock may be reclaimed (default 90). Never used to steal a **running** other-host job lock. |
 | `lockAcquireTimeoutMs` | Wait for per-job lock file. |
 | `selection.preferJobTypes` | Worker picks preferred types first when multiple pending. |
 

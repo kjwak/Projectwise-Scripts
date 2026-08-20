@@ -37,7 +37,7 @@ Legacy `*-qc.pdf` is a **compatibility bridge** only (older prepend paths, norma
 
 | Layer | Role | Source of truth |
 |-------|------|-----------------|
-| **JSON queue** | Job scheduling and worker dispatch | `queue.rootDir` → `pending/`, `running/`, `succeeded/`, `failed/`, `_locks/` (`modules/Queue/QC.Queue.Json.psm1`) |
+| **JSON queue** | Job scheduling and worker dispatch | `queue.rootDir` → `pending/`, `running/`, `succeeded/`, `failed/`, `locks/` (`modules/Queue/QC.Queue.Json.psm1`) |
 | **SQL (`QC_Pipeline`)** | Audit ingest, package index, mirrors, reporting | Durable telemetry — **not** a second job scheduler |
 
 **Invariants:**
@@ -119,8 +119,15 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 - Code-only and static-test validation is sufficient for many PRs — state what was and was not validated.
 - For PW workflow debugging on a connected machine, prefer MCP `pw-qc-debug` tools before deep code speculation (see `.cursor/rules/projectwise-debugging.mdc`).
 
+## Remote worker host (modelling PC)
+
+This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, and temp roots go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
+
+Do not claim jobs from the live UNC queue until **host-aware locks** (`machineName` + PID) are deployed on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md).
+
 ## Safe change boundaries (unless explicitly requested)
 
 - Do not remove legacy compatibility code or flat module shims without a tracked deprecation plan.
-- Do not change production `appsettings.json` defaults to enable PW writes, notifications, or native prepend without operator sign-off.
+- Do not change production `appsettings.json` defaults to enable PW writes, notifications, native prepend, or remote workers without operator sign-off.
 - Do not treat SQL as a job queue replacement without an explicit design change.
+- Do not run `Watch-QCTrigger.ps1` or `Start-QCPipelineDashboard.ps1` on the modelling PC as a second coordinator.

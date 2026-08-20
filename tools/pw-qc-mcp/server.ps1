@@ -1,11 +1,16 @@
 # pw-qc-debug MCP server (PowerShell, read-only diagnostics).
-# Communicates via MCP stdio transport (Content-Length framed JSON-RPC 2.0).
+# Communicates via MCP stdio transport (newline-delimited JSON-RPC 2.0).
 
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$VerbosePreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+$script:McpUtf8 = New-Object System.Text.UTF8Encoding $false
+$script:McpStdin = [Console]::OpenStandardInput()
+$script:McpStdout = [Console]::OpenStandardOutput()
 
 $repoRoot = $env:PWQC_REPO_ROOT
 if ([string]::IsNullOrWhiteSpace($repoRoot)) {
@@ -68,37 +73,10 @@ function ConvertTo-McpHashtable {
     return $Value
 }
 
-function Read-McpMessage {
-    $stdin = [Console]::OpenStandardInput()
-    $headers = @{}
-    while ($true) {
-        $line = Read-McpLine $stdin
-        if ($null -eq $line) { return $null }
-        if ($line -eq '') { break }
-        $idx = $line.IndexOf(':')
-        if ($idx -gt 0) {
-            $name = $line.Substring(0, $idx).Trim().ToLowerInvariant()
-            $value = $line.Substring($idx + 1).Trim()
-            $headers[$name] = $value
-        }
-    }
-    if (-not $headers.ContainsKey('content-length')) { return $null }
-    $length = [int]$headers['content-length']
-    $buffer = New-Object byte[] $length
-    $offset = 0
-    while ($offset -lt $length) {
-        $read = $stdin.Read($buffer, $offset, $length - $offset)
-        if ($read -le 0) { break }
-        $offset += $read
-    }
-    return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $offset)
-}
-
 function Read-McpLine {
-    param([System.IO.Stream]$Stream)
     $bytes = New-Object System.Collections.Generic.List[byte]
     while ($true) {
-        $b = $Stream.ReadByte()
+        $b = $script:McpStdin.ReadByte()
         if ($b -lt 0) {
             if ($bytes.Count -eq 0) { return $null }
             break
@@ -106,22 +84,48 @@ function Read-McpLine {
         if ($b -eq 10) { break }
         if ($b -ne 13) { $bytes.Add([byte]$b) }
     }
-    return [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
+    return $script:McpUtf8.GetString($bytes.ToArray())
+}
+
+function Read-McpMessage {
+    # MCP stdio is newline-delimited JSON. Content-Length (LSP) is accepted as a fallback.
+    while ($true) {
+        $line = Read-McpLine
+        if ($null -eq $line) { return $null }
+        if ($line -eq '') { continue }
+        if ($line -match '^Content-Length:\s*(\d+)\s*$') {
+            $length = [int]$Matches[1]
+            while ($true) {
+                $headerLine = Read-McpLine
+                if ($null -eq $headerLine -or $headerLine -eq '') { break }
+            }
+            $buffer = New-Object byte[] $length
+            $offset = 0
+            while ($offset -lt $length) {
+                $read = $script:McpStdin.Read($buffer, $offset, $length - $offset)
+                if ($read -le 0) { break }
+                $offset += $read
+            }
+            return $script:McpUtf8.GetString($buffer, 0, $offset)
+        }
+        return $line
+    }
 }
 
 function Write-McpMessage {
     param([Parameter(Mandatory)]$Payload)
     if ($Payload -is [string]) {
-        $body = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+        $json = $Payload.Trim()
     } else {
         $json = $Payload | ConvertTo-Json -Depth 80 -Compress
-        $body = [System.Text.Encoding]::UTF8.GetBytes($json)
     }
-    $header = [System.Text.Encoding]::ASCII.GetBytes("Content-Length: $($body.Length)`r`n`r`n")
-    $stdout = [Console]::OpenStandardOutput()
-    $stdout.Write($header, 0, $header.Length)
-    $stdout.Write($body, 0, $body.Length)
-    $stdout.Flush()
+    if ($json.Contains("`n") -or $json.Contains("`r")) {
+        $json = ($json -replace '[\r\n]+', ' ')
+    }
+    $body = $script:McpUtf8.GetBytes($json)
+    $script:McpStdout.Write($body, 0, $body.Length)
+    $script:McpStdout.WriteByte(10)
+    $script:McpStdout.Flush()
 }
 
 function Send-McpJsonResult {
@@ -307,13 +311,10 @@ function Handle-McpRequest {
         switch ($method) {
             'initialize' {
                 $clientVersion = [string]$params.protocolVersion
-                $supported = @('2024-11-05', '2025-03-26')
+                $supported = @('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25')
                 $protocolVersion = if ($supported -contains $clientVersion) { $clientVersion } else { '2024-11-05' }
-                Send-McpResponse -Id $id -Result @{
-                    protocolVersion = $protocolVersion
-                    capabilities = @{ tools = @{} }
-                    serverInfo = @{ name = 'pw-qc-debug'; version = '1.0.0' }
-                }
+                # Literal JSON: Windows PowerShell ConvertTo-Json turns empty @{} into [] .
+                Send-McpJsonResult -Id $id -ResultJson "{`"protocolVersion`":`"$protocolVersion`",`"capabilities`":{`"tools`":{}},`"serverInfo`":{`"name`":`"pw-qc-debug`",`"version`":`"1.0.0`"}}"
             }
             'tools/list' {
                 Send-McpJsonResult -Id $id -ResultJson "{`"tools`":$script:ToolsListJson}"
