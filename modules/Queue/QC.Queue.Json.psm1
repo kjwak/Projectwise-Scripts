@@ -274,6 +274,18 @@ function _QCQJ-NewLockPayloadJson {
     return ($payload | ConvertTo-Json -Depth 5 -Compress)
 }
 
+function _QCQJ-StampJobOwner {
+    param([Parameter(Mandatory)][hashtable]$Job)
+    $Job['machineName'] = (_QCQJ-GetLocalMachineName)
+    $Job['pid'] = $PID
+}
+
+function _QCQJ-ClearJobOwner {
+    param([Parameter(Mandatory)][hashtable]$Job)
+    if ($Job.ContainsKey('machineName')) { $Job.Remove('machineName') }
+    if ($Job.ContainsKey('pid')) { $Job.Remove('pid') }
+}
+
 function _QCQJ-IsLockOwnerDead {
     <#
     Same-host (or legacy pid-only) locks: dead when owner PID is gone.
@@ -1299,6 +1311,7 @@ function Lock-QCJob {
             $nowTs = Get-QCTimestamp
             $job.startedAtUtc = $nowTs
             $job.heartbeatUtc = $nowTs
+            _QCQJ-StampJobOwner -Job $job
             if (-not $job.ContainsKey('recoveryCount')) { $job.recoveryCount = 0 }
             _QCQJ-WriteJobFileAtomic -Path $pending -Job $job -Config $Config
             _QCQJ-MoveItemWithRetry -LiteralPath $pending -Destination $running -Config $Config
@@ -1517,6 +1530,7 @@ function Recover-QCStaleJobs {
                 } else {
                     $job.status = 'pending'
                     $job.startedAtUtc = $null
+                    _QCQJ-ClearJobOwner -Job $job
                     _QCQJ-WriteJobFileAtomic -Path $src -Job $job -Config $Config
                     $dst = _QCQJ-JobFilePath -Root $root -State 'pending' -JobId $jobId
                     _QCQJ-MoveItemWithRetry -LiteralPath $src -Destination $dst -Config $Config

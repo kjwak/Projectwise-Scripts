@@ -100,6 +100,8 @@ if (Test-Path -LiteralPath $runningDir) {
         $rows += [pscustomobject]@{
             jobId         = if ($j) { [string]$j.id } else { [System.IO.Path]::GetFileNameWithoutExtension($f.Name) }
             type          = if ($j) { [string]$j.type } else { '' }
+            machineName   = if ($j -and $j.PSObject.Properties['machineName']) { [string]$j.machineName } else { '' }
+            pid           = if ($j -and $j.PSObject.Properties['pid']) { $j.pid } else { '' }
             ageStartSecs  = $ageStartSecs
             ageDiskSecs   = $ageDiskSecs
             sourceName    = if ($j) { [string]$j.sourceName } else { '' }

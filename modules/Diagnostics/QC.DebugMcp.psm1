@@ -1603,7 +1603,7 @@ function Get-QCDebugNotificationDiagnostics {
     if (_QDM-TestTableExists -TableName 'processing_jobs') {
         [void]$sourceTables.Add('processing_jobs')
         $cols = _QDM-SelectExistingColumns -TableName 'processing_jobs' -Requested @(
-            'id', 'job_id', 'job_type', 'status', 'created_at', 'completed_at', 'source_path', 'dedupe_key', 'error_code', 'error_message', 'sheet_package_id', 'source_folder'
+            'id', 'job_id', 'job_type', 'status', 'created_at', 'completed_at', 'source_path', 'dedupe_key', 'error_code', 'error_message', 'sheet_package_id', 'source_folder', 'worker_machine_name', 'worker_pid'
         )
         if ($cols.Count -gt 0) {
             $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
@@ -2350,6 +2350,19 @@ function Get-QCDebugJobTimeline {
     }
 
     $rows = @()
+    $jobRow = $null
+    if (_QDM-TestTableExists -TableName 'processing_jobs') {
+        $jobCols = _QDM-SelectExistingColumns -TableName 'processing_jobs' -Requested @(
+            'job_id', 'job_type', 'status', 'started_at', 'completed_at', 'duration_ms',
+            'source_folder', 'source_path', 'error_code', 'error_message',
+            'worker_machine_name', 'worker_pid', 'sheet_package_id'
+        )
+        if ($jobCols.Count -gt 0) {
+            $select = ($jobCols | ForEach-Object { "[$_]" }) -join ', '
+            $found = _QDM-RowsFromQuery -Sql "SELECT TOP (1) $select FROM [processing_jobs] WHERE job_id = @jobId" -Parameters @{ jobId = $resolvedJobId }
+            if ($found.Count -gt 0) { $jobRow = $found[0] }
+        }
+    }
     if (-not $ForceJsonlFallback -and (_QDM-AutomationEventsAvailable)) {
         $sourceTables += 'v_mcp_job_timeline'
         $q = _QDM-QueryAutomationView -ViewName 'v_mcp_job_timeline' -Limit $Limit `
@@ -2364,10 +2377,11 @@ function Get-QCDebugJobTimeline {
     return _QDM-ToolResult -Data @{
         fallback_mode = $fallback
         job_id = $resolvedJobId
+        job = $jobRow
         event_count = $rows.Count
         events = $rows
     } -Warnings $warnings -SourceTables $sourceTables -QueryAssumptions @(
-        'Automation events filtered by job_id; processing_jobs may supplement via get_sheet_debug_timeline.'
+        'processing_jobs row (including worker_machine_name / worker_pid when present) plus automation events filtered by job_id.'
     )
 }
 

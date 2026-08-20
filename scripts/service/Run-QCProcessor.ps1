@@ -152,6 +152,7 @@ function Write-WorkerJobTelemetryLog {
     param(
         [string]$JobId,
         [string]$JobType,
+        [string]$Status = '',
         [object]$TelemetryResult
     )
     if (-not $TelemetryResult) { return }
@@ -165,8 +166,9 @@ function Write-WorkerJobTelemetryLog {
         }
     } catch { }
     if ($code -eq 'JOB_TELEMETRY_WRITTEN') {
-        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'JOB_TELEMETRY_WRITTEN' -Message 'Job outcome recorded in processing_jobs.' -Data @{
-            jobId = $JobId; jobType = $JobType; written = $written; rowsAffected = $rowsAffected
+        $msg = if ($Status -eq 'running') { 'Job claim recorded in processing_jobs.' } else { 'Job outcome recorded in processing_jobs.' }
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'JOB_TELEMETRY_WRITTEN' -Message $msg -Data @{
+            jobId = $JobId; jobType = $JobType; status = $Status; written = $written; rowsAffected = $rowsAffected
         }
         return
     }
@@ -234,7 +236,7 @@ function _Write-WorkerJobOutcomeTelemetry {
         [string]$JobId,
         [string]$JobType,
         [string]$Status,
-        [int]$DurationMs,
+        [Nullable[int]]$DurationMs = $null,
         [hashtable]$ResultData,
         [string]$ErrorCode = '',
         [string]$ErrorMessage = ''
@@ -264,14 +266,25 @@ function _Write-WorkerJobOutcomeTelemetry {
     if ([string]::IsNullOrWhiteSpace($jobDocumentGuid) -and $ResultData -is [hashtable] -and $ResultData.ContainsKey('documentGuid')) {
         $jobDocumentGuid = [string]$ResultData.documentGuid
     }
+    $workerMachine = $null
+    $workerPid = $null
+    try {
+        if ($Job.ContainsKey('machineName') -and $Job['machineName']) { $workerMachine = [string]$Job['machineName'] }
+    } catch { }
+    try {
+        if ($Job.ContainsKey('pid') -and $null -ne $Job['pid'] -and [int]$Job['pid'] -gt 0) { $workerPid = [int]$Job['pid'] }
+    } catch { }
+    if ([string]::IsNullOrWhiteSpace($workerMachine)) { $workerMachine = [string]$env:COMPUTERNAME }
+    if ($null -eq $workerPid -or [int]$workerPid -le 0) { $workerPid = [int]$PID }
     $telRes = Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType $JobType -Status $Status `
         -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
         -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
         -AttemptCount $jobAttempts -DurationMs $DurationMs -ResultData $rdJson `
         -ErrorCode $(if ($ErrorCode) { $ErrorCode } else { $null }) `
         -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
-        -DocumentGuid $jobDocumentGuid
-    Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -TelemetryResult $telRes
+        -DocumentGuid $jobDocumentGuid `
+        -WorkerMachineName $workerMachine -WorkerPid $workerPid
+    Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -Status $Status -TelemetryResult $telRes
     return $telRes
 }
 
@@ -395,6 +408,8 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
             sourcePath = if ($Job.ContainsKey('sourcePath')) { [string]$Job['sourcePath'] } else { '' }
             sourceName = if ($Job.ContainsKey('sourceName')) { [string]$Job['sourceName'] } else { '' }
+            machineName = if ($Job.ContainsKey('machineName')) { [string]$Job['machineName'] } else { '' }
+            pid = if ($Job.ContainsKey('pid')) { $Job['pid'] } else { $PID }
         }
 
         if ($IsDryRun) {
@@ -405,6 +420,8 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             }
             return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
         }
+
+        _Write-WorkerJobOutcomeTelemetry -Config $Config -Job $Job -JobId $jobId -JobType $jobType -Status 'running'
 
         Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
         if (Get-Command -Name 'Update-QCJobHeartbeat' -ErrorAction SilentlyContinue) {

@@ -421,7 +421,7 @@ function Initialize-QCDatabaseSchema {
         return New-QCFailureResult -Code 'DB_DISABLED' -Message 'Database is not enabled in config.' -Data @{}
     }
 
-    $targetVersion = '1.21.0'
+    $targetVersion = '1.22.0'
     $schemaV1 = _QDB-GetSchemaV1
     $schemaV1_1 = _QDB-GetSchemaV1dot1
     $schemaV1_2 = _QDB-GetSchemaV1dot2
@@ -430,7 +430,7 @@ function Initialize-QCDatabaseSchema {
     $schemaV1_5 = _QDB-GetSchemaV1dot5
     $schemaV1_6 = _QDB-GetSchemaV1dot6
     $schemaSql = $schemaV1 + [Environment]::NewLine + $schemaV1_1 + [Environment]::NewLine + $schemaV1_2 + [Environment]::NewLine + $schemaV1_3 + [Environment]::NewLine + $schemaV1_4 + [Environment]::NewLine + $schemaV1_5 + [Environment]::NewLine + $schemaV1_6
-    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot20Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot21Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
+    $patchSql = (_QDB-GetSchemaV1dot3Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot4Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot5Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot6Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot7Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot8Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot9Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot10Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot11Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot12Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot13Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot14Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot15Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot16Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot17Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot18Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot19Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot20Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot21Additive) + [Environment]::NewLine + (_QDB-GetSchemaV1dot22Additive) + [Environment]::NewLine + (_QDB-GetProcessingJobsAdditive)
 
     $connRes = Get-QCDatabaseConnection -Config $Config
     if (-not $connRes.IsSuccess) { return $connRes }
@@ -2051,6 +2051,19 @@ IF OBJECT_ID('dbo.qc_notification_messages', 'U') IS NOT NULL AND NOT EXISTS (SE
 '@
 }
 
+function _QDB-GetSchemaV1dot22Additive {
+    return @'
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'worker_machine_name') IS NULL
+    ALTER TABLE processing_jobs ADD worker_machine_name NVARCHAR(128) NULL;
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'worker_pid') IS NULL
+    ALTER TABLE processing_jobs ADD worker_pid INT NULL;
+GO
+IF OBJECT_ID('dbo.processing_jobs', 'U') IS NOT NULL AND COL_LENGTH('dbo.processing_jobs', 'worker_machine_name') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_jobs_worker_machine')
+    CREATE INDEX IX_jobs_worker_machine ON processing_jobs (worker_machine_name) WHERE worker_machine_name IS NOT NULL;
+'@
+}
+
 function _QDB-GetSchemaV1dot9Additive {
     return @'
 GO
@@ -2592,7 +2605,9 @@ function Write-QCJobTelemetry {
         [string]$ErrorMessage,
         [string]$ResultData,
         [string]$DocumentGuid = '',
-        [Nullable[guid]]$SheetPackageId = $null
+        [Nullable[guid]]$SheetPackageId = $null,
+        [string]$WorkerMachineName = '',
+        [Nullable[int]]$WorkerPid = $null
     )
     if (-not (_QDB-IsEnabled -Config $Config)) {
         return New-QCSuccessResult -Code 'JOB_TELEMETRY_SKIPPED' -Message 'Database telemetry is disabled.' -Data @{ written = $false; reason = 'database_disabled' }
@@ -2611,6 +2626,10 @@ function Write-QCJobTelemetry {
     if (-not [string]::IsNullOrWhiteSpace($StartedAtUtc)) {
         try { $startedAt = [DateTimeOffset]::Parse($StartedAtUtc) } catch { $startedAt = $null }
     }
+    $workerMachine = $null
+    if (-not [string]::IsNullOrWhiteSpace($WorkerMachineName)) { $workerMachine = $WorkerMachineName.Trim() }
+    $workerPidVal = $null
+    if ($null -ne $WorkerPid -and [int]$WorkerPid -gt 0) { $workerPidVal = [int]$WorkerPid }
     try {
         $sql = @"
 MERGE processing_jobs AS tgt
@@ -2624,11 +2643,13 @@ WHEN MATCHED THEN UPDATE SET
     error_code = @errorCode,
     error_message = @errorMessage,
     result_data = @resultData,
-    sheet_package_id = COALESCE(@sheetPackageId, tgt.sheet_package_id)
+    sheet_package_id = COALESCE(@sheetPackageId, tgt.sheet_package_id),
+    worker_machine_name = COALESCE(@workerMachineName, tgt.worker_machine_name),
+    worker_pid = COALESCE(@workerPid, tgt.worker_pid)
 WHEN NOT MATCHED THEN INSERT
-    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data, sheet_package_id)
+    (job_id, job_type, status, source_path, source_folder, dedupe_key, trigger_source, started_at, attempt_count, duration_ms, error_code, error_message, result_data, sheet_package_id, worker_machine_name, worker_pid)
 VALUES
-    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData, @sheetPackageId);
+    (@jobId, @jobType, @status, @sourcePath, @sourceFolder, @dedupeKey, @triggerSource, @startedAt, @attemptCount, @durationMs, @errorCode, @errorMessage, @resultData, @sheetPackageId, @workerMachineName, @workerPid);
 "@
         $params = @{
             jobId         = $JobId
@@ -2645,6 +2666,8 @@ VALUES
             errorMessage  = if ($ErrorMessage)  { $ErrorMessage }  else { $null }
             resultData    = if ($resultPayload) { $resultPayload } else { $null }
             sheetPackageId = if ($null -ne $resolvedPackageId) { $resolvedPackageId } else { [DBNull]::Value }
+            workerMachineName = if ($workerMachine) { $workerMachine } else { $null }
+            workerPid     = if ($null -ne $workerPidVal) { $workerPidVal } else { $null }
         }
         $dbRes = Invoke-QCDatabaseNonQuery -Config $Config -Sql $sql -Parameters $params
         if (-not $dbRes.IsSuccess) {

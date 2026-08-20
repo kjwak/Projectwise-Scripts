@@ -34,7 +34,7 @@ def test_database_schema_includes_qc_attribute_columns():
     assert "qc_review_type" in text
     assert "qc_assigned_to" in text
     assert "_QDB-GetSchemaV1dot5" in text
-    assert "targetVersion = '1.21.0'" in text
+    assert "targetVersion = '1.22.0'" in text
 
 
 def test_write_sheet_index_merges_checker_and_qc_fields():

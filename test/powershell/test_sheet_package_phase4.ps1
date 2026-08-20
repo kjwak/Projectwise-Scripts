@@ -26,7 +26,9 @@ $dbText = Get-Content -LiteralPath (Resolve-ModuleImplPath -ModuleName 'Core.Dat
 Assert-True ($dbText -match '_QDB-GetSchemaV1dot17Additive') 'schema v1.17 additive patch exists'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_status') 'v_sheet_package_status defined'
 Assert-True ($dbText -match 'CREATE VIEW v_sheet_package_cycle_aging') 'v_sheet_package_cycle_aging defined'
-Assert-True ($dbText -match "targetVersion = '1.19.0'") 'schema target version is 1.19.0'
+Assert-True ($dbText -match '_QDB-GetSchemaV1dot22Additive') 'schema v1.22 additive patch exists'
+Assert-True ($dbText -match 'worker_machine_name') 'processing_jobs.worker_machine_name in schema'
+Assert-True ($dbText -match "targetVersion = '1.22.0'") 'schema target version is 1.22.0'
 
 InModuleScope -ModuleName Core.Database {
     function _QDB-IsEnabled { param([hashtable]$Config) return $true }
@@ -73,7 +75,15 @@ InModuleScope -ModuleName Core.Database {
         -DocumentGuid $phase4DocGuid
     Assert-True $jobRes.IsSuccess 'Write-QCJobTelemetry should succeed'
     Assert-True ($script:lastJobSql -match 'sheet_package_id') 'processing_jobs MERGE includes sheet_package_id'
+    Assert-True ($script:lastJobSql -match 'worker_machine_name') 'processing_jobs MERGE includes worker_machine_name'
+    Assert-True ($script:lastJobSql -match 'worker_pid') 'processing_jobs MERGE includes worker_pid'
     Assert-Eq $script:lastJobParams.sheetPackageId $phase4PackageId 'processing_jobs.sheet_package_id populated'
+
+    $owned = Write-QCJobTelemetry -Config $phase4Config -JobId 'qc_test_job_host' -JobType 'STATUS_SET_GEN' -Status 'succeeded' `
+        -SourceFolder 'Documents\X\CADD\Sheets' -WorkerMachineName 'QC-TEST-HOST' -WorkerPid 4242
+    Assert-True $owned.IsSuccess 'Write-QCJobTelemetry with worker host should succeed'
+    Assert-Eq $script:lastJobParams.workerMachineName 'QC-TEST-HOST' 'worker_machine_name parameter populated'
+    Assert-Eq $script:lastJobParams.workerPid 4242 'worker_pid parameter populated'
 
     # Notifications: sheet_package_id populated from document_guid
     $script:lastNotifSql = ''
@@ -85,6 +95,14 @@ InModuleScope -ModuleName Core.Database {
             $script:lastNotifParams = $Parameters
         }
         return New-QCSuccessResult -Code 'DB_OK' -Message 'ok' -Data @{ rowsAffected = 1 }
+    }
+    function Invoke-QCDatabaseScalar {
+        param([hashtable]$Config, [string]$Sql, [hashtable]$Parameters = @{})
+        if ($Sql -match 'notification_log') {
+            $script:lastNotifSql = $Sql
+            $script:lastNotifParams = $Parameters
+        }
+        return New-QCSuccessResult -Code 'DB_OK' -Message 'ok' -Data @{ value = 1 }
     }
     $notifRes = Write-QCNotificationTelemetry -Config $phase4Config -EventType 'READY_FOR_QC' `
         -DocumentGuid $phase4DocGuid -DocumentName '080J082001ab001.pdf' -FolderPath 'Documents\X\CADD\Sheets' `

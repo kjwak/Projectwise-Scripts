@@ -79,7 +79,7 @@ flowchart LR
 3. **Backward compatibility** — existing `Run-QCProcessor.ps1` entrypoint and server dashboard behavior must keep working when remote workers are disabled.
 4. **No interactive session required** — processors run as a scheduled task (or later a service) under a dedicated account, not the shared D-Team login.
 5. **Safe queue mutation only** — remote workers use existing `Lock-QCJob` / `Move-QCJob` paths; no uncoordinated file edits.
-6. **Cross-machine locking** — lock files include `machineName` + `pid`. Same-host liveness still uses PID. Other-host per-job locks are never stolen via local `Get-Process`; `Recover-QCStaleJobs` uses job `heartbeatUtc`. Deploy this lock code on the QC server **before** the modelling PC claims the UNC queue. See [`remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md).
+6. **Cross-machine locking** — lock files include `machineName` + `pid`. Job JSON in `running/` / `succeeded/` / `failed/` stores the same owner fields; `processing_jobs.worker_machine_name` / `worker_pid` mirror them for SQL. Same-host liveness still uses PID. Other-host per-job locks are never stolen via local `Get-Process`; `Recover-QCStaleJobs` uses job `heartbeatUtc`. Deploy this lock code on the QC server **before** the modelling PC claims the UNC queue. See [`remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md).
 
 ---
 
