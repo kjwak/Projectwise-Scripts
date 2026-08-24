@@ -14,6 +14,8 @@ This clone on the drainage modelling workstation (AZTEC002799) is a **processor 
 | Local `qcPrepend` temp/output on fast disk (E: / F:) | Audit polling, enqueue, reconciliation sweeps |
 | Read-only diagnostics (`Show-QCQueueDiag.ps1`) | UNC claims without `-AllowUncQueue` / `workers.remoteHost.allowUncQueue` |
 
+The supervisor tails `queue\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim, stage, success, and failure to the console. Heartbeat lines say `idle` or `busy=N <document>`. Restart `Start-QCRemoteWorkerHost.ps1` to pick this up.
+
 Restrict this host with gitignored `workers.enabledJobTypes` (modelling PC: `["QC_PREPEND"]` so `STATUS_SET_GEN` stays on the QC server). Empty/omitted `enabledJobTypes` means all types — do not set that in committed `appsettings.json`.
 
 ## Config
@@ -33,3 +35,11 @@ See `modules/Queue/QC.Queue.Json.psm1` (`_QCQJ-IsLockOwnerDead`, `Recover-QCStal
 ## Accounts
 
 Do not run QC processors under the shared interactive D-Team login. Use a dedicated scheduled-task account (later).
+
+## ProjectWise modules on this host
+
+`Open-PWConnection` comes from **pwps**. Folder/document cmdlets come from **pwps_dab**. The QC server usually has both on `PSModulePath`, so `Import-Module pwps_dab` is enough there. Explorer workstations often have `pwps_dab` in `WindowsPowerShell\Modules` while `pwps` is a separate module (or only under the Bentley install path). Workers spawn with `-NoProfile`, so a user profile that auto-imports `pwps` never runs.
+
+`Test-PWConnection.ps1` already loads both via `PW.Connection` (`Import-PWCmdletModules`). Production prepend (`Invoke-QCPrependPw.ps1`) must use that same loader — do not import `pwps_dab` alone. Imports from inside `PW.Connection` use `-Global` so `Get-PWDocumentsBySearch` is visible in the prepend script after connect.
+
+The modelling PC does **not** need to clone the QC server. It needs the same **cmdlet surface in the prepend child**: MTA, `pwps` (`Open-PWConnection`), and `pwps_dab` (`Get-PWDocumentsBySearch`, export/update). Watcher, dashboard, and server hardware stay on the coordinator.

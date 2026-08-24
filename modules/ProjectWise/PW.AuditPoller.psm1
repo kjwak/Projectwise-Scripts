@@ -88,6 +88,7 @@ $script:AuditPoller_FolderGuidCache = @{}
 $script:AuditPoller_UnresolvedFolderGuids = @{}
 $script:AuditPoller_WatchFolderCacheWarmed = $false
 $script:AuditPoller_PwFolderGuidByPath = $null
+$script:AuditPoller_WarmHeartbeat = $null
 
 function _AuditPoller-LoadDocFolderCache {
     param([hashtable]$Config)
@@ -1386,11 +1387,31 @@ function _AuditPoller-WriteWarmHeartbeat {
     )
 
     if (-not (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue)) { return }
+    $interval = 30
+    $prevStage = ''
+    try {
+        if ($HeartbeatState.Value -and $HeartbeatState.Value.ContainsKey('stage')) {
+            $prevStage = [string]$HeartbeatState.Value.stage
+        }
+    } catch { }
+    if ($Stage -and $Stage -ne $prevStage) { $interval = 0 }
+    try {
+        if (-not $HeartbeatState.Value) {
+            $HeartbeatState.Value = @{
+                lastUtc = [DateTime]::MinValue
+                startedUtc = (Get-Date).ToUniversalTime()
+            }
+        }
+        $HeartbeatState.Value['stage'] = $Stage
+    } catch { }
     $payload = @{ stage = $Stage }
-    foreach ($key in @($Data.Keys)) { $payload[$key] = $Data[$key] }
+    foreach ($key in @($Data.Keys)) {
+        if ($key -eq 'stage') { continue }
+        $payload[$key] = $Data[$key]
+    }
     Write-QCWatcherPhaseHeartbeat -Phase 'audit_folder_guid_cache_warm' `
         -Message "Audit folder GUID cache warm: $Stage" `
-        -Data $payload -IntervalSeconds 180 -HeartbeatState $HeartbeatState | Out-Null
+        -Data $payload -IntervalSeconds $interval -HeartbeatState $HeartbeatState | Out-Null
 }
 
 function Sync-AuditPollerWatchFolderGuidCache {
@@ -1448,20 +1469,37 @@ function Sync-AuditPollerWatchFolderGuidCache {
     }
     $warmDiagRef = [ref]$warmDiag
 
-    [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
-
     $warmHeartbeat = [ref]@{
         lastUtc = [DateTime]::MinValue
         startedUtc = (Get-Date).ToUniversalTime()
+        stage = ''
     }
     _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'starting' -Data @{
         watchRootCount = @($normalized).Count
         warmSheets = [bool]$warmSheets
     }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'building_path_index' -Data @{
+        watchRootCount = @($normalized).Count
+    }
+    [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
+
+    $script:AuditPoller_WarmHeartbeat = $warmHeartbeat
+    $findProgress = {
+        param($info)
+        if (-not $info) { return }
+        if (-not $script:AuditPoller_WarmHeartbeat) { return }
+        $stage = 'discovering_sheets'
+        try { if ($info.stage) { $stage = [string]$info.stage } } catch { }
+        _AuditPoller-WriteWarmHeartbeat -HeartbeatState $script:AuditPoller_WarmHeartbeat -Stage $stage -Data $info
+    }
 
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+        _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'registering_watch_root' -Data @{
+            rootPath = $rootPath
+            rootGuidCount = [int]$rootGuidCount
+        }
         if (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue) {
             try {
                 $f = $null
@@ -1500,7 +1538,11 @@ function Sync-AuditPollerWatchFolderGuidCache {
 
         if (Get-Command -Name 'Find-PWSheetsFoldersUnderRoot' -ErrorAction SilentlyContinue) {
             try {
-                foreach ($sp in @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)) {
+                _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'discovering_sheets' -Data @{
+                    rootPath = $rootPath
+                    projectDepth = [int]$projectDepth
+                }
+                foreach ($sp in @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth -ProgressCallback $findProgress)) {
                     [void]$discoveryEntries.Add($sp)
                 }
             } catch { }
@@ -1572,6 +1614,13 @@ function Sync-AuditPollerWatchFolderGuidCache {
     if ($debugLogPaths -and $debugPaths.Count -gt 0) {
         $warmLogData.debugPaths = @($debugPaths | Select-Object -Unique)
     }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'done' -Data @{
+        warmed = [int]$warmed
+        rootGuidCount = [int]$rootGuidCount
+        sheetsParentGuidCount = [int]$sheetsParentGuidCount
+        oneLevelChildGuidCount = [int]$oneLevelChildGuidCount
+    }
+    $script:AuditPoller_WarmHeartbeat = $null
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_FOLDER_CACHE_WARMED' -Message "Watch folder GUID cache warmed ($warmed folders)." -Data $warmLogData
     }

@@ -151,6 +151,48 @@ function _Trunc([string]$Text, [int]$Max) {
     return ($t.Substring(0, $Max - 3) + '...')
 }
 
+function _Format-HeartbeatScanStage([object]$Data) {
+    if (-not $Data) { return '' }
+    $phase = ''
+    try { if ($Data.phase) { $phase = [string]$Data.phase } } catch { }
+    if ([string]::IsNullOrWhiteSpace($phase)) { return '' }
+    $stage = $phase -replace '_', ' '
+    try {
+        if ($Data.stage) {
+            $stage = ('{0}: {1}' -f $stage, (([string]$Data.stage) -replace '_', ' '))
+        }
+    } catch { }
+    $bits = New-Object System.Collections.Generic.List[string]
+    foreach ($key in @('rootPath', 'folder', 'folderPath')) {
+        try {
+            $v = [string]$Data.$key
+            if (-not [string]::IsNullOrWhiteSpace($v)) {
+                [void]$bits.Add($v)
+                break
+            }
+        } catch { }
+    }
+    try {
+        if ($null -ne $Data.elapsedSeconds -and "$($Data.elapsedSeconds)" -ne '') {
+            [void]$bits.Add(('{0}s' -f [int][double]$Data.elapsedSeconds))
+        }
+    } catch { }
+    try {
+        if ($null -ne $Data.childCount -and [int]$Data.childCount -gt 0) {
+            [void]$bits.Add(('{0} folders' -f [int]$Data.childCount))
+        }
+    } catch { }
+    try {
+        if ($null -ne $Data.sheetsBudgetUsed -and $null -ne $Data.maxSheets) {
+            [void]$bits.Add(('{0}/{1} sheets' -f [int]$Data.sheetsBudgetUsed, [int]$Data.maxSheets))
+        }
+    } catch { }
+    if ($bits.Count -gt 0) {
+        return ('{0} ({1})' -f $stage, ($bits -join ', '))
+    }
+    return $stage
+}
+
 function _Repeat-Char([string]$Char, [int]$Count) {
     if ($Count -le 0) { return '' }
     return $Char * $Count
@@ -1513,6 +1555,29 @@ function _Process-ChildJsonLogObject {
     if ($o.code -eq 'WATCH_AUDIT_SCAN_FAILED' -or $o.code -eq 'WATCH_AUDIT_SCAN_ERROR') {
         $state.currentScanStage = 'audit trail scan failed (see watcher log)'
     }
+    if ($o.code -eq 'AUDIT_FOLDER_CACHE_WARMED') {
+        $n = 0
+        try { $n = [int]$o.data.warmed } catch { $n = 0 }
+        $state.currentScanStage = "folder GUID cache warmed ($n folders)"
+        try {
+            $stageUtc = _Parse-UtcIso -Value ([string]$o.ts)
+            $state.stageSinceUtc = if ($stageUtc) { $stageUtc.ToString('o') } else { Get-QCTimestamp }
+        } catch { $state.stageSinceUtc = Get-QCTimestamp }
+    }
+    if ($o.code -in @('WATCH_AUDIT_EVAL_OUTCOME', 'WATCH_AUDIT_OWNERSHIP_EVENT', 'WATCH_AUDIT_ATTR_LIVE_READ', 'WATCH_AUDIT_SKIPPED', 'WATCH_AUDIT_BASELINE_STATE_SUPPRESSED')) {
+        $doc = ''
+        $folder = ''
+        try { if ($o.data.documentName) { $doc = [string]$o.data.documentName } } catch { }
+        try { if (-not $doc -and $o.data.path) { $doc = [IO.Path]::GetFileName([string]$o.data.path) } } catch { }
+        try { if ($o.data.folderPath) { $folder = [string]$o.data.folderPath } } catch { }
+        if ($doc -and $folder) {
+            $state.currentScanStage = "evaluating audit: $doc ($folder)"
+        } elseif ($doc) {
+            $state.currentScanStage = "evaluating audit: $doc"
+        } else {
+            $state.currentScanStage = 'evaluating audit events'
+        }
+    }
     if ($o.code -eq 'WATCH_AUDIT_FALLBACK') {
         $state.currentScanStage = 'audit scan failed; falling back to full folder scan'
         $state.pwFoldersPreparedSeen = $false
@@ -1650,13 +1715,8 @@ function _Process-ChildJsonLogObject {
     }
     if ($o.code -eq 'WATCH_PHASE_HEARTBEAT') {
         try {
-            $phase = ''
-            if ($o.data -and $o.data.phase) { $phase = [string]$o.data.phase }
-            if ($phase) {
-                $stage = $phase -replace '_', ' '
-                if ($o.data.stage) { $stage = ("{0}: {1}" -f $stage, [string]$o.data.stage) }
-                $state.currentScanStage = $stage
-            }
+            $formatted = _Format-HeartbeatScanStage -Data $o.data
+            if ($formatted) { $state.currentScanStage = $formatted }
         } catch { }
     }
 }

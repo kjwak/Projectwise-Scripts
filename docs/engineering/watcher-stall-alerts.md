@@ -41,13 +41,16 @@ Both channels honor `watcher.sessionAlerts.enabled`, recipients, importance, and
 
 ## Progress heartbeats
 
-Long silent phases emit throttled `WATCH_PHASE_HEARTBEAT` (default every 3 minutes):
+Long silent phases emit throttled `WATCH_PHASE_HEARTBEAT`:
 
-| Phase key | Where |
-| --- | --- |
-| `audit_folder_guid_cache_warm` | `Sync-AuditPollerWatchFolderGuidCache` |
-| `full_reconciliation_scan` | Scheduled full folder scan loop |
-| `statusset_sheet_index` | Sheet index reconciliation (`Invoke-QCWatcherLongRunningWork`) |
+| Phase key | Where | Interval |
+| --- | --- | --- |
+| `audit_folder_guid_cache_warm` | `Sync-AuditPollerWatchFolderGuidCache` + `Find-PWSheetsFoldersUnderRoot` | Immediate on stage change; 30s while the same stage repeats |
+| `full_reconciliation_scan` | Scheduled full folder scan loop | 180s (start is immediate) |
+| `statusset_sheet_index` | Sheet index reconciliation (`Invoke-QCWatcherLongRunningWork`) | start/end + work progress |
+| `audit_trail_scan` | `Invoke-AuditTrailScan` page callback | 60s |
+
+Cache-warm stages include `starting`, `building_path_index`, `discovering_sheets`, `checking_sheets_path`, `listing_children`, `registering_sheets_folder`, and `done`. The dashboard Status/Stage line shows the current stage, folder path, and elapsed seconds so a long AZDOT walk does not look frozen on `starting`.
 
 The dashboard stall detector treats any JSONL bytes (including heartbeats) as activity.
 

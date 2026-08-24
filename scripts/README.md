@@ -21,6 +21,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 - **Job types**: honors `workers.enabledJobTypes` (empty/omitted = all types).
 - **UNC**: refuses `\\server\share` queue roots unless `-AllowUncQueue` or `workers.remoteHost.allowUncQueue`.
 - **Stop**: `Stop-QCPipeline.ps1` (also matches this supervisor).
+- **Console**: tails `queueRoot\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim/stage/success/failure. Heartbeat shows `idle` or `busy=N <document>`.
 
 ### `Watch-QCTrigger.ps1`
 - **Purpose**: one-shot watcher tick (detect → filter → trigger → job → dedupe → enqueue).

@@ -151,13 +151,15 @@ function Write-WorkerStage {
         [string]$Stage,
         [string]$JobId = '',
         [string]$JobType = '',
-        [string]$Handler = ''
+        [string]$Handler = '',
+        [string]$SourceName = ''
     )
     Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_STAGE' -Message $Stage -Data @{
         stage = $Stage
         jobId = $JobId
         jobType = $JobType
         handler = $Handler
+        sourceName = $SourceName
     }
 }
 
@@ -326,9 +328,14 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     # Returns hashtable: @{ Outcome = 'succeeded'|'failed'|'requeued'|'skipped_locked'|'dryrun_noop'; ExitOk = [bool]; SkipId = [string] }
     $jobId = [string]$Job['id']
     $jobType = [string]$Job['type']
+    $sourceName = ''
+    try {
+        if ($Job.ContainsKey('sourceName') -and $Job['sourceName']) { $sourceName = [string]$Job['sourceName'] }
+        elseif ($Job.ContainsKey('sourcePath') -and $Job['sourcePath']) { $sourceName = [System.IO.Path]::GetFileName([string]$Job['sourcePath']) }
+    } catch { }
 
     if ($IsDryRun -and -not $DryRunAllowStateChange) {
-        Write-WorkerStage -Stage 'dry-run: evaluating read-only dispatch' -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage 'dry-run: evaluating read-only dispatch' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job (read-only, no lock/state changes).' -Data @{
             jobId = $jobId; jobType = $jobType; handler = $Handler
             wouldRun = $true; wouldLock = $false; wouldChangeState = $false
@@ -365,8 +372,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         jobType = $jobType
         handler = $Handler
         sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
+        sourcePath = if ($Job.ContainsKey('sourcePath')) { [string]$Job['sourcePath'] } else { '' }
+        sourceName = $sourceName
     }
-    Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
+    Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
         $benignLockCodes = @(
@@ -398,7 +407,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     }
 
     try {
-        Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         $loaded = Get-QCJobById -JobId $jobId -Config $Config
         if (-not $loaded.IsSuccess -or -not $loaded.Data.found) { throw "Failed to load locked job: $jobId" }
         # After a long wait to acquire the job lock, the job may have already
@@ -412,6 +421,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
         $Job = [hashtable]$loaded.Data.job
+        try {
+            if ($Job.ContainsKey('sourceName') -and $Job['sourceName']) { $sourceName = [string]$Job['sourceName'] }
+            elseif ($Job.ContainsKey('sourcePath') -and $Job['sourcePath']) { $sourceName = [System.IO.Path]::GetFileName([string]$Job['sourcePath']) }
+        } catch { }
 
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Job locked and running (exclusive owner).' -Data @{
             jobId = $jobId
@@ -426,7 +439,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         }
 
         if ($IsDryRun) {
-            Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler
+            Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job.' -Data @{
                 jobId = $jobId; jobType = [string]$Job['type']; handler = $Handler
                 wouldRun = $true; wouldLock = $true; wouldChangeState = $DryRunAllowStateChange
@@ -436,7 +449,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
 
         _Write-WorkerJobOutcomeTelemetry -Config $Config -Job $Job -JobId $jobId -JobType $jobType -Status 'running'
 
-        Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         if (Get-Command -Name 'Update-QCJobHeartbeat' -ErrorAction SilentlyContinue) {
             try { Update-QCJobHeartbeat -JobId $jobId -Config $Config -Job $Job | Out-Null } catch { }
         }
@@ -464,7 +477,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
             # write lock twice in a row, doubling contention and producing
             # spurious WORKER_MOVE_FAILED / QUEUE_LOCK_TIMEOUT under load.
-            Write-WorkerStage -Stage 'moving completed job to succeeded' -JobId $jobId -JobType $jobType -Handler $Handler
+            Write-WorkerStage -Stage 'moving completed job to succeeded' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
             $mv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
@@ -555,7 +568,7 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock
         # cycle, in-memory job preserved with attempts/lastError stamped on disk).
-        Write-WorkerStage -Stage ("moving failed job to $target") -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage ("moving failed job to $target") -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         $fmv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
         if (-not $fmv.IsSuccess) {
             $innerErr = ''

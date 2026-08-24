@@ -87,4 +87,51 @@ $fromIndex = $mod.Invoke({
 }, @('Documents\AZDOT 2024\AZFWY2302-027_Centennial\CADD\Sheets'))
 _Assert ($fromIndex -eq $indexGuid) 'path index resolves normalized folder path to GUID'
 
+# Discovery progress callback fires before PW cmdlets (dashboard freshness)
+$progress = [System.Collections.Generic.List[object]]::new()
+$null = @(Find-PWSheetsFoldersUnderRoot -RootPath 'Documents\AZDOT' -SheetsSuffix 'CADD\Sheets' -ProjectDepth 1 -ProgressCallback {
+    param($info)
+    if ($info) { [void]$progress.Add($info) }
+})
+_Assert ($progress.Count -ge 1) 'Find-PWSheetsFoldersUnderRoot emits progress without live PW'
+_Assert ($progress[0].stage -eq 'checking_sheets_path') 'first discovery stage is checking_sheets_path'
+_Assert ($progress[0].rootPath -match '(?i)Documents\\AZDOT$') 'progress includes watch root path'
+
+# Warm heartbeat emits immediately on stage change, then throttles same-stage repeats
+$global:QcWarmHbCalls = [System.Collections.Generic.List[object]]::new()
+function global:Write-QCWatcherPhaseHeartbeat {
+    param(
+        [string]$Phase,
+        [string]$Message = '',
+        [hashtable]$Data = @{},
+        [int]$IntervalSeconds = 180,
+        [ref]$HeartbeatState
+    )
+    $now = (Get-Date).ToUniversalTime()
+    if (-not $HeartbeatState.Value) {
+        $HeartbeatState.Value = @{ lastUtc = [DateTime]::MinValue; startedUtc = $now }
+    }
+    $last = $HeartbeatState.Value.lastUtc
+    if ($IntervalSeconds -gt 0 -and $last -ne [DateTime]::MinValue) {
+        if (($now - $last).TotalSeconds -lt [double]$IntervalSeconds) { return $false }
+    }
+    $HeartbeatState.Value.lastUtc = $now
+    [void]$global:QcWarmHbCalls.Add(@{ stage = [string]$Data.stage; interval = $IntervalSeconds; phase = $Phase })
+    return $true
+}
+$warmHb = [ref]@{ lastUtc = [DateTime]::MinValue; startedUtc = [DateTime]::MinValue; stage = '' }
+$mod.Invoke({
+    param($State)
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $State -Stage 'starting'
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $State -Stage 'listing_children' -Data @{ folderPath = 'Documents\AZDOT' }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $State -Stage 'listing_children' -Data @{ folderPath = 'Documents\AZDOT\P2' }
+}, @($warmHb)) | Out-Null
+_Assert ($global:QcWarmHbCalls.Count -eq 2) 'stage change emits; same-stage repeat is throttled'
+_Assert ($global:QcWarmHbCalls[0].stage -eq 'starting') 'first warm heartbeat is starting'
+_Assert ($global:QcWarmHbCalls[0].interval -eq 0) 'stage change uses interval 0'
+_Assert ($global:QcWarmHbCalls[1].stage -eq 'listing_children') 'second heartbeat is listing_children'
+_Assert ($global:QcWarmHbCalls[1].interval -eq 0) 'new stage uses interval 0'
+Remove-Item -Path Function:\Write-QCWatcherPhaseHeartbeat -ErrorAction SilentlyContinue
+Remove-Variable -Name QcWarmHbCalls -Scope Global -ErrorAction SilentlyContinue
+
 Write-Host 'OK: audit folder cache warm tests passed.' -ForegroundColor Green

@@ -150,6 +150,16 @@ Assert-Match $pwPrependText 'QcProcessType' 'prepend script defines QcProcessTyp
 Assert-Match $pwPrependText 'QcPdfSuffix' 'prepend script defines QcPdfSuffix'
 Assert-Match $pwPrependText 'HistoryDocumentName' 'prepend script defines HistoryDocumentName'
 Assert-Match $pwPrependText 'QC_PROCESS_TYPE_UNKNOWN' 'prepend script fails without lane in strict mode'
+Assert-Match $pwPrependText 'Import-PWCmdletModules' 'prepend script loads pwps/pwps_dab via PW.Connection'
+Assert-Match $pwPrependText 'PW\.Connection\.psm1' 'prepend script imports PW.Connection'
+Assert-Match $pwPrependText 'Get-PWDocumentsBySearch' 'prepend script requires Get-PWDocumentsBySearch in caller session'
+Assert-Match $pwPrependText 'IncomingDocumentGuid' 'prepend script accepts source document GUID'
+Assert-Match $pwPrependText 'Get-PWDocumentsByGUIDs' 'prepend script resolves incoming PDF by GUID before folder search'
+Assert-Match $pwPrependText 'Get-PrependPwFolderPathCandidates' 'prepend script retries Documents\\ folder prefix'
+
+$pwConnText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1') -Raw
+$pwProcText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Processing\QC.Processors.psm1') -Raw
+Assert-Match $pwProcText 'IncomingDocumentGuid' 'processor passes source document GUID to prepend'
 
 $settings = Get-QCNotificationSettings -Config @{}
 $jobObj = [pscustomobject]@{ metadata = [pscustomobject]@{ qcProcessType = 'review' } }

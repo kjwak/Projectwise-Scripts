@@ -1458,6 +1458,13 @@ function Invoke-QCPrependProcessor {
             }
         }
 
+        $incomingGuid = [string]$laneCtx.sourceDocumentGuid
+        if (_QCP-IsNullOrWhiteSpace $incomingGuid) {
+            try {
+                $incomingGuid = [string](_QCP-GetJobMetadataValue -Job $Job -Keys @('sourceDocumentGuid', 'triggerDocumentGuid', 'documentGuid'))
+            } catch { $incomingGuid = '' }
+        }
+
         $historyDocName = [string]$laneCtx.expectedLanePdfName
         $args = @(
             '-NoProfile',
@@ -1468,6 +1475,9 @@ function Invoke-QCPrependProcessor {
             '-DatasourceName', $ds,
             '-LocalRoot', $localRoot
         )
+        if (-not (_QCP-IsNullOrWhiteSpace $incomingGuid)) {
+            $args += @('-IncomingDocumentGuid', $incomingGuid)
+        }
         if (-not (_QCP-IsNullOrWhiteSpace $logDir)) { $args += @('-LogDir', $logDir) }
         if (Test-Path -LiteralPath $qpdfExe) { $args += @('-QpdfExe', $qpdfExe) }
         if (Test-Path -LiteralPath $overlayExe) { $args += @('-QcOverlayExe', $overlayExe) }

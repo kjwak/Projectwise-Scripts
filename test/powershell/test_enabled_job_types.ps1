@@ -87,4 +87,9 @@ try {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$hostScript = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\Start-QCRemoteWorkerHost.ps1') -Raw
+Assert-True ($hostScript -match '_Drain-ProcessorJsonLogs') 'remote host tails processor JSONL'
+Assert-True ($hostScript -match 'WORKER_SELECTED') 'remote host prints WORKER_SELECTED'
+Assert-True ($hostScript -match 'Tailing processor JSON logs') 'remote host announces console job activity'
+
 Write-Host 'test_enabled_job_types: passed' -ForegroundColor Green

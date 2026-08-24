@@ -60,7 +60,7 @@ Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full
 
 ### Prepend mode
 
-Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are orchestrated by `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1`, which spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
+Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are orchestrated by `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1`, which spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
 
 `qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 

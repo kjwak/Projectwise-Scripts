@@ -46,6 +46,7 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Recover-QCStaleJobs'
     'Write-QCJsonLog'
     'Get-QCTimestamp'
+    'Get-QCLogHourStamp'
 ) -Context 'remote worker host bootstrap'
 
 function _CmdLineEscapeDoubleQuotes([string]$Value) {
@@ -118,6 +119,151 @@ function _Start-WorkerProcess {
     }
 }
 
+function _Get-ProcessorJsonlPath([string]$LogDir, [string]$HourStamp) {
+    return (Join-Path $LogDir ("Run-QCProcessor_${HourStamp}.jsonl"))
+}
+
+function _Read-LogChunkFromOffset([string]$Path, [int64]$StartPos) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return @{ Text = ''; NewPos = [int64]$StartPos }
+    }
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            if ($StartPos -gt $fs.Length) { $StartPos = [int64]0 }
+            $fs.Position = $StartPos
+            $sr = New-Object System.IO.StreamReader($fs, [System.Text.UTF8Encoding]::new($false), $false, 4096, $true)
+            $text = $sr.ReadToEnd()
+            $newPos = $fs.Position
+            $sr.Dispose()
+            return @{ Text = [string]$text; NewPos = [int64]$newPos }
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {
+        return @{ Text = ''; NewPos = [int64]$StartPos }
+    }
+}
+
+function _Test-RemoteHostJobEvent([string]$Code) {
+    if ([string]::IsNullOrWhiteSpace($Code)) { return $false }
+    if ($Code -in @(
+            'WORKER_NO_JOB'
+            'WORKER_START'
+            'WORKER_BUDGET'
+            'WORKER_LEASE'
+            'WORKER_LOCK_RACE'
+            'WORKER_DB_SCHEMA_INIT_FAILED'
+            'WORKER_QUEUE_DUPLICATE_CLEANUP'
+            'JOB_TELEMETRY_WRITTEN'
+            'JOB_TELEMETRY_SKIPPED'
+        )) { return $false }
+    if ($Code -match '^(WORKER_|QC_PREPEND|STATUS_SET)') { return $true }
+    return $false
+}
+
+function _Write-RemoteHostJobLine {
+    param([object]$Obj)
+    if (-not $Obj) { return }
+    $code = [string]$Obj.code
+    if (-not (_Test-RemoteHostJobEvent $code)) { return }
+
+    $d = $null
+    try { $d = $Obj.data } catch { }
+    $label = ''; $jobId = ''; $jobType = ''; $src = ''; $stage = ''
+    if ($d) {
+        try { if ($d.workerLabel) { $label = [string]$d.workerLabel } } catch { }
+        try { if ($d.jobId) { $jobId = [string]$d.jobId } } catch { }
+        try { if ($d.jobType) { $jobType = [string]$d.jobType } } catch { }
+        try {
+            if ($d.sourceName) { $src = [string]$d.sourceName }
+            elseif ($d.sourcePath) { $src = [System.IO.Path]::GetFileName([string]$d.sourcePath) }
+        } catch { }
+        try { if ($d.stage) { $stage = [string]$d.stage } } catch { }
+    }
+    if (-not $src -and $jobId -and $script:ActiveJobs -and $script:ActiveJobs.ContainsKey($jobId)) {
+        try { $src = [string]$script:ActiveJobs[$jobId] } catch { }
+    }
+    if ($code -eq 'WORKER_STAGE' -and -not $jobId) { return }
+
+    $msg = [string]$Obj.message
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add(('[{0}]' -f (Get-Date -Format 'HH:mm:ss')))
+    if ($label) { [void]$parts.Add($label) }
+    [void]$parts.Add($code)
+    if ($jobType) { [void]$parts.Add($jobType) }
+    if ($src) { [void]$parts.Add($src) }
+    if ($jobId) { [void]$parts.Add($jobId) }
+    if ($stage) { [void]$parts.Add(("stage={0}" -f $stage)) }
+    if ($msg) { [void]$parts.Add($msg) }
+    $line = ($parts -join ' ')
+
+    $color = 'White'
+    switch -Regex ($code) {
+        '^(WORKER_SELECTED|WORKER_CLAIMING)$' { $color = 'Cyan' }
+        '^WORKER_STAGE$' { $color = 'Yellow' }
+        '^(WORKER_SUCCEEDED|QC_PREPEND_OK)$' { $color = 'Green' }
+        '(FAILED|UNHANDLED|ERROR)' { $color = 'Red' }
+        default { $color = 'Gray' }
+    }
+    Write-Host $line -ForegroundColor $color
+
+    if ($jobId) {
+        if ($code -match '^(WORKER_SELECTED|WORKER_CLAIMING)$') {
+            $script:ActiveJobs[$jobId] = $(if ($src) { $src } else { $jobType })
+        } elseif ($code -match '^(WORKER_SUCCEEDED|WORKER_FAILED|WORKER_JOB_UNHANDLED)$') {
+            try { $script:ActiveJobs.Remove($jobId) | Out-Null } catch { }
+        }
+    }
+}
+
+function _Drain-ProcessorJsonLogs([string]$LogDir) {
+    $hour = Get-QCLogHourStamp
+    if ($script:ProcJsonLog.hour -and [string]$script:ProcJsonLog.hour -ne $hour) {
+        $prev = _Get-ProcessorJsonlPath -LogDir $LogDir -HourStamp ([string]$script:ProcJsonLog.hour)
+        _Drain-ProcessorJsonlFile -Path $prev
+        $script:ProcJsonLog.offset = [int64]0
+        $script:ProcJsonLog.tail = ''
+        $script:ProcJsonLog.skipExisting = $false
+    }
+    $script:ProcJsonLog.hour = $hour
+    $path = _Get-ProcessorJsonlPath -LogDir $LogDir -HourStamp $hour
+    if ($script:ProcJsonLog.skipExisting) {
+        if (Test-Path -LiteralPath $path) {
+            try { $script:ProcJsonLog.offset = [int64](Get-Item -LiteralPath $path).Length } catch { $script:ProcJsonLog.offset = [int64]0 }
+        }
+        $script:ProcJsonLog.skipExisting = $false
+        return
+    }
+    _Drain-ProcessorJsonlFile -Path $path
+}
+
+function _Drain-ProcessorJsonlFile([string]$Path) {
+    $chunk = _Read-LogChunkFromOffset -Path $Path -StartPos ([int64]$script:ProcJsonLog.offset)
+    if ($chunk.NewPos -lt $script:ProcJsonLog.offset) {
+        $script:ProcJsonLog.offset = [int64]0
+        $script:ProcJsonLog.tail = ''
+        $chunk = _Read-LogChunkFromOffset -Path $Path -StartPos 0
+    }
+    $script:ProcJsonLog.offset = [int64]$chunk.NewPos
+    $buffer = ([string]$script:ProcJsonLog.tail) + ([string]$chunk.Text)
+    $nl = $buffer.LastIndexOfAny(@([char]10, [char]13))
+    if ($nl -lt 0) {
+        $script:ProcJsonLog.tail = $buffer
+        return
+    }
+    $complete = $buffer.Substring(0, $nl + 1)
+    $script:ProcJsonLog.tail = $buffer.Substring($nl + 1)
+    foreach ($line in ($complete -split '\r?\n')) {
+        $t = ([string]$line).Trim()
+        if (-not $t -or -not $t.StartsWith('{')) { continue }
+        try {
+            $o = $t | ConvertFrom-Json -ErrorAction Stop
+            _Write-RemoteHostJobLine -Obj $o
+        } catch { }
+    }
+}
+
 $cfg = Get-QCAppSettingsConfig -Path $AppSettingsPath -DryRun:$DryRun.IsPresent
 if (-not (Test-QCUncQueueClaimAllowed -Config $cfg -AllowUncQueue:$AllowUncQueue.IsPresent)) {
     throw "Queue root is a UNC path. Pass -AllowUncQueue or set workers.remoteHost.allowUncQueue before claiming jobs from this host."
@@ -158,6 +304,13 @@ if (Test-Path -LiteralPath $lockPath) {
 
 $script:HostLockPath = $lockPath
 $script:WorkerSlots = @{}
+$script:ActiveJobs = @{}
+$script:ProcJsonLog = @{
+    hour = ''
+    offset = [int64]0
+    tail = ''
+    skipExisting = $true
+}
 
 function _Stop-TrackedWorkers {
     foreach ($lbl in @($script:WorkerSlots.Keys)) {
@@ -189,6 +342,9 @@ Write-QCJsonLog -Level 'Information' -Code 'REMOTE_HOST_START' -Message 'Remote 
     allowUncQueue = [bool]($AllowUncQueue.IsPresent -or $rh.allowUncQueue)
     dryRun = [bool]$cfg.dryRun
 }
+
+Write-Host ("[{0}] remote-host started host={1} queue={2} types={3}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $queueRoot, $(if (@($rh.enabledJobTypes).Count -gt 0) { $rh.enabledJobTypes -join ',' } else { '(all)' })) -ForegroundColor Gray
+Write-Host 'Tailing processor JSON logs: claim, stage, success, and failure print here. Idle heartbeat every 10s.' -ForegroundColor Gray
 
 try {
     $rec = Recover-QCStaleJobs -Config $cfg
@@ -254,11 +410,14 @@ try {
                         label = $label
                         pid = [int]$child.process.Id
                     }
+                    Write-Host ("[{0}] spawned {1} pid={2}" -f (Get-Date -Format 'HH:mm:ss'), $label, $child.process.Id) -ForegroundColor Gray
                 } catch {
                     Write-QCJsonLog -Level 'Error' -Code 'REMOTE_HOST_SPAWN_FAILED' -Message $_.Exception.Message -Data @{ label = $label }
                 }
             }
         }
+
+        try { _Drain-ProcessorJsonLogs -LogDir $logDir } catch { }
 
         if (([DateTime]::UtcNow - $lastStatusAt).TotalSeconds -ge 10) {
             $lastStatusAt = [DateTime]::UtcNow
@@ -267,7 +426,15 @@ try {
                 try { $pids += [int]$script:WorkerSlots[$lbl].process.Id } catch { }
             }
             $types = if (@($rh.enabledJobTypes).Count -gt 0) { ($rh.enabledJobTypes -join ',') } else { '(all)' }
-            Write-Host ("[{0}] remote-host {1} workers={2}/{3} types={4} pids={5}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $script:WorkerSlots.Count, $want, $types, ($pids -join ','))
+            $busyN = 0
+            $busyTxt = 'idle'
+            try {
+                $busyN = @($script:ActiveJobs.Keys).Count
+                if ($busyN -gt 0) {
+                    $busyTxt = 'busy=' + $busyN + ' ' + ((@($script:ActiveJobs.Values) | Select-Object -First 3) -join ',')
+                }
+            } catch { }
+            Write-Host ("[{0}] remote-host {1} workers={2}/{3} types={4} pids={5} {6}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $script:WorkerSlots.Count, $want, $types, ($pids -join ','), $busyTxt)
         }
 
         Start-Sleep -Milliseconds 400

@@ -417,7 +417,8 @@ function Find-PWSheetsFoldersUnderRoot {
         [Parameter(Mandatory)][string]$RootPath,
         [string]$SheetsSuffix,
         [string]$DatasourceName,
-        [int]$ProjectDepth = 1
+        [int]$ProjectDepth = 1,
+        [scriptblock]$ProgressCallback
     )
 
     $rootPathRaw = ($RootPath -as [string]).Trim().TrimEnd('\')
@@ -432,6 +433,22 @@ function Find-PWSheetsFoldersUnderRoot {
 
     $rootDocs = $rootPathRaw
     if ($rootDocs -notmatch '^(?i)Documents\\') { $rootDocs = ('Documents\' + $rootDocs.TrimStart('\')) }
+
+    function _EmitSheetsDiscoveryProgress {
+        param(
+            [Parameter(Mandatory)][string]$Stage,
+            [hashtable]$Data = @{}
+        )
+        if (-not $ProgressCallback) { return }
+        try {
+            $payload = @{
+                stage    = $Stage
+                rootPath = $rootDocs
+            }
+            foreach ($key in @($Data.Keys)) { $payload[$key] = $Data[$key] }
+            & $ProgressCallback $payload
+        } catch { }
+    }
 
     function _TestPwFolderExists([string]$DocsFolderPath) {
         $apiPath = ConvertTo-PWCmdletFolderPath -InternalFolderPath $DocsFolderPath
@@ -524,6 +541,7 @@ function Find-PWSheetsFoldersUnderRoot {
     }
 
     $rootSheets = (($rootDocs.TrimEnd('\') + '\' + $suffix).TrimEnd('\'))
+    _EmitSheetsDiscoveryProgress -Stage 'checking_sheets_path' -Data @{ folderPath = $rootSheets }
     if (_TestPwFolderExists -DocsFolderPath $rootSheets) {
         $walkDepth = ($depth - 1)
         if ($walkDepth -lt 0) { $walkDepth = 0 }
@@ -533,6 +551,7 @@ function Find-PWSheetsFoldersUnderRoot {
         for ($i = 1; $i -le $walkDepth; $i++) {
             $next = @()
             foreach ($p in @($current)) {
+                _EmitSheetsDiscoveryProgress -Stage 'listing_children' -Data @{ folderPath = $p }
                 foreach ($n in @(_GetChildNames -DocsFolderPath $p)) {
                     $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
                 }
@@ -553,11 +572,13 @@ function Find-PWSheetsFoldersUnderRoot {
     for ($i = 1; $i -le $depth; $i++) {
         $next = @()
         foreach ($p in @($levelProjects)) {
+            _EmitSheetsDiscoveryProgress -Stage 'listing_children' -Data @{ folderPath = $p }
             foreach ($n in @(_GetChildNames -DocsFolderPath $p)) {
                 $next += (($p.TrimEnd('\') + '\' + $n).TrimEnd('\'))
             }
         }
         $levelProjects = @($next | Select-Object -Unique)
+        _EmitSheetsDiscoveryProgress -Stage 'listed_projects' -Data @{ childCount = @($levelProjects).Count }
         if ($levelProjects.Count -eq 0) { break }
     }
 
