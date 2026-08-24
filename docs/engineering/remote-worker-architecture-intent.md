@@ -1,6 +1,6 @@
 # Remote Worker Architecture — Intent
 
-**Status:** Phase 1 in repo (supervisor + `enabledJobTypes`); UNC claims still opt-in per host  
+**Status:** Phase 2 live on the modelling PC (UNC prepend + scheduled task). Host resource throttle is in repo (opt-in via `appsettings.local.json`; committed defaults remain off).  
 **Date:** 2026-06-24  
 **Primary deployment target:** Drainage team modelling workstation (shared hydraulic modelling PC)
 
@@ -101,11 +101,11 @@ Deploy code via existing [`scripts/Publish-QCPipelineCode.ps1`](../../scripts/Pu
 
 The modelling PC is shared with hydraulic modelling. Remote QC work must defer when models are active.
 
-**Intent:**
+**In repo (`workers.remoteHost.throttle`):** the remote-host supervisor samples machine-wide CPU, physical memory, and `Win32_Process` names across all sessions (including disconnected `dteam`). A status file `queue\_remote_worker.{host}.throttle.json` records `pauseNewClaims` / `recommendedSlots`. When busy, the pool scales down to `busyRecommendedSlots` (default 1) instead of going idle unless that value is 0. Extra `Run-QCProcessor` children stay alive but skip `Get-NextQCJob`. In-flight prepend/writeback is never aborted. Missing, stale, malformed, or `sample_error` status **fails open** (claims continue). Committed `appsettings.json` keeps throttle disabled; enable only in gitignored `appsettings.local.json`.
 
-- Detect activity via configurable process name patterns, CPU, and memory thresholds.
-- When busy: **pause new job claims** and optionally reduce active processor slots.
-- **Let running jobs finish** by default — do not abort mid-prepend or mid-PW upload unless explicitly safe at a checkpoint.
+Process Lasso (or similar) should exclude QC supervisor/worker PowerShell processes as an **ops** setting — that is not encoded in QC.
+
+SQL `qc_workers` / dashboard worker registry is still a later visibility slice. This throttle is a local host control plane only.
 
 ---
 
@@ -116,7 +116,7 @@ The modelling PC is shared with hydraulic modelling. Remote QC work must defer w
 | **1** | Local simulation: supervisor + multiple `Run-QCProcessor` instances on one machine; job-type filters |
 | **2** | Remote worker on modelling PC: shared queue over UNC; host-aware locks; scheduled task under service account |
 | **3** | Worker heartbeat and SQL telemetry (`qc_workers`); dashboard/diagnostic visibility |
-| **4** | Resource-aware throttling on modelling PC |
+| **4** | Resource-aware throttling on modelling PC (in repo; opt-in local overlay) |
 | **5** | Production hardening: gMSA, alerting, optional Windows Service, runbooks |
 
 Phase 1 should not require network shares or SQL schema changes. Phase 2 is the first production-facing milestone on the modelling PC.
@@ -163,6 +163,7 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 | [`docs/data/database-telemetry.md`](../data/database-telemetry.md) | SQL vs JSON queue roles |
 | [`docs/reference/appsettings-reference.md`](../reference/appsettings-reference.md) | Current `workers` config |
 | [`modules/Queue/QC.Queue.Json.psm1`](../../modules/Queue/QC.Queue.Json.psm1) | Queue, locks, recovery |
+| [`modules/Queue/QC.HostThrottle.psm1`](../../modules/Queue/QC.HostThrottle.psm1) | Host resource sample, evaluate, status file |
 | [`scripts/service/Run-QCProcessor.ps1`](../../scripts/service/Run-QCProcessor.ps1) | Worker entrypoint (`enabledJobTypes`, `-AllowUncQueue`) |
 | [`scripts/service/Start-QCRemoteWorkerHost.ps1`](../../scripts/service/Start-QCRemoteWorkerHost.ps1) | Processor-only supervisor |
 | [`test/powershell/test_worker_pool_dispatch.ps1`](../../test/powershell/test_worker_pool_dispatch.ps1) | Parallel worker safety test |
@@ -171,7 +172,5 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 
 ## Next steps
 
-1. Keep host-aware locks on the QC server before any UNC worker claims.
-2. On the modelling PC, set gitignored `appsettings.local.json` from `appsettings.remote-worker.example.json` with `workers.enabledJobTypes: ["QC_PREPEND"]`.
-3. Start claims with `Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` only when ready to process live prepend jobs.
-4. Resource-aware throttling remains Phase 4.
+1. On the modelling PC, copy throttle keys from `appsettings.remote-worker.example.json` into gitignored `appsettings.local.json` and set `workers.remoteHost.throttle.enabled` to `true`, then restart `QC-RemoteWorkerHost`.
+2. SQL `qc_workers` heartbeat / dashboard host visibility remains a later slice (intent Phase 3).

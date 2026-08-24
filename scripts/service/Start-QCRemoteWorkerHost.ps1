@@ -42,6 +42,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Core\Core.Results.psm1'
     'Queue\QC.Queue.Json.psm1'
+    'Queue\QC.HostThrottle.psm1'
 ) -RequiredCommands @(
     'Get-QCAppSettingsConfig'
     'Get-QCRemoteWorkerHostSettings'
@@ -50,6 +51,9 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Write-QCJsonLog'
     'Get-QCTimestamp'
     'Get-QCLogHourStamp'
+    'Update-QCHostThrottleStatus'
+    'Get-QCHostThrottleClaimDecision'
+    'Get-QCHostThrottleStatusPath'
 ) -Context 'remote worker host bootstrap'
 
 . (Join-Path $PSScriptRoot 'QC.RemoteWorkerHostLogView.ps1')
@@ -231,6 +235,9 @@ $nextWorkerIndex = 1
 $lastSpawnAt = [DateTime]::MinValue
 $lastRecoveryAt = [DateTime]::UtcNow
 $lastStatusAt = [DateTime]::MinValue
+$lastThrottleSampleAt = [DateTime]::MinValue
+$script:LastThrottleLogKey = ''
+$throttleStatusPath = Get-QCHostThrottleStatusPath -QueueRoot $queueRoot -HostName $hostName
 
 try {
     while ($true) {
@@ -260,9 +267,61 @@ try {
             } catch { }
         }
 
-        $want = [int]$rh.maxParallel
-        if ($want -lt 1) { $want = 1 }
-        if ($script:WorkerSlots.Count -lt $want) {
+        $pool = [int]$rh.maxParallel
+        if ($pool -lt 1) { $pool = 1 }
+        $th = $rh.throttle
+        if (-not $th) {
+            $th = @{ enabled = $false; sampleSeconds = 10; processNamePatterns = @(); cpuPercent = 0; memoryPercent = 0; busyRecommendedSlots = 0 }
+        }
+        $sampleEvery = 10
+        try { $sampleEvery = [int]$th.sampleSeconds } catch { $sampleEvery = 10 }
+        if ($sampleEvery -lt 1) { $sampleEvery = 10 }
+        if (([DateTime]::UtcNow - $lastThrottleSampleAt).TotalSeconds -ge $sampleEvery) {
+            $lastThrottleSampleAt = [DateTime]::UtcNow
+            $excludePids = @($PID)
+            foreach ($lbl in @($script:WorkerSlots.Keys)) {
+                try { $excludePids += [int]$script:WorkerSlots[$lbl].process.Id } catch { }
+            }
+            try {
+                if ([bool]$th.enabled) {
+                    Update-QCHostThrottleStatus -Settings $th -StatusPath $throttleStatusPath -MaxParallel $pool `
+                        -ExcludePids $excludePids -HostName $hostName -CurrentLabels @($script:WorkerSlots.Keys) -Live | Out-Null
+                } else {
+                    $disabledEval = ConvertTo-QCHostThrottleEvaluation -Settings $th -MaxParallel $pool
+                    Write-QCHostThrottleStatus -Path $throttleStatusPath -Evaluation $disabledEval -HostName $hostName | Out-Null
+                }
+            } catch {
+                Write-QCJsonLog -Level 'Warning' -Code 'REMOTE_HOST_THROTTLE' -Message 'Host throttle sample failed; claims stay fail-open.' -Data @{
+                    host = $hostName
+                    error = [string]$_.Exception.Message
+                    reason = 'sample_error'
+                }
+                try {
+                    $errEval = ConvertTo-QCHostThrottleEvaluation -Settings $th -MaxParallel $pool -SampleError
+                    Write-QCHostThrottleStatus -Path $throttleStatusPath -Evaluation $errEval -HostName $hostName | Out-Null
+                } catch { }
+            }
+        }
+
+        $throttleStatus = $null
+        try { $throttleStatus = Read-QCHostThrottleStatus -Path $throttleStatusPath } catch { $throttleStatus = $null }
+        $throttleDecision = Get-QCHostThrottleClaimDecision -Status $throttleStatus -Settings $th -MaxParallel $pool
+        $want = Get-QCHostThrottleDesiredSlots -MaxParallel $pool -RecommendedSlots ([int]$throttleDecision.recommendedSlots)
+        $throttleKey = '{0}|{1}|{2}' -f [bool]$throttleDecision.pauseNewClaims, [string]$throttleDecision.reason, [int]$want
+        if ($throttleKey -ne $script:LastThrottleLogKey) {
+            $script:LastThrottleLogKey = $throttleKey
+            Write-QCJsonLog -Level 'Information' -Code 'REMOTE_HOST_THROTTLE' -Message 'Remote host throttle state.' -Data @{
+                host = $hostName
+                pauseNewClaims = [bool]$throttleDecision.pauseNewClaims
+                recommendedSlots = [int]$want
+                maxParallel = $pool
+                reason = [string]$throttleDecision.reason
+                honored = [bool]$throttleDecision.honored
+            }
+        }
+
+        $spawnPlan = Get-QCHostThrottleSpawnPlan -CurrentCount $script:WorkerSlots.Count -Want $want
+        if ($spawnPlan.shouldSpawn) {
             $now = Get-Date
             if (($now - $lastSpawnAt).TotalMilliseconds -ge [int]$rh.spawnStaggerMs) {
                 $label = "RW$nextWorkerIndex"
@@ -301,7 +360,10 @@ try {
             }
             $types = if (@($rh.enabledJobTypes).Count -gt 0) { ($rh.enabledJobTypes -join ',') } else { '(all)' }
             $busyTxt = Get-QCRemoteWorkerHostBusySummary
-            Write-Host ("[{0}] remote-host {1} workers={2}/{3} types={4} pids={5} {6}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $script:WorkerSlots.Count, $want, $types, ($pids -join ','), $busyTxt)
+            $thReason = [string]$throttleDecision.reason
+            if ([string]::IsNullOrWhiteSpace($thReason)) { $thReason = 'disabled' }
+            $thPause = if ([bool]$throttleDecision.pauseNewClaims) { 'pause' } elseif ($want -lt $pool) { 'reduce' } else { 'run' }
+            Write-Host ("[{0}] remote-host {1} workers={2}/{3} types={4} pids={5} throttle={6}:{7} {8}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $script:WorkerSlots.Count, $want, $types, ($pids -join ','), $thPause, $thReason, $busyTxt)
         }
 
         Start-Sleep -Milliseconds 400

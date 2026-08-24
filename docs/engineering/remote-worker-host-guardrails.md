@@ -57,6 +57,18 @@ Do not manually move the job to `succeeded\` unless prepend **and** workflow wri
 
 `Read-QCAppSettings` already merges `appsettings.json` → `appsettings.local.json` → `appsettings.secrets.json`.
 
+## Host resource throttle
+
+When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and process names across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json`.
+
+- **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**.
+- **In-flight work always finishes** (prepend, reconnect, writeback, notification).
+- **Fail-open:** missing, malformed, unreadable, stale (`sampledAtUtc` older than `max(3 * sampleSeconds, 30s)`), or `reason=sample_error` does **not** pause claims.
+- Process-name patterns are case-insensitive wildcards against `Win32_Process.Name` with `.exe` stripped. QC supervisor/worker PIDs and their descendant tree are excluded; other PowerShell processes are not.
+- Committed `appsettings.json` must keep this **off**. Do not add SQL `qc_workers` here — this is local host control only.
+
+If you use Process Lasso (or similar) on this PC, exclude the QC remote-host supervisor and `Run-QCProcessor` PowerShell processes there. That is an ops setting, not QC code.
+
 ## Lock safety
 
 Queue lock files must include `machineName` plus `pid`. The same fields are stamped onto the job JSON at claim (`running/`) and kept when the file moves to `succeeded/` or `failed/`. Recover-to-pending clears them. SQL `processing_jobs` mirrors `worker_machine_name` / `worker_pid` (schema 1.22.0). Local PID-only liveness will steal (or fail to recover) jobs across machines if the QC server is not running the same host-aware lock code.

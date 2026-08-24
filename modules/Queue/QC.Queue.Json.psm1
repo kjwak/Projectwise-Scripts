@@ -863,6 +863,12 @@ function Get-QCRemoteWorkerHostSettings {
     $idleSleepMs = 400
     $spawnStaggerMs = 150
     $allowUncQueue = $false
+    $throttleEnabled = $false
+    $throttleSampleSeconds = 10
+    $throttleCpuPercent = 0
+    $throttleMemoryPercent = 0
+    $throttleBusySlots = 1
+    $throttlePatterns = New-Object System.Collections.Generic.List[string]
     try {
         if ($Config.ContainsKey('workers') -and $Config.workers) {
             $w = $Config.workers
@@ -879,6 +885,29 @@ function Get-QCRemoteWorkerHostSettings {
                 if ($rh -is [hashtable] -and $rh.ContainsKey('allowUncQueue')) { $flag = $rh.allowUncQueue }
                 elseif ($rh.PSObject -and $rh.PSObject.Properties['allowUncQueue']) { $flag = $rh.allowUncQueue }
                 if ($null -ne $flag) { $allowUncQueue = [bool]$flag }
+                $th = $null
+                if ($rh -is [hashtable] -and $rh.ContainsKey('throttle')) { $th = $rh.throttle }
+                elseif ($rh.PSObject -and $rh.PSObject.Properties['throttle']) { $th = $rh.throttle }
+                if ($th) {
+                    if ($th -is [hashtable] -and $th.ContainsKey('enabled') -and $null -ne $th.enabled) {
+                        try { $throttleEnabled = [bool]$th.enabled } catch { $throttleEnabled = $false }
+                    } elseif ($th.PSObject -and $th.PSObject.Properties['enabled'] -and $null -ne $th.enabled) {
+                        try { $throttleEnabled = [bool]$th.enabled } catch { $throttleEnabled = $false }
+                    }
+                    if ($null -ne $th.sampleSeconds) { try { $throttleSampleSeconds = [int]$th.sampleSeconds } catch { } }
+                    if ($null -ne $th.cpuPercent) { try { $throttleCpuPercent = [double]$th.cpuPercent } catch { } }
+                    if ($null -ne $th.memoryPercent) { try { $throttleMemoryPercent = [double]$th.memoryPercent } catch { } }
+                    if ($null -ne $th.busyRecommendedSlots) { try { $throttleBusySlots = [int]$th.busyRecommendedSlots } catch { } }
+                    $rawPats = $null
+                    if ($th -is [hashtable] -and $th.ContainsKey('processNamePatterns')) { $rawPats = $th.processNamePatterns }
+                    elseif ($th.PSObject -and $th.PSObject.Properties['processNamePatterns']) { $rawPats = $th.processNamePatterns }
+                    foreach ($pat in @($rawPats)) {
+                        $s = ([string]$pat).Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($s) -and -not $throttlePatterns.Contains($s)) {
+                            [void]$throttlePatterns.Add($s)
+                        }
+                    }
+                }
             }
         }
     } catch { }
@@ -887,6 +916,9 @@ function Get-QCRemoteWorkerHostSettings {
     if ($leaseSeconds -lt 0) { $leaseSeconds = 0 }
     if ($idleSleepMs -lt 0) { $idleSleepMs = 0 }
     if ($spawnStaggerMs -lt 0) { $spawnStaggerMs = 0 }
+    if ($throttleSampleSeconds -lt 1) { $throttleSampleSeconds = 10 }
+    if ($throttleCpuPercent -lt 0) { $throttleCpuPercent = 0 }
+    if ($throttleMemoryPercent -lt 0) { $throttleMemoryPercent = 0 }
     return @{
         maxParallel = $maxParallel
         maxJobsPerWorker = $maxJobsPerWorker
@@ -895,6 +927,14 @@ function Get-QCRemoteWorkerHostSettings {
         spawnStaggerMs = $spawnStaggerMs
         allowUncQueue = $allowUncQueue
         enabledJobTypes = @(Get-QCEnabledJobTypes -Config $Config)
+        throttle = @{
+            enabled = [bool]$throttleEnabled
+            sampleSeconds = [int]$throttleSampleSeconds
+            cpuPercent = [double]$throttleCpuPercent
+            memoryPercent = [double]$throttleMemoryPercent
+            processNamePatterns = @($throttlePatterns.ToArray())
+            busyRecommendedSlots = [int]$throttleBusySlots
+        }
     }
 }
 

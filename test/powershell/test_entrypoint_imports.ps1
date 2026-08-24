@@ -52,6 +52,7 @@ Write-Host '=== Processor bootstrap (shared restore helper) ===' -ForegroundColo
 Import-QCModuleBootstrapSet -FeatureModules @(
     'Core\Core.Results.psm1'
     'Queue\QC.Queue.Json.psm1'
+    'Queue\QC.HostThrottle.psm1'
     'Processing\QC.Processors.psm1'
     'Notifications\QC.Notifications.psm1'
     'Processing\QC.Rendition.psm1'
@@ -67,6 +68,7 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Invoke-QCProcessorByType'
     'Write-QCJsonLog'
     'Test-QCDatabaseEnabled'
+    'Get-QCHostThrottleClaimDecision'
 ) -Context 'processor entrypoint test'
 
 Write-Host '=== Dashboard bootstrap (shared restore helper) ===' -ForegroundColor Cyan

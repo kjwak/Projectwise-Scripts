@@ -39,6 +39,7 @@ $script:QCModulePathMap = @{
     'QC.StatusSetBatching.psm1' = 'Core\QC.StatusSetBatching.psm1'
     'Core.Database.psm1' = 'Database\Core.Database.psm1'
     'QC.Queue.Json.psm1' = 'Queue\QC.Queue.Json.psm1'
+    'QC.HostThrottle.psm1' = 'Queue\QC.HostThrottle.psm1'
     'QC.JobFactory.psm1' = 'Queue\QC.JobFactory.psm1'
     'QC.Worker.psm1' = 'Queue\QC.Worker.psm1'
     'QC.Filters.psm1' = 'Queue\QC.Filters.psm1'

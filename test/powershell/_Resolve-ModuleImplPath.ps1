@@ -42,6 +42,7 @@ function Resolve-ModuleImplPath {
         'QC.AuditTriggers.psm1' = 'Workflow\QC.AuditTriggers.psm1'
         'QC.ProcessType.psm1' = 'Workflow\QC.ProcessType.psm1'
         'QC.Queue.Json.psm1' = 'Queue\QC.Queue.Json.psm1'
+        'QC.HostThrottle.psm1' = 'Queue\QC.HostThrottle.psm1'
         'QC.JobFactory.psm1' = 'Queue\QC.JobFactory.psm1'
         'QC.Worker.psm1' = 'Queue\QC.Worker.psm1'
         'QC.Filters.psm1' = 'Queue\QC.Filters.psm1'

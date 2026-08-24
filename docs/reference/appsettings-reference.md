@@ -162,6 +162,22 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 | `idleSleepMs` | Sleep when queue empty (also watcher default if `watcher.idleSleepMs` unset). |
 | `enabledJobTypes` | Per-host allow-list of job types to claim. **`[]` or omit = all types** (QC server default). Does not affect the watcher or enqueue. Combined with `Get-NextQCJob -ExcludeJobTypes`. Known types: `QC_PREPEND`, `STATUS_SET_GEN`, `QC_RENDITION`, `QC_COMMENT_STATUS_SYNC`, `QC_REPORTING_SCAN`. |
 | `remoteHost.allowUncQueue` | Remote processor hosts only. When `false` (default), `Run-QCProcessor.ps1` / `Start-QCRemoteWorkerHost.ps1` refuse a UNC `queue.rootDir` unless `-AllowUncQueue` is passed. Keep `false` on the QC server. |
+| `remoteHost.throttle` | Remote processor host only. Resource throttle; **missing or `enabled: false` = off** (committed/server default). See below. |
+
+### `workers.remoteHost.throttle`
+
+Local host control plane for the modelling PC. Never abort in-flight jobs. Enable only in gitignored `appsettings.local.json`, then restart `QC-RemoteWorkerHost`.
+
+| Key | Description |
+|-----|-------------|
+| `enabled` | Default `false`. When false, no sampling pause. |
+| `sampleSeconds` | Supervisor sample interval (default `10`). Status older than `max(3 * sampleSeconds, 30)` seconds is ignored (fail-open). |
+| `cpuPercent` | Pause when machine-wide CPU is at/above this percent. `0` or omit = ignore CPU. |
+| `memoryPercent` | Pause when physical memory utilization is at/above this percent. `0` or omit = ignore memory. |
+| `processNamePatterns` | Case-insensitive wildcards vs `Win32_Process.Name` (`.exe` optional), e.g. `OpenRoads*`, `ras*`. |
+| `busyRecommendedSlots` | Desired worker children while busy (default **1**). **0** pauses all new claims. Extra children are not killed; they idle and stop claiming. In-flight jobs always finish. |
+
+Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Reasons: `disabled`, `normal`, `matched_process`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
 
 **How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
 

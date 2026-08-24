@@ -50,6 +50,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Core\Core.Results.psm1'
     'Queue\QC.Queue.Json.psm1'
+    'Queue\QC.HostThrottle.psm1'
     'Processing\QC.Processors.psm1'
     'Notifications\QC.Notifications.psm1'
     'Processing\QC.Rendition.psm1'
@@ -59,6 +60,7 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Read-QCAppSettings'
     'Get-NextQCJob'
     'Get-QCEnabledJobTypes'
+    'Get-QCRemoteWorkerHostSettings'
     'Test-QCUncQueueClaimAllowed'
     'Lock-QCJob'
     'Move-QCJob'
@@ -67,6 +69,8 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Invoke-QCProcessorByType'
     'Write-QCJsonLog'
     'Test-QCDatabaseEnabled'
+    'Get-QCHostThrottleClaimDecision'
+    'Read-QCHostThrottleStatus'
 ) -Context 'processor bootstrap'
 
 $script:WorkerLabel = $WorkerLabel
@@ -619,6 +623,8 @@ $skip = New-Object System.Collections.Generic.List[string]
 $processed = 0
 $lastOutcomeOk = $true
 $startedAt = [DateTime]::UtcNow
+$script:LastThrottlePause = $null
+$script:LastThrottleLogUtc = [DateTime]::MinValue
 
 while ($true) {
     if ($MaxJobs -gt 0 -and $processed -ge $MaxJobs) {
@@ -636,6 +642,52 @@ while ($true) {
     # pass exited starved workers during long sweeps. QC_PREPEND was always
     # immediately eligible.
     Write-WorkerStage -Stage 'polling queue for pending job'
+
+    $rhNow = Get-QCRemoteWorkerHostSettings -Config $config
+    $throttlePause = $false
+    $throttleReason = 'disabled'
+    try {
+        $thCfg = $rhNow.throttle
+        if ($thCfg -and [bool]$thCfg.enabled) {
+            $qroot = Get-QCHostThrottleQueueRoot -Config $config
+            if (-not [string]::IsNullOrWhiteSpace($qroot)) {
+                $thPath = Get-QCHostThrottleStatusPath -QueueRoot $qroot
+                $thStatus = Read-QCHostThrottleStatus -Path $thPath
+                $thDecision = Get-QCHostThrottleClaimDecision -Status $thStatus -Settings $thCfg -MaxParallel ([int]$rhNow.maxParallel)
+                $throttleReason = [string]$thDecision.reason
+                $throttlePause = -not (Test-QCHostThrottleWorkerMayClaim -Decision $thDecision -WorkerLabel $script:WorkerLabel)
+            }
+        }
+    } catch {
+        $throttlePause = $false
+        $throttleReason = 'sample_error'
+    }
+    if ($throttlePause) {
+        $nowUtc = [DateTime]::UtcNow
+        $stateChanged = ($script:LastThrottlePause -ne $true)
+        $periodic = ($script:LastThrottleLogUtc -eq [DateTime]::MinValue) -or (($nowUtc - $script:LastThrottleLogUtc).TotalSeconds -ge 30)
+        if ($stateChanged -or $periodic) {
+            $script:LastThrottleLogUtc = $nowUtc
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_THROTTLE_PAUSE' -Message 'Host throttle scaled down or paused this worker; idle without dequeue.' -Data @{
+                reason = $throttleReason
+                processed = $processed
+            }
+        }
+        $script:LastThrottlePause = $true
+        $pauseSleep = $IdleSleepMs
+        if ($pauseSleep -le 0) { $pauseSleep = 400 }
+        if (-not $loopMode) { break }
+        Start-Sleep -Milliseconds $pauseSleep
+        continue
+    }
+    if ($script:LastThrottlePause -eq $true) {
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_THROTTLE_RESUME' -Message 'Host throttle cleared; worker may dequeue.' -Data @{
+            reason = $throttleReason
+            processed = $processed
+        }
+    }
+    $script:LastThrottlePause = $false
+
     $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip) -IncludeJobTypes $enabledJobTypes
     if (-not $next.IsSuccess) { throw $next.Message }
     if (-not $next.Data.job) {

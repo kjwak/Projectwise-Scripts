@@ -1,0 +1,607 @@
+# QC.HostThrottle.psm1
+# Local host resource throttle for remote QC worker hosts.
+# Advisory / fail-open: never abort in-flight jobs; never pause indefinitely on bad status.
+
+Set-StrictMode -Version Latest
+
+function ConvertTo-QCHostProcessMatchName {
+    <#
+    .SYNOPSIS
+    Normalize a process name or wildcard for case-insensitive matching (strip .exe).
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    $n = $Name.Trim()
+    if ($n.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $n = $n.Substring(0, $n.Length - 4)
+    }
+    return $n.ToLowerInvariant()
+}
+
+function Test-QCHostProcessNameMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name,
+        [string[]]$Patterns
+    )
+    $norm = ConvertTo-QCHostProcessMatchName -Name $Name
+    if ([string]::IsNullOrWhiteSpace($norm)) { return $false }
+    foreach ($pat in @($Patterns)) {
+        $p = ConvertTo-QCHostProcessMatchName -Name ([string]$pat)
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        if ($norm -like $p) { return $true }
+    }
+    return $false
+}
+
+function Get-QCHostExcludedPidSet {
+    <#
+    .SYNOPSIS
+    Expand supervisor/worker PIDs to their descendant process tree. Does not exclude all powershell.exe.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Processes,
+        [int[]]$RootPids
+    )
+    $byParent = @{}
+    foreach ($p in @($Processes)) {
+        if ($null -eq $p) { continue }
+        $ppid = 0
+        $pidVal = 0
+        try { $pidVal = [int]$p.ProcessId } catch { $pidVal = 0 }
+        try { $ppid = [int]$p.ParentProcessId } catch { $ppid = 0 }
+        if ($pidVal -le 0) { continue }
+        if (-not $byParent.ContainsKey($ppid)) {
+            $byParent[$ppid] = New-Object System.Collections.Generic.List[int]
+        }
+        [void]$byParent[$ppid].Add($pidVal)
+    }
+    $set = New-Object 'System.Collections.Generic.HashSet[int]'
+    $queue = New-Object System.Collections.Queue
+    foreach ($id in @($RootPids)) {
+        if ($id -gt 0 -and $set.Add($id)) { $queue.Enqueue($id) }
+    }
+    while ($queue.Count -gt 0) {
+        $cur = [int]$queue.Dequeue()
+        if ($byParent.ContainsKey($cur)) {
+            foreach ($child in @($byParent[$cur])) {
+                if ($set.Add([int]$child)) { $queue.Enqueue([int]$child) }
+            }
+        }
+    }
+    return $set
+}
+
+function Select-QCHostMatchedProcesses {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Processes,
+        [string[]]$Patterns,
+        [int[]]$ExcludePids
+    )
+    $pats = @($Patterns | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($pats.Count -eq 0) { return @() }
+    $exclude = Get-QCHostExcludedPidSet -Processes $Processes -RootPids @($ExcludePids)
+    $matched = New-Object System.Collections.Generic.List[object]
+    foreach ($p in @($Processes)) {
+        if ($null -eq $p) { continue }
+        $pidVal = 0
+        try { $pidVal = [int]$p.ProcessId } catch { $pidVal = 0 }
+        if ($pidVal -gt 0 -and $exclude.Contains($pidVal)) { continue }
+        $name = ''
+        try { $name = [string]$p.Name } catch { $name = '' }
+        if (Test-QCHostProcessNameMatch -Name $name -Patterns $pats) {
+            $matched.Add([pscustomobject]@{
+                ProcessId = $pidVal
+                Name      = $name
+            }) | Out-Null
+        }
+    }
+    return @($matched.ToArray())
+}
+
+function Get-QCHostThrottleFreshnessSeconds {
+    [CmdletBinding()]
+    param([int]$SampleSeconds = 10)
+    $s = $SampleSeconds
+    if ($s -lt 1) { $s = 10 }
+    $f = 3 * $s
+    if ($f -lt 30) { $f = 30 }
+    return [int]$f
+}
+
+function Get-QCHostThrottleDesiredSlots {
+    [CmdletBinding()]
+    param(
+        [int]$MaxParallel,
+        [int]$RecommendedSlots
+    )
+    $max = $MaxParallel
+    if ($max -lt 0) { $max = 0 }
+    $rec = $RecommendedSlots
+    if ($rec -lt 0) { $rec = 0 }
+    if ($rec -gt $max) { $rec = $max }
+    return [int]$rec
+}
+
+function Get-QCHostThrottleClaimAllowLabels {
+    <#
+    .SYNOPSIS
+    Lowest N current worker labels may keep claiming when the pool is scaled down.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$CurrentLabels,
+        [int]$RecommendedSlots
+    )
+    if ($RecommendedSlots -le 0) { return @() }
+    $sorted = @(@($CurrentLabels) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object {
+        if ($_ -match '(\d+)$') { [int]$Matches[1] } else { [int]::MaxValue }
+    }, { $_ })
+    if ($sorted.Count -le $RecommendedSlots) { return @($sorted) }
+    return @($sorted | Select-Object -First $RecommendedSlots)
+}
+
+function Test-QCHostThrottleWorkerMayClaim {
+    <#
+    .SYNOPSIS
+    False when fully paused (recommendedSlots 0) or this worker is above the scaled-down allow list.
+    Missing allow list fails open so workers keep claiming.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Decision,
+        [string]$WorkerLabel = ''
+    )
+    if (-not $Decision) { return $true }
+    if ([bool]$Decision.pauseNewClaims) { return $false }
+    $slots = 1
+    if ($Decision.ContainsKey('recommendedSlots') -and $null -ne $Decision.recommendedSlots) {
+        try { $slots = [int]$Decision.recommendedSlots } catch { $slots = 1 }
+    }
+    if ($slots -le 0) { return $false }
+    if (-not $Decision.ContainsKey('claimAllowLabels') -or $null -eq $Decision.claimAllowLabels) {
+        return $true
+    }
+    $allowed = @($Decision.claimAllowLabels | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($allowed.Count -eq 0) { return $true }
+    if ([string]::IsNullOrWhiteSpace($WorkerLabel)) { return $true }
+    return ($allowed -contains [string]$WorkerLabel)
+}
+
+function Get-QCHostThrottleSpawnPlan {
+    <#
+    .SYNOPSIS
+    Decide whether to spawn. Never requests killing existing workers when slots drop.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$CurrentCount,
+        [int]$Want
+    )
+    $cur = $CurrentCount
+    if ($cur -lt 0) { $cur = 0 }
+    $w = $Want
+    if ($w -lt 0) { $w = 0 }
+    return @{
+        want            = $w
+        currentCount    = $cur
+        shouldSpawn     = ($cur -lt $w)
+        shouldStopExcess = $false
+    }
+}
+
+function ConvertTo-QCHostThrottleEvaluation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [int]$MaxParallel = 1,
+        [AllowNull()][Nullable[double]]$CpuPercent = $null,
+        [AllowNull()][Nullable[double]]$MemoryPercent = $null,
+        [object[]]$MatchedProcesses = @(),
+        [switch]$SampleError
+    )
+    $enabled = $false
+    try { $enabled = [bool]$Settings.enabled } catch { $enabled = $false }
+    $max = $MaxParallel
+    if ($max -lt 1) { $max = 1 }
+    $busySlots = 1
+    if ($Settings.ContainsKey('busyRecommendedSlots') -and $null -ne $Settings.busyRecommendedSlots) {
+        try { $busySlots = [int]$Settings.busyRecommendedSlots } catch { $busySlots = 1 }
+    }
+
+    if ($SampleError.IsPresent) {
+        return @{
+            enabled           = $enabled
+            pauseNewClaims    = $false
+            recommendedSlots  = $max
+            reason            = 'sample_error'
+            matchedProcesses  = @()
+            cpuPercent        = $CpuPercent
+            memoryPercent     = $MemoryPercent
+        }
+    }
+
+    if (-not $enabled) {
+        return @{
+            enabled           = $false
+            pauseNewClaims    = $false
+            recommendedSlots  = $max
+            reason            = 'disabled'
+            matchedProcesses  = @()
+            cpuPercent        = $CpuPercent
+            memoryPercent     = $MemoryPercent
+        }
+    }
+
+    $cpuThresh = 0
+    $memThresh = 0
+    if ($Settings.ContainsKey('cpuPercent') -and $null -ne $Settings.cpuPercent) {
+        try { $cpuThresh = [double]$Settings.cpuPercent } catch { $cpuThresh = 0 }
+    }
+    if ($Settings.ContainsKey('memoryPercent') -and $null -ne $Settings.memoryPercent) {
+        try { $memThresh = [double]$Settings.memoryPercent } catch { $memThresh = 0 }
+    }
+
+    $matchedNames = @(
+        @($MatchedProcesses) | ForEach-Object {
+            if ($null -eq $_) { return $null }
+            if ($_ -is [string]) { return $_ }
+            try { return [string]$_.Name } catch { return $null }
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    $procBusy = ($matchedNames.Count -gt 0)
+    $cpuBusy = ($cpuThresh -gt 0 -and $null -ne $CpuPercent -and [double]$CpuPercent -ge $cpuThresh)
+    $memBusy = ($memThresh -gt 0 -and $null -ne $MemoryPercent -and [double]$MemoryPercent -ge $memThresh)
+    $signalCount = @($procBusy, $cpuBusy, $memBusy) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+
+    $reason = 'normal'
+    $pause = $false
+    $slots = $max
+    if ($signalCount -gt 0) {
+        $slots = Get-QCHostThrottleDesiredSlots -MaxParallel $max -RecommendedSlots $busySlots
+        $pause = ($slots -le 0)
+        if ($signalCount -gt 1) { $reason = 'multiple_signals' }
+        elseif ($procBusy) { $reason = 'matched_process' }
+        elseif ($cpuBusy) { $reason = 'cpu_threshold' }
+        else { $reason = 'memory_threshold' }
+    }
+
+    return @{
+        enabled           = $true
+        pauseNewClaims    = $pause
+        recommendedSlots  = $slots
+        reason            = $reason
+        matchedProcesses  = @($matchedNames)
+        cpuPercent        = $CpuPercent
+        memoryPercent     = $MemoryPercent
+    }
+}
+
+function Get-QCHostThrottleQueueRoot {
+    [CmdletBinding()]
+    param([hashtable]$Config)
+    $root = $null
+    try {
+        if ($Config -and $Config.ContainsKey('queue') -and $Config.queue) {
+            if ($Config.queue.rootDir) { $root = [string]$Config.queue.rootDir }
+            elseif ($Config.queue.root) { $root = [string]$Config.queue.root }
+        }
+    } catch { $root = $null }
+    return $root
+}
+
+function Get-QCHostThrottleStatusPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [string]$HostName = ''
+    )
+    $hostVal = $HostName
+    if ([string]::IsNullOrWhiteSpace($hostVal)) { $hostVal = [string]$env:COMPUTERNAME }
+    $safe = ($hostVal -replace '[^A-Za-z0-9._-]', '_')
+    return (Join-Path $QueueRoot ('_remote_worker.{0}.throttle.json' -f $safe))
+}
+
+function ConvertTo-QCHostThrottleStatusHashtable {
+    param([object]$Obj)
+    if ($null -eq $Obj) { return $null }
+    if ($Obj -is [hashtable]) { return $Obj }
+    $h = @{}
+    foreach ($p in @($Obj.PSObject.Properties)) {
+        $h[$p.Name] = $p.Value
+    }
+    return $h
+}
+
+function Write-QCHostThrottleStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][hashtable]$Evaluation,
+        [string]$HostName = '',
+        [datetime]$SampledAtUtc = [datetime]::MinValue
+    )
+    $dir = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $when = $SampledAtUtc
+    if ($when -eq [datetime]::MinValue) { $when = [datetime]::UtcNow }
+    if ($when.Kind -eq [DateTimeKind]::Local) { $when = $when.ToUniversalTime() }
+    $hostVal = $HostName
+    if ([string]::IsNullOrWhiteSpace($hostVal)) { $hostVal = [string]$env:COMPUTERNAME }
+
+    $cpu = $null
+    if ($Evaluation.ContainsKey('cpuPercent') -and $null -ne $Evaluation.cpuPercent) {
+        try { $cpu = [math]::Round([double]$Evaluation.cpuPercent, 1) } catch { $cpu = $null }
+    }
+    $mem = $null
+    if ($Evaluation.ContainsKey('memoryPercent') -and $null -ne $Evaluation.memoryPercent) {
+        try { $mem = [math]::Round([double]$Evaluation.memoryPercent, 1) } catch { $mem = $null }
+    }
+
+    $allow = @()
+    if ($Evaluation.ContainsKey('claimAllowLabels') -and $null -ne $Evaluation.claimAllowLabels) {
+        $allow = @($Evaluation.claimAllowLabels | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $payload = [ordered]@{
+        enabled           = [bool]$Evaluation.enabled
+        pauseNewClaims    = [bool]$Evaluation.pauseNewClaims
+        recommendedSlots  = [int]$Evaluation.recommendedSlots
+        reason            = [string]$Evaluation.reason
+        matchedProcesses  = @($Evaluation.matchedProcesses)
+        claimAllowLabels  = @($allow)
+        cpuPercent        = $cpu
+        memoryPercent     = $mem
+        sampledAtUtc      = $when.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        host              = $hostVal
+    }
+    $tmp = $Path + '.tmp.' + ([guid]::NewGuid().ToString('N'))
+    $enc = New-Object System.Text.UTF8Encoding $false
+    try {
+        $json = ($payload | ConvertTo-Json -Compress -Depth 6)
+        [System.IO.File]::WriteAllText($tmp, $json, $enc)
+        Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+    } catch {
+        try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+        throw
+    }
+    return $payload
+}
+
+function Read-QCHostThrottleStatus {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    try {
+        $raw = [System.IO.File]::ReadAllText($Path)
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        return (ConvertTo-QCHostThrottleStatusHashtable -Obj $obj)
+    } catch {
+        return $null
+    }
+}
+
+function Test-QCHostThrottleStatusFresh {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Status,
+        [int]$SampleSeconds = 10,
+        [datetime]$NowUtc = [datetime]::MinValue
+    )
+    if (-not $Status -or -not $Status.ContainsKey('sampledAtUtc') -or [string]::IsNullOrWhiteSpace([string]$Status.sampledAtUtc)) {
+        return $false
+    }
+    $now = $NowUtc
+    if ($now -eq [datetime]::MinValue) { $now = [datetime]::UtcNow }
+    $now = $now.ToUniversalTime()
+    $sampled = $null
+    try {
+        $sampled = [datetimeoffset]::Parse([string]$Status.sampledAtUtc, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+    } catch {
+        try { $sampled = [datetime]::Parse([string]$Status.sampledAtUtc, $null, [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime() } catch { return $false }
+    }
+    $freshFor = Get-QCHostThrottleFreshnessSeconds -SampleSeconds $SampleSeconds
+    return (($now - $sampled).TotalSeconds -le $freshFor)
+}
+
+function Get-QCHostThrottleClaimDecision {
+    <#
+    .SYNOPSIS
+    Fail-open claim gate. Pause only when a fresh valid status explicitly says to.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Status,
+        [hashtable]$Settings,
+        [int]$MaxParallel = 1,
+        [datetime]$NowUtc = [datetime]::MinValue
+    )
+    $max = $MaxParallel
+    if ($max -lt 1) { $max = 1 }
+    $cfgEnabled = $false
+    $sampleSeconds = 10
+    if ($Settings) {
+        try { $cfgEnabled = [bool]$Settings.enabled } catch { $cfgEnabled = $false }
+        if ($Settings.ContainsKey('sampleSeconds')) {
+            try { $sampleSeconds = [int]$Settings.sampleSeconds } catch { $sampleSeconds = 10 }
+        }
+    }
+    $open = @{
+        pauseNewClaims   = $false
+        recommendedSlots = $max
+        reason           = 'disabled'
+        honored          = $false
+        fresh            = $false
+        claimAllowLabels = @()
+    }
+    if (-not $cfgEnabled) { return $open }
+
+    if (-not $Status) {
+        $open.reason = 'normal'
+        return $open
+    }
+
+    $reason = ''
+    try { $reason = [string]$Status.reason } catch { $reason = '' }
+    if ($reason -eq 'sample_error' -or $reason -eq 'disabled') {
+        $open.reason = $(if ($reason) { $reason } else { 'normal' })
+        return $open
+    }
+
+    $fresh = Test-QCHostThrottleStatusFresh -Status $Status -SampleSeconds $sampleSeconds -NowUtc $NowUtc
+    $open.fresh = $fresh
+    if (-not $fresh) {
+        $open.reason = 'normal'
+        return $open
+    }
+
+    $statusEnabled = $true
+    if ($Status.ContainsKey('enabled')) {
+        try { $statusEnabled = [bool]$Status.enabled } catch { $statusEnabled = $true }
+    }
+    if (-not $statusEnabled) {
+        $open.reason = 'disabled'
+        $open.honored = $true
+        $open.fresh = $true
+        return $open
+    }
+
+    $pause = $false
+    if ($Status.ContainsKey('pauseNewClaims')) {
+        try { $pause = [bool]$Status.pauseNewClaims } catch { $pause = $false }
+    }
+    $slots = $max
+    if ($Status.ContainsKey('recommendedSlots') -and $null -ne $Status.recommendedSlots) {
+        try { $slots = [int]$Status.recommendedSlots } catch { $slots = $max }
+    }
+    $slots = Get-QCHostThrottleDesiredSlots -MaxParallel $max -RecommendedSlots $slots
+    $allow = @()
+    if ($Status.ContainsKey('claimAllowLabels') -and $null -ne $Status.claimAllowLabels) {
+        $allow = @($Status.claimAllowLabels | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    if (-not $reason) { $reason = $(if ($pause) { 'matched_process' } else { 'normal' }) }
+    if ($pause -or $slots -le 0) { $pause = $true; $slots = 0 }
+    return @{
+        pauseNewClaims   = [bool]$pause
+        recommendedSlots = $slots
+        reason           = $reason
+        honored          = $true
+        fresh            = $true
+        claimAllowLabels = @($allow)
+    }
+}
+
+function Get-QCHostCpuPercentLive {
+    $rows = @(Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop)
+    if ($rows.Count -eq 0) { return $null }
+    return [double](($rows | Measure-Object -Property LoadPercentage -Average).Average)
+}
+
+function Get-QCHostMemoryPercentLive {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $total = [double]$os.TotalVisibleMemorySize
+    $free = [double]$os.FreePhysicalMemory
+    if ($total -le 0) { return $null }
+    return [math]::Round((($total - $free) / $total) * 100.0, 1)
+}
+
+function Get-QCHostProcessSnapshotLive {
+    @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
+        [pscustomobject]@{
+            ProcessId       = [int]$_.ProcessId
+            Name            = [string]$_.Name
+            ParentProcessId = [int]$_.ParentProcessId
+        }
+    })
+}
+
+function Get-QCHostResourceSample {
+    <#
+    .SYNOPSIS
+    Compose a resource sample. Pass CpuPercent/MemoryPercent/Processes to skip live CIM.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][Nullable[double]]$CpuPercent,
+        [AllowNull()][Nullable[double]]$MemoryPercent,
+        [object[]]$Processes,
+        [switch]$Live
+    )
+    $cpu = $CpuPercent
+    $mem = $MemoryPercent
+    $procs = $Processes
+    if ($Live.IsPresent) {
+        if ($null -eq $cpu) { $cpu = Get-QCHostCpuPercentLive }
+        if ($null -eq $mem) { $mem = Get-QCHostMemoryPercentLive }
+        if ($null -eq $procs) { $procs = Get-QCHostProcessSnapshotLive }
+    }
+    return @{
+        cpuPercent    = $cpu
+        memoryPercent = $mem
+        processes     = @($procs)
+        sampledAtUtc  = [datetime]::UtcNow
+    }
+}
+
+function Update-QCHostThrottleStatus {
+    <#
+    .SYNOPSIS
+    Sample (or use injected sample), evaluate, and write the host throttle status file.
+    Sampling exceptions write reason=sample_error and do not pause claims.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][string]$StatusPath,
+        [int]$MaxParallel = 1,
+        [int[]]$ExcludePids = @(),
+        [hashtable]$Sample = $null,
+        [string]$HostName = '',
+        [string[]]$CurrentLabels = @(),
+        [switch]$Live
+    )
+    $cpu = $null
+    $mem = $null
+    $matched = @()
+    try {
+        $snap = $Sample
+        if (-not $snap) {
+            $snap = Get-QCHostResourceSample -Live:$Live.IsPresent
+        }
+        if ($snap.ContainsKey('cpuPercent')) { $cpu = $snap.cpuPercent }
+        if ($snap.ContainsKey('memoryPercent')) { $mem = $snap.memoryPercent }
+        $procs = @()
+        if ($snap.ContainsKey('processes')) { $procs = @($snap.processes) }
+        $pats = @()
+        if ($Settings.ContainsKey('processNamePatterns')) { $pats = @($Settings.processNamePatterns) }
+        $matched = @(Select-QCHostMatchedProcesses -Processes $procs -Patterns $pats -ExcludePids $ExcludePids)
+        $eval = ConvertTo-QCHostThrottleEvaluation -Settings $Settings -MaxParallel $MaxParallel `
+            -CpuPercent $cpu -MemoryPercent $mem -MatchedProcesses $matched
+    } catch {
+        $eval = ConvertTo-QCHostThrottleEvaluation -Settings $Settings -MaxParallel $MaxParallel `
+            -CpuPercent $cpu -MemoryPercent $mem -MatchedProcesses @() -SampleError
+        $eval['sampleError'] = [string]$_.Exception.Message
+    }
+    $want = Get-QCHostThrottleDesiredSlots -MaxParallel $MaxParallel -RecommendedSlots ([int]$eval.recommendedSlots)
+    $eval['claimAllowLabels'] = @(Get-QCHostThrottleClaimAllowLabels -CurrentLabels $CurrentLabels -RecommendedSlots $want)
+    $when = [datetime]::UtcNow
+    if ($Sample -and $Sample.ContainsKey('sampledAtUtc') -and $Sample.sampledAtUtc) {
+        try { $when = [datetime]$Sample.sampledAtUtc } catch { $when = [datetime]::UtcNow }
+    }
+    $written = Write-QCHostThrottleStatus -Path $StatusPath -Evaluation $eval -HostName $HostName -SampledAtUtc $when
+    return @{
+        evaluation = $eval
+        status     = $written
+        path       = $StatusPath
+    }
+}
+
+Export-ModuleMember -Function *
