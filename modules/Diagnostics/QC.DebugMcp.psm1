@@ -6,8 +6,6 @@ Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Runtime.p
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Paths.psm1') -Force
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Database/Core.Database.psm1') -Force
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Core/Core.Telemetry.psm1') -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Connection.psm1') -Force
-Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise/PW.Discovery.psm1') -Force
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Workflow/QC.ProcessType.psm1') -Force -ErrorAction SilentlyContinue
 
 $script:QDM_Config = $null
@@ -129,6 +127,13 @@ function _QDM-Config {
     return $script:QDM_Config
 }
 
+function _QDM-EnsureProjectWiseModules {
+    if (Get-Command -Name 'Invoke-PWAuthenticatedCommand' -ErrorAction SilentlyContinue) { return }
+    $pwRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'ProjectWise'
+    Import-Module (Join-Path $pwRoot 'PW.Connection.psm1') -Force -ErrorAction SilentlyContinue
+    Import-Module (Join-Path $pwRoot 'PW.Discovery.psm1') -Force -ErrorAction SilentlyContinue
+}
+
 function _QDM-SerializeValue {
     param([AllowNull()][object]$Value)
     if ($null -eq $Value -or $Value -is [DBNull]) { return $null }
@@ -146,7 +151,7 @@ function _QDM-RowsFromQuery {
         [hashtable]$Parameters = @{}
     )
     $cfg = _QDM-Config
-    $res = Invoke-QCDatabaseQuery -Config $cfg -Sql $Sql -Parameters $Parameters
+    $res = Invoke-QCDatabaseQuery -Config $cfg -Sql $Sql -Parameters $Parameters -CommandTimeout 20
     if (-not $res.IsSuccess) {
         throw $res.Message
     }
@@ -642,6 +647,9 @@ function Search-QCDebugSheet {
     if ($lookup.lookup_type -ne 'document_path') {
     foreach ($entry in $script:QDM_SheetSearchTables) {
         $table = $entry.table
+        if ($table -in @('audit_events', 'processing_jobs', 'qc_workflow_events')) {
+            continue
+        }
         if (-not (_QDM-TestTableExists -TableName $table)) {
             $warnings += _QDM-BuildWarning -Message "Table dbo.$table is not present; skipped." -Table $table
             continue
@@ -651,10 +659,11 @@ function Search-QCDebugSheet {
             $warnings += _QDM-BuildWarning -Message "No searchable text columns on dbo.$table; skipped." -Table $table
             continue
         }
-        $cols = _QDM-GetColumns -TableName $table
-        $select = ($cols | ForEach-Object { "[$_]" }) -join ', '
+        $selectCols = _QDM-SelectExistingColumns -TableName $table -Requested @($entry.columns)
+        if ($selectCols.Count -eq 0) { continue }
+        $select = ($selectCols | ForEach-Object { "[$_]" }) -join ', '
         try {
-            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (100) $select FROM [$table] WHERE $($where.clause) ORDER BY 1 DESC" -Parameters $where.params
+            $rows = _QDM-RowsFromQuery -Sql "SELECT TOP (25) $select FROM [$table] WHERE $($where.clause) ORDER BY 1 DESC" -Parameters $where.params
         } catch {
             $warnings += _QDM-BuildWarning -Message "Query failed: $($_.Exception.Message)" -Table $table
             continue
@@ -1132,6 +1141,7 @@ function _QDM-ReadProjectWiseProcessTypesForDocuments {
     )
     $processTypeMap = @{}
     if ($Documents.Count -eq 0) { return $processTypeMap }
+    _QDM-EnsureProjectWiseModules
     $pw = $Config.projectWise
     $ds = [string]$pw.datasourceName
     $credPath = [string]$pw.credentialPath
@@ -1972,6 +1982,7 @@ function Compare-QCProjectWiseToDatabase {
     $pwStateMap = @{}
     $pwNameMap = @{}
 
+    _QDM-EnsureProjectWiseModules
     if ([string]::IsNullOrWhiteSpace($ds) -or [string]::IsNullOrWhiteSpace($credPath)) {
         $warnings += _QDM-BuildWarning -Message 'projectWise.datasourceName or credentialPath missing; skipping live PW reads.'
     }
@@ -1979,7 +1990,14 @@ function Compare-QCProjectWiseToDatabase {
         $warnings += _QDM-BuildWarning -Message 'Invoke-PWAuthenticatedCommand unavailable; run on a host with ProjectWise PowerShell.'
     }
     else {
-        $guids = @($dbDocs | ForEach-Object { $_.document_guid } | Where-Object { Test-PWValidDocumentGuid -DocumentGuid $_ } | Select-Object -Unique)
+        $guidOk = {
+            param($g)
+            if (Get-Command -Name 'Test-PWValidDocumentGuid' -ErrorAction SilentlyContinue) {
+                return [bool](Test-PWValidDocumentGuid -DocumentGuid $g)
+            }
+            return [bool]($g -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')
+        }
+        $guids = @($dbDocs | ForEach-Object { $_.document_guid } | Where-Object { & $guidOk $_ } | Select-Object -Unique)
         $modulesRoot = Split-Path -Parent $PSScriptRoot
         try {
             $pwResult = Invoke-PWAuthenticatedCommand -DatasourceName $ds -CredentialPath $credPath -KeepSession -ScriptBlock {

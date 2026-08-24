@@ -40,6 +40,7 @@ function Initialize-WorkerContext {
             'Search-QCDebugSheet'
         ) -Context 'pw-qc-mcp worker'
         Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
+        Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Discovery.psm1'
         Test-QCRequiredCommands -Names @('Invoke-PWAuthenticatedCommand') -Context 'pw-qc-mcp worker ProjectWise'
         $appSettings = $env:PWQC_APPSETTINGS
         if ([string]::IsNullOrWhiteSpace($appSettings)) {
@@ -199,8 +200,23 @@ function Write-WorkerResponse {
     if (-not [string]::IsNullOrWhiteSpace($Id)) { $payload['id'] = $Id }
     if (-not [string]::IsNullOrWhiteSpace($Tool)) { $payload['tool'] = $Tool }
     $json = $payload | ConvertTo-Json -Depth 80 -Compress
-    [Console]::Out.WriteLine($json)
-    [Console]::Out.Flush()
+    if ($script:WorkerJsonOut) {
+        $script:WorkerJsonOut.WriteLine($json)
+        $script:WorkerJsonOut.Flush()
+    } else {
+        [Console]::Out.WriteLine($json)
+        [Console]::Out.Flush()
+    }
+}
+
+function Enable-WorkerStdoutGuard {
+    if ($script:WorkerStdoutGuard) { return }
+    $script:WorkerJsonOut = [Console]::Out
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $errWriter = New-Object System.IO.StreamWriter([Console]::OpenStandardError(), $utf8)
+    $errWriter.AutoFlush = $true
+    [Console]::SetOut($errWriter)
+    $script:WorkerStdoutGuard = $true
 }
 
 function Handle-WorkerRequest {
@@ -225,6 +241,7 @@ function Handle-WorkerRequest {
 
 if ($Worker) {
     try {
+        Enable-WorkerStdoutGuard
         Initialize-WorkerContext
         Write-WorkerResponse -Ok $true -Data @{ ready = $true } -Tool 'worker_ready'
         while ($true) {
@@ -240,6 +257,7 @@ if ($Worker) {
 }
 
 try {
+    Enable-WorkerStdoutGuard
     if (-not [string]::IsNullOrWhiteSpace($ArgumentsFile)) {
         if (-not (Test-Path -LiteralPath $ArgumentsFile)) {
             throw "ArgumentsFile not found: $ArgumentsFile"

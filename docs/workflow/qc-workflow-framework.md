@@ -34,7 +34,7 @@ The watcher stays on the QC server and remains the only enqueue path. With `qcPr
 2. Read live workflow state once (`Get-PWDocumentWorkflowStateName`).
 3. If the state is **Initiate Origination** (`qcInitiated`) or **Initiate Verification** (`qcFinalizing`), enqueue `QC_PREPEND` immediately. Do not wait for sibling maps, attr sync, or live process-type.
 4. After every candidate in the tick has been considered, run `Sync-PWAssociatedSheetWorkflowState` as a second pass so `sheet_index` / telemetry still update.
-5. The worker (`Invoke-QCPrependProcessor`) confirms live state, DGN pair, and lane **before** spawning overlay. A stale or echo audit becomes a successful skip (`QC_PREPEND_SKIPPED_NOT_QC_INITIATED`, `QC_PREPEND_SKIPPED_NO_DGN_PAIR`, `QC_PREPEND_SKIPPED_NO_PROCESS_TYPE`). Writeback-only resume (`prepend_complete` / `writeback_running`) does not re-run that preflight.
+5. The worker (`Invoke-QCPrependProcessor`) confirms live state, DGN pair, and lane **before** spawning overlay **when live ProjectWise state is readable**. A stale or echo audit with a real non-trigger state becomes a successful skip (`QC_PREPEND_SKIPPED_NOT_QC_INITIATED`, `QC_PREPEND_SKIPPED_NO_DGN_PAIR`, `QC_PREPEND_SKIPPED_NO_PROCESS_TYPE`). Empty/unreadable live state (typical on remote processor hosts, which do not `Open-PWConnection` in the parent) must **not** skip-succeed — the prepend child opens PW and is the gate. Writeback-only resume (`prepend_complete` / `writeback_running`) does not re-run that preflight.
 
 Enable the flag on the QC server overlay after soak; do not flip the committed default without operator sign-off.
 

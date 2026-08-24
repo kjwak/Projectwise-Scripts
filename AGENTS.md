@@ -60,7 +60,7 @@ Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full
 
 ### Prepend mode
 
-Committed production uses `qcPrepend.mode: "projectWise"`. The watcher identifies a `DOCUMENT_STATE` candidate, reads live workflow state once, and enqueues `QC_PREPEND` (immediately when `qcPrepend.fastAuditEnqueue` is true; otherwise after sibling/attr sync). `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1` confirms live state, DGN pair, and lane **before** overlay, then spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). Skip at preflight is success (`QC_PREPEND_SKIPPED_*`), not failure. The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
+Committed production uses `qcPrepend.mode: "projectWise"`. The watcher identifies a `DOCUMENT_STATE` candidate, reads live workflow state once, and enqueues `QC_PREPEND` (immediately when `qcPrepend.fastAuditEnqueue` is true; otherwise after sibling/attr sync). `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1` confirms live state, DGN pair, and lane **before** overlay when live PW state is readable; skip at preflight is success (`QC_PREPEND_SKIPPED_*`), not failure. Empty live state is **not** a skip — remote processor hosts do not `Open-PWConnection` in the parent, so preflight proceeds to the prepend child (`scripts/processing/Invoke-QCPrependPw.ps1`). The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
 
 `qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 
@@ -119,6 +119,7 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 - **Do not claim** end-to-end verification of ProjectWise writeback, SQL telemetry, Graph email, or prepend output unless you ran it on a Windows worker with live PW/SQL/Graph access.
 - Code-only and static-test validation is sufficient for many PRs — state what was and was not validated.
 - For PW workflow debugging on a connected machine, prefer MCP `pw-qc-debug` tools before deep code speculation (see `.cursor/rules/projectwise-debugging.mdc`).
+- Cursor MCP entrypoint is `tools/pw-qc-mcp/server.ps1` (restart the MCP after changing it). SQL tools stay on the stdio thread; `warm_projectwise_session`, `compare_projectwise_to_database`, and `get_qc_process_type_diagnostics` run in a child worker so a slow `Connect-PW` does not time out SQL tools. Call `warm_projectwise_session` once before live PW compares.
 
 ## Remote worker host (modelling PC)
 

@@ -270,6 +270,27 @@ InModuleScope -ModuleName QC.Processors {
     Assert-Eq ([string]$skipLane.Code) 'QC_PREPEND_SKIPPED_NO_PROCESS_TYPE' 'Skip code is NO_PROCESS_TYPE'
     Assert-Eq $script:spawnCalls 0 'Overlay child must not start when lane is unresolved'
 
+    function Get-PWDocumentWorkflowStateName { param($FolderPath, $DocumentName, $DocumentGuid) return '' }
+    function Test-PWSheetPdfHasMatchingPair { param($FolderPath, $DocumentName) return $false }
+    function Test-QCWorkflowStateIsQcInitiated { param([string]$StateName, [hashtable]$Config) return $false }
+    function _QCP-TryResolvePrependLaneContext {
+        param($Job, $Config)
+        return New-QCSuccessResult -Code 'QC_PROCESS_TYPE_OK' -Message 'ok' -Data @{
+            qcProcessType = 'production'
+            pdfSuffix = '-prod.pdf'
+            expectedLanePdfName = '0818000063ia501-prod.pdf'
+            sourceDocumentGuid = ''
+            triggerDocumentName = '0818000063ia501.pdf'
+        }
+    }
+    $script:spawnCalls = 0
+    $script:writebackCalls = 0
+    $emptyState = Invoke-QCPrependProcessor -Job $job -Config $cfg
+    Assert-True $emptyState.IsSuccess 'Unreadable live state must not fail the job'
+    Assert-True ([string]$emptyState.Code -ne 'QC_PREPEND_SKIPPED_NOT_QC_INITIATED') 'Empty live state must not skip as NOT_QC_INITIATED'
+    Assert-True ([string]$emptyState.Code -ne 'QC_PREPEND_SKIPPED_NO_DGN_PAIR') 'Empty live state must not skip as NO_DGN_PAIR'
+    Assert-Eq $script:spawnCalls 1 'Unreadable live state must spawn the prepend child (child opens PW)'
+
     $script:preflightCalls = 0
     $script:spawnCalls = 0
     $script:writebackCalls = 0

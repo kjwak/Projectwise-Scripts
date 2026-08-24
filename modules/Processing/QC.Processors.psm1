@@ -260,7 +260,9 @@ function Invoke-QCPrependPreflight {
     <#
     .SYNOPSIS
     Confirm live workflow state, DGN pair, and lane before overlay. Skip = success (no overlay).
-    When PW cmdlets are missing, proceed so local/checkpoint tests still run.
+    When PW cmdlets are missing, or live state cannot be read (remote workers have
+    discovery cmdlets but no Open-PWConnection), proceed so the prepend child — which
+    opens PW — is the real gate. Empty liveState must not skip-succeed as NOT_QC_INITIATED.
     #>
     [CmdletBinding()]
     param(
@@ -294,55 +296,68 @@ function Invoke-QCPrependPreflight {
     }
 
     $trigger = _QCP-ResolvePrependTrigger -Job $Job
+    $liveStateUnreadable = $false
     if ($hasStateCmd -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
         $liveState = ''
         try {
             $liveState = [string](Get-PWDocumentWorkflowStateName -FolderPath $folder -DocumentName $docName -DocumentGuid $guid)
         } catch { $liveState = '' }
-        $stateOk = $false
-        if ($trigger -eq 'finalQcComplete') {
-            if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
-                try { $stateOk = [bool](Test-QCWorkflowStateIsQcFinalizing -StateName $liveState -Config $Config) } catch { $stateOk = $false }
-            }
-            if (-not $stateOk -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
-                try {
-                    $wf = Get-QCWorkflowSettings -Config $Config
-                    $want = [string](Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing')
-                    if (-not [string]::IsNullOrWhiteSpace($want) -and -not [string]::IsNullOrWhiteSpace($liveState)) {
-                        $stateOk = ($liveState.Trim().ToLowerInvariant() -eq $want.Trim().ToLowerInvariant())
-                    }
-                } catch { }
-            }
-        } else {
-            if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
-                try { $stateOk = [bool](Test-QCWorkflowStateIsQcInitiated -StateName $liveState -Config $Config) } catch { $stateOk = $false }
-            }
-            if (-not $stateOk -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
-                try {
-                    $wf = Get-QCWorkflowSettings -Config $Config
-                    $want = [string](Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated')
-                    if (-not [string]::IsNullOrWhiteSpace($want) -and -not [string]::IsNullOrWhiteSpace($liveState)) {
-                        $stateOk = ($liveState.Trim().ToLowerInvariant() -eq $want.Trim().ToLowerInvariant())
-                    }
-                } catch { }
-            }
-        }
-        if (-not $stateOk) {
+        if ([string]::IsNullOrWhiteSpace($liveState)) {
+            $liveStateUnreadable = $true
             if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
-                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NOT_QC_INITIATED' `
-                    -Message 'QC_PREPEND skipped: live workflow state is not a prepend trigger state.' -Data @{
-                    jobId = [string]$Job.id; liveState = $liveState; prependTrigger = $trigger
+                Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_PREFLIGHT_STATE_UNREADABLE' `
+                    -Message 'QC_PREPEND preflight could not read live workflow state; deferring state and DGN-pair gates to the prepend child.' -Data @{
+                    jobId = [string]$Job.id; prependTrigger = $trigger
                     folderPath = $folder; sourceName = $docName
                 } | Out-Null
             }
-            return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_NOT_QC_INITIATED' `
-                -Message 'QC_PREPEND skipped because live workflow state is not QC Initiated / QC Finalizing.' -Data @{
-                skipped = $true; proceed = $false; liveState = $liveState; prependTrigger = $trigger
+        }
+        $stateOk = $false
+        if (-not $liveStateUnreadable) {
+            if ($trigger -eq 'finalQcComplete') {
+                if (Get-Command -Name 'Test-QCWorkflowStateIsQcFinalizing' -ErrorAction SilentlyContinue) {
+                    try { $stateOk = [bool](Test-QCWorkflowStateIsQcFinalizing -StateName $liveState -Config $Config) } catch { $stateOk = $false }
+                }
+                if (-not $stateOk -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                    try {
+                        $wf = Get-QCWorkflowSettings -Config $Config
+                        $want = [string](Get-QCWorkflowStateName -Settings $wf -StateKey 'qcFinalizing')
+                        if (-not [string]::IsNullOrWhiteSpace($want) -and -not [string]::IsNullOrWhiteSpace($liveState)) {
+                            $stateOk = ($liveState.Trim().ToLowerInvariant() -eq $want.Trim().ToLowerInvariant())
+                        }
+                    } catch { }
+                }
+            } else {
+                if (Get-Command -Name 'Test-QCWorkflowStateIsQcInitiated' -ErrorAction SilentlyContinue) {
+                    try { $stateOk = [bool](Test-QCWorkflowStateIsQcInitiated -StateName $liveState -Config $Config) } catch { $stateOk = $false }
+                }
+                if (-not $stateOk -and (Get-Command -Name 'Get-QCWorkflowStateName' -ErrorAction SilentlyContinue)) {
+                    try {
+                        $wf = Get-QCWorkflowSettings -Config $Config
+                        $want = [string](Get-QCWorkflowStateName -Settings $wf -StateKey 'qcInitiated')
+                        if (-not [string]::IsNullOrWhiteSpace($want) -and -not [string]::IsNullOrWhiteSpace($liveState)) {
+                            $stateOk = ($liveState.Trim().ToLowerInvariant() -eq $want.Trim().ToLowerInvariant())
+                        }
+                    } catch { }
+                }
+            }
+            if (-not $stateOk) {
+                if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
+                    Write-QCJsonLog -Level 'Information' -Code 'QC_PREPEND_SKIPPED_NOT_QC_INITIATED' `
+                        -Message 'QC_PREPEND skipped: live workflow state is not a prepend trigger state.' -Data @{
+                        jobId = [string]$Job.id; liveState = $liveState; prependTrigger = $trigger
+                        folderPath = $folder; sourceName = $docName
+                    } | Out-Null
+                }
+                return New-QCSuccessResult -Code 'QC_PREPEND_SKIPPED_NOT_QC_INITIATED' `
+                    -Message 'QC_PREPEND skipped because live workflow state is not QC Initiated / QC Finalizing.' -Data @{
+                    skipped = $true; proceed = $false; liveState = $liveState; prependTrigger = $trigger
+                }
             }
         }
     }
 
-    if ($hasPairCmd -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
+    if (-not $liveStateUnreadable -and $hasPairCmd -and -not (_QCP-IsNullOrWhiteSpace $folder) -and -not (_QCP-IsNullOrWhiteSpace $docName)) {
         $hasPair = $false
         try { $hasPair = [bool](Test-PWSheetPdfHasMatchingPair -FolderPath $folder -DocumentName $docName) } catch { $hasPair = $false }
         if (-not $hasPair) {

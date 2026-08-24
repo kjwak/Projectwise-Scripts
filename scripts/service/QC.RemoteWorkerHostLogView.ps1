@@ -74,7 +74,6 @@ function Test-QCRemoteWorkerHostJobEvent {
             'WORKER_START'
             'WORKER_BUDGET'
             'WORKER_LEASE'
-            'WORKER_LOCK_RACE'
             'WORKER_DB_SCHEMA_INIT_FAILED'
             'WORKER_QUEUE_DUPLICATE_CLEANUP'
             'JOB_TELEMETRY_WRITTEN'
@@ -116,6 +115,13 @@ function Write-QCRemoteWorkerHostJobLine {
         try { $src = [string]$activeJobs[$jobId] } catch { }
     }
     if ($code -eq 'WORKER_STAGE' -and -not $jobId) { return $false }
+
+    if ($code -eq 'WORKER_LOCK_RACE') {
+        if ($jobId) {
+            try { $activeJobs.Remove($jobId) | Out-Null } catch { }
+        }
+        return $false
+    }
 
     $msg = [string]$Obj.message
     $parts = New-Object System.Collections.Generic.List[string]
