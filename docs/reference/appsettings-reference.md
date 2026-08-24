@@ -160,8 +160,16 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 | `maxJobsPerWorker` | Jobs per process before exit. |
 | `leaseSeconds` | Stale `running` job recovery threshold. |
 | `idleSleepMs` | Sleep when queue empty (also watcher default if `watcher.idleSleepMs` unset). |
-| `enabledJobTypes` | Optional allow-list of job types this host will claim (e.g. `["QC_PREPEND"]`). Empty or omitted = all types (server default). Combined with `Get-NextQCJob -ExcludeJobTypes`. |
-| `remoteHost.allowUncQueue` | Remote processor hosts only. When `false` (default), `Run-QCProcessor.ps1` / `Start-QCRemoteWorkerHost.ps1` refuse a UNC `queue.rootDir` unless `-AllowUncQueue` is passed. Do not set this in committed `appsettings.json`. |
+| `enabledJobTypes` | Per-host allow-list of job types to claim. **`[]` or omit = all types** (QC server default). Does not affect the watcher or enqueue. Combined with `Get-NextQCJob -ExcludeJobTypes`. Known types: `QC_PREPEND`, `STATUS_SET_GEN`, `QC_RENDITION`, `QC_COMMENT_STATUS_SYNC`, `QC_REPORTING_SCAN`. |
+| `remoteHost.allowUncQueue` | Remote processor hosts only. When `false` (default), `Run-QCProcessor.ps1` / `Start-QCRemoteWorkerHost.ps1` refuse a UNC `queue.rootDir` unless `-AllowUncQueue` is passed. Keep `false` on the QC server. |
+
+**How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
+
+| Host | `workers.enabledJobTypes` |
+|------|---------------------------|
+| QC server (keep status sets here) | `["STATUS_SET_GEN"]` — add `QC_COMMENT_STATUS_SYNC`, `QC_RENDITION`, `QC_REPORTING_SCAN` if those should stay on the server |
+| Modelling PC (prepend only) | `["QC_PREPEND"]` in gitignored `appsettings.local.json` (already set) |
+| Single host / rollback | `[]` (claim everything) |
 
 ---
 
