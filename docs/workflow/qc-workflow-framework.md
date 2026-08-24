@@ -26,6 +26,18 @@ Each sheet stem can have up to three lane QC PDFs in ProjectWise:
 
 Lane states are **independent** by default (`QCProcess.EnableLegacySiblingStateSync: false`). Post-initial-prepend lane split is handled by `Sync-PWPostInitialPrependLaneStates` in `PW.Discovery.psm1`.
 
+### Fast `DOCUMENT_STATE` prepend enqueue
+
+The watcher stays on the QC server and remains the only enqueue path. With `qcPrepend.fastAuditEnqueue` (default **false** in committed `appsettings.json`):
+
+1. Identify a Sheets-folder stem PDF `DOCUMENT_STATE` candidate (not a lane PDF, DGN, status-set output, or automation actor).
+2. Read live workflow state once (`Get-PWDocumentWorkflowStateName`).
+3. If the state is **Initiate Origination** (`qcInitiated`) or **Initiate Verification** (`qcFinalizing`), enqueue `QC_PREPEND` immediately. Do not wait for sibling maps, attr sync, or live process-type.
+4. After every candidate in the tick has been considered, run `Sync-PWAssociatedSheetWorkflowState` as a second pass so `sheet_index` / telemetry still update.
+5. The worker (`Invoke-QCPrependProcessor`) confirms live state, DGN pair, and lane **before** spawning overlay. A stale or echo audit becomes a successful skip (`QC_PREPEND_SKIPPED_NOT_QC_INITIATED`, `QC_PREPEND_SKIPPED_NO_DGN_PAIR`, `QC_PREPEND_SKIPPED_NO_PROCESS_TYPE`). Writeback-only resume (`prepend_complete` / `writeback_running`) does not re-run that preflight.
+
+Enable the flag on the QC server overlay after soak; do not flip the committed default without operator sign-off.
+
 When legacy sibling sync is off, stem/DGN `DOCUMENT_STATE` audit handling must **not** copy the stem state onto lane QC PDFs (`*-prod/-chk/-rev`). `Sync-PWAssociatedSheetWorkflowState` filters lane members out of the sync set and skips any remaining lane write attempts (`WATCH_SHEET_STATE_SYNC_LANE_SKIPPED`). This prevents a successful post-prepend **Originated** lane state from being overwritten when a delayed stem audit still shows **In Development**.
 
 **Lane-independent prepend telemetry** (`Invoke-QCSheetGroupWorkflowTransition` with `laneIndependentInitialPrepend`):

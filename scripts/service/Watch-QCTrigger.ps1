@@ -373,6 +373,8 @@ $script:WatchRequiredCommands = @(
     'Test-QCStatusSetJobInFlight'
     'Add-QCPrependJobForQcInitiatedStateChange'
     'Add-QCPrependJobForQcFinalizingStateChange'
+    'Test-QCFastAuditEnqueueEnabled'
+    'Invoke-QCFastAuditPrependEnqueue'
     'Get-StatusSetPWFolderState'
     'Get-StatusSetLocalFolderState'
     'Test-StatusSetWatcherShouldEnqueue'
@@ -1274,6 +1276,11 @@ if ($statusSetRules.Count -ge 0) {
                         $auditSheetPairCache = @{}
                         $auditTriggerEventIds = [System.Collections.Generic.List[long]]::new()
                         $qcPrependAuditActions = @(Get-QCPrependAuditActions -Config $config)
+                        $fastAuditEnqueue = $false
+                        if (Get-Command -Name 'Test-QCFastAuditEnqueueEnabled' -ErrorAction SilentlyContinue) {
+                            try { $fastAuditEnqueue = [bool](Test-QCFastAuditEnqueueEnabled -Config $config) } catch { $fastAuditEnqueue = $false }
+                        }
+                        $fastAuditSyncPass = New-Object System.Collections.Generic.List[hashtable]
                         foreach ($ac in $auditCandidates) {
                             $candidateAuditEventId = $null
                             $itemName = ''
@@ -1282,6 +1289,7 @@ if ($statusSetRules.Count -ge 0) {
                             $auditCandidateOutcome = 'processed'
                             $auditCandidateReason = 'evaluated'
                             $auditCandidateRetryable = $false
+                            $skipPathDForPrepend = $false
                             try {
                                 try {
                                     if ($null -ne $ac.auditEventId) {
@@ -1393,19 +1401,48 @@ if ($statusSetRules.Count -ge 0) {
                                                 pwStateName = $acLivePwState
                                                 pwStateNameSource = 'liveProjectWise'
                                             }
-                                            Sync-PWAssociatedSheetWorkflowState -Config $config `
-                                                -DocumentGuid ([string]$ac.objGuid) `
-                                                -DocumentName $itemName `
-                                                -FolderPath $fp `
-                                                -WatchRoot $acWatchRoot `
-                                                -LastAuditEventAt ([string]$ac.actTime) `
-                                                -AuditEventId $acAuditIdSync `
-                                                -DryRun:$isDryRun `
-                                                -ChangedByUser $acUserno `
-                                                -ChangedByUsername $acUsername `
-                                                -AuditTargetStateName $acLivePwState `
-                                                -AuditRawItemDesc $acItemDesc `
-                                                -AuditRawTextParam $acTextParam
+                                            $syncPwParams = @{
+                                                Config = $config
+                                                DocumentGuid = [string]$ac.objGuid
+                                                DocumentName = $itemName
+                                                FolderPath = $fp
+                                                WatchRoot = $acWatchRoot
+                                                LastAuditEventAt = [string]$ac.actTime
+                                                AuditEventId = $acAuditIdSync
+                                                DryRun = [bool]$isDryRun
+                                                ChangedByUser = $acUserno
+                                                ChangedByUsername = $acUsername
+                                                AuditTargetStateName = $acLivePwState
+                                                AuditRawItemDesc = $acItemDesc
+                                                AuditRawTextParam = $acTextParam
+                                            }
+                                            if ($fastAuditEnqueue) {
+                                                $acEnableFastPrepend = $true
+                                                try { if ($null -ne $ac.enableQcPrepend) { $acEnableFastPrepend = [bool]$ac.enableQcPrepend } } catch { $acEnableFastPrepend = $true }
+                                                $acIsSheets = $false
+                                                try { $acIsSheets = [bool]$ac.isSheetsFolder } catch { $acIsSheets = $false }
+                                                if (Get-Command -Name 'Invoke-QCFastAuditPrependEnqueue' -ErrorAction SilentlyContinue) {
+                                                    try {
+                                                        $fastEnq = Invoke-QCFastAuditPrependEnqueue -Config $config `
+                                                            -TriggerDocumentGuid ([string]$ac.objGuid) `
+                                                            -TriggerDocumentName $itemName `
+                                                            -FolderPath $fp `
+                                                            -LiveStateName $acLivePwState `
+                                                            -IsSheetsFolder:$acIsSheets `
+                                                            -EnableQcPrepend:$acEnableFastPrepend `
+                                                            -DryRun:$isDryRun `
+                                                            -ChangedByUser $acUserno `
+                                                            -ChangedByUsername $acUsername `
+                                                            -LastAuditEventAt ([string]$ac.actTime) `
+                                                            -AuditEventId $acAuditIdSync
+                                                        if ($fastEnq -and [bool]$fastEnq.skipPathD) { $skipPathDForPrepend = $true }
+                                                        if ($fastEnq -and [bool]$fastEnq.enqueued) { $enqueued++ }
+                                                    } catch { }
+                                                }
+                                                [void]$fastAuditSyncPass.Add($syncPwParams)
+                                            } else {
+                                                Sync-PWAssociatedSheetWorkflowState @syncPwParams
+                                            }
                                         }
                                     } elseif ($isDocumentDelete) {
                                         $isLaneQcPdf = $false
@@ -1675,7 +1712,14 @@ if ($statusSetRules.Count -ge 0) {
                                 # QC_PREPEND: paired sheet PDFs — QC Initiated state and/or QC_Archivist description tag.
                                 $acEnableQcPrepend = $true
                                 try { if ($null -ne $ac.enableQcPrepend) { $acEnableQcPrepend = [bool]$ac.enableQcPrepend } } catch { }
-                                if ($acEnableQcPrepend -and (Get-Command -Name 'Test-QCIsSheetPdfDocumentName' -ErrorAction SilentlyContinue) -and (Test-QCIsSheetPdfDocumentName -DocumentName $itemName)) {
+                                if ($skipPathDForPrepend) {
+                                    _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_PATH_D_SKIPPED_FAST_ENQUEUE' -Message 'Skipped Path D pair-check because this tick already attempted state-driven prepend enqueue.' -Data @{
+                                        auditEventId = $candidateAuditEventId
+                                        documentGuid = [string]$ac.objGuid
+                                        documentName = $itemName
+                                    }
+                                }
+                                if ($acEnableQcPrepend -and -not $skipPathDForPrepend -and (Get-Command -Name 'Test-QCIsSheetPdfDocumentName' -ErrorAction SilentlyContinue) -and (Test-QCIsSheetPdfDocumentName -DocumentName $itemName)) {
                                     if (Test-QCIsStatusSetOutputPdfName -FileName $itemName) { continue }
                                     if ($qcPrependAuditActions -notcontains $actionName) {
                                         _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_AUDIT_SKIPPED' -Message 'Audit PDF skipped (action not configured for QC_PREPEND).' -Data @{
@@ -2059,6 +2103,22 @@ if ($statusSetRules.Count -ge 0) {
                                             documentGuid = [string]$ac.objGuid
                                             folderPath   = $fp
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        if ($fastAuditEnqueue -and $fastAuditSyncPass.Count -gt 0) {
+                            _Watch-WriteJsonLog -Level 'Information' -Code 'WATCH_FAST_AUDIT_SYNC_PASS' -Message 'Running deferred sibling/attr sync after fast prepend enqueue.' -Data @{
+                                candidateCount = $fastAuditSyncPass.Count
+                            }
+                            foreach ($syncPwParams in $fastAuditSyncPass) {
+                                try {
+                                    Sync-PWAssociatedSheetWorkflowState @syncPwParams
+                                } catch {
+                                    _Watch-WriteJsonLog -Level 'Warning' -Code 'WATCH_FAST_AUDIT_SYNC_PASS_FAILED' -Message 'Deferred sibling/attr sync failed after fast prepend enqueue.' -Data @{
+                                        documentGuid = [string]$syncPwParams.DocumentGuid
+                                        documentName = [string]$syncPwParams.DocumentName
+                                        error = $_.Exception.Message
                                     }
                                 }
                             }

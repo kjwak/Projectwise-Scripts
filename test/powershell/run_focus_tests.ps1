@@ -8,6 +8,7 @@ $tests = @(
     'test\powershell\test_host_throttle.ps1',
     'test\powershell\test_queue_json.ps1',
     'test\powershell\test_qc_prepend_child_wait_and_checkpoint.ps1',
+    'test\powershell\test_fast_prepend_enqueue.ps1',
     'test\powershell\test_orphan_lock_recovery.ps1',
     'test\powershell\test_merge_statusset_qpdf.ps1',
     'test\powershell\test_statusset_workspace_dir.ps1',

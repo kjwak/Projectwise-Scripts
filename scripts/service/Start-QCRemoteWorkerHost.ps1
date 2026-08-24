@@ -310,7 +310,7 @@ try {
         $throttleKey = '{0}|{1}|{2}' -f [bool]$throttleDecision.pauseNewClaims, [string]$throttleDecision.reason, [int]$want
         if ($throttleKey -ne $script:LastThrottleLogKey) {
             $script:LastThrottleLogKey = $throttleKey
-            Write-QCJsonLog -Level 'Information' -Code 'REMOTE_HOST_THROTTLE' -Message 'Remote host throttle state.' -Data @{
+            $thLog = @{
                 host = $hostName
                 pauseNewClaims = [bool]$throttleDecision.pauseNewClaims
                 recommendedSlots = [int]$want
@@ -318,6 +318,12 @@ try {
                 reason = [string]$throttleDecision.reason
                 honored = [bool]$throttleDecision.honored
             }
+            if ($throttleStatus) {
+                if ($throttleStatus.ContainsKey('matchedProcesses')) { $thLog['matchedProcesses'] = @($throttleStatus.matchedProcesses) }
+                if ($throttleStatus.ContainsKey('matchedProcessCpuPercent')) { $thLog['matchedProcessCpuPercent'] = $throttleStatus.matchedProcessCpuPercent }
+                if ($throttleStatus.ContainsKey('matchedProcessMemoryMb')) { $thLog['matchedProcessMemoryMb'] = $throttleStatus.matchedProcessMemoryMb }
+            }
+            Write-QCJsonLog -Level 'Information' -Code 'REMOTE_HOST_THROTTLE' -Message 'Remote host throttle state.' -Data $thLog
         }
 
         $spawnPlan = Get-QCHostThrottleSpawnPlan -CurrentCount $script:WorkerSlots.Count -Want $want

@@ -867,6 +867,8 @@ function Get-QCRemoteWorkerHostSettings {
     $throttleSampleSeconds = 10
     $throttleCpuPercent = 0
     $throttleMemoryPercent = 0
+    $throttleProcessCpuPercent = 0
+    $throttleProcessMemoryMb = 0
     $throttleBusySlots = 1
     $throttlePatterns = New-Object System.Collections.Generic.List[string]
     try {
@@ -897,6 +899,8 @@ function Get-QCRemoteWorkerHostSettings {
                     if ($null -ne $th.sampleSeconds) { try { $throttleSampleSeconds = [int]$th.sampleSeconds } catch { } }
                     if ($null -ne $th.cpuPercent) { try { $throttleCpuPercent = [double]$th.cpuPercent } catch { } }
                     if ($null -ne $th.memoryPercent) { try { $throttleMemoryPercent = [double]$th.memoryPercent } catch { } }
+                    if ($null -ne $th.processCpuPercent) { try { $throttleProcessCpuPercent = [double]$th.processCpuPercent } catch { } }
+                    if ($null -ne $th.processMemoryMb) { try { $throttleProcessMemoryMb = [double]$th.processMemoryMb } catch { } }
                     if ($null -ne $th.busyRecommendedSlots) { try { $throttleBusySlots = [int]$th.busyRecommendedSlots } catch { } }
                     $rawPats = $null
                     if ($th -is [hashtable] -and $th.ContainsKey('processNamePatterns')) { $rawPats = $th.processNamePatterns }
@@ -919,6 +923,8 @@ function Get-QCRemoteWorkerHostSettings {
     if ($throttleSampleSeconds -lt 1) { $throttleSampleSeconds = 10 }
     if ($throttleCpuPercent -lt 0) { $throttleCpuPercent = 0 }
     if ($throttleMemoryPercent -lt 0) { $throttleMemoryPercent = 0 }
+    if ($throttleProcessCpuPercent -lt 0) { $throttleProcessCpuPercent = 0 }
+    if ($throttleProcessMemoryMb -lt 0) { $throttleProcessMemoryMb = 0 }
     return @{
         maxParallel = $maxParallel
         maxJobsPerWorker = $maxJobsPerWorker
@@ -932,6 +938,8 @@ function Get-QCRemoteWorkerHostSettings {
             sampleSeconds = [int]$throttleSampleSeconds
             cpuPercent = [double]$throttleCpuPercent
             memoryPercent = [double]$throttleMemoryPercent
+            processCpuPercent = [double]$throttleProcessCpuPercent
+            processMemoryMb = [double]$throttleProcessMemoryMb
             processNamePatterns = @($throttlePatterns.ToArray())
             busyRecommendedSlots = [int]$throttleBusySlots
         }

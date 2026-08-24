@@ -33,6 +33,8 @@ Assert-False $missing.throttle.enabled 'throttle block absent → disabled'
 Assert-Eq ([int]$missing.throttle.sampleSeconds) 10 'sampleSeconds default 10'
 Assert-Eq ([double]$missing.throttle.cpuPercent) 0 'cpuPercent default 0'
 Assert-Eq ([double]$missing.throttle.memoryPercent) 0 'memoryPercent default 0'
+Assert-Eq ([double]$missing.throttle.processCpuPercent) 0 'processCpuPercent default 0'
+Assert-Eq ([double]$missing.throttle.processMemoryMb) 0 'processMemoryMb default 0'
 Assert-Eq ([int]$missing.throttle.busyRecommendedSlots) 1 'busyRecommendedSlots default 1'
 Assert-Eq @($missing.throttle.processNamePatterns).Count 0 'patterns default empty'
 
@@ -90,6 +92,29 @@ Assert-True ($qcIds -contains 200) 'non-QC powershell still matches powershell*'
 Assert-False ($qcIds -contains 201) 'pwsh does not match powershell* wildcard'
 Assert-True ($qcIds.Count -ge 1) 'do not exclude all PowerShell globally'
 
+# --- Matched process tree CPU (solver children) ---
+$treeProcs = @(
+    [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 10000000; WorkingSetSize = 104857600 }
+    [pscustomobject]@{ ProcessId = 51; Name = 'solver.exe'; ParentProcessId = 50; KernelModeTime = 0; UserModeTime = 40000000; WorkingSetSize = 209715200 }
+    [pscustomobject]@{ ProcessId = 99; Name = 'notepad.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 80000000; WorkingSetSize = 10485760 }
+)
+$treePrev = @(
+    [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 104857600 }
+    [pscustomobject]@{ ProcessId = 51; Name = 'solver.exe'; ParentProcessId = 50; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 209715200 }
+    [pscustomobject]@{ ProcessId = 99; Name = 'notepad.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 10485760 }
+)
+$tree = Get-QCHostMatchedProcessTreePids -Processes $treeProcs -Patterns @('ras*') -ExcludePids @()
+Assert-True $tree.treePids.Contains(50) "matched RAS is in tree"
+Assert-True $tree.treePids.Contains(51) "solver child is in tree even when name does not match ras*"
+Assert-False $tree.treePids.Contains(99) "unrelated process is not in tree"
+$usage = Measure-QCHostMatchedProcessUsage -PreviousProcesses $treePrev -CurrentProcesses $treeProcs `
+    -CandidatePids $tree.treePids -ElapsedSeconds 10
+Assert-True $usage.comparable "two snapshots are comparable"
+Assert-Eq ([double]$usage.sumCpuPercent) ([double]50) "parent plus child CPU summed"
+$usageFirst = Measure-QCHostMatchedProcessUsage -PreviousProcesses $null -CurrentProcesses $treeProcs `
+    -CandidatePids $tree.treePids -ElapsedSeconds 10
+Assert-False $usageFirst.comparable "first sample is not comparable"
+
 # --- Resource gates ---
 $baseOn = @{
     enabled = $true
@@ -112,8 +137,58 @@ $memHigh = ConvertTo-QCHostThrottleEvaluation -Settings $baseOn -MaxParallel 2 -
 Assert-Eq $memHigh.reason 'memory_threshold' 'memory_threshold reason'
 
 $procOnly = ConvertTo-QCHostThrottleEvaluation -Settings $baseOn -MaxParallel 2 -CpuPercent 1 -MemoryPercent 1 -MatchedProcesses @(@{ Name = 'ras.exe' })
-Assert-Eq $procOnly.reason 'matched_process' 'process-only busy'
+Assert-Eq $procOnly.reason 'matched_process' 'process-only busy when processCpuPercent is 0'
 Assert-True $procOnly.pauseNewClaims 'process match pauses'
+
+$parsedProc = Get-QCRemoteWorkerHostSettings -Config @{
+    workers = @{
+        remoteHost = @{
+            throttle = @{
+                enabled = $true
+                processCpuPercent = 15
+                processMemoryMb = 0
+                processNamePatterns = @('ras*')
+            }
+        }
+    }
+}
+Assert-Eq ([double]$parsedProc.throttle.processCpuPercent) 15 'parses processCpuPercent'
+
+$gated = @{
+    enabled = $true
+    cpuPercent = 0
+    memoryPercent = 0
+    processCpuPercent = 15
+    processMemoryMb = 0
+    processNamePatterns = @('ras*')
+    busyRecommendedSlots = 1
+}
+$idleGui = ConvertTo-QCHostThrottleEvaluation -Settings $gated -MaxParallel 5 -CpuPercent 1 -MemoryPercent 1 `
+    -MatchedProcesses @(@{ Name = 'ras.exe' }) -MatchedProcessCpuPercent 2 -MatchedProcessMemoryMb 800 -MatchedProcessUsageReady
+Assert-Eq $idleGui.reason 'normal' 'idle HEC-RAS below processCpuPercent does not throttle'
+Assert-Eq ([int]$idleGui.recommendedSlots) 5 'idle keeps maxParallel'
+
+$notReady = ConvertTo-QCHostThrottleEvaluation -Settings $gated -MaxParallel 5 `
+    -MatchedProcesses @(@{ Name = 'ras.exe' }) -MatchedProcessCpuPercent 80
+Assert-Eq $notReady.reason 'normal' 'first process-CPU sample is not comparable'
+
+$procCpuBusy = ConvertTo-QCHostThrottleEvaluation -Settings $gated -MaxParallel 5 `
+    -MatchedProcesses @(@{ Name = 'ras.exe' }) -MatchedProcessCpuPercent 40 -MatchedProcessUsageReady
+Assert-Eq $procCpuBusy.reason 'process_cpu_threshold' 'model-running CPU scales down'
+Assert-Eq ([int]$procCpuBusy.recommendedSlots) 1 'busyRecommendedSlots when process CPU is high'
+
+$memGated = @{
+    enabled = $true
+    cpuPercent = 0
+    memoryPercent = 0
+    processCpuPercent = 0
+    processMemoryMb = 500
+    processNamePatterns = @('ras*')
+    busyRecommendedSlots = 1
+}
+$procMemBusy = ConvertTo-QCHostThrottleEvaluation -Settings $memGated -MaxParallel 5 `
+    -MatchedProcesses @(@{ Name = 'ras.exe' }) -MatchedProcessMemoryMb 600 -MatchedProcessUsageReady
+Assert-Eq $procMemBusy.reason 'process_memory_threshold' 'processMemoryMb gate'
 
 $multiSig = ConvertTo-QCHostThrottleEvaluation -Settings $baseOn -MaxParallel 2 -CpuPercent 90 -MemoryPercent 90 -MatchedProcesses @(@{ Name = 'ras.exe' })
 Assert-Eq $multiSig.reason 'multiple_signals' 'multiple simultaneous signals'
@@ -225,6 +300,57 @@ try {
     }
     Assert-Eq ([string]$injected.evaluation.reason) 'matched_process' 'injected sample evaluates without live CIM'
     Assert-True $injected.evaluation.pauseNewClaims 'injected matching process pauses'
+
+    $gatedSettings = @{
+        enabled = $true
+        sampleSeconds = 10
+        cpuPercent = 0
+        memoryPercent = 0
+        processCpuPercent = 15
+        processMemoryMb = 0
+        processNamePatterns = @('ras*')
+        busyRecommendedSlots = 1
+    }
+    $firstGated = Update-QCHostThrottleStatus -Settings $gatedSettings -StatusPath (Join-Path $tmp 'gated1.json') -MaxParallel 5 -HostName 'TESTHOST' `
+        -PreviousProcesses $null -PreviousSampledAt ([datetime]::MinValue) -Sample @{
+            cpuPercent = 5
+            memoryPercent = 5
+            processes = @(
+                [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 104857600 }
+            )
+            sampledAtUtc = $now
+        }
+    Assert-Eq ([string]$firstGated.evaluation.reason) 'normal' 'first gated sample fails open even with RAS present'
+
+    $secondGated = Update-QCHostThrottleStatus -Settings $gatedSettings -StatusPath (Join-Path $tmp 'gated2.json') -MaxParallel 5 -HostName 'TESTHOST' `
+        -PreviousProcesses @(
+            [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 104857600 }
+            [pscustomobject]@{ ProcessId = 51; Name = 'solver.exe'; ParentProcessId = 50; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 209715200 }
+        ) -PreviousSampledAt $now.AddSeconds(-10) -Sample @{
+            cpuPercent = 5
+            memoryPercent = 5
+            processes = @(
+                [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 5000000; WorkingSetSize = 104857600 }
+                [pscustomobject]@{ ProcessId = 51; Name = 'solver.exe'; ParentProcessId = 50; KernelModeTime = 0; UserModeTime = 45000000; WorkingSetSize = 209715200 }
+            )
+            sampledAtUtc = $now
+        }
+    Assert-Eq ([string]$secondGated.evaluation.reason) 'process_cpu_threshold' 'RAS + solver CPU over threshold throttles'
+    Assert-Eq ([int]$secondGated.evaluation.recommendedSlots) 1 'gated busy scales to 1'
+    Assert-True ([double]$secondGated.evaluation.matchedProcessCpuPercent -ge 15) 'status records matched-tree CPU'
+
+    $idleGated = Update-QCHostThrottleStatus -Settings $gatedSettings -StatusPath (Join-Path $tmp 'gated3.json') -MaxParallel 5 -HostName 'TESTHOST' `
+        -PreviousProcesses @(
+            [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 0; WorkingSetSize = 104857600 }
+        ) -PreviousSampledAt $now.AddSeconds(-10) -Sample @{
+            cpuPercent = 5
+            memoryPercent = 5
+            processes = @(
+                [pscustomobject]@{ ProcessId = 50; Name = 'ras.exe'; ParentProcessId = 1; KernelModeTime = 0; UserModeTime = 2000000; WorkingSetSize = 104857600 }
+            )
+            sampledAtUtc = $now
+        }
+    Assert-Eq ([string]$idleGated.evaluation.reason) 'normal' 'idle RAS CPU below threshold does not throttle'
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

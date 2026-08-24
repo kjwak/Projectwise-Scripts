@@ -60,7 +60,7 @@ Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full
 
 ### Prepend mode
 
-Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are orchestrated by `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1`, which spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
+Committed production uses `qcPrepend.mode: "projectWise"`. The watcher identifies a `DOCUMENT_STATE` candidate, reads live workflow state once, and enqueues `QC_PREPEND` (immediately when `qcPrepend.fastAuditEnqueue` is true; otherwise after sibling/attr sync). `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1` confirms live state, DGN pair, and lane **before** overlay, then spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). Skip at preflight is success (`QC_PREPEND_SKIPPED_*`), not failure. The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
 
 `qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 
@@ -124,7 +124,7 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 
 This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, temp roots, and `workers.enabledJobTypes` go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
 
-Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md).
+Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md). Host throttle (`workers.remoteHost.throttle` in `appsettings.local.json`) should use `processCpuPercent` so idle CAD/hydro GUIs (HEC-RAS open, no model running) do not scale QC down; name match alone is only for `processCpuPercent: 0`.
 
 `QC_PREPEND` is not safely repeatable after the lane PDF (`*-rev.pdf` / `*-chk.pdf` / `*-prod.pdf`) exists. The worker persists `job.checkpoint` (`prepend_complete` then `writeback_complete`). Stale recovery must resume **writeback only** when `prepend_complete` is set — do not rerun prepend from heartbeat/PID/log inference.
 

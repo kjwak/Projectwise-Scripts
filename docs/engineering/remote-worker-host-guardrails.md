@@ -59,12 +59,13 @@ Do not manually move the job to `succeeded\` unless prepend **and** workflow wri
 
 ## Host resource throttle
 
-When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and process names across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json`.
+When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`).
 
 - **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**.
 - **In-flight work always finishes** (prepend, reconnect, writeback, notification).
-- **Fail-open:** missing, malformed, unreadable, stale (`sampledAtUtc` older than `max(3 * sampleSeconds, 30s)`), or `reason=sample_error` does **not** pause claims.
-- Process-name patterns are case-insensitive wildcards against `Win32_Process.Name` with `.exe` stripped. QC supervisor/worker PIDs and their descendant tree are excluded; other PowerShell processes are not.
+- **Fail-open:** missing, malformed, unreadable, stale (`sampledAtUtc` older than `max(3 * sampleSeconds, 30s)`), `reason=sample_error`, or the **first** process-CPU sample (no prior snapshot to compare) does **not** pause claims.
+- Process-name patterns identify CAD/hydro apps (case-insensitive wildcards vs `Win32_Process.Name`, `.exe` optional). When `processCpuPercent` is set (typical **15**), a matching app sitting idle (HEC-RAS open on `dteam` with no model running) is **not** busy — the matched process **plus descendants** (solver children) must use CPU over `sampleSeconds`. `processMemoryMb` is optional and usually left at `0`. When both process gates are `0`, a name match alone still counts as busy. QC supervisor/worker PIDs and their descendant tree are excluded; other PowerShell processes are not.
+- Leave machine `cpuPercent` / `memoryPercent` at `0` on this host so QC prepend does not throttle itself.
 - Committed `appsettings.json` must keep this **off**. Do not add SQL `qc_workers` here — this is local host control only.
 
 If you use Process Lasso (or similar) on this PC, exclude the QC remote-host supervisor and `Run-QCProcessor` PowerShell processes there. That is an ops setting, not QC code.

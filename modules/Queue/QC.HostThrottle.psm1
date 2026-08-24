@@ -4,6 +4,9 @@
 
 Set-StrictMode -Version Latest
 
+$script:QCHostThrottlePrevProcesses = $null
+$script:QCHostThrottlePrevAt = $null
+
 function ConvertTo-QCHostProcessMatchName {
     <#
     .SYNOPSIS
@@ -100,6 +103,130 @@ function Select-QCHostMatchedProcesses {
         }
     }
     return @($matched.ToArray())
+}
+
+function Get-QCHostProcessCpuTicks {
+    param($Process)
+    if ($null -eq $Process) { return [int64]0 }
+    $k = [int64]0
+    $u = [int64]0
+    try {
+        if ($Process.PSObject.Properties['KernelModeTime'] -and $null -ne $Process.KernelModeTime) {
+            $k = [int64]$Process.KernelModeTime
+        }
+    } catch { $k = [int64]0 }
+    try {
+        if ($Process.PSObject.Properties['UserModeTime'] -and $null -ne $Process.UserModeTime) {
+            $u = [int64]$Process.UserModeTime
+        }
+    } catch { $u = [int64]0 }
+    return ($k + $u)
+}
+
+function Get-QCHostProcessWorkingSetMb {
+    param($Process)
+    if ($null -eq $Process) { return 0.0 }
+    $bytes = 0.0
+    try {
+        if ($Process.PSObject.Properties['WorkingSetSize'] -and $null -ne $Process.WorkingSetSize) {
+            $bytes = [double]$Process.WorkingSetSize
+        }
+    } catch { $bytes = 0.0 }
+    if ($bytes -le 0) { return 0.0 }
+    return [math]::Round($bytes / 1MB, 1)
+}
+
+function Get-QCHostMatchedProcessTreePids {
+    <#
+    .SYNOPSIS
+    PIDs of pattern-matched processes plus their descendants (solver children).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Processes,
+        [string[]]$Patterns,
+        [int[]]$ExcludePids
+    )
+    $matched = @(Select-QCHostMatchedProcesses -Processes $Processes -Patterns $Patterns -ExcludePids $ExcludePids)
+    $roots = @($matched | ForEach-Object { [int]$_.ProcessId } | Where-Object { $_ -gt 0 })
+    if ($roots.Count -eq 0) {
+        return @{ matched = @($matched); treePids = (New-Object 'System.Collections.Generic.HashSet[int]') }
+    }
+    return @{
+        matched  = @($matched)
+        treePids = (Get-QCHostExcludedPidSet -Processes $Processes -RootPids $roots)
+    }
+}
+
+function Measure-QCHostMatchedProcessUsage {
+    <#
+    .SYNOPSIS
+    CPU % of one logical processor (can exceed 100) and working-set MB for a PID set.
+    Requires two snapshots of KernelModeTime/UserModeTime. First sample is not comparable.
+    #>
+    [CmdletBinding()]
+    param(
+        $PreviousProcesses,
+        $CurrentProcesses,
+        $CandidatePids,
+        [double]$ElapsedSeconds
+    )
+    $out = @{
+        comparable        = $false
+        sumCpuPercent     = 0.0
+        maxCpuPercent     = 0.0
+        sumWorkingSetMb   = 0.0
+        processCount      = 0
+    }
+    $currById = @{}
+    foreach ($p in @($CurrentProcesses)) {
+        if ($null -eq $p) { continue }
+        $id = 0
+        try { $id = [int]$p.ProcessId } catch { $id = 0 }
+        if ($id -gt 0) { $currById[$id] = $p }
+    }
+    $prevById = @{}
+    foreach ($p in @($PreviousProcesses)) {
+        if ($null -eq $p) { continue }
+        $id = 0
+        try { $id = [int]$p.ProcessId } catch { $id = 0 }
+        if ($id -gt 0) { $prevById[$id] = $p }
+    }
+    $ids = @()
+    if ($CandidatePids -is [System.Collections.IEnumerable] -and -not ($CandidatePids -is [string])) {
+        foreach ($id in @($CandidatePids)) {
+            try { $ids += [int]$id } catch { }
+        }
+    }
+    $ids = @($ids | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+    $out.processCount = $ids.Count
+    $sumMb = 0.0
+    foreach ($id in $ids) {
+        if ($currById.ContainsKey($id)) {
+            $sumMb += (Get-QCHostProcessWorkingSetMb -Process $currById[$id])
+        }
+    }
+    $out.sumWorkingSetMb = [math]::Round($sumMb, 1)
+    if ($ElapsedSeconds -lt 0.2 -or $prevById.Count -eq 0 -or $ids.Count -eq 0) {
+        return $out
+    }
+    $sumCpu = 0.0
+    $maxCpu = 0.0
+    $compared = 0
+    foreach ($id in $ids) {
+        if (-not $currById.ContainsKey($id) -or -not $prevById.ContainsKey($id)) { continue }
+        $deltaTicks = (Get-QCHostProcessCpuTicks -Process $currById[$id]) - (Get-QCHostProcessCpuTicks -Process $prevById[$id])
+        if ($deltaTicks -lt 0) { continue }
+        $cpuPct = ([double]$deltaTicks / 10000000.0) / $ElapsedSeconds * 100.0
+        $sumCpu += $cpuPct
+        if ($cpuPct -gt $maxCpu) { $maxCpu = $cpuPct }
+        $compared++
+    }
+    if ($compared -le 0) { return $out }
+    $out.comparable = $true
+    $out.sumCpuPercent = [math]::Round($sumCpu, 1)
+    $out.maxCpuPercent = [math]::Round($maxCpu, 1)
+    return $out
 }
 
 function Get-QCHostThrottleFreshnessSeconds {
@@ -201,6 +328,9 @@ function ConvertTo-QCHostThrottleEvaluation {
         [AllowNull()][Nullable[double]]$CpuPercent = $null,
         [AllowNull()][Nullable[double]]$MemoryPercent = $null,
         [object[]]$MatchedProcesses = @(),
+        [AllowNull()][Nullable[double]]$MatchedProcessCpuPercent = $null,
+        [AllowNull()][Nullable[double]]$MatchedProcessMemoryMb = $null,
+        [switch]$MatchedProcessUsageReady,
         [switch]$SampleError
     )
     $enabled = $false
@@ -221,6 +351,8 @@ function ConvertTo-QCHostThrottleEvaluation {
             matchedProcesses  = @()
             cpuPercent        = $CpuPercent
             memoryPercent     = $MemoryPercent
+            matchedProcessCpuPercent = $MatchedProcessCpuPercent
+            matchedProcessMemoryMb   = $MatchedProcessMemoryMb
         }
     }
 
@@ -233,6 +365,8 @@ function ConvertTo-QCHostThrottleEvaluation {
             matchedProcesses  = @()
             cpuPercent        = $CpuPercent
             memoryPercent     = $MemoryPercent
+            matchedProcessCpuPercent = $MatchedProcessCpuPercent
+            matchedProcessMemoryMb   = $MatchedProcessMemoryMb
         }
     }
 
@@ -253,7 +387,28 @@ function ConvertTo-QCHostThrottleEvaluation {
         } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
 
-    $procBusy = ($matchedNames.Count -gt 0)
+    $procCpuThresh = 0
+    $procMemThresh = 0
+    if ($Settings.ContainsKey('processCpuPercent') -and $null -ne $Settings.processCpuPercent) {
+        try { $procCpuThresh = [double]$Settings.processCpuPercent } catch { $procCpuThresh = 0 }
+    }
+    if ($Settings.ContainsKey('processMemoryMb') -and $null -ne $Settings.processMemoryMb) {
+        try { $procMemThresh = [double]$Settings.processMemoryMb } catch { $procMemThresh = 0 }
+    }
+    $resourceGated = ($procCpuThresh -gt 0 -or $procMemThresh -gt 0)
+
+    $hasMatch = ($matchedNames.Count -gt 0)
+    $procCpuBusy = $false
+    $procMemBusy = $false
+    if ($resourceGated) {
+        if ($hasMatch -and $MatchedProcessUsageReady.IsPresent) {
+            $procCpuBusy = ($procCpuThresh -gt 0 -and $null -ne $MatchedProcessCpuPercent -and [double]$MatchedProcessCpuPercent -ge $procCpuThresh)
+            $procMemBusy = ($procMemThresh -gt 0 -and $null -ne $MatchedProcessMemoryMb -and [double]$MatchedProcessMemoryMb -ge $procMemThresh)
+        }
+        $procBusy = ($procCpuBusy -or $procMemBusy)
+    } else {
+        $procBusy = $hasMatch
+    }
     $cpuBusy = ($cpuThresh -gt 0 -and $null -ne $CpuPercent -and [double]$CpuPercent -ge $cpuThresh)
     $memBusy = ($memThresh -gt 0 -and $null -ne $MemoryPercent -and [double]$MemoryPercent -ge $memThresh)
     $signalCount = @($procBusy, $cpuBusy, $memBusy) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
@@ -265,6 +420,9 @@ function ConvertTo-QCHostThrottleEvaluation {
         $slots = Get-QCHostThrottleDesiredSlots -MaxParallel $max -RecommendedSlots $busySlots
         $pause = ($slots -le 0)
         if ($signalCount -gt 1) { $reason = 'multiple_signals' }
+        elseif ($procBusy -and $resourceGated -and $procCpuBusy -and -not $procMemBusy) { $reason = 'process_cpu_threshold' }
+        elseif ($procBusy -and $resourceGated -and $procMemBusy -and -not $procCpuBusy) { $reason = 'process_memory_threshold' }
+        elseif ($procBusy -and $resourceGated) { $reason = 'process_cpu_threshold' }
         elseif ($procBusy) { $reason = 'matched_process' }
         elseif ($cpuBusy) { $reason = 'cpu_threshold' }
         else { $reason = 'memory_threshold' }
@@ -278,6 +436,8 @@ function ConvertTo-QCHostThrottleEvaluation {
         matchedProcesses  = @($matchedNames)
         cpuPercent        = $CpuPercent
         memoryPercent     = $MemoryPercent
+        matchedProcessCpuPercent = $MatchedProcessCpuPercent
+        matchedProcessMemoryMb   = $MatchedProcessMemoryMb
     }
 }
 
@@ -343,6 +503,14 @@ function Write-QCHostThrottleStatus {
     if ($Evaluation.ContainsKey('memoryPercent') -and $null -ne $Evaluation.memoryPercent) {
         try { $mem = [math]::Round([double]$Evaluation.memoryPercent, 1) } catch { $mem = $null }
     }
+    $matchedProcCpu = $null
+    if ($Evaluation.ContainsKey('matchedProcessCpuPercent') -and $null -ne $Evaluation.matchedProcessCpuPercent) {
+        try { $matchedProcCpu = [math]::Round([double]$Evaluation.matchedProcessCpuPercent, 1) } catch { $matchedProcCpu = $null }
+    }
+    $matchedProcMb = $null
+    if ($Evaluation.ContainsKey('matchedProcessMemoryMb') -and $null -ne $Evaluation.matchedProcessMemoryMb) {
+        try { $matchedProcMb = [math]::Round([double]$Evaluation.matchedProcessMemoryMb, 1) } catch { $matchedProcMb = $null }
+    }
 
     $allow = @()
     if ($Evaluation.ContainsKey('claimAllowLabels') -and $null -ne $Evaluation.claimAllowLabels) {
@@ -354,6 +522,8 @@ function Write-QCHostThrottleStatus {
         recommendedSlots  = [int]$Evaluation.recommendedSlots
         reason            = [string]$Evaluation.reason
         matchedProcesses  = @($Evaluation.matchedProcesses)
+        matchedProcessCpuPercent = $matchedProcCpu
+        matchedProcessMemoryMb   = $matchedProcMb
         claimAllowLabels  = @($allow)
         cpuPercent        = $cpu
         memoryPercent     = $mem
@@ -519,6 +689,9 @@ function Get-QCHostProcessSnapshotLive {
             ProcessId       = [int]$_.ProcessId
             Name            = [string]$_.Name
             ParentProcessId = [int]$_.ParentProcessId
+            KernelModeTime  = $_.KernelModeTime
+            UserModeTime    = $_.UserModeTime
+            WorkingSetSize  = $_.WorkingSetSize
         }
     })
 }
@@ -566,6 +739,8 @@ function Update-QCHostThrottleStatus {
         [hashtable]$Sample = $null,
         [string]$HostName = '',
         [string[]]$CurrentLabels = @(),
+        [object[]]$PreviousProcesses,
+        [datetime]$PreviousSampledAt = [datetime]::MinValue,
         [switch]$Live
     )
     $cpu = $null
@@ -582,9 +757,35 @@ function Update-QCHostThrottleStatus {
         if ($snap.ContainsKey('processes')) { $procs = @($snap.processes) }
         $pats = @()
         if ($Settings.ContainsKey('processNamePatterns')) { $pats = @($Settings.processNamePatterns) }
-        $matched = @(Select-QCHostMatchedProcesses -Processes $procs -Patterns $pats -ExcludePids $ExcludePids)
-        $eval = ConvertTo-QCHostThrottleEvaluation -Settings $Settings -MaxParallel $MaxParallel `
-            -CpuPercent $cpu -MemoryPercent $mem -MatchedProcesses $matched
+        $tree = Get-QCHostMatchedProcessTreePids -Processes $procs -Patterns $pats -ExcludePids $ExcludePids
+        $matched = @($tree.matched)
+        $prev = $script:QCHostThrottlePrevProcesses
+        $prevAt = $script:QCHostThrottlePrevAt
+        if ($PSBoundParameters.ContainsKey('PreviousProcesses')) { $prev = $PreviousProcesses }
+        if ($PreviousSampledAt -ne [datetime]::MinValue) { $prevAt = $PreviousSampledAt }
+        $whenSample = [datetime]::UtcNow
+        if ($snap.ContainsKey('sampledAtUtc') -and $snap.sampledAtUtc) {
+            try { $whenSample = [datetime]$snap.sampledAtUtc } catch { $whenSample = [datetime]::UtcNow }
+        }
+        $elapsed = 0.0
+        if ($null -ne $prevAt) {
+            try { $elapsed = ($whenSample.ToUniversalTime() - ([datetime]$prevAt).ToUniversalTime()).TotalSeconds } catch { $elapsed = 0.0 }
+        }
+        $usage = Measure-QCHostMatchedProcessUsage -PreviousProcesses $prev -CurrentProcesses $procs `
+            -CandidatePids $tree.treePids -ElapsedSeconds $elapsed
+        $evalParams = @{
+            Settings = $Settings
+            MaxParallel = $MaxParallel
+            CpuPercent = $cpu
+            MemoryPercent = $mem
+            MatchedProcesses = $matched
+            MatchedProcessCpuPercent = $usage.sumCpuPercent
+            MatchedProcessMemoryMb = $usage.sumWorkingSetMb
+        }
+        if ($usage.comparable) { $evalParams['MatchedProcessUsageReady'] = $true }
+        $eval = ConvertTo-QCHostThrottleEvaluation @evalParams
+        $script:QCHostThrottlePrevProcesses = $procs
+        $script:QCHostThrottlePrevAt = $whenSample
     } catch {
         $eval = ConvertTo-QCHostThrottleEvaluation -Settings $Settings -MaxParallel $MaxParallel `
             -CpuPercent $cpu -MemoryPercent $mem -MatchedProcesses @() -SampleError

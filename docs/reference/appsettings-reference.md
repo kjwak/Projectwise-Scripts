@@ -172,12 +172,14 @@ Local host control plane for the modelling PC. Never abort in-flight jobs. Enabl
 |-----|-------------|
 | `enabled` | Default `false`. When false, no sampling pause. |
 | `sampleSeconds` | Supervisor sample interval (default `10`). Status older than `max(3 * sampleSeconds, 30)` seconds is ignored (fail-open). |
-| `cpuPercent` | Pause when machine-wide CPU is at/above this percent. `0` or omit = ignore CPU. |
-| `memoryPercent` | Pause when physical memory utilization is at/above this percent. `0` or omit = ignore memory. |
+| `cpuPercent` | Pause/scale when machine-wide CPU is at/above this percent. `0` or omit = ignore CPU. |
+| `memoryPercent` | Pause/scale when physical memory utilization is at/above this percent. `0` or omit = ignore memory. |
+| `processCpuPercent` | Scale only when **matched modelling apps** (and their child processes) use at least this much CPU, as percent of one logical processor summed over the process tree. Measured over `sampleSeconds`. `0` = a matching name alone is enough (idle HEC-RAS would throttle). Typical: `15`–`25`. |
+| `processMemoryMb` | Optional working-set floor in MB for the matched tree. `0` = ignore. Prefer CPU for “model is running”. |
 | `processNamePatterns` | Case-insensitive wildcards vs `Win32_Process.Name` (`.exe` optional), e.g. `OpenRoads*`, `ras*`. |
 | `busyRecommendedSlots` | Desired worker children while busy (default **1**). **0** pauses all new claims. Extra children are not killed; they idle and stop claiming. In-flight jobs always finish. |
 
-Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Reasons: `disabled`, `normal`, `matched_process`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
+Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
 
 **How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
 
@@ -214,6 +216,7 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 |-----|-------------|
 | `historyRoot` / `outputRoot` / `tempRoot` | Overlay working directories (used by `local` mode and overlay staging). |
 | `mode` | **`projectWise`** (production): `Invoke-QCPrependProcessor` spawns `scripts\processing\Invoke-QCPrependPw.ps1` for PW export, overlay merge, and lane PDF upload. **`local`**: disk-only path in `QC.Processors.psm1` (tests/staging; no PW file I/O). **`legacyPw`** / **`pw`**: deprecated aliases for `projectWise`. |
+| `fastAuditEnqueue` | Default **`false`**. When `true`, the watcher enqueues `QC_PREPEND` right after the `DOCUMENT_STATE` live-state read (Initiate Origination / Initiate Verification) so a burst of sheets can sit in `pending/` together. Sibling sync / `sheet_index` attr work runs as a **second pass** in the same tick. Path D (DGN + description) is skipped for that candidate when this tick already enqueued. Process type may be empty at enqueue; the worker confirms live state, DGN pair, and lane **before** overlay and no-op-succeeds (`QC_PREPEND_SKIPPED_*`) if the job is not a real prepend. Enable on the QC server overlay; do not flip the committed default until soak. |
 | `projectWiseScriptPath` | Optional override for the ProjectWise prepend script (default `scripts\processing\Invoke-QCPrependPw.ps1`). |
 | `legacyScriptPath` | Deprecated alias for `projectWiseScriptPath`. |
 | `enableOverlay` | Use `qc_overlay_prepend.exe` when available. |

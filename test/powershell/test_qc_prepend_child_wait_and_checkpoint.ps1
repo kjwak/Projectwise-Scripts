@@ -95,6 +95,9 @@ InModuleScope -ModuleName QC.Processors {
             startFailed = $false
         }
     }
+    function Get-PWDocumentWorkflowStateName { param($FolderPath, $DocumentName, $DocumentGuid) return 'Initiate Origination' }
+    function Test-PWSheetPdfHasMatchingPair { param($FolderPath, $DocumentName) return $true }
+    function Test-QCWorkflowStateIsQcInitiated { param([string]$StateName, [hashtable]$Config) return $true }
     function _QCP-InvokePrependPostSuccessWriteback {
         param(
             [hashtable]$Job,

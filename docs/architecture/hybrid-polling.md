@@ -29,7 +29,7 @@ Relevant audit actions monitored:
 | 1003 | `DOCUMENT_ATTR` | Environment attribute change — `sheet_index` refresh + attribute history rows |
 | 1006 | `DOCUMENT_FILE_REP` | File replaced (common after rendition) — STATUS_SET_GEN + QC_PREPEND |
 | 1007 | `DOCUMENT_CIN` | Check-in — STATUS_SET_GEN rebuild |
-| 1012 | `DOCUMENT_STATE` | Workflow state change — lane state sync + `document_state_history` / notifications on lane QC PDFs (`*-prod/-rev/-chk.pdf`) |
+| 1012 | `DOCUMENT_STATE` | Workflow state change — live state read, optional fast `QC_PREPEND` enqueue, then sibling/`sheet_index` sync + `document_state_history` / notifications on lane QC PDFs (`*-prod/-rev/-chk.pdf`) |
 | 1015 | `DOCUMENT_VERSION` | New version — STATUS_SET_GEN rebuild |
 | 1020 | `DOCUMENT_DELETE` | Document deleted — STATUS_SET_GEN rebuild |
 
@@ -97,7 +97,9 @@ Each tick (typical production config):
 
 ### QC_PREPEND Trigger
 
-On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`, `DOCUMENT_STATE`), paired sheet PDFs in Sheets folders may enqueue `QC_PREPEND` when workflow state is **Initiate Origination** (non-automation actor), or when the description contains `QC_Archivist` and state is **Initiate Origination**. `DOCUMENT_STATE` on DGN/PDF also enqueues via `Sync-PWAssociatedSheetWorkflowState`; `DOCUMENT_ATTR` may enqueue after `Sync-PWSheetIndexOwnership` detects a state change. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips do not block this check.
+On configured audit actions (`auditPoller.qcPrependAuditActions`, default includes `DOCUMENT_MODIFY`, `DOCUMENT_ATTR`, `DOCUMENT_CIN`, `DOCUMENT_FILE_REP`, `DOCUMENT_VERSION`, `DOCUMENT_CREATE`, `DOCUMENT_STATE`), paired sheet PDFs in Sheets folders may enqueue `QC_PREPEND` when workflow state is **Initiate Origination** (non-automation actor), or when the description contains `QC_Archivist` and state is **Initiate Origination**. `DOCUMENT_ATTR` may enqueue after `Sync-PWSheetIndexOwnership` detects a state change. A matching DGN (same stem) is required in Sheets folders. STATUS_SET_GEN skips do not block this check.
+
+When `qcPrepend.fastAuditEnqueue` is **true** (QC server overlay; committed default is **false**), a `DOCUMENT_STATE` candidate is identified, the watcher reads live workflow state once, and if the state is **Initiate Origination** or **Initiate Verification** it enqueues immediately. Sibling maps / attr sync (`Sync-PWAssociatedSheetWorkflowState`) run as a **second pass** after every candidate in the tick has had a chance to enqueue, so a burst of sheets can sit in `pending/` together. Path D (DGN + description) is skipped for that candidate when this tick already attempted state-driven enqueue. Process type may be empty at enqueue. The worker confirms live state, DGN pair, and lane **before** overlay and no-op-succeeds (`QC_PREPEND_SKIPPED_*`) if the job is not a real prepend. Automation-actor events, lane PDFs, and DGNs still do not enqueue from this path. Tag-driven Path D prepend (non-`DOCUMENT_STATE`) is unchanged. When the flag is **false**, `DOCUMENT_STATE` still enqueues via `Sync-PWAssociatedSheetWorkflowState` after sibling/attr work (previous order).
 
 ### STATUS_SET_GEN Trigger
 
@@ -157,7 +159,7 @@ When `auditPoller.workflowTriggers.enabled` is true (default):
 
 | Audit action | Runtime behavior |
 |--------------|------------------|
-| `DOCUMENT_STATE` | `Sync-PWAssociatedSheetWorkflowState` aligns siblings when legacy sibling sync is enabled; history/transitions recorded; lane QC PDF notifications when enabled. Events from `workflowTriggers.automationPwUsernames` may skip notify/sync echoes per config. |
+| `DOCUMENT_STATE` | Live state read; with `qcPrepend.fastAuditEnqueue`, `QC_PREPEND` enqueue first, then deferred `Sync-PWAssociatedSheetWorkflowState`. Flag off: sibling/attr sync first (aligns siblings when legacy sibling sync is enabled). History/transitions recorded; lane QC PDF notifications when enabled. Events from `workflowTriggers.automationPwUsernames` may skip notify/sync echoes per config. |
 | `DOCUMENT_ATTR` | `Sync-PWSheetIndexOwnership` re-reads EM_* / QC_* columns; `QC_Process_Type` and `QC_Review_Type` changes propagate to associated documents; workflow state change to **Initiate Origination** may enqueue `QC_PREPEND` |
 
 Configure under `auditPoller.workflowTriggers` in `appsettings.json`. Notifications still require `notifications.enabled` (separate master switch).
