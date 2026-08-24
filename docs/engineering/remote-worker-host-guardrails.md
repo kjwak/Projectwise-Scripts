@@ -14,9 +14,40 @@ This clone on the drainage modelling workstation (AZTEC002799) is a **processor 
 | Local `qcPrepend` temp/output on fast disk (E: / F:) | Audit polling, enqueue, reconciliation sweeps |
 | Read-only diagnostics (`Show-QCQueueDiag.ps1`) | UNC claims without `-AllowUncQueue` / `workers.remoteHost.allowUncQueue` |
 
-The supervisor tails `queue\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim, stage, success, and failure to the console. Heartbeat lines say `idle` or `busy=N <document>`. Restart `Start-QCRemoteWorkerHost.ps1` to pick this up.
+The supervisor tails `queue\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim, stage, success, and failure to the console. By default it shows **this host only** (`RW*` worker labels). Pass `-ShowAllWorkers` to `Start-QCRemoteWorkerHost.ps1` if you need QC-server worker lines too. Heartbeat lines say `idle` or `busy=N <document>`. Post-prepend steps (tag clear, workflow writeback) emit `QC_PREPEND_*` progress lines so the console is not silent while the job remains in `running\`.
 
 Restrict this host with gitignored `workers.enabledJobTypes` (modelling PC: `["QC_PREPEND"]` so `STATUS_SET_GEN` stays on the QC server). Empty/omitted `enabledJobTypes` means all types — do not set that in committed `appsettings.json`.
+
+## Stamp assets (QC_PREPEND)
+
+Lane PDF stamps are **not** optional for check/review prepend on this host. `QCProcess.StampAssets` paths are relative to the repo root unless `QCProcess.stampsRoot` is set in `appsettings.local.json`.
+
+1. Copy the `stamps\` folder from the QC server install root into `<repo>\stamps\`, **or**
+2. Copy stamp PDFs to e.g. `C:\PW_QC_LOCAL\stamps\` and set `"QCProcess": { "stampsRoot": "C:\\PW_QC_LOCAL\\stamps" }` in `appsettings.local.json`.
+
+`Start-QCRemoteWorkerHost.ps1` warns at startup when configured stamp files are missing. Production lane prepend continues without a stamp when the template is absent; check/review prepend fails fast once stamp resolution fails.
+
+## Stuck job in `running\`
+
+A prepend job stays in `running\` until the worker finishes **post-prepend workflow writeback** (lane state change + `QC_NOTIFICATION` enqueue) and `Run-QCProcessor.ps1` moves it to `succeeded\`. The notification job is created during writeback, not after the move — but writeback must complete first.
+
+The worker waits **only for the prepend PowerShell child PID**. Bentley Connection Client / other descendants that inherit redirected stdout/stderr must not keep the job in `running\`. Progress lines: `QC_PREPEND_PW_CHILD_START`, `QC_PREPEND_PW_CHILD_PID`, `QC_PREPEND_PW_CHILD_DONE`, `QC_PREPEND_PW_RECONNECT_START`, `QC_PREPEND_WORKFLOW_WRITEBACK_*`.
+
+Durable queue checkpoints (`job.checkpoint`, mirrored to `processing_jobs.checkpoint`):
+
+| Checkpoint | Meaning | Recovery |
+|---|---|---|
+| *(absent)* | Prepend child has not succeeded | Retry may rerun prepend |
+| `prepend_complete` / `writeback_running` | Lane PDF created; writeback not finished | Resume **writeback only** — never rerun prepend |
+| `writeback_complete` | Writeback finished | Skip prepend and writeback; archive the job |
+
+**Unstick a hung job:**
+
+1. If `checkpoint` is `prepend_complete` or `writeback_running`, stop the hung worker and let stale recovery requeue it. The next worker resumes writeback only.
+2. If there is no checkpoint, stopping the worker may rerun prepend — do not requeue blindly after the lane PDF already exists. Persist `prepend_complete` first, or invoke writeback only.
+3. On the modelling PC, stale recovery detects a dead local PID within ~30s (or wait for `queue.recover.staleSeconds`, default 900s, without a heartbeat).
+
+Do not manually move the job to `succeeded\` unless prepend **and** workflow writeback already completed in ProjectWise — otherwise notification will not fire and lane state may be wrong.
 
 ## Config
 
@@ -34,7 +65,21 @@ See `modules/Queue/QC.Queue.Json.psm1` (`_QCQJ-IsLockOwnerDead`, `Recover-QCStal
 
 ## Accounts
 
-Do not run QC processors under the shared interactive D-Team login. Use a dedicated scheduled-task account (later).
+Do not run QC processors under the shared interactive D-Team login. Use a dedicated scheduled-task account when the PC is shared; a personal account (e.g. `jflint`) is acceptable for a single-user modelling PC.
+
+**Boot without login:** register a scheduled task (elevated):
+
+```powershell
+.\scripts\deployment\Register-QCRemoteWorkerHostTask.ps1 -AllowUncQueue
+```
+
+Runs `Start-QCRemoteWorkerHost.ps1` at startup with a short delay, **whether the user is logged on or not**. You will be prompted for the run-as password (stored with the task). Unregister with `-Unregister`.
+
+**Log console at logon:** read-only tail in a PowerShell window (does not start a second supervisor):
+
+```powershell
+.\scripts\deployment\Register-QCRemoteWorkerHostLogonConsole.ps1
+```
 
 ## ProjectWise modules on this host
 

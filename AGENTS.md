@@ -126,6 +126,8 @@ This clone may become an optional **processor host**. It must not run the watche
 
 Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md).
 
+`QC_PREPEND` is not safely repeatable after the lane PDF (`*-rev.pdf` / `*-chk.pdf` / `*-prod.pdf`) exists. The worker persists `job.checkpoint` (`prepend_complete` then `writeback_complete`). Stale recovery must resume **writeback only** when `prepend_complete` is set — do not rerun prepend from heartbeat/PID/log inference.
+
 ## Safe change boundaries (unless explicitly requested)
 
 - Do not remove legacy compatibility code or flat module shims without a tracked deprecation plan.

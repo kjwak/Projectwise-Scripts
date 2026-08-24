@@ -204,6 +204,9 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 | `overlaySkipIncomingAboveMb` | When `> 0`, skip layered overlay if the **incoming** PDF is larger than this many megabytes (`Mb * 1024 * 1024`); fall back to qpdf simple prepend + stamps (no Old/New/Current layers). Default `5`. Set `0` to disable the size gate. |
 | `qpdfExePath` | Path to qpdf binary. |
 | `overlayExePath` | Path to `qc_overlay_prepend.exe` (default `dist\qc_overlay_prepend\qc_overlay_prepend.exe`). |
+| `childWaitTimeoutSeconds` | Optional cap on waiting for the ProjectWise prepend **PowerShell child PID** (`0` = wait until that process exits). Does not wait for Bentley/ProjectWise descendants. |
+
+`QC_PREPEND` persists `job.checkpoint` (`prepend_complete`, `writeback_running`, `writeback_complete`) so a retry after a successful lane-PDF create resumes **writeback only**. See [`docs/engineering/remote-worker-host-guardrails.md`](../engineering/remote-worker-host-guardrails.md).
 
 ---
 

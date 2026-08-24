@@ -36,6 +36,7 @@ $copyPlan = @(
     @{ src = (Join-Path $repoRoot 'scripts\Restore-QCModuleExports.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Restore-QCModuleExports.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\Import-QCScriptModules.ps1'); dst = (Join-Path $workerRootResolved 'scripts\Import-QCScriptModules.ps1'); type = 'file' }
     @{ src = (Join-Path $repoRoot 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'); dst = (Join-Path $workerRootResolved 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'); type = 'file' }
+    @{ src = (Join-Path $repoRoot 'stamps'); dst = (Join-Path $workerRootResolved 'stamps'); type = 'dir'; optional = $true }
 )
 
 Write-Host "[Publish] Repo: $repoRoot" -ForegroundColor Cyan
@@ -44,6 +45,10 @@ Write-Host "[Publish] Worker: $workerRootResolved" -ForegroundColor Cyan
 if (-not $SkipModuleCopy.IsPresent) {
     foreach ($item in $copyPlan) {
         if (-not (Test-Path -LiteralPath $item.src)) {
+            if ($item.optional) {
+                Write-Host "  Skipped optional missing source: $($item.src)" -ForegroundColor DarkGray
+                continue
+            }
             throw "Missing source: $($item.src)"
         }
         if ($item.type -eq 'dir') {

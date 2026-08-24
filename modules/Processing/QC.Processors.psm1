@@ -262,6 +262,331 @@ function _QCP-LogPrependLaneResolved {
     } | Out-Null
 }
 
+function _QCP-LogPrependProgress {
+    param(
+        [hashtable]$Job,
+        [Parameter(Mandatory)][string]$Code,
+        [Parameter(Mandatory)][string]$Message,
+        [hashtable]$Config = $null,
+        [hashtable]$Extra = $null
+    )
+    if (-not (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue)) { return }
+    $data = @{
+        jobId = if ($Job -and $Job.id) { [string]$Job.id } else { '' }
+        jobType = 'QC_PREPEND'
+    }
+    if ($Job) {
+        $src = _QCP-GetJobMetadataValue -Job $Job -Keys @('sourceName', 'triggerDocumentName', 'documentName', 'incomingDocName')
+        if (-not (_QCP-IsNullOrWhiteSpace $src)) { $data['sourceName'] = [string]$src }
+    }
+    if ($Extra) {
+        foreach ($k in $Extra.Keys) { $data[$k] = $Extra[$k] }
+    }
+    Write-QCJsonLog -Level 'Information' -Code $Code -Message $Message -Data $data | Out-Null
+    if ($Config -and $Job -and $Job.id -and (Get-Command -Name 'Update-QCJobHeartbeat' -ErrorAction SilentlyContinue)) {
+        try { Update-QCJobHeartbeat -JobId ([string]$Job.id) -Config $Config -Job $Job | Out-Null } catch { }
+    }
+}
+
+$script:_QCP_CheckpointPrependComplete = 'prepend_complete'
+$script:_QCP_CheckpointWritebackRunning = 'writeback_running'
+$script:_QCP_CheckpointWritebackComplete = 'writeback_complete'
+
+function _QCP-GetJobCheckpointName {
+    param([hashtable]$Job)
+    if (-not $Job) { return '' }
+    if ($Job.ContainsKey('checkpoint') -and -not (_QCP-IsNullOrWhiteSpace $Job.checkpoint)) {
+        return ([string]$Job.checkpoint).Trim()
+    }
+    return ''
+}
+
+function _QCP-TestPrependWritebackOnlyResume {
+    param([hashtable]$Job)
+    $cp = _QCP-GetJobCheckpointName -Job $Job
+    return ($cp -eq $script:_QCP_CheckpointPrependComplete -or $cp -eq $script:_QCP_CheckpointWritebackRunning)
+}
+
+function _QCP-TestPrependAlreadyComplete {
+    param([hashtable]$Job)
+    return ((_QCP-GetJobCheckpointName -Job $Job) -eq $script:_QCP_CheckpointWritebackComplete)
+}
+
+function _QCP-SetPrependJobCheckpoint {
+    param(
+        [hashtable]$Job,
+        [hashtable]$Config,
+        [Parameter(Mandatory)][string]$Checkpoint,
+        [hashtable]$CheckpointData = $null
+    )
+    if (-not $Job) { return }
+    $dataText = ''
+    if ($CheckpointData) {
+        try { $dataText = ($CheckpointData | ConvertTo-Json -Compress -Depth 6) } catch { $dataText = '' }
+    }
+    if (Get-Command -Name 'Set-QCJobCheckpoint' -ErrorAction SilentlyContinue -and $Job.id -and $Config) {
+        try {
+            Set-QCJobCheckpoint -JobId ([string]$Job.id) -Config $Config -Job $Job -Checkpoint $Checkpoint -CheckpointData $dataText | Out-Null
+            return
+        } catch { }
+    }
+    $Job.checkpoint = [string]$Checkpoint
+    if ($dataText) { $Job.checkpointData = $dataText }
+}
+
+function _QCP-ReadProcessRedirectFile {
+    param(
+        [string]$Path,
+        [int]$Retries = 8,
+        [int]$DelayMs = 150
+    )
+    if (_QCP-IsNullOrWhiteSpace $Path) { return '' }
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try {
+            if (-not (Test-Path -LiteralPath $Path)) { return '' }
+            $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $sr = New-Object System.IO.StreamReader($fs)
+                try { return [string]$sr.ReadToEnd() } finally { $sr.Dispose() }
+            } finally { $fs.Dispose() }
+        } catch {
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+    return [string](Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue)
+}
+
+function _QCP-WaitForLaunchedProcess {
+    <#
+    .SYNOPSIS
+    Wait for a specific Start-Process -PassThru process to exit. Does not wait for descendants
+    or for redirected stdout/stderr handles held by Bentley/ProjectWise child processes.
+    #>
+    param(
+        [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
+        [hashtable]$Job = $null,
+        [hashtable]$Config = $null,
+        [int]$PollMilliseconds = 500,
+        [int]$TimeoutSeconds = 0,
+        [int]$HeartbeatSeconds = 15
+    )
+    if ($PollMilliseconds -lt 50) { $PollMilliseconds = 50 }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastHb = [DateTime]::UtcNow
+    $pidValue = 0
+    try { $pidValue = [int]$Process.Id } catch { $pidValue = 0 }
+    # Touching Handle keeps the native process handle alive so ExitCode is readable
+    # after the PID exits, without WaitForExit() (which waits on redirected descendants).
+    $keepHandle = $null
+    try { $keepHandle = $Process.Handle } catch { $keepHandle = $null }
+    while ($true) {
+        $alive = $false
+        if ($pidValue -gt 0) {
+            $alive = [bool](Get-Process -Id $pidValue -ErrorAction SilentlyContinue)
+        } else {
+            try {
+                $Process.Refresh()
+                $alive = -not [bool]$Process.HasExited
+            } catch { $alive = $false }
+        }
+        if (-not $alive) {
+            $code = $null
+            try {
+                $Process.Refresh()
+                $code = [int]$Process.ExitCode
+            } catch { $code = $null }
+            [GC]::KeepAlive($Process)
+            [void]$keepHandle
+            return @{
+                exited = $true
+                timedOut = $false
+                exitCode = $code
+                elapsedMs = [int]$sw.ElapsedMilliseconds
+                processId = $pidValue
+            }
+        }
+        if ($TimeoutSeconds -gt 0 -and $sw.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            [GC]::KeepAlive($Process)
+            [void]$keepHandle
+            return @{
+                exited = $false
+                timedOut = $true
+                exitCode = $null
+                elapsedMs = [int]$sw.ElapsedMilliseconds
+                processId = $pidValue
+            }
+        }
+        if ($Job -and $Config -and $HeartbeatSeconds -gt 0 -and (([DateTime]::UtcNow - $lastHb).TotalSeconds -ge $HeartbeatSeconds)) {
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_PW_CHILD_WAIT' `
+                -Message 'Waiting for ProjectWise prepend child PowerShell process (descendants ignored).' -Extra @{
+                childPid = $pidValue
+                elapsedMs = [int]$sw.ElapsedMilliseconds
+            }
+            $lastHb = [DateTime]::UtcNow
+        }
+        Start-Sleep -Milliseconds $PollMilliseconds
+    }
+}
+
+function _QCP-StartAndWaitLaunchedProcess {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$ArgumentList,
+        [Parameter(Mandatory)][string]$StdoutPath,
+        [Parameter(Mandatory)][string]$StderrPath,
+        [hashtable]$Job = $null,
+        [hashtable]$Config = $null,
+        [int]$TimeoutSeconds = 0,
+        [int]$PollMilliseconds = 500,
+        [int]$HeartbeatSeconds = 15
+    )
+    $p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru `
+        -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
+    if (-not $p) {
+        return @{
+            process = $null
+            processId = 0
+            exited = $false
+            timedOut = $false
+            exitCode = $null
+            elapsedMs = 0
+            stdout = ''
+            stderr = ''
+            startFailed = $true
+        }
+    }
+    $startedPid = 0
+    try { $startedPid = [int]$p.Id } catch { $startedPid = 0 }
+    try { [void]$p.Handle } catch { }
+    _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_PW_CHILD_PID' `
+        -Message 'ProjectWise prepend child PowerShell PID retained; waiting for that process only.' -Extra @{
+        childPid = $startedPid
+    }
+    $wait = _QCP-WaitForLaunchedProcess -Process $p -Job $Job -Config $Config `
+        -TimeoutSeconds $TimeoutSeconds -PollMilliseconds $PollMilliseconds -HeartbeatSeconds $HeartbeatSeconds
+    $stdout = _QCP-ReadProcessRedirectFile -Path $StdoutPath
+    $stderr = _QCP-ReadProcessRedirectFile -Path $StderrPath
+    return @{
+        process = $p
+        processId = [int]$wait.processId
+        exited = [bool]$wait.exited
+        timedOut = [bool]$wait.timedOut
+        exitCode = $wait.exitCode
+        elapsedMs = [int]$wait.elapsedMs
+        stdout = $stdout
+        stderr = $stderr
+        startFailed = $false
+    }
+}
+
+function _QCP-GetPrependChildWaitTimeoutSeconds {
+    param([hashtable]$QcPrependConfig)
+    if (-not $QcPrependConfig) { return 0 }
+    if ($QcPrependConfig.ContainsKey('childWaitTimeoutSeconds') -and $null -ne $QcPrependConfig.childWaitTimeoutSeconds) {
+        try { return [int]$QcPrependConfig.childWaitTimeoutSeconds } catch { return 0 }
+    }
+    return 0
+}
+
+function _QCP-InvokePrependPostSuccessWriteback {
+    param(
+        [Parameter(Mandatory)][hashtable]$Job,
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][object]$SuccessResult,
+        [string]$IncomingFolder,
+        [string]$IncomingDocName,
+        [string]$DatasourceName,
+        [hashtable]$ProjectWiseCfg,
+        [switch]$ClearTriggerTag
+    )
+
+    $tagCleared = $null
+    $tagClearError = $null
+    $writebackResult = $null
+    $connected = $false
+    try {
+        _QCP-SetPrependJobCheckpoint -Job $Job -Config $Config -Checkpoint $script:_QCP_CheckpointWritebackRunning
+        _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_PW_RECONNECT_START' `
+            -Message 'Reconnecting to ProjectWise for post-prepend workflow writeback.' -Extra @{
+            incomingDocName = $IncomingDocName
+        }
+        $repoRoot = _QCP-GetRepoRoot
+        $pwConnMod = Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1'
+        if (Test-Path -LiteralPath $pwConnMod) { Import-Module $pwConnMod -Force -ErrorAction SilentlyContinue | Out-Null }
+
+        $pwCfg = if ($ProjectWiseCfg) { $ProjectWiseCfg } else { @{} }
+        $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
+        $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
+        if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
+        $connRes = Connect-PW -DatasourceName $DatasourceName -Credential ([pscredential]$credRes.Data.credential)
+        if (-not $connRes.IsSuccess) { throw ($connRes.Code + ': ' + $connRes.Message) }
+        $connected = $true
+
+        $discRes = Ensure-PWDiscoveryCmdlets
+        if (-not $discRes.IsSuccess -or -not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+            throw ('QC_PREPEND_PW_DISCOVERY_INCOMPLETE: ProjectWise document search cmdlet Get-PWDocumentsBySearch is missing after connect/re-import.')
+        }
+
+        $doc = Get-PWDocumentsBySearch -FolderPath $IncomingFolder -JustThisFolder -DocumentName $IncomingDocName -PopulatePath -ErrorAction Stop
+        if ($ClearTriggerTag.IsPresent) {
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_TAG_CLEAR_START' `
+                -Message 'Clearing QC_Archivist trigger tag.' -Extra @{ incomingDocName = $IncomingDocName }
+            if ($doc) {
+                $currentDesc = $doc.Description
+                if ($null -eq $currentDesc -and $doc.PSObject.Properties['Description']) { $currentDesc = $doc.Description }
+                if ($null -eq $currentDesc) { $currentDesc = '' }
+                $newDesc = ([string]$currentDesc -replace [regex]::Escape('QC_Archivist'), '').Trim()
+                $doc.Description = $newDesc
+                Update-PWDocumentProperties $doc -ErrorAction Stop
+                $tagCleared = $true
+            } else {
+                $tagCleared = $false
+                $tagClearError = 'Could not re-find document to clear trigger tag.'
+            }
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_TAG_CLEAR_DONE' `
+                -Message $(if ($tagCleared) { 'QC_Archivist trigger tag cleared.' } else { 'QC_Archivist trigger tag clear skipped or failed.' }) -Extra @{
+                triggerTagCleared = $tagCleared
+                triggerTagClearError = $tagClearError
+                incomingDocName = $IncomingDocName
+            }
+        }
+
+        if ($doc) { $Job['document'] = $doc }
+        if ($SuccessResult.Data) {
+            $SuccessResult.Data.triggerTagCleared = $tagCleared
+            $SuccessResult.Data.triggerTagClearError = $tagClearError
+        }
+
+        _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_WORKFLOW_WRITEBACK_START' `
+            -Message 'Workflow writeback starting (ProjectWise connected).' -Extra @{ incomingDocName = $IncomingDocName }
+        $writebackResult = _QCP-AppendWorkflowWriteback -Result $SuccessResult -Job $Job -Config $Config `
+            -SourcePath $IncomingDocName -OutputPath $null -HistoryPath $null
+        if ($writebackResult -and $writebackResult.IsSuccess) {
+            _QCP-SetPrependJobCheckpoint -Job $Job -Config $Config -Checkpoint $script:_QCP_CheckpointWritebackComplete
+        }
+        return $writebackResult
+    } catch {
+        $tagClearError = [string]$_.Exception.Message
+        try {
+            if ($SuccessResult.Data) {
+                $SuccessResult.Data.triggerTagCleared = $false
+                $SuccessResult.Data.triggerTagClearError = $tagClearError
+            }
+        } catch { }
+        return New-QCFailureResult -Code 'QC_PREPEND_POST_WRITEBACK_FAILED' `
+            -Message 'Post-prepend ProjectWise workflow writeback failed.' -Data @{
+            error = $tagClearError
+            incomingDocName = $IncomingDocName
+            incomingFolderPath = $IncomingFolder
+        }
+    } finally {
+        if ($Job.ContainsKey('document')) { $Job.Remove('document') }
+        if ($connected) {
+            try { Disconnect-PW | Out-Null } catch { }
+        }
+    }
+}
+
 function _QCP-ResolvePrependProcessTypeFromSourceAttributes {
     <#
     .SYNOPSIS
@@ -1420,6 +1745,56 @@ function Invoke-QCPrependProcessor {
             return New-QCFailureResult -Code 'QC_PREPEND_LEGACY_MISSING_INPUTS' -Message 'ProjectWise prepend requires Job.sourceFolder and Job.sourceName.' -Data @{ jobId = [string]$Job.id; sourceFolder = [string]$Job.sourceFolder; sourceName = [string]$Job.sourceName; sourcePath = [string]$Job.sourcePath }
         }
 
+        $clearTag = $true
+        if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
+
+        if (_QCP-TestPrependAlreadyComplete -Job $Job) {
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_RESUME_ALREADY_COMPLETE' `
+                -Message 'QC_PREPEND writeback checkpoint already complete; skipping prepend and writeback.' -Extra @{
+                checkpoint = _QCP-GetJobCheckpointName -Job $Job
+                incomingDocName = $incomingDocName
+            }
+            return New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND already completed (writeback checkpoint).' -Data @{
+                resumedFromCheckpoint = $true
+                checkpoint = _QCP-GetJobCheckpointName -Job $Job
+                incomingFolderPath = $incomingFolder
+                incomingDocName = $incomingDocName
+            }
+        }
+
+        if (_QCP-TestPrependWritebackOnlyResume -Job $Job) {
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_RESUME_WRITEBACK' `
+                -Message 'Resuming QC_PREPEND at workflow writeback; prepend child will not run.' -Extra @{
+                checkpoint = _QCP-GetJobCheckpointName -Job $Job
+                incomingDocName = $incomingDocName
+            }
+            if ($isDryRun) {
+                return New-QCSuccessResult -Code 'QC_PREPEND_DRYRUN' -Message 'Dry-run: would resume ProjectWise prepend at workflow writeback.' -Data @{
+                    resumedFromCheckpoint = $true
+                    checkpoint = _QCP-GetJobCheckpointName -Job $Job
+                    incomingFolderPath = $incomingFolder
+                    incomingDocName = $incomingDocName
+                }
+            }
+            $resumeSuccess = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND resumed at workflow writeback (prepend already completed).' -Data @{
+                resumedFromCheckpoint = $true
+                checkpoint = _QCP-GetJobCheckpointName -Job $Job
+                incomingFolderPath = $incomingFolder
+                incomingDocName = $incomingDocName
+            }
+            $resumeParams = @{
+                Job = $Job
+                Config = $Config
+                SuccessResult = $resumeSuccess
+                IncomingFolder = $incomingFolder
+                IncomingDocName = $incomingDocName
+                DatasourceName = $ds
+                ProjectWiseCfg = $pwCfg
+            }
+            if ($clearTag) { $resumeParams['ClearTriggerTag'] = $true }
+            return (_QCP-InvokePrependPostSuccessWriteback @resumeParams)
+        }
+
         $localRoot = if ($qc.ContainsKey('localRoot') -and $qc.localRoot) { [string]$qc.localRoot } else { 'C:\PW_QC_LOCAL' }
         $logDir = if ($qc.ContainsKey('logDir') -and $qc.logDir) { [string]$qc.logDir } else { '' }
 
@@ -1530,12 +1905,49 @@ function Invoke-QCPrependProcessor {
                 return $t
             }) -join ' ')
 
-            $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-            $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
-            $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
-            if ($p.ExitCode -ne 0) {
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_PW_CHILD_START' `
+                -Message 'ProjectWise prepend child process starting.' -Extra @{
+                prependScript = $pwPrependScript
+                incomingDocName = $incomingDocName
+            }
+            $childWaitTimeout = _QCP-GetPrependChildWaitTimeoutSeconds -QcPrependConfig $qc
+            $child = _QCP-StartAndWaitLaunchedProcess -FilePath 'powershell.exe' -ArgumentList $argLine `
+                -StdoutPath $stdoutPath -StderrPath $stderrPath -Job $Job -Config $Config `
+                -TimeoutSeconds $childWaitTimeout
+            if ($child.startFailed) {
+                return New-QCFailureResult -Code 'QC_PREPEND_PW_FAILED' -Message 'Failed to start ProjectWise prepend child process.' -Data @{
+                    prependScript = $pwPrependScript
+                    incomingDocName = $incomingDocName
+                }
+            }
+            _QCP-LogPrependProgress -Job $Job -Config $Config -Code 'QC_PREPEND_PW_CHILD_DONE' `
+                -Message 'ProjectWise prepend child PowerShell process finished.' -Extra @{
+                exitCode = $child.exitCode
+                childPid = $child.processId
+                timedOut = [bool]$child.timedOut
+                elapsedMs = $child.elapsedMs
+                incomingDocName = $incomingDocName
+            }
+            $stdout = [string]$child.stdout
+            $stderr = [string]$child.stderr
+            if ($child.timedOut -or -not $child.exited) {
                 $failData = _QCP-SanitizeProcessorDataForStorage @{
-                    exitCode = [int]$p.ExitCode
+                    exitCode = $child.exitCode
+                    timedOut = $true
+                    childPid = $child.processId
+                    elapsedMs = $child.elapsedMs
+                    stdout = $stdout
+                    stderr = $stderr
+                    args = $args
+                    argLine = $argLine
+                    prependScript = $pwPrependScript
+                }
+                return New-QCFailureResult -Code 'QC_PREPEND_PW_CHILD_TIMEOUT' -Message 'ProjectWise prepend child PowerShell process timed out; prepend was not marked complete.' -Data $failData
+            }
+            if ($null -eq $child.exitCode -or [int]$child.exitCode -ne 0) {
+                $failData = _QCP-SanitizeProcessorDataForStorage @{
+                    exitCode = $child.exitCode
+                    childPid = $child.processId
                     stdout = $stdout
                     stderr = $stderr
                     args = $args
@@ -1545,13 +1957,17 @@ function Invoke-QCPrependProcessor {
                 return New-QCFailureResult -Code 'QC_PREPEND_PW_FAILED' -Message 'ProjectWise prepend failed.' -Data $failData
             }
 
+            _QCP-SetPrependJobCheckpoint -Job $Job -Config $Config -Checkpoint $script:_QCP_CheckpointPrependComplete -CheckpointData @{
+                exitCode = [int]$child.exitCode
+                childPid = $child.processId
+                atUtc = (Get-Date).ToUniversalTime().ToString('o')
+                incomingDocName = $incomingDocName
+            }
             $tagCleared = $null
             $tagClearError = $null
-            $writebackWhileConnected = $null
-            $clearTag = $true
-            if ($pwCfg.ContainsKey('clearTriggerTagOnSuccess')) { try { $clearTag = [bool]$pwCfg.clearTriggerTagOnSuccess } catch { $clearTag = $true } }
             $success = New-QCSuccessResult -Code 'QC_PREPEND_OK' -Message 'QC_PREPEND completed via ProjectWise prepend.' -Data (_QCP-SanitizeProcessorDataForStorage @{
-                exitCode = [int]$p.ExitCode
+                exitCode = [int]$child.exitCode
+                childPid = $child.processId
                 stdout = $stdout
                 stderr = $stderr
                 prependScript = $pwPrependScript
@@ -1560,58 +1976,17 @@ function Invoke-QCPrependProcessor {
                 triggerTagCleared = $tagCleared
                 triggerTagClearError = $tagClearError
             })
-            if ($clearTag) {
-                try {
-                    $repoRoot = _QCP-GetRepoRoot
-                    $pwConnMod = Join-Path $repoRoot 'modules\ProjectWise\PW.Connection.psm1'
-                    if (Test-Path -LiteralPath $pwConnMod) { Import-Module $pwConnMod -Force -ErrorAction SilentlyContinue | Out-Null }
-
-                    $credPath = if ($pwCfg.ContainsKey('credentialPath') -and $pwCfg.credentialPath) { [string]$pwCfg.credentialPath } else { 'C:\PW_QC_LOCAL\pw_cred.txt' }
-                    $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
-                    if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
-                    $connRes2 = Connect-PW -DatasourceName $ds -Credential ([pscredential]$credRes.Data.credential)
-                    if (-not $connRes2.IsSuccess) { throw ($connRes2.Code + ': ' + $connRes2.Message) }
-
-                    $discRes = Ensure-PWDiscoveryCmdlets
-                    if (-not $discRes.IsSuccess -or -not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
-                        throw ('QC_PREPEND_PW_DISCOVERY_INCOMPLETE: ProjectWise document search cmdlet Get-PWDocumentsBySearch is missing after connect/re-import; cannot clear QC_Archivist trigger tag.')
-                    }
-
-                    $doc = Get-PWDocumentsBySearch -FolderPath $incomingFolder -JustThisFolder -DocumentName $incomingDocName -PopulatePath -ErrorAction Stop
-                    if ($doc) {
-                        $currentDesc = $doc.Description
-                        if ($null -eq $currentDesc -and $doc.PSObject.Properties['Description']) { $currentDesc = $doc.Description }
-                        if ($null -eq $currentDesc) { $currentDesc = '' }
-                        $newDesc = ([string]$currentDesc -replace [regex]::Escape('QC_Archivist'), '').Trim()
-                        $doc.Description = $newDesc
-                        Update-PWDocumentProperties $doc -ErrorAction Stop
-                        $tagCleared = $true
-                    } else {
-                        $tagCleared = $false
-                        $tagClearError = 'Could not re-find document to clear trigger tag.'
-                    }
-                    if ($doc) {
-                        $Job['document'] = $doc
-                        $success.Data.triggerTagCleared = $tagCleared
-                        $success.Data.triggerTagClearError = $tagClearError
-                        $writebackWhileConnected = _QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $incomingDocName -OutputPath $null -HistoryPath $null
-                    }
-                } catch {
-                    $tagCleared = $false
-                    $tagClearError = [string]$_.Exception.Message
-                    try {
-                        if ($success.Data) {
-                            $success.Data.triggerTagCleared = $tagCleared
-                            $success.Data.triggerTagClearError = $tagClearError
-                        }
-                    } catch { }
-                } finally {
-                    try { Disconnect-PW | Out-Null } catch { }
-                    if ($Job.ContainsKey('document')) { $Job.Remove('document') }
-                }
+            $writebackParams = @{
+                Job = $Job
+                Config = $Config
+                SuccessResult = $success
+                IncomingFolder = $incomingFolder
+                IncomingDocName = $incomingDocName
+                DatasourceName = $ds
+                ProjectWiseCfg = $pwCfg
             }
-            if ($writebackWhileConnected) { return $writebackWhileConnected }
-            return (_QCP-AppendWorkflowWriteback -Result $success -Job $Job -Config $Config -SourcePath $incomingDocName -OutputPath $null -HistoryPath $null)
+            if ($clearTag) { $writebackParams['ClearTriggerTag'] = $true }
+            return (_QCP-InvokePrependPostSuccessWriteback @writebackParams)
         } finally {
             Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue

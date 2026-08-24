@@ -139,6 +139,26 @@ try {
     $failB = Get-QCJobById -JobId 'job-b' -Config $config
     Assert-Eq ([string]$failB.Data.job['machineName']) ([string]$env:COMPUTERNAME) 'failed recovery keeps machineName'
 
+    # prepend/writeback checkpoint survives stale requeue (must not be inferred from logs/PID)
+    $jobC = New-TestJob -Id 'job-c' -DedupeKey 'dq_c'
+    $enqC = Add-QCQueueJob -Job $jobC -Config $config
+    Assert-True $enqC.IsSuccess 'Enqueue job-c should succeed'
+    $lockC = Lock-QCJob -JobId 'job-c' -Config $config
+    Assert-True $lockC.IsSuccess 'Lock job-c should succeed'
+    $cLoc = Get-QCJobById -JobId 'job-c' -Config $config
+    $jobC2 = $cLoc.Data.job
+    Set-QCJobCheckpoint -JobId 'job-c' -Config $config -Job $jobC2 -Checkpoint 'prepend_complete' -CheckpointData '{"exitCode":0}'
+    $staleUtcC = [DateTime]::UtcNow.AddSeconds(-10).ToString('o')
+    $jobC2.startedAtUtc = $staleUtcC
+    $jobC2.heartbeatUtc = $staleUtcC
+    $runningPathC = Join-Path (Join-Path $root 'running') 'job-c.json'
+    Set-Content -LiteralPath $runningPathC -Value ($jobC2 | ConvertTo-Json -Depth 50) -Encoding utf8
+    $recC = Recover-QCStaleJobs -Config $config
+    Assert-True $recC.IsSuccess 'Checkpointed job recovery should succeed'
+    $pendingC = Get-QCJobById -JobId 'job-c' -Config $config
+    Assert-Eq $pendingC.Data.state 'pending' 'job-c should be pending after recover'
+    Assert-Eq ([string]$pendingC.Data.job.checkpoint) 'prepend_complete' 'stale recovery must preserve prepend_complete checkpoint'
+
     # recent jobs
     $recent = Get-QCRecentJobs -Config $config -Limit 10
     Assert-True ($recent.IsSuccess -and $recent.Data.jobs.Count -ge 2) 'Get-QCRecentJobs should return jobs across states'
