@@ -2060,6 +2060,195 @@ function Get-QCQueueStats {
     }
 }
 
+function Get-QCQueueRetentionSettings {
+    <#
+    .SYNOPSIS
+    Age thresholds for succeeded-job and _logs cleanup during scheduled reconciliation.
+    Missing queue.retention uses enabled=true and 24 hours for both folders.
+    Hours <= 0 disables that folder only.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $enabled = $true
+    $succeededHours = 24
+    $logsHours = 24
+    $sec = $null
+    if ($Config -and $Config.ContainsKey('queue') -and $Config.queue) {
+        $q = $Config.queue
+        if ($q -is [hashtable] -and $q.ContainsKey('retention') -and $q.retention) {
+            $sec = $q.retention
+        } elseif ($q.PSObject -and $q.PSObject.Properties['retention'] -and $q.retention) {
+            $sec = $q.retention
+        }
+    }
+    if ($sec) {
+        if ($sec -is [hashtable]) {
+            if ($sec.ContainsKey('enabled') -and $null -ne $sec['enabled']) {
+                try { $enabled = [bool]$sec['enabled'] } catch { }
+            }
+            if ($sec.ContainsKey('succeededHours') -and $null -ne $sec['succeededHours']) {
+                try { $succeededHours = [int]$sec['succeededHours'] } catch { }
+            }
+            if ($sec.ContainsKey('logsHours') -and $null -ne $sec['logsHours']) {
+                try { $logsHours = [int]$sec['logsHours'] } catch { }
+            }
+        } else {
+            try {
+                if ($null -ne $sec.enabled) { $enabled = [bool]$sec.enabled }
+            } catch { }
+            try {
+                if ($null -ne $sec.succeededHours) { $succeededHours = [int]$sec.succeededHours }
+            } catch { }
+            try {
+                if ($null -ne $sec.logsHours) { $logsHours = [int]$sec.logsHours }
+            } catch { }
+        }
+    }
+    if ($succeededHours -lt 0) { $succeededHours = 0 }
+    if ($logsHours -lt 0) { $logsHours = 0 }
+    return @{
+        enabled = $enabled
+        succeededHours = $succeededHours
+        logsHours = $logsHours
+    }
+}
+
+function _QCQJ-TryDeleteAgedFile {
+    param(
+        [Parameter(Mandatory)][System.IO.FileInfo]$File,
+        [Parameter(Mandatory)][datetime]$CutoffUtc,
+        [switch]$DryRun
+    )
+    if ($File.LastWriteTimeUtc -ge $CutoffUtc) {
+        return @{ action = 'keep'; bytes = [long]0 }
+    }
+    $len = [long]0
+    try { $len = [long]$File.Length } catch { $len = [long]0 }
+    if ($DryRun.IsPresent) {
+        return @{ action = 'delete'; bytes = $len }
+    }
+    try {
+        Remove-Item -LiteralPath $File.FullName -Force -ErrorAction Stop
+        return @{ action = 'delete'; bytes = $len }
+    } catch {
+        return @{ action = 'skip'; bytes = [long]0 }
+    }
+}
+
+function Invoke-QCQueueRetention {
+    <#
+    .SYNOPSIS
+    Delete succeeded job JSON and queue\_logs files older than queue.retention hours.
+    .DESCRIPTION
+    Intended for the start of each scheduled/operator full-scan slot (same once-per-slot
+    gate as status-set history retention). Does not touch pending, running, failed, or _watcher.
+    Prunes _watcher/dedupe-index.json entries whose succeeded job files were removed.
+    Global dryRun or -DryRun counts candidates without deleting.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [switch]$DryRun
+    )
+
+    $settings = Get-QCQueueRetentionSettings -Config $Config
+    $isDry = [bool]$DryRun
+    if (-not $isDry -and $Config.ContainsKey('dryRun')) {
+        try { $isDry = [bool]$Config.dryRun } catch { $isDry = $false }
+    }
+
+    $root = _QCQJ-GetQueueRoot -Config $Config
+    $nowUtc = [DateTime]::UtcNow
+    $summary = @{
+        enabled = [bool]$settings.enabled
+        dryRun = $isDry
+        queueRoot = $root
+        succeededHours = [int]$settings.succeededHours
+        logsHours = [int]$settings.logsHours
+        cutoffUtc = $null
+        succeeded = @{ considered = 0; deleted = 0; skipped = 0; bytesDeleted = [long]0 }
+        logs = @{ considered = 0; deleted = 0; skipped = 0; bytesDeleted = [long]0; logDir = (Join-Path $root '_logs') }
+        dedupeIndexPruned = 0
+    }
+
+    if (-not $settings.enabled) {
+        return New-QCSuccessResult -Code 'QUEUE_RETENTION_SKIPPED' -Message 'Queue retention is disabled.' -Data $summary
+    }
+
+    $succCutoff = $nowUtc.AddHours(-1 * [int]$settings.succeededHours)
+    $logCutoff = $nowUtc.AddHours(-1 * [int]$settings.logsHours)
+    $summary.cutoffUtc = $succCutoff.ToString('o')
+
+    $deletedJobIds = @{}
+
+    if ([int]$settings.succeededHours -gt 0) {
+        $succDir = Join-Path $root 'succeeded'
+        if (Test-Path -LiteralPath $succDir -PathType Container) {
+            $files = @(Get-ChildItem -LiteralPath $succDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+            foreach ($f in $files) {
+                $summary.succeeded.considered++
+                $one = _QCQJ-TryDeleteAgedFile -File $f -CutoffUtc $succCutoff -DryRun:$isDry
+                if ($one.action -eq 'delete') {
+                    $summary.succeeded.deleted++
+                    $summary.succeeded.bytesDeleted += [long]$one.bytes
+                    $jid = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+                    if (-not [string]::IsNullOrWhiteSpace($jid)) { $deletedJobIds[$jid] = $true }
+                } elseif ($one.action -eq 'skip') {
+                    $summary.succeeded.skipped++
+                }
+            }
+        }
+    }
+
+    if ([int]$settings.logsHours -gt 0) {
+        $logDir = [string]$summary.logs.logDir
+        if (Test-Path -LiteralPath $logDir -PathType Container) {
+            $logFiles = @(Get-ChildItem -LiteralPath $logDir -File -Recurse -Force -ErrorAction SilentlyContinue)
+            foreach ($f in $logFiles) {
+                $summary.logs.considered++
+                $one = _QCQJ-TryDeleteAgedFile -File $f -CutoffUtc $logCutoff -DryRun:$isDry
+                if ($one.action -eq 'delete') {
+                    $summary.logs.deleted++
+                    $summary.logs.bytesDeleted += [long]$one.bytes
+                } elseif ($one.action -eq 'skip') {
+                    $summary.logs.skipped++
+                }
+            }
+        }
+    }
+
+    if (-not $isDry -and $deletedJobIds.Count -gt 0) {
+        try {
+            $idxPath = _QCQJ-DedupeIndexPath -Root $root
+            $idx = _QCQJ-ReadDedupeIndex -Path $idxPath
+            if ($idx -and $idx.entries -and $idx.entries.Count -gt 0) {
+                $removeKeys = New-Object 'System.Collections.Generic.List[string]'
+                foreach ($k in @($idx.entries.Keys)) {
+                    $hit = $idx.entries[$k]
+                    $jid = ''
+                    try { $jid = [string]$hit.jobId } catch { $jid = '' }
+                    if (-not [string]::IsNullOrWhiteSpace($jid) -and $deletedJobIds.ContainsKey($jid)) {
+                        [void]$removeKeys.Add([string]$k)
+                    }
+                }
+                if ($removeKeys.Count -gt 0) {
+                    foreach ($k in $removeKeys) { $idx.entries.Remove($k) }
+                    _QCQJ-WriteDedupeIndexAtomic -Path $idxPath -Index $idx
+                    $summary.dedupeIndexPruned = [int]$removeKeys.Count
+                }
+            }
+        } catch { }
+    }
+
+    $msg = if ($isDry) {
+        'Queue retention dry-run completed.'
+    } else {
+        'Queue retention completed.'
+    }
+    return New-QCSuccessResult -Code 'QUEUE_RETENTION_DONE' -Message $msg -Data $summary
+}
+
 function Get-QCRecentJobs {
     <#
     .SYNOPSIS

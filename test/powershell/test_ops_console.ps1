@@ -148,18 +148,64 @@ try {
     $batchTxt = Get-QCOpsStatusSetBatchHeaderText -Schedule $sched
     Assert-True ($batchTxt -like 'Status-set batch:*dirty*') 'header mentions dirty folders'
     Assert-True ($batchTxt -like '*in *m*') 'header shows minutes until next run'
+    Assert-Eq (Get-QCOpsDeferredStatusSetCheckpointText -Schedule $sched) ('wait {0}m' -f [int]$sched.Data.minutesUntil) 'deferred checkpoint shows wait minutes'
+    $dirtyList = Get-QCStatusSetDirtyFolders -Config $batchCfg
+    Assert-True $dirtyList.IsSuccess 'dirty folder list succeeds'
+    Assert-Eq $dirtyList.Data.count 1 'dirty list has one folder'
+
+    $deferredRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'pending' -Config $batchCfg -IncludeDeferredStatusSet -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN'))
+    $defRow = @($deferredRows | Where-Object { $_.deferred })[0]
+    Assert-True ($null -ne $defRow) 'dirty folder appears as deferred pending row'
+    Assert-Eq $defRow.type 'STATUS_SET_GEN' 'deferred row is STATUS_SET_GEN'
+    Assert-Eq $defRow.sourceName 'Documents\Proj\CADD\Sheets' 'deferred row shows folder path'
+    Assert-True ($defRow.checkpoint -like 'wait *') 'deferred checkpoint says wait'
+    Assert-True (-not (Test-QCOpsCanRequeueJob -JobRow $defRow)) 'deferred rows cannot be requeued'
 
     $pendingPath = Join-Path (Join-Path $queueRoot 'pending') 'job-status.json'
+    $ssFolder = 'Documents\Proj\CADD\Sheets'
     @{
         id = 'job-status'
         type = 'STATUS_SET_GEN'
-        sourceName = 'Sheets'
+        sourceName = '_folder_'
+        sourceFolder = $ssFolder
         checkpoint = ''
     } | ConvertTo-Json | Set-Content -LiteralPath $pendingPath -Encoding utf8
-    $pendingRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'pending' -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN'))
+    Assert-Eq (Get-QCOpsJobDisplayName -Type 'STATUS_SET_GEN' -SourceName '_folder_' -SourceFolder $ssFolder) $ssFolder 'status-set display uses folder path'
+    Assert-Eq (Get-QCOpsJobDisplayName -Type 'QC_PREPEND' -SourceName 'ea003-rev.pdf' -SourceFolder $ssFolder) 'ea003-rev.pdf' 'prepend keeps file name'
+    $pendingRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'pending' -Config $batchCfg -IncludeDeferredStatusSet -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN'))
     Assert-True ($pendingRows.Count -ge 1) 'pending row exists'
     $ssRow = @($pendingRows | Where-Object { $_.jobId -eq 'job-status' })[0]
     Assert-Eq $ssRow.priority 2 'pending STATUS_SET_GEN row has prefer rank 2'
+    Assert-Eq $ssRow.sourceName $ssFolder 'queue row shows folder path instead of _folder_'
+    Assert-Eq @($pendingRows | Where-Object { $_.deferred }).Count 0 'real pending status-set hides deferred duplicate'
+
+    $nowHost = [datetime]::UtcNow
+    $thPath = Join-Path $queueRoot '_remote_worker.AZTEC002799.throttle.json'
+    @{
+        enabled = $true
+        pauseNewClaims = $false
+        recommendedSlots = 5
+        maxParallel = 5
+        reason = 'normal'
+        cpuPercent = 4.2
+        memoryPercent = 31.4
+        sampledAtUtc = $nowHost.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        host = 'AZTEC002799'
+    } | ConvertTo-Json | Set-Content -LiteralPath $thPath -Encoding utf8
+    $hostRows = @(Get-QCOpsHostStatusRows -QueueRoot $queueRoot -LocalHost 'PXBENTLEY01' -ModellingHost 'AZTEC002799' `
+        -LocalRunning 0 -RemoteRunning 0 -Task @{ enabled = $true; state = 'Running' } -Lock @{ exists = $true; alive = $true } -NowUtc $nowHost)
+    Assert-Eq $hostRows.Count 2 'two host status rows'
+    Assert-Eq $hostRows[0].health 'healthy' 'local running pipeline is healthy'
+    Assert-True ($hostRows[0].text -eq 'PXBENTLEY01: 0 running') 'local line is host + running count'
+    Assert-Eq $hostRows[1].health 'healthy' 'fresh full-slot remote is healthy'
+    Assert-True ($hostRows[1].text -like '*throttle=RUN*') 'remote line shows RUN'
+    Assert-True ($hostRows[1].text -like '*slots=5/5*') 'remote line shows slots'
+    Assert-True ($hostRows[1].text -like '*CPU=4%*') 'remote line shows CPU'
+    Assert-True ($hostRows[1].text -like '*MEM=31%*') 'remote line shows MEM'
+    Assert-Eq (Get-QCOpsHostHealthColorArgb -Health 'healthy').G 135 'healthy is green'
+    Assert-Eq (Get-QCOpsHostHealthColorArgb -Health 'throttled').R 201 'throttled is yellow'
+    Assert-Eq (Get-QCOpsHostHealthColorArgb -Health 'stale').R 220 'stale is red'
+    Assert-Eq (Get-QCOpsHostHealthColorArgb -Health 'disabled').R 108 'disabled is gray'
 
     $stBatch = Get-QCOpsPipelineStatus -Config $batchCfg -TaskName 'QC-OpsConsole-Test-DoesNotExist'
     Assert-True ($stBatch.Data.statusSetBatchText -like 'Status-set batch:*') 'pipeline status includes status-set batch text'
@@ -172,8 +218,12 @@ try {
     Assert-True ($guiText -notmatch "_New-Tab 'Hosts'") 'Hosts tab removed'
     Assert-True ($guiText -notmatch 'QC_COMMENT_STATUS_SYNC') 'Runs tab does not enqueue comment sync'
     Assert-True ($guiText -match 'IncludePriority') 'pending queue grid includes priority'
+    Assert-True ($guiText -match 'IncludeDeferredStatusSet') 'pending grid includes deferred dirty-folder status-set rows'
+    Assert-True ($guiText -match "\[W\]") 'deferred pending jobs use \[W\] wait marker'
     Assert-True ($guiText -match 'statusSetBatchText') 'header binds status-set batch schedule'
-    Assert-True ($guiText -match 'QueueScoreLabels') 'header queue counts use stretching scoreboard'
+    Assert-True ($guiText -match 'HostStatusLabels') 'header binds color-coded host status labels'
+    Assert-True ($guiText -notmatch 'lblRemote') 'header no longer uses a single remote label'
+    Assert-True ($guiText -match 'Get-QCOpsHostHealthColorArgb') 'host lines use health colors'
     Assert-True ($guiText -notmatch 'gridQueueCounts') 'header no longer uses a fixed DataGridView for counts'
     Assert-True ($guiText -match "Source folder") 'SQL filter is source folder'
     Assert-True ($guiText -match 'cmbSqlSourceFolder') 'SQL folder combo exists'

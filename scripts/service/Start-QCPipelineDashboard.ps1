@@ -1260,7 +1260,7 @@ function _Start-Child([string]$ScriptPath, [string[]]$ScriptArgs, [switch]$Mta) 
 function _Stop-Child([hashtable]$Child) {
     # Intentionally do NOT delete the log files: they're the only forensic trail
     # when a worker is killed by AV and never gets to write a failure result.
-    # A separate housekeeping step can prune _logs\ on age if needed.
+    # Aged _logs files are pruned during scheduled reconciliation (queue.retention.logsHours).
 }
 
 function _Invoke-WatcherStallRecovery {

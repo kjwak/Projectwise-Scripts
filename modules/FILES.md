@@ -67,7 +67,7 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | `QC.PdfExport.psm1` | `Export-QCPdfToStaging` — ProjectWise PDF download to staging. |
 | `QC.ProcessType.psm1` | `QC_Process_Type` normalization, lane PDF resolution, and stamp configuration. |
 | `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend, status-set, comment sync, reporting, and related job types. |
-| `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, and recent-job reporting. |
+| `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, recent-job reporting, and recon-slot succeeded/`_logs` retention. |
 | `QC.Rendition.psm1` | ProjectWise PDF rendition request helpers. |
 | `QC.Reporting.psm1` | Read-only QC reporting aggregation and JSON snapshot generation for `QC_REPORTING_SCAN` jobs. |
 | `QC.ReviewStamp.psm1` | QC review stamp processor integration. |

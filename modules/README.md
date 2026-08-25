@@ -77,6 +77,7 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
   - enqueue/selection: `Add-QCQueueJob`, `Get-NextQCJob`
   - lifecycle: `Lock-QCJob`, `Unlock-QCJob`, `Move-QCJob`, `Get-QCJobById`, `Update-QCJob`
   - observability: `Get-QCQueueStats`, `Get-QCRecentJobs`
+  - retention: `Invoke-QCQueueRetention` (aged `succeeded/` + `_logs` during recon slots)
   - recovery: `Recover-QCStaleJobs` (requeue/fail stale running jobs, clean orphan locks)
 - **Robustness**: atomic writes, PID-validated lock stealing, retryable moves (AV handle contention).
 

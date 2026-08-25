@@ -12,7 +12,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
   - Production dashboard view by default (`-DashboardView Production`) that shows only critical health, queue, watcher, worker, and warning/error information.
   - Detailed operations view remains available with `-DashboardView Detailed` for recent job tables, scan paths, and processor activity.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
-  - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
+  - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes. Files older than `queue.retention.logsHours` (default 24) are deleted at the start of each reconciliation slot.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.
 - **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not (Session 0, no TUI). On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`. It also grants the run-as account Enable/Disable on the task so the logon ops GUI can toggle Pipeline on/off without elevation. For a task that already exists, re-run elevated with `-GrantOperatorAccess`.
 - **Logon console:** `scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1` (Startup shortcut → `Start-QCOpsConsole.ps1` WinForms; `-NoGui` → `Watch-QCPipelineDashboardConsole.ps1` text tail). Does not start a second dashboard. Do not register this on the modelling PC.

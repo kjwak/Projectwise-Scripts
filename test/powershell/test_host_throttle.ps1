@@ -57,6 +57,7 @@ $disabledEval = ConvertTo-QCHostThrottleEvaluation -Settings $disabledCfg.thrott
 Assert-False $disabledEval.pauseNewClaims 'disabled config never pauses'
 Assert-Eq $disabledEval.reason 'disabled' 'disabled reason'
 Assert-Eq ([int]$disabledEval.recommendedSlots) 2 'disabled recommendedSlots = maxParallel'
+Assert-Eq ([int]$disabledEval.maxParallel) 2 'disabled eval keeps maxParallel'
 
 $zeroCpu = ConvertTo-QCHostThrottleEvaluation -Settings @{
     enabled = $true; cpuPercent = 0; memoryPercent = 0; processNamePatterns = @(); busyRecommendedSlots = 0
@@ -238,12 +239,44 @@ try {
         matchedProcesses = @('OpenRoadsDesigner')
         cpuPercent = 42.1
         memoryPercent = 68.7
+        maxParallel = 5
     }
     $readBack = Read-QCHostThrottleStatus -Path $statusPath
     Assert-True ([bool]$readBack.pauseNewClaims) 'round-trip pauseNewClaims'
     Assert-Eq ([string]$readBack.reason) 'matched_process' 'round-trip reason'
     Assert-Eq ([int]$readBack.recommendedSlots) 0 'round-trip slots'
+    Assert-Eq ([int]$readBack.maxParallel) 5 'round-trip maxParallel'
     Assert-True ([string]$readBack.sampledAtUtc.EndsWith('Z')) 'sampledAtUtc is UTC Z'
+
+    Assert-Eq (Get-QCHostThrottleHealth -Status $readBack -NowUtc $now) 'throttled' 'paused fresh status is throttled'
+    Assert-Eq (Get-QCHostThrottleHealth -Status $null) 'stale' 'missing status is stale'
+    $disabledHealth = @{
+        enabled = $false
+        pauseNewClaims = $false
+        recommendedSlots = 5
+        maxParallel = 5
+        reason = 'disabled'
+        sampledAtUtc = $now.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    }
+    Assert-Eq (Get-QCHostThrottleHealth -Status $disabledHealth -NowUtc $now) 'disabled' 'disabled reason is gray'
+    $healthyHealth = @{
+        enabled = $true
+        pauseNewClaims = $false
+        recommendedSlots = 5
+        maxParallel = 5
+        reason = 'normal'
+        sampledAtUtc = $now.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    }
+    Assert-Eq (Get-QCHostThrottleHealth -Status $healthyHealth -NowUtc $now) 'healthy' 'full slots is healthy'
+    $reduceHealth = @{
+        enabled = $true
+        pauseNewClaims = $false
+        recommendedSlots = 1
+        maxParallel = 5
+        reason = 'cpu_threshold'
+        sampledAtUtc = $now.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    }
+    Assert-Eq (Get-QCHostThrottleHealth -Status $reduceHealth -NowUtc $now) 'throttled' 'reduced slots is throttled'
 
     $pausedDecision = Get-QCHostThrottleClaimDecision -Status $readBack -Settings $enabledSettings -MaxParallel 1 -NowUtc $now
     Assert-True $pausedDecision.pauseNewClaims 'valid fresh paused status pauses claims'
@@ -276,6 +309,7 @@ try {
         sampledAtUtc = $now.AddSeconds(-90).ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     }
     Assert-False (Test-QCHostThrottleStatusFresh -Status $stale -SampleSeconds 10 -NowUtc $now) '90s old status is stale at sampleSeconds=10'
+    Assert-Eq (Get-QCHostThrottleHealth -Status $stale -NowUtc $now) 'stale' 'stale heartbeat is red'
     Assert-False ((Get-QCHostThrottleClaimDecision -Status $stale -Settings $enabledSettings -MaxParallel 1 -NowUtc $now).pauseNewClaims) 'stale status fails open'
     Assert-True (Test-QCHostThrottleStatusFresh -Status $normalStatus -SampleSeconds 10 -NowUtc $now) 'fresh status within 30s'
 

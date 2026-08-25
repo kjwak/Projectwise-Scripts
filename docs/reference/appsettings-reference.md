@@ -132,12 +132,25 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 | Key | Description |
 |-----|-------------|
-| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `locks`, `_watcher`. |
+| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `locks`, `_logs`, `_watcher`. |
 | `recover.maxAttempts` | Failed jobs retried up to this count. |
 | `recover.staleSeconds` | Requeue `running` jobs whose heartbeat is older than this (default 900). Cross-host jobs use this instead of local PID. |
 | `recover.crossHostLockStaleSeconds` | Age after which another host's abandoned `_queue_write.lock` or pending per-job lock may be reclaimed (default 90). Never used to steal a **running** other-host job lock. |
 | `lockAcquireTimeoutMs` | Wait for per-job lock file. |
 | `selection.preferJobTypes` | Worker picks preferred types first when multiple pending. |
+| `retention` | Once per scheduled/operator full-scan slot, delete aged `succeeded/` jobs and `_logs` files. See below. |
+
+### queue.retention
+
+Runs at the start of each reconciliation slot (`06:00` / `18:00` and operator full scans), including preempted scans. Does not touch `pending/`, `running/`, `failed/`, or `_watcher`. Dedupe-index entries for deleted succeeded jobs are pruned so `Test-QCDuplicateJob` does not keep blocking after the files are gone.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Skip cleanup when false. |
+| `succeededHours` | `24` | Delete `succeeded/*.json` whose last write is older than this. `0` disables succeeded cleanup. |
+| `logsHours` | `24` | Delete files under `queue/_logs` older than this (recursive). `0` disables log cleanup. Active logs are kept because their last-write time is recent. |
+
+Global `dryRun` skips deletes (counts only). `failed/` is left for diagnosis.
 
 ---
 

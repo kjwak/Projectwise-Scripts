@@ -117,6 +117,7 @@ function _Ops-RefreshStatus {
         $d.watermarkUtc = $prev.watermarkUtc
         $d.watermarkAgeSeconds = $prev.watermarkAgeSeconds
         if (-not $d.throttleSummary) { $d.throttleSummary = $prev.throttleSummary }
+        if (-not $d.hostRows -or @($d.hostRows).Count -eq 0) { $d.hostRows = $prev.hostRows }
     }
     $script:Status = $st
     return $script:Status
@@ -197,16 +198,30 @@ $lblLine2.Size = New-Object System.Drawing.Size(400, 18)
 $lblLine2.Anchor = 'Top,Left,Right'
 $leftHead.Controls.Add($lblLine2)
 
-$lblRemote = New-Object System.Windows.Forms.Label
-$lblRemote.Location = New-Object System.Drawing.Point(4, 52)
-$lblRemote.Size = New-Object System.Drawing.Size(400, 40)
-$lblRemote.Anchor = 'Top,Left,Right'
-$lblRemote.Text = 'Remote: ...'
-$leftHead.Controls.Add($lblRemote)
+$pnlHosts = New-Object System.Windows.Forms.Panel
+$pnlHosts.Location = New-Object System.Drawing.Point(4, 50)
+$pnlHosts.Size = New-Object System.Drawing.Size(400, 40)
+$pnlHosts.Anchor = 'Top,Left,Right'
+$leftHead.Controls.Add($pnlHosts)
+
+$lblHostLocal = New-Object System.Windows.Forms.Label
+$lblHostLocal.Location = New-Object System.Drawing.Point(0, 0)
+$lblHostLocal.Size = New-Object System.Drawing.Size(400, 18)
+$lblHostLocal.Anchor = 'Top,Left,Right'
+$lblHostLocal.Text = '...'
+$pnlHosts.Controls.Add($lblHostLocal)
+
+$lblHostRemote = New-Object System.Windows.Forms.Label
+$lblHostRemote.Location = New-Object System.Drawing.Point(0, 18)
+$lblHostRemote.Size = New-Object System.Drawing.Size(400, 20)
+$lblHostRemote.Anchor = 'Top,Left,Right'
+$lblHostRemote.Text = '...'
+$pnlHosts.Controls.Add($lblHostRemote)
+$script:HostStatusLabels = @($lblHostLocal, $lblHostRemote)
 
 $lblLine3 = New-Object System.Windows.Forms.Label
-$lblLine3.Location = New-Object System.Drawing.Point(4, 96)
-$lblLine3.Size = New-Object System.Drawing.Size(400, 44)
+$lblLine3.Location = New-Object System.Drawing.Point(4, 92)
+$lblLine3.Size = New-Object System.Drawing.Size(400, 48)
 $lblLine3.Anchor = 'Top,Left,Right'
 $lblLine3.Text = ''
 $leftHead.Controls.Add($lblLine3)
@@ -253,7 +268,9 @@ $leftHead.Add_Resize({
     $w = [Math]::Max(180, $leftHead.ClientSize.Width - 12)
     $lblState.Width = [Math]::Max(120, $w - 156)
     $lblLine2.Width = $w
-    $lblRemote.Width = $w
+    $pnlHosts.Width = $w
+    $lblHostLocal.Width = $w
+    $lblHostRemote.Width = $w
     $lblLine3.Width = $w
 })
 
@@ -410,12 +427,20 @@ function _New-JobGrid {
     $grid.Add_CellFormatting({
         $e = $args[1]
         if (-not $e -or $e.ColumnIndex -lt 0 -or $e.RowIndex -lt 0) { return }
+        $item = $this.Rows[$e.RowIndex].DataBoundItem
+        $deferred = $false
+        $locked = $false
+        try { $deferred = [bool]$item.deferred } catch { }
+        try { $locked = [bool]$item.locked } catch { }
+        if ($deferred) {
+            $e.CellStyle.ForeColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+        }
         $col = $this.Columns[$e.ColumnIndex]
         if ($col.DataPropertyName -ne 'jobId') { return }
-        $item = $this.Rows[$e.RowIndex].DataBoundItem
-        $locked = $false
-        try { $locked = [bool]$item.locked } catch { }
-        if ($locked) {
+        if ($deferred) {
+            $e.Value = ('[W] {0}' -f $item.jobId)
+            $e.FormattingApplied = $true
+        } elseif ($locked) {
             $e.Value = ('[L] {0}' -f $item.jobId)
             $e.FormattingApplied = $true
         }
@@ -759,14 +784,21 @@ function _Ops-ApplyHeader {
         }
     }
 
-    $remoteBits = New-Object System.Collections.Generic.List[string]
-    [void]$remoteBits.Add(('This host {0}: {1} running' -f $d.hostName, $d.localRunning))
-    [void]$remoteBits.Add(('{0}: {1} running' -f $d.modellingHost, $d.remoteRunning))
-    $names = @()
-    try { $names = @($d.remoteJobNames) } catch { }
-    if ($names.Count -gt 0) { [void]$remoteBits.Add(('jobs: ' + ($names -join ', '))) }
-    if ($d.throttleSummary) { [void]$remoteBits.Add(('throttle: ' + [string]$d.throttleSummary)) }
-    $lblRemote.Text = ($remoteBits -join '   |   ')
+    $hostRows = @()
+    try { $hostRows = @($d.hostRows) } catch { $hostRows = @() }
+    $hostLabels = @($script:HostStatusLabels)
+    for ($i = 0; $i -lt $hostLabels.Count; $i++) {
+        $lbl = $hostLabels[$i]
+        $row = $null
+        if ($i -lt $hostRows.Count) { $row = $hostRows[$i] }
+        if ($row) {
+            $lbl.Text = [string]$row.text
+            $argb = Get-QCOpsHostHealthColorArgb -Health ([string]$row.health)
+            $lbl.ForeColor = [System.Drawing.Color]::FromArgb([int]$argb.R, [int]$argb.G, [int]$argb.B)
+        } else {
+            $lbl.Text = ''
+        }
+    }
 
     $tick = ''
     if ($d.lastTick -and $d.lastTick.ts) { $tick = [string]$d.lastTick.ts }
@@ -862,6 +894,13 @@ function _Ops-RefreshQueue {
             $stamp += (Get-Item -LiteralPath $dir).LastWriteTimeUtc.Ticks.ToString() + '|'
         }
     }
+    try {
+        $dirtyPath = Get-QCStatusSetDirtyFolderStorePath -Config $script:Cfg
+        if ($dirtyPath -and (Test-Path -LiteralPath $dirtyPath)) {
+            $stamp += (Get-Item -LiteralPath $dirtyPath).LastWriteTimeUtc.Ticks.ToString() + '|'
+        }
+    } catch { }
+    $stamp += [datetime]::UtcNow.ToString('yyyyMMddHHmm')
     if ($stamp -eq $script:QueueStamp -and $stamp) { return }
     $script:QueueStamp = $stamp
     $limits = @{ pending = 150; running = 50; failed = 100; succeeded = 100 }
@@ -870,9 +909,9 @@ function _Ops-RefreshQueue {
         $lim = [int]$limits[$state]
         $rowLimit = $lim
         if ($state -eq 'pending') { $rowLimit = 0 }
-        $rows = @(Get-QCOpsRunningJobRows -QueueRoot $root -State $state -Limit $rowLimit -PreferJobTypes $prefer)
+        $rows = @(Get-QCOpsRunningJobRows -QueueRoot $root -State $state -Limit $rowLimit -PreferJobTypes $prefer -Config $script:Cfg -IncludeDeferredStatusSet:($state -eq 'pending'))
         if ($state -eq 'pending') {
-            $rows = @($rows | Sort-Object @{ Expression = { [int]$_.priority } }, @{ Expression = { $_.lastWriteTimeUtc } })
+            $rows = @($rows | Sort-Object @{ Expression = { [bool]$_.deferred } }, @{ Expression = { [int]$_.priority } }, @{ Expression = { $_.lastWriteTimeUtc } })
         } else {
             $rows = @($rows | Sort-Object lastWriteTimeUtc -Descending)
         }

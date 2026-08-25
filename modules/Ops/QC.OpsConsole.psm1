@@ -8,6 +8,7 @@ $modulesRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $modulesRoot 'Queue\QC.Queue.Json.psm1') -Force
+Import-Module (Join-Path $modulesRoot 'Queue\QC.HostThrottle.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Database\Core.Database.psm1') -Force -WarningAction SilentlyContinue
@@ -212,6 +213,178 @@ function Get-QCOpsDryRunHeaderText {
     return 'live'
 }
 
+function Get-QCOpsJobDisplayName {
+    [CmdletBinding()]
+    param(
+        [string]$Type = '',
+        [string]$SourceName = '',
+        [string]$SourceFolder = ''
+    )
+    $src = [string]$SourceName
+    $folder = [string]$SourceFolder
+    $isFolderJob = ([string]$Type -eq 'STATUS_SET_GEN') -or ($src -eq '_folder_')
+    if ($isFolderJob -and -not [string]::IsNullOrWhiteSpace($folder)) { return $folder }
+    if (([string]::IsNullOrWhiteSpace($src) -or $src -eq '_folder_') -and -not [string]::IsNullOrWhiteSpace($folder)) {
+        return $folder
+    }
+    return $src
+}
+
+function Get-QCOpsHostHealthColorArgb {
+    [CmdletBinding()]
+    param([string]$Health = '')
+    switch ([string]$Health) {
+        'healthy' { return @{ R = 25; G = 135; B = 84 } }
+        'throttled' { return @{ R = 201; G = 154; B = 22 } }
+        'stale' { return @{ R = 220; G = 53; B = 69 } }
+        default { return @{ R = 108; G = 117; B = 125 } }
+    }
+}
+
+function Get-QCOpsLocalHostHealth {
+    [CmdletBinding()]
+    param(
+        $Task,
+        $Lock
+    )
+    $alive = $false
+    $exists = $false
+    try { if ($Lock) { $alive = [bool]$Lock.alive; $exists = [bool]$Lock.exists } } catch { }
+    if ($exists -and -not $alive) { return 'stale' }
+    $state = ''
+    $enabled = $true
+    try { if ($Task) { $state = [string]$Task.state; $enabled = [bool]$Task.enabled } } catch { }
+    if ($alive -or $state -eq 'Running') { return 'healthy' }
+    if ((-not $enabled) -or $state -eq 'Disabled' -or $state -eq 'not registered') { return 'disabled' }
+    return 'disabled'
+}
+
+function Get-QCOpsThrottleModeLabel {
+    [CmdletBinding()]
+    param(
+        [string]$Health = '',
+        [hashtable]$Status
+    )
+    switch ([string]$Health) {
+        'disabled' { return 'OFF' }
+        'stale' {
+            if ($Status) { return 'STALE' }
+            return 'NONE'
+        }
+        'throttled' {
+            $reason = ''
+            try { if ($Status) { $reason = [string]$Status.reason } } catch { }
+            if ($reason -eq 'sample_error') { return 'ERROR' }
+            $pause = $false
+            try { if ($Status) { $pause = [bool]$Status.pauseNewClaims } } catch { }
+            if ($pause) { return 'PAUSE' }
+            return 'REDUCE'
+        }
+        default { return 'RUN' }
+    }
+}
+
+function Get-QCOpsHostStatusLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [int]$Running = 0,
+        [string]$Health = 'disabled',
+        [hashtable]$Status,
+        [switch]$IncludeThrottle
+    )
+    $bits = New-Object System.Collections.Generic.List[string]
+    [void]$bits.Add(('{0}: {1} running' -f $HostName, [int]$Running))
+    if ($IncludeThrottle.IsPresent) {
+        [void]$bits.Add(('throttle={0}' -f (Get-QCOpsThrottleModeLabel -Health $Health -Status $Status)))
+        $slots = $null
+        $max = $null
+        if ($Status) {
+            if ($Status.ContainsKey('recommendedSlots') -and $null -ne $Status.recommendedSlots) {
+                try { $slots = [int]$Status.recommendedSlots } catch { $slots = $null }
+            }
+            if ($Status.ContainsKey('maxParallel') -and $null -ne $Status.maxParallel) {
+                try { $max = [int]$Status.maxParallel } catch { $max = $null }
+            }
+        }
+        if ($null -ne $slots) {
+            if ($null -ne $max -and $max -gt 0) {
+                [void]$bits.Add(('slots={0}/{1}' -f $slots, $max))
+            } else {
+                [void]$bits.Add(('slots={0}' -f $slots))
+            }
+        }
+        $cpu = $null
+        $mem = $null
+        if ($Status) {
+            if ($Status.ContainsKey('cpuPercent') -and $null -ne $Status.cpuPercent) {
+                try { $cpu = [int][math]::Round([double]$Status.cpuPercent) } catch { $cpu = $null }
+            }
+            if ($Status.ContainsKey('memoryPercent') -and $null -ne $Status.memoryPercent) {
+                try { $mem = [int][math]::Round([double]$Status.memoryPercent) } catch { $mem = $null }
+            }
+        }
+        if ($null -ne $cpu) { [void]$bits.Add(('CPU={0}%' -f $cpu)) }
+        if ($null -ne $mem) { [void]$bits.Add(('MEM={0}%' -f $mem)) }
+    }
+    return ($bits -join ' | ')
+}
+
+function Get-QCOpsHostStatusRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [string]$LocalHost = '',
+        [string]$ModellingHost = '',
+        [int]$LocalRunning = 0,
+        [int]$RemoteRunning = 0,
+        $Task,
+        $Lock,
+        [datetime]$NowUtc = [datetime]::MinValue
+    )
+    if ([string]::IsNullOrWhiteSpace($LocalHost)) { $LocalHost = [string]$env:COMPUTERNAME }
+    if ([string]::IsNullOrWhiteSpace($ModellingHost)) { $ModellingHost = $script:QCOpsModellingHost }
+    $localHealth = Get-QCOpsLocalHostHealth -Task $Task -Lock $Lock
+    $localText = Get-QCOpsHostStatusLine -HostName $LocalHost -Running $LocalRunning -Health $localHealth
+    $rows = New-Object System.Collections.Generic.List[object]
+    [void]$rows.Add([pscustomobject]@{
+        hostName = $LocalHost
+        role = 'local'
+        running = [int]$LocalRunning
+        health = $localHealth
+        text = $localText
+    })
+
+    $status = $null
+    try {
+        if (Get-Command Read-QCHostThrottleStatus -ErrorAction SilentlyContinue) {
+            $thPath = Get-QCHostThrottleStatusPath -QueueRoot $QueueRoot -HostName $ModellingHost
+            $status = Read-QCHostThrottleStatus -Path $thPath
+        }
+    } catch { $status = $null }
+    $sampleSeconds = 10
+    if ($status -and $status.ContainsKey('sampleSeconds') -and $null -ne $status.sampleSeconds) {
+        try { $sampleSeconds = [int]$status.sampleSeconds } catch { $sampleSeconds = 10 }
+    }
+    $remoteHealth = 'stale'
+    try {
+        if (Get-Command Get-QCHostThrottleHealth -ErrorAction SilentlyContinue) {
+            $remoteHealth = Get-QCHostThrottleHealth -Status $status -SampleSeconds $sampleSeconds -NowUtc $NowUtc
+        } elseif (-not $status) {
+            $remoteHealth = 'stale'
+        }
+    } catch { $remoteHealth = 'stale' }
+    $remoteText = Get-QCOpsHostStatusLine -HostName $ModellingHost -Running $RemoteRunning -Health $remoteHealth -Status $status -IncludeThrottle
+    [void]$rows.Add([pscustomobject]@{
+        hostName = $ModellingHost
+        role = 'remote'
+        running = [int]$RemoteRunning
+        health = $remoteHealth
+        text = $remoteText
+    })
+    return @($rows.ToArray())
+}
+
 function Get-QCOpsRecentLogEvents {
     [CmdletBinding()]
     param(
@@ -368,63 +541,185 @@ function Get-QCOpsStatusSetBatchHeaderText {
     return ('Status-set batch: {0} dirty folder(s); every {1}m' -f $dirty, $interval)
 }
 
+function Get-QCOpsFolderKey {
+    [CmdletBinding()]
+    param([string]$FolderPath = '')
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) { return '' }
+    if (Get-Command Normalize-QCDocumentsFolderPath -ErrorAction SilentlyContinue) {
+        try {
+            $r = Normalize-QCDocumentsFolderPath -Path $FolderPath
+            if ($r -and $r.IsSuccess -and $r.Data -and $r.Data.path) { return [string]$r.Data.path }
+        } catch { }
+    }
+    return ([string]$FolderPath).Trim().TrimEnd('\', '/').Replace('/', '\').ToLowerInvariant()
+}
+
+function Get-QCOpsDeferredStatusSetCheckpointText {
+    [CmdletBinding()]
+    param($Schedule)
+    $d = $null
+    try {
+        if ($Schedule -and $Schedule.PSObject.Properties['IsSuccess'] -and $Schedule.IsSuccess) { $d = $Schedule.Data }
+        elseif ($Schedule -and $Schedule.PSObject.Properties['enabled']) { $d = $Schedule }
+        elseif ($Schedule -and $Schedule.Data) { $d = $Schedule.Data }
+    } catch { $d = $null }
+    if (-not $d) { return 'wait (batch)' }
+    $due = $false
+    try { $due = [bool]$d.due } catch { }
+    if ($due) { return 'wait (due)' }
+    $inMin = $null
+    try { if ($null -ne $d.minutesUntil) { $inMin = [int]$d.minutesUntil } } catch { }
+    if ($null -ne $inMin) { return ('wait {0}m' -f $inMin) }
+    return 'wait (batch)'
+}
+
+function Get-QCOpsDeferredStatusSetRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$QueueRoot = '',
+        [string[]]$PreferJobTypes = @(),
+        [string[]]$ExcludeFolderKeys = @()
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+    if (-not (Get-Command Get-QCStatusSetDirtyFolders -ErrorAction SilentlyContinue)) { return @() }
+    $dirtyRes = $null
+    try { $dirtyRes = Get-QCStatusSetDirtyFolders -Config $Config } catch { return @() }
+    if (-not $dirtyRes -or -not $dirtyRes.IsSuccess) { return @() }
+    if (-not [bool]$dirtyRes.Data.enabled) { return @() }
+    $sched = $null
+    try { $sched = Get-QCStatusSetBatchSchedule -Config $Config } catch { $sched = $null }
+    $ckpt = Get-QCOpsDeferredStatusSetCheckpointText -Schedule $sched
+    $pri = Get-QCOpsPendingJobPriority -JobType 'STATUS_SET_GEN' -PreferJobTypes $PreferJobTypes
+    $exclude = @{}
+    foreach ($k in @($ExcludeFolderKeys)) {
+        $nk = Get-QCOpsFolderKey -FolderPath $k
+        if ($nk) { $exclude[$nk] = $true }
+    }
+    foreach ($f in @($dirtyRes.Data.folders)) {
+        $folder = [string]$f.folderPath
+        $key = [string]$f.folderKey
+        if ([string]::IsNullOrWhiteSpace($key)) { $key = Get-QCOpsFolderKey -FolderPath $folder }
+        if ($key -and $exclude.ContainsKey($key)) { continue }
+        $when = $null
+        foreach ($raw in @($f.lastSeenUtc, $f.firstSeenUtc)) {
+            if ([string]::IsNullOrWhiteSpace([string]$raw)) { continue }
+            try {
+                $when = [datetimeoffset]::Parse([string]$raw, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+                break
+            } catch {
+                try { $when = [datetime]::Parse([string]$raw, $null, [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime(); break } catch { }
+            }
+        }
+        if (-not $when) { $when = [datetime]::UtcNow }
+        $leaf = [System.IO.Path]::GetFileName($folder.Trim().TrimEnd('\', '/'))
+        if ([string]::IsNullOrWhiteSpace($leaf)) { $leaf = 'status-set' }
+        [void]$out.Add([pscustomobject]@{
+            state = 'pending'
+            jobId = $leaf
+            type = 'STATUS_SET_GEN'
+            priority = $pri
+            sourceName = $folder
+            sourceFolder = $folder
+            machineName = ''
+            checkpoint = $ckpt
+            locked = $false
+            deferred = $true
+            path = ''
+            lastWriteTimeUtc = $when
+            lastWriteTime = ($when.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
+        })
+    }
+    return @($out.ToArray())
+}
+
 function Get-QCOpsRunningJobRows {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$QueueRoot,
         [string]$State = 'running',
         [int]$Limit = 0,
-        [string[]]$PreferJobTypes = @()
+        [string[]]$PreferJobTypes = @(),
+        [hashtable]$Config,
+        [switch]$IncludeDeferredStatusSet
     )
     $dir = Join-Path $QueueRoot $State
     $out = New-Object System.Collections.Generic.List[object]
-    if (-not (Test-Path -LiteralPath $dir)) { return @() }
-    $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-    if ($Limit -gt 0 -and $State -ne 'pending' -and $files.Count -gt $Limit) {
-        $files = @($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First $Limit)
+    if (Test-Path -LiteralPath $dir) {
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+        if ($Limit -gt 0 -and $State -ne 'pending' -and $files.Count -gt $Limit) {
+            $files = @($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First $Limit)
+        }
+        foreach ($f in $files) {
+            $j = $null
+            try { $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $j = $null }
+            $id = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+            $type = ''; $src = ''; $machine = ''; $ckpt = ''; $folder = ''
+            if ($j) {
+                try { if ($j.id) { $id = [string]$j.id } } catch { }
+                try { if ($j.type) { $type = [string]$j.type } } catch { }
+                try { if ($j.sourceFolder) { $folder = [string]$j.sourceFolder } } catch { }
+                try {
+                    $rawName = ''
+                    if ($j.sourceName) { $rawName = [string]$j.sourceName }
+                    elseif ($j.sourcePath) { $rawName = [System.IO.Path]::GetFileName([string]$j.sourcePath) }
+                    $src = Get-QCOpsJobDisplayName -Type $type -SourceName $rawName -SourceFolder $folder
+                } catch { }
+                try { if ($j.machineName) { $machine = [string]$j.machineName } } catch { }
+                try {
+                    if ($j.checkpoint) { $ckpt = [string]$j.checkpoint }
+                    elseif ($j.PSObject.Properties['checkpoint']) { $ckpt = [string]$j.checkpoint }
+                } catch { }
+            }
+            $pri = 0
+            if ($State -eq 'pending') {
+                $pri = Get-QCOpsPendingJobPriority -JobType $type -PreferJobTypes $PreferJobTypes
+            }
+            $locked = $false
+            try {
+                $lockPath = Join-Path (Join-Path $QueueRoot 'locks') ($id + '.lock')
+                $locked = Test-Path -LiteralPath $lockPath
+            } catch { }
+            [void]$out.Add([pscustomobject]@{
+                state = $State
+                jobId = $id
+                type = $type
+                priority = $pri
+                sourceName = $src
+                sourceFolder = $folder
+                machineName = $machine
+                checkpoint = $ckpt
+                locked = [bool]$locked
+                deferred = $false
+                path = $f.FullName
+                lastWriteTimeUtc = $f.LastWriteTimeUtc
+                lastWriteTime = ($f.LastWriteTimeUtc.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
+            })
+        }
     }
-    foreach ($f in $files) {
-        $j = $null
-        try { $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $j = $null }
-        $id = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
-        $type = ''; $src = ''; $machine = ''; $ckpt = ''; $folder = ''
-        if ($j) {
-            try { if ($j.id) { $id = [string]$j.id } } catch { }
-            try { if ($j.type) { $type = [string]$j.type } } catch { }
-            try {
-                if ($j.sourceName) { $src = [string]$j.sourceName }
-                elseif ($j.sourcePath) { $src = [System.IO.Path]::GetFileName([string]$j.sourcePath) }
-            } catch { }
-            try { if ($j.machineName) { $machine = [string]$j.machineName } } catch { }
-            try { if ($j.sourceFolder) { $folder = [string]$j.sourceFolder } } catch { }
-            try {
-                if ($j.checkpoint) { $ckpt = [string]$j.checkpoint }
-                elseif ($j.PSObject.Properties['checkpoint']) { $ckpt = [string]$j.checkpoint }
-            } catch { }
+    if ($State -eq 'pending' -and $IncludeDeferredStatusSet.IsPresent -and $Config) {
+        $exclude = New-Object System.Collections.Generic.List[string]
+        foreach ($row in $out) {
+            if ([string]$row.type -eq 'STATUS_SET_GEN' -and $row.sourceFolder) {
+                [void]$exclude.Add([string]$row.sourceFolder)
+            }
         }
-        $pri = 0
-        if ($State -eq 'pending') {
-            $pri = Get-QCOpsPendingJobPriority -JobType $type -PreferJobTypes $PreferJobTypes
+        $runDir = Join-Path $QueueRoot 'running'
+        if (Test-Path -LiteralPath $runDir) {
+            foreach ($rf in @(Get-ChildItem -LiteralPath $runDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+                $rj = $null
+                try { $rj = Get-Content -LiteralPath $rf.FullName -Raw | ConvertFrom-Json } catch { $rj = $null }
+                if (-not $rj) { continue }
+                $rt = ''
+                $rfolder = ''
+                try { if ($rj.type) { $rt = [string]$rj.type } } catch { }
+                try { if ($rj.sourceFolder) { $rfolder = [string]$rj.sourceFolder } } catch { }
+                if ($rt -eq 'STATUS_SET_GEN' -and $rfolder) { [void]$exclude.Add($rfolder) }
+            }
         }
-        $locked = $false
-        try {
-            $lockPath = Join-Path (Join-Path $QueueRoot 'locks') ($id + '.lock')
-            $locked = Test-Path -LiteralPath $lockPath
-        } catch { }
-        [void]$out.Add([pscustomobject]@{
-            state = $State
-            jobId = $id
-            type = $type
-            priority = $pri
-            sourceName = $src
-            sourceFolder = $folder
-            machineName = $machine
-            checkpoint = $ckpt
-            locked = [bool]$locked
-            path = $f.FullName
-            lastWriteTimeUtc = $f.LastWriteTimeUtc
-            lastWriteTime = ($f.LastWriteTimeUtc.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
-        })
+        foreach ($drow in @(Get-QCOpsDeferredStatusSetRows -Config $Config -QueueRoot $QueueRoot -PreferJobTypes $PreferJobTypes -ExcludeFolderKeys @($exclude.ToArray()))) {
+            [void]$out.Add($drow)
+        }
     }
     return @($out.ToArray())
 }
@@ -446,6 +741,9 @@ function Test-QCOpsCanRequeueJob {
     )
     $type = [string]$JobRow.type
     $ckpt = [string]$JobRow.checkpoint
+    $deferred = $false
+    try { $deferred = [bool]$JobRow.deferred } catch { }
+    if ($deferred) { return $false }
     if ($type -eq 'QC_PREPEND' -and $ckpt -in @('prepend_complete', 'writeback_running') -and -not $WritebackOnly.IsPresent) {
         return $false
     }
@@ -503,30 +801,15 @@ function Get-QCOpsPipelineStatus {
     }
     $runningRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'running' -Limit 50)
     $localHost = [string]$env:COMPUTERNAME
+    $modellingHost = $script:QCOpsModellingHost
     $localRows = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ieq $localHost) })
-    $remoteRows = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ine $localHost) })
+    $remoteRows = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ieq $modellingHost) })
     $localN = $localRows.Count
     $remoteN = $remoteRows.Count
     $remoteJobNames = @($remoteRows | ForEach-Object { $_.sourceName } | Where-Object { $_ } | Select-Object -First 3)
-    $throttleSummary = ''
-    if (-not $Light.IsPresent) {
-        try {
-            $bits = New-Object System.Collections.Generic.List[string]
-            foreach ($f in @(Get-ChildItem -LiteralPath $queueRoot -Filter '_remote_worker.*.throttle.json' -File -ErrorAction SilentlyContinue | Select-Object -First 2)) {
-                $doc = $null
-                try { $doc = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
-                if ($doc) {
-                    $cpu = ''
-                    try { if ($null -ne $doc.processCpuPercent) { $cpu = ('cpu={0}' -f $doc.processCpuPercent) } } catch { }
-                    try { if (-not $cpu -and $null -ne $doc.cpu) { $cpu = ('cpu={0}' -f $doc.cpu) } } catch { }
-                    [void]$bits.Add(($f.Name + $(if ($cpu) { ' ' + $cpu } else { '' })))
-                } else {
-                    [void]$bits.Add($f.Name)
-                }
-            }
-            $throttleSummary = ($bits -join '; ')
-        } catch { }
-    }
+    $hostRows = @(Get-QCOpsHostStatusRows -QueueRoot $queueRoot -LocalHost $localHost -ModellingHost $modellingHost `
+        -LocalRunning $localN -RemoteRunning $remoteN -Task $task -Lock $lock)
+    $throttleSummary = @($hostRows | ForEach-Object { $_.text }) -join ' | '
     $pwText = 'unknown'
     if ($Light.IsPresent) {
         $pwText = $(if ($lock.alive) { 'SESSION ?' } else { 'NOT RUNNING' })
@@ -581,6 +864,7 @@ function Get-QCOpsPipelineStatus {
         localRunning = $localN
         remoteRunning = $remoteN
         remoteJobNames = $remoteJobNames
+        hostRows = $hostRows
         throttleSummary = $throttleSummary
         inFlightPrepend = $inFlight
         opsRequest = $opsReq

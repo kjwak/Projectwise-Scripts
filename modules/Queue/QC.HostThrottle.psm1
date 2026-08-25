@@ -347,6 +347,7 @@ function ConvertTo-QCHostThrottleEvaluation {
             enabled           = $enabled
             pauseNewClaims    = $false
             recommendedSlots  = $max
+            maxParallel       = $max
             reason            = 'sample_error'
             matchedProcesses  = @()
             cpuPercent        = $CpuPercent
@@ -361,6 +362,7 @@ function ConvertTo-QCHostThrottleEvaluation {
             enabled           = $false
             pauseNewClaims    = $false
             recommendedSlots  = $max
+            maxParallel       = $max
             reason            = 'disabled'
             matchedProcesses  = @()
             cpuPercent        = $CpuPercent
@@ -432,6 +434,7 @@ function ConvertTo-QCHostThrottleEvaluation {
         enabled           = $true
         pauseNewClaims    = $pause
         recommendedSlots  = $slots
+        maxParallel       = $max
         reason            = $reason
         matchedProcesses  = @($matchedNames)
         cpuPercent        = $CpuPercent
@@ -439,6 +442,46 @@ function ConvertTo-QCHostThrottleEvaluation {
         matchedProcessCpuPercent = $MatchedProcessCpuPercent
         matchedProcessMemoryMb   = $MatchedProcessMemoryMb
     }
+}
+
+function Get-QCHostThrottleHealth {
+    <#
+    .SYNOPSIS
+    Classify a throttle heartbeat for ops display: healthy, throttled, stale, disabled.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Status,
+        [int]$SampleSeconds = 10,
+        [datetime]$NowUtc = [datetime]::MinValue
+    )
+    if (-not $Status) { return 'stale' }
+    $reason = ''
+    try { $reason = [string]$Status.reason } catch { $reason = '' }
+    $enabled = $true
+    if ($Status.ContainsKey('enabled') -and $null -ne $Status.enabled) {
+        try { $enabled = [bool]$Status.enabled } catch { $enabled = $true }
+    }
+    $fresh = Test-QCHostThrottleStatusFresh -Status $Status -SampleSeconds $SampleSeconds -NowUtc $NowUtc
+    if (-not $fresh) { return 'stale' }
+    if ((-not $enabled) -or ($reason -eq 'disabled')) { return 'disabled' }
+    $pause = $false
+    if ($Status.ContainsKey('pauseNewClaims') -and $null -ne $Status.pauseNewClaims) {
+        try { $pause = [bool]$Status.pauseNewClaims } catch { $pause = $false }
+    }
+    $slots = $null
+    if ($Status.ContainsKey('recommendedSlots') -and $null -ne $Status.recommendedSlots) {
+        try { $slots = [int]$Status.recommendedSlots } catch { $slots = $null }
+    }
+    $max = $null
+    if ($Status.ContainsKey('maxParallel') -and $null -ne $Status.maxParallel) {
+        try { $max = [int]$Status.maxParallel } catch { $max = $null }
+    }
+    if ($reason -eq 'sample_error') { return 'throttled' }
+    if ($pause) { return 'throttled' }
+    if ($null -ne $slots -and $slots -le 0) { return 'throttled' }
+    if ($null -ne $slots -and $null -ne $max -and $slots -lt $max) { return 'throttled' }
+    return 'healthy'
 }
 
 function Get-QCHostThrottleQueueRoot {
@@ -529,6 +572,9 @@ function Write-QCHostThrottleStatus {
         memoryPercent     = $mem
         sampledAtUtc      = $when.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
         host              = $hostVal
+    }
+    if ($Evaluation.ContainsKey('maxParallel') -and $null -ne $Evaluation.maxParallel) {
+        try { $payload['maxParallel'] = [int]$Evaluation.maxParallel } catch { }
     }
     $tmp = $Path + '.tmp.' + ([guid]::NewGuid().ToString('N'))
     $enc = New-Object System.Text.UTF8Encoding $false

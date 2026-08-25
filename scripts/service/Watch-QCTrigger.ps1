@@ -383,6 +383,7 @@ $script:WatchRequiredCommands = @(
     'Mark-StatusSetDirtyFolder'
     'Invoke-StatusSetDirtyFolderBatch'
     'Invoke-StatusSetHistoryRetention'
+    'Invoke-QCQueueRetention'
     'Invoke-StatusSetReconcile'
     'Get-PWCredentialFromFile'
     'Connect-PW'
@@ -669,7 +670,7 @@ $queueRoot = _Get-WatcherQueueRoot -Config $config
 
 $script:auditRestartOverlapDone = $false
 $script:startupOutputsReconcileDone = $false
-$script:statusSetHistoryRetentionSlotKey = $null
+$script:reconSlotHousekeepingKey = $null
 try {
     $startupRes = Invoke-QCRecoverQueue -Config $config -ClearWatcherActive
     $startupData = if ($startupRes.IsSuccess) { $startupRes.Data } else { @{} }
@@ -2193,8 +2194,8 @@ if ($statusSetRules.Count -ge 0) {
                     _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'AUDIT_FOLDER_CACHE_WARM_FAILED' -Message ('Folder GUID cache warm threw: ' + $_.Exception.Message) -Data @{}
                 }
                 $histSlotKey = if ($fullScanPlan.slotKey) { [string]$fullScanPlan.slotKey } else { 'cycle|{0}' -f $cycleNum }
-                if ($script:statusSetHistoryRetentionSlotKey -ne $histSlotKey) {
-                    $script:statusSetHistoryRetentionSlotKey = $histSlotKey
+                if ($script:reconSlotHousekeepingKey -ne $histSlotKey) {
+                    $script:reconSlotHousekeepingKey = $histSlotKey
                     try {
                         $histRes = Invoke-StatusSetHistoryRetention -Config $config
                         $histLevel = if ($histRes.IsSuccess) { 'Information' } else { 'Warning' }
@@ -2203,6 +2204,15 @@ if ($statusSetRules.Count -ge 0) {
                         _Watch-WriteJsonLog -Flush -Level $histLevel -Code $histCode -Message ([string]$histRes.Message) -Data $histData
                     } catch {
                         _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_STATUSSET_HISTORY_RETENTION_FAILED' -Message ('History retention threw: ' + $_.Exception.Message) -Data @{}
+                    }
+                    try {
+                        $qRet = Invoke-QCQueueRetention -Config $config
+                        $qLevel = if ($qRet.IsSuccess) { 'Information' } else { 'Warning' }
+                        $qCode = if ($qRet.IsSuccess) { 'WATCH_QUEUE_RETENTION' } else { 'WATCH_QUEUE_RETENTION_FAILED' }
+                        $qData = if ($qRet.Data) { $qRet.Data } else { @{ code = [string]$qRet.Code } }
+                        _Watch-WriteJsonLog -Flush -Level $qLevel -Code $qCode -Message ([string]$qRet.Message) -Data $qData
+                    } catch {
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_QUEUE_RETENTION_FAILED' -Message ('Queue retention threw: ' + $_.Exception.Message) -Data @{}
                     }
                 }
                 $runFullScan = $true
