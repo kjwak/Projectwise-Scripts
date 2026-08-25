@@ -103,16 +103,7 @@ function Get-QCOpsDashboardLockStatus {
     if (-not $isPw) {
         return @{ exists = $true; alive = $false; pid = $pidVal; text = ('pid=' + $pidVal + ' not powershell'); host = $hostName; path = $lockPath }
     }
-    $cmdOk = $false
-    try {
-        $p2 = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pidVal) -ErrorAction SilentlyContinue
-        if ($p2 -and $p2.CommandLine) {
-            if ([string]$p2.CommandLine -match '(?i)Start-QCPipelineDashboard\.ps1') { $cmdOk = $true }
-        }
-    } catch { }
-    $alive = $isPw -and ($cmdOk -or $true)
-    $text = if ($cmdOk) { ('alive pid=' + $pidVal) } else { ('powershell pid=' + $pidVal) }
-    return @{ exists = $true; alive = [bool]$alive; pid = $pidVal; text = $text; host = $hostName; path = $lockPath; confirmedDashboard = $cmdOk }
+    return @{ exists = $true; alive = $true; pid = $pidVal; text = ('powershell pid=' + $pidVal); host = $hostName; path = $lockPath; confirmedDashboard = $false }
 }
 
 function Get-QCOpsLogDir {
@@ -129,7 +120,9 @@ function _QCOps-ReadJsonlTail {
     )
     $out = New-Object System.Collections.Generic.List[object]
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return @() }
-    $lines = @(Get-Content -LiteralPath $Path -Tail ($MaxLines * 4) -ErrorAction SilentlyContinue)
+    $tailN = $MaxLines
+    if ($Filter) { $tailN = [Math]::Min(800, $MaxLines * 3) }
+    $lines = @(Get-Content -LiteralPath $Path -Tail $tailN -ErrorAction SilentlyContinue)
     foreach ($line in $lines) {
         $t = ([string]$line).Trim()
         if (-not $t -or -not $t.StartsWith('{')) { continue }
@@ -143,16 +136,90 @@ function _QCOps-ReadJsonlTail {
     return @($out.ToArray() | Select-Object -Last $MaxLines)
 }
 
+function Get-QCOpsQueueDirCounts {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$QueueRoot)
+    $q = @{ pending = 0; running = 0; succeeded = 0; failed = 0; locks = 0 }
+    foreach ($s in @('pending', 'running', 'succeeded', 'failed')) {
+        $dir = Join-Path $QueueRoot $s
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $q[$s] = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+    }
+    $locksDir = Join-Path $QueueRoot 'locks'
+    if (Test-Path -LiteralPath $locksDir) {
+        $q.locks = @(Get-ChildItem -LiteralPath $locksDir -Filter '*.lock' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne '_queue_write.lock' }).Count
+    }
+    return $q
+}
+
+function Get-QCOpsJsonlHeadlineScan {
+    [CmdletBinding()]
+    param(
+        [string]$Path,
+        [hashtable]$Patterns,
+        [int]$Tail = 80
+    )
+    $found = @{}
+    foreach ($k in @($Patterns.Keys)) { $found[$k] = $null }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $found }
+    $remaining = $Patterns.Count
+    $lines = @(Get-Content -LiteralPath $Path -Tail $Tail -ErrorAction SilentlyContinue)
+    [array]::Reverse($lines)
+    foreach ($line in $lines) {
+        $t = ([string]$line).Trim()
+        if (-not $t.StartsWith('{')) { continue }
+        try {
+            $o = $t | ConvertFrom-Json -ErrorAction Stop
+            $code = [string]$o.code
+            foreach ($k in @($Patterns.Keys)) {
+                if ($found[$k]) { continue }
+                if ($code -match $Patterns[$k]) {
+                    $ts = ''
+                    try { if ($o.ts) { $ts = [string]$o.ts } } catch { }
+                    $found[$k] = @{ code = $code; ts = $ts; message = [string]$o.message }
+                    $remaining--
+                }
+            }
+            if ($remaining -le 0) { break }
+        } catch { }
+    }
+    return $found
+}
+
+function Get-QCOpsDryRunHeaderText {
+    [CmdletBinding()]
+    param($Policy)
+    if (-not $Policy) { return 'n/a' }
+    $global = $false
+    try { $global = [bool]$Policy.globalDryRun } catch { }
+    if ($global) { return 'ON (global)' }
+    $layers = New-Object System.Collections.Generic.List[string]
+    $src = $null
+    try { $src = $Policy.sources } catch { }
+    if ($src) {
+        try {
+            if ($src.qcWorkflowDryRunWriteback) { [void]$layers.Add('workflow writeback') }
+        } catch { }
+        try {
+            if ($src.notificationsEnabled -and $src.notificationsDryRun) { [void]$layers.Add('notifications') }
+        } catch { }
+    }
+    if ($layers.Count -gt 0) {
+        return ('live + {0} dry-run' -f ($layers -join ', '))
+    }
+    return 'live'
+}
+
 function Get-QCOpsRecentLogEvents {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$QueueRoot,
-        [int]$MaxLines = 40
+        [int]$MaxLines = 80,
+        [int]$MaxFiles = 6,
+        [switch]$Unfiltered
     )
     $logDir = Get-QCOpsLogDir -QueueRoot $QueueRoot
-    $hour = Get-QCLogHourStamp
-    $watchPath = Join-Path $logDir ("Watch-QCTrigger_${hour}.jsonl")
-    $procPath = Join-Path $logDir ("Run-QCProcessor_${hour}.jsonl")
     $watchFilter = {
         param($Obj)
         $level = ''; $code = ''
@@ -162,9 +229,36 @@ function Get-QCOpsRecentLogEvents {
         if ($code -match '(FAILED|STALE|ALERT|STALL|ACCEPTED|CONNECT_OK|WATCH_START$|ENQUEUE|DASH_WATCHER)') { return $true }
         return $false
     }
-    $watch = @(_QCOps-ReadJsonlTail -Path $watchPath -MaxLines $MaxLines -Filter $watchFilter)
-    $proc = @(_QCOps-ReadJsonlTail -Path $procPath -MaxLines $MaxLines)
-    return @{ watcher = $watch; processor = $proc; watchPath = $watchPath; processorPath = $procPath }
+    $events = New-Object System.Collections.Generic.List[object]
+    $watch = New-Object System.Collections.Generic.List[object]
+    $proc = New-Object System.Collections.Generic.List[object]
+    foreach ($pair in @(
+            @{ tag = 'Watch-QCTrigger'; source = 'watcher' }
+            @{ tag = 'Run-QCProcessor'; source = 'processor' }
+        )) {
+        $files = @()
+        if (Test-Path -LiteralPath $logDir) {
+            $files = @(Get-ChildItem -LiteralPath $logDir -Filter ($pair.tag + '_*.jsonl') -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First $MaxFiles)
+        }
+        $filter = $null
+        if (-not $Unfiltered.IsPresent -and $pair.source -eq 'watcher') { $filter = $watchFilter }
+        foreach ($f in $files) {
+            foreach ($o in @(_QCOps-ReadJsonlTail -Path $f.FullName -MaxLines $MaxLines -Filter $filter)) {
+                try { $o | Add-Member -NotePropertyName 'logSource' -NotePropertyValue $pair.source -Force } catch { }
+                try { $o | Add-Member -NotePropertyName 'logFile' -NotePropertyValue $f.Name -Force } catch { }
+                [void]$events.Add($o)
+                if ($pair.source -eq 'watcher') { [void]$watch.Add($o) } else { [void]$proc.Add($o) }
+            }
+        }
+    }
+    return @{
+        events = @($events.ToArray())
+        watcher = @($watch.ToArray())
+        processor = @($proc.ToArray())
+        logDir = $logDir
+    }
 }
 
 function Get-QCOpsJsonlLastCodeTime {
@@ -194,12 +288,17 @@ function Get-QCOpsRunningJobRows {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$QueueRoot,
-        [string]$State = 'running'
+        [string]$State = 'running',
+        [int]$Limit = 0
     )
     $dir = Join-Path $QueueRoot $State
     $out = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $dir)) { return @() }
-    foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+    $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    if ($Limit -gt 0 -and $files.Count -gt $Limit) {
+        $files = @($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First $Limit)
+    }
+    foreach ($f in $files) {
         $j = $null
         try { $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $j = $null }
         $id = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
@@ -218,6 +317,11 @@ function Get-QCOpsRunningJobRows {
                 elseif ($j.PSObject.Properties['checkpoint']) { $ckpt = [string]$j.checkpoint }
             } catch { }
         }
+        $locked = $false
+        try {
+            $lockPath = Join-Path (Join-Path $QueueRoot 'locks') ($id + '.lock')
+            $locked = Test-Path -LiteralPath $lockPath
+        } catch { }
         [void]$out.Add([pscustomobject]@{
             state = $State
             jobId = $id
@@ -226,8 +330,10 @@ function Get-QCOpsRunningJobRows {
             sourceFolder = $folder
             machineName = $machine
             checkpoint = $ckpt
+            locked = [bool]$locked
             path = $f.FullName
             lastWriteTimeUtc = $f.LastWriteTimeUtc
+            lastWriteTime = ($f.LastWriteTimeUtc.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
         })
     }
     return @($out.ToArray())
@@ -260,47 +366,81 @@ function Get-QCOpsPipelineStatus {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [string]$TaskName = ''
+        [string]$TaskName = '',
+        [switch]$Light
     )
     if ([string]::IsNullOrWhiteSpace($TaskName)) { $TaskName = $script:QCOpsDefaultTaskName }
     $queueRoot = Get-QCOpsQueueRoot -Config $Config
     $task = Get-QCOpsScheduledTaskState -TaskName $TaskName
     $lock = Get-QCOpsDashboardLockStatus -QueueRoot $queueRoot
     $queue = @{ pending = 0; running = 0; succeeded = 0; failed = 0; locks = 0 }
-    try {
-        $statsRes = Get-QCQueueStats -Config $Config
-        if ($statsRes.IsSuccess -and $statsRes.Data) {
-            $st = $statsRes.Data.states
-            $queue.pending = [int]$st.pending
-            $queue.running = [int]$st.running
-            $queue.succeeded = [int]$st.succeeded
-            $queue.failed = [int]$st.failed
-            if ($statsRes.Data.locks) { $queue.locks = [int]$statsRes.Data.locks.count }
-        }
-    } catch { }
+    if (-not $Light.IsPresent) {
+        try { $queue = Get-QCOpsQueueDirCounts -QueueRoot $queueRoot } catch { }
+    }
     $dry = $null
     try { $dry = Get-QCEffectiveDryRunPolicy -Config $Config -Role 'worker' } catch { }
     $sqlEnabled = $false
     try { $sqlEnabled = [bool](Test-QCDatabaseEnabled -Config $Config) } catch { }
     $wm = $null
     $wmAge = $null
-    try {
-        if (Get-Command Get-QCAuditWatermarkUtc -ErrorAction SilentlyContinue) {
-            $wm = Get-QCAuditWatermarkUtc -Config $Config
-            if ($wm) { $wmAge = [int](([DateTime]::UtcNow - $wm).TotalSeconds) }
+    $pwEvt = $null
+    $tickEvt = $null
+    $stallEvt = $null
+    $notifFailEvt = $null
+    if (-not $Light.IsPresent) {
+        try {
+            if (Get-Command Get-QCAuditWatermarkUtc -ErrorAction SilentlyContinue) {
+                $wm = Get-QCAuditWatermarkUtc -Config $Config
+                if ($wm) { $wmAge = [int](([DateTime]::UtcNow - $wm).TotalSeconds) }
+            }
+        } catch { }
+        $logDir = Get-QCOpsLogDir -QueueRoot $queueRoot
+        $hour = Get-QCLogHourStamp
+        $watchPath = Join-Path $logDir ("Watch-QCTrigger_${hour}.jsonl")
+        $procPath = Join-Path $logDir ("Run-QCProcessor_${hour}.jsonl")
+        $watchHit = Get-QCOpsJsonlHeadlineScan -Path $watchPath -Tail 80 -Patterns @{
+            pw = 'WATCH_PW_CONNECT_OK|WATCH_PW_SESSION_STALE|WATCH_PW_CONNECT_START'
+            tick = 'WATCH_TICK_START|WATCH_AUDIT_SCAN_DONE'
+            stall = 'DASH_WATCHER_STALL|WATCH_STALL'
         }
-    } catch { }
-    $logDir = Get-QCOpsLogDir -QueueRoot $queueRoot
-    $pwEvt = Get-QCOpsJsonlLastCodeTime -LogDir $logDir -Tag 'Watch-QCTrigger' -CodePattern 'WATCH_PW_CONNECT_OK|WATCH_PW_SESSION_STALE|WATCH_PW_CONNECT_START'
-    $tickEvt = Get-QCOpsJsonlLastCodeTime -LogDir $logDir -Tag 'Watch-QCTrigger' -CodePattern 'WATCH_TICK_START|WATCH_AUDIT_SCAN_DONE'
-    $stallEvt = Get-QCOpsJsonlLastCodeTime -LogDir $logDir -Tag 'Watch-QCTrigger' -CodePattern 'DASH_WATCHER_STALL|WATCH_STALL'
-    $notifFailEvt = Get-QCOpsJsonlLastCodeTime -LogDir $logDir -Tag 'Run-QCProcessor' -CodePattern 'NOTIF.*FAIL|GRAPH_.*FAIL|NOTIFICATION_FAILED|WATCHER_ALERT'
-    $runningRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'running')
+        $procHit = Get-QCOpsJsonlHeadlineScan -Path $procPath -Tail 80 -Patterns @{
+            notifFail = 'NOTIF.*FAIL|GRAPH_.*FAIL|NOTIFICATION_FAILED|WATCHER_ALERT'
+        }
+        $pwEvt = $watchHit.pw
+        $tickEvt = $watchHit.tick
+        $stallEvt = $watchHit.stall
+        $notifFailEvt = $procHit.notifFail
+    }
+    $runningRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'running' -Limit 50)
     $localHost = [string]$env:COMPUTERNAME
-    $localN = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ieq $localHost) }).Count
-    $remoteN = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ine $localHost) }).Count
+    $localRows = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ieq $localHost) })
+    $remoteRows = @($runningRows | Where-Object { $_.machineName -and ([string]$_.machineName -ine $localHost) })
+    $localN = $localRows.Count
+    $remoteN = $remoteRows.Count
+    $remoteJobNames = @($remoteRows | ForEach-Object { $_.sourceName } | Where-Object { $_ } | Select-Object -First 3)
+    $throttleSummary = ''
+    if (-not $Light.IsPresent) {
+        try {
+            $bits = New-Object System.Collections.Generic.List[string]
+            foreach ($f in @(Get-ChildItem -LiteralPath $queueRoot -Filter '_remote_worker.*.throttle.json' -File -ErrorAction SilentlyContinue | Select-Object -First 2)) {
+                $doc = $null
+                try { $doc = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+                if ($doc) {
+                    $cpu = ''
+                    try { if ($null -ne $doc.processCpuPercent) { $cpu = ('cpu={0}' -f $doc.processCpuPercent) } } catch { }
+                    try { if (-not $cpu -and $null -ne $doc.cpu) { $cpu = ('cpu={0}' -f $doc.cpu) } } catch { }
+                    [void]$bits.Add(($f.Name + $(if ($cpu) { ' ' + $cpu } else { '' })))
+                } else {
+                    [void]$bits.Add($f.Name)
+                }
+            }
+            $throttleSummary = ($bits -join '; ')
+        } catch { }
+    }
     $pwText = 'unknown'
-    if ($pwEvt) {
+    if ($Light.IsPresent) {
+        $pwText = $(if ($lock.alive) { 'SESSION ?' } else { 'NOT RUNNING' })
+    } elseif ($pwEvt) {
         if ($pwEvt.code -match 'CONNECT_OK') { $pwText = 'SESSION ACTIVE' }
         elseif ($pwEvt.code -match 'STALE') { $pwText = 'SESSION STALE' }
         elseif ($pwEvt.code -match 'CONNECT_START') { $pwText = 'CONNECTING' }
@@ -314,6 +454,13 @@ function Get-QCOpsPipelineStatus {
     elseif ($lock.exists -and -not $lock.alive) { $stateLabel = 'Stale lock' }
     elseif ($task.registered) { $stateLabel = 'Ready' }
     else { $stateLabel = 'Not registered' }
+    $inFlight = @($runningRows | Where-Object {
+            ([string]$_.type -eq 'QC_PREPEND') -and ([string]$_.checkpoint -in @('prepend_complete', 'writeback_running'))
+        })
+    $opsReq = $null
+    if (-not $Light.IsPresent) {
+        $opsReq = (Get-QCWatcherOpsRequest -Config $Config -QueueRoot $queueRoot)
+    }
 
     return New-QCSuccessResult -Code 'OPS_STATUS' -Message $stateLabel -Data @{
         hostName = $localHost
@@ -326,6 +473,7 @@ function Get-QCOpsPipelineStatus {
         queueRoot = $queueRoot
         queue = $queue
         dryRun = $dry
+        dryRunText = (Get-QCOpsDryRunHeaderText -Policy $dry)
         sqlEnabled = $sqlEnabled
         watermarkUtc = $wm
         watermarkAgeSeconds = $wmAge
@@ -336,8 +484,11 @@ function Get-QCOpsPipelineStatus {
         lastNotificationFail = $notifFailEvt
         localRunning = $localN
         remoteRunning = $remoteN
-        inFlightPrepend = @(Get-QCOpsInFlightPrependJobs -QueueRoot $queueRoot)
-        opsRequest = (Get-QCWatcherOpsRequest -Config $Config -QueueRoot $queueRoot)
+        remoteJobNames = $remoteJobNames
+        throttleSummary = $throttleSummary
+        inFlightPrepend = $inFlight
+        opsRequest = $opsReq
+        light = [bool]$Light.IsPresent
     }
 }
 
@@ -530,7 +681,6 @@ ORDER BY started_at DESC
                 @{ kind = 'QC_PREPEND'; type = 'QC_PREPEND' }
                 @{ kind = 'STATUS_SET_GEN'; type = 'STATUS_SET_GEN' }
                 @{ kind = 'QC_NOTIFICATION'; type = 'QC_NOTIFICATION' }
-                @{ kind = 'QC_COMMENT_STATUS_SYNC'; type = 'QC_STATE' }
                 @{ kind = 'QC_REPORTING_SCAN'; type = 'QC_REPORTING_SCAN' }
             )) {
             try {

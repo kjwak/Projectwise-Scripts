@@ -21,6 +21,8 @@ Assert-Eq (Get-QCOpsExpectedHost) 'PXBENTLEY01' 'ops console host is PXBENTLEY01
 Assert-True (Test-QCOpsHostAllowed -ComputerName 'PXBENTLEY01') 'PXBENTLEY01 allowed'
 Assert-True (-not (Test-QCOpsHostAllowed -ComputerName 'AZTEC002799')) 'modelling host not allowed without -Force'
 Assert-True (Test-QCOpsHostAllowed -ComputerName 'AZTEC002799' -Force) '-Force overrides host guard'
+Assert-Eq (Get-QCOpsDryRunHeaderText -Policy @{ globalDryRun = $false; sources = @{ qcWorkflowDryRunWriteback = $false; notificationsEnabled = $true; notificationsDryRun = $false } }) 'live' 'global off is live'
+Assert-Eq (Get-QCOpsDryRunHeaderText -Policy @{ globalDryRun = $true }) 'ON (global)' 'global dry-run label'
 
 $tempRoot = Join-Path $env:TEMP ('qc-ops-console-' + [guid]::NewGuid().ToString('N'))
 $queueRoot = Join-Path $tempRoot 'queue'
@@ -116,9 +118,11 @@ try {
 
     $guiPath = Join-Path $repoRoot 'scripts\service\Start-QCOpsConsole.ps1'
     $guiText = Get-Content -LiteralPath $guiPath -Raw
-    Assert-True ($guiText -notmatch '(?m)^\s*(Start-Process|&).{0,120}Start-QCPipelineDashboard') 'GUI does not start the dashboard'
+    Assert-True ($guiText -notmatch "(?m)^\s*(Start-Process|&).{0,120}Start-QCPipelineDashboard") 'GUI does not start the dashboard'
     Assert-True ($guiText -match '-STA') 'GUI requests STA'
     Assert-True ($guiText -match 'NoGui') 'GUI keeps text console fallback'
+    Assert-True ($guiText -notmatch "_New-Tab 'Hosts'") 'Hosts tab removed'
+    Assert-True ($guiText -notmatch 'QC_COMMENT_STATUS_SYNC') 'Runs tab does not enqueue comment sync'
 
     $regPath = Join-Path $repoRoot 'scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1'
     $regText = Get-Content -LiteralPath $regPath -Raw

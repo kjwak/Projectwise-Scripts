@@ -77,6 +77,11 @@ try { $script:Cfg['_appSettingsPath'] = $AppSettingsPath } catch { }
 $script:AppSettingsPath = $AppSettingsPath
 $script:SuppressToggle = $false
 $script:Status = $null
+$script:StateColor = [System.Drawing.Color]::Gray
+$script:LogEvents = @()
+$script:LogStamp = ''
+$script:QueueStamp = ''
+$script:TickN = 0
 
 function _Ops-Msg([string]$Text, [string]$Title = 'QC ops') {
     [System.Windows.Forms.MessageBox]::Show($Text, $Title) | Out-Null
@@ -89,27 +94,55 @@ function _Ops-Confirm([string]$Text) {
 
 function _Ops-FormatEvent($Obj) {
     if (-not $Obj) { return '' }
-    $code = ''; $msg = ''; $ts = ''
+    $code = ''; $msg = ''; $ts = ''; $src = ''; $level = ''
     try { $code = [string]$Obj.code } catch { }
     try { $msg = [string]$Obj.message } catch { }
     try { if ($Obj.ts) { $ts = [string]$Obj.ts } } catch { }
-    return ('{0} {1} {2}' -f $ts, $code, $msg)
+    try { if ($Obj.logSource) { $src = [string]$Obj.logSource } } catch { }
+    try { if ($Obj.level) { $level = [string]$Obj.level } } catch { }
+    return ('{0}  {1}  {2}  {3}  {4}' -f $ts, $src, $level, $code, $msg)
 }
 
 function _Ops-RefreshStatus {
-    $script:Status = Get-QCOpsPipelineStatus -Config $script:Cfg
+    param([switch]$Light)
+    $st = Get-QCOpsPipelineStatus -Config $script:Cfg -Light:$Light
+    if ($Light.IsPresent -and $script:Status -and $script:Status.Data) {
+        $prev = $script:Status.Data
+        $d = $st.Data
+        $d.queue = $prev.queue
+        $d.pwText = $prev.pwText
+        $d.lastTick = $prev.lastTick
+        $d.lastStall = $prev.lastStall
+        $d.lastNotificationFail = $prev.lastNotificationFail
+        $d.watermarkUtc = $prev.watermarkUtc
+        $d.watermarkAgeSeconds = $prev.watermarkAgeSeconds
+        if (-not $d.throttleSummary) { $d.throttleSummary = $prev.throttleSummary }
+    }
+    $script:Status = $st
     return $script:Status
+}
+
+function _Ops-StateColor([string]$Label) {
+    switch ($Label) {
+        'Running' { return [System.Drawing.Color]::FromArgb(40, 167, 69) }
+        'Ready' { return [System.Drawing.Color]::FromArgb(240, 173, 78) }
+        'Stale lock' { return [System.Drawing.Color]::FromArgb(253, 126, 20) }
+        'Stopped' { return [System.Drawing.Color]::FromArgb(108, 117, 125) }
+        'Disabled' { return [System.Drawing.Color]::FromArgb(108, 117, 125) }
+        default { return [System.Drawing.Color]::FromArgb(220, 53, 69) }
+    }
 }
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'QC Pipeline Ops'
-$form.Size = New-Object System.Drawing.Size(1120, 760)
+$form.Size = New-Object System.Drawing.Size(1280, 820)
 $form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object System.Drawing.Size(900, 600)
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 640)
 
 $header = New-Object System.Windows.Forms.Panel
 $header.Dock = 'Top'
-$header.Height = 88
+$header.Height = 148
+$header.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 250)
 $form.Controls.Add($header)
 
 $chkOn = New-Object System.Windows.Forms.CheckBox
@@ -118,20 +151,62 @@ $chkOn.Location = New-Object System.Drawing.Point(12, 10)
 $chkOn.AutoSize = $true
 $header.Controls.Add($chkOn)
 
+$pnlBubble = New-Object System.Windows.Forms.Panel
+$pnlBubble.Location = New-Object System.Drawing.Point(140, 12)
+$pnlBubble.Size = New-Object System.Drawing.Size(18, 18)
+$pnlBubble.Add_Paint({
+    $e = $args[1]
+    if (-not $e) { return }
+    $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $brush = New-Object System.Drawing.SolidBrush $script:StateColor
+    $g.FillEllipse($brush, 1, 1, 15, 15)
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(60, 60, 60))
+    $g.DrawEllipse($pen, 1, 1, 15, 15)
+    $brush.Dispose()
+    $pen.Dispose()
+})
+$header.Controls.Add($pnlBubble)
+
 $lblState = New-Object System.Windows.Forms.Label
-$lblState.Location = New-Object System.Drawing.Point(140, 12)
-$lblState.Size = New-Object System.Drawing.Size(400, 20)
+$lblState.Location = New-Object System.Drawing.Point(164, 11)
+$lblState.Size = New-Object System.Drawing.Size(700, 20)
+$lblState.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $lblState.Text = 'State: ...'
 $header.Controls.Add($lblState)
 
 $lblLine2 = New-Object System.Windows.Forms.Label
-$lblLine2.Location = New-Object System.Drawing.Point(12, 36)
-$lblLine2.Size = New-Object System.Drawing.Size(1080, 20)
+$lblLine2.Location = New-Object System.Drawing.Point(12, 34)
+$lblLine2.Size = New-Object System.Drawing.Size(700, 18)
 $header.Controls.Add($lblLine2)
 
+$gridQueueCounts = New-Object System.Windows.Forms.DataGridView
+$gridQueueCounts.Location = New-Object System.Drawing.Point(720, 8)
+$gridQueueCounts.Size = New-Object System.Drawing.Size(540, 72)
+$gridQueueCounts.ReadOnly = $true
+$gridQueueCounts.AllowUserToAddRows = $false
+$gridQueueCounts.AllowUserToDeleteRows = $false
+$gridQueueCounts.AllowUserToResizeRows = $false
+$gridQueueCounts.RowHeadersVisible = $false
+$gridQueueCounts.ColumnHeadersHeight = 24
+$gridQueueCounts.ColumnHeadersHeightSizeMode = 'DisableResizing'
+$gridQueueCounts.ScrollBars = 'None'
+$gridQueueCounts.AutoSizeColumnsMode = 'Fill'
+$gridQueueCounts.BackgroundColor = [System.Drawing.Color]::White
+$gridQueueCounts.BorderStyle = 'FixedSingle'
+$gridQueueCounts.EnableHeadersVisualStyles = $true
+$header.Controls.Add($gridQueueCounts)
+
+$lblRemote = New-Object System.Windows.Forms.Label
+$lblRemote.Location = New-Object System.Drawing.Point(12, 56)
+$lblRemote.Size = New-Object System.Drawing.Size(700, 36)
+$lblRemote.Text = 'Remote: ...'
+$header.Controls.Add($lblRemote)
+
 $lblLine3 = New-Object System.Windows.Forms.Label
-$lblLine3.Location = New-Object System.Drawing.Point(12, 58)
-$lblLine3.Size = New-Object System.Drawing.Size(1080, 22)
+$lblLine3.Location = New-Object System.Drawing.Point(12, 96)
+$lblLine3.Size = New-Object System.Drawing.Size(1240, 44)
+$lblLine3.Text = ''
 $header.Controls.Add($lblLine3)
 
 $tabs = New-Object System.Windows.Forms.TabControl
@@ -151,6 +226,47 @@ function _New-Tab([string]$Title) {
 
 # --- Overview ---
 $tabOverview = _New-Tab 'Overview'
+$logTop = New-Object System.Windows.Forms.Panel
+$logTop.Dock = 'Top'
+$logTop.Height = 36
+$tabOverview.Controls.Add($logTop)
+$lblLogTime = New-Object System.Windows.Forms.Label
+$lblLogTime.Text = 'Time'
+$lblLogTime.Location = New-Object System.Drawing.Point(8, 10)
+$lblLogTime.AutoSize = $true
+$logTop.Controls.Add($lblLogTime)
+$cmbLogTime = New-Object System.Windows.Forms.ComboBox
+$cmbLogTime.DropDownStyle = 'DropDownList'
+@('Last 15 min', 'Last hour', 'Last 6 hours', 'Last 24 hours', 'All loaded') | ForEach-Object { [void]$cmbLogTime.Items.Add($_) }
+$cmbLogTime.SelectedIndex = 1
+$cmbLogTime.Location = New-Object System.Drawing.Point(48, 6)
+$cmbLogTime.Width = 130
+$logTop.Controls.Add($cmbLogTime)
+$lblLogType = New-Object System.Windows.Forms.Label
+$lblLogType.Text = 'Type'
+$lblLogType.Location = New-Object System.Drawing.Point(190, 10)
+$lblLogType.AutoSize = $true
+$logTop.Controls.Add($lblLogType)
+$cmbLogType = New-Object System.Windows.Forms.ComboBox
+$cmbLogType.DropDownStyle = 'DropDownList'
+@('All', 'Watcher', 'Processor', 'Error', 'Warning') | ForEach-Object { [void]$cmbLogType.Items.Add($_) }
+$cmbLogType.SelectedIndex = 0
+$cmbLogType.Location = New-Object System.Drawing.Point(228, 6)
+$cmbLogType.Width = 110
+$logTop.Controls.Add($cmbLogType)
+$lblLogCode = New-Object System.Windows.Forms.Label
+$lblLogCode.Text = 'Code'
+$lblLogCode.Location = New-Object System.Drawing.Point(350, 10)
+$lblLogCode.AutoSize = $true
+$logTop.Controls.Add($lblLogCode)
+$txtLogCode = New-Object System.Windows.Forms.TextBox
+$txtLogCode.Location = New-Object System.Drawing.Point(390, 6)
+$txtLogCode.Width = 180
+$logTop.Controls.Add($txtLogCode)
+$btnLogApply = New-Object System.Windows.Forms.Button
+$btnLogApply.Text = 'Apply'
+$btnLogApply.Location = New-Object System.Drawing.Point(580, 4)
+$logTop.Controls.Add($btnLogApply)
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
 $logBox.ScrollBars = 'Both'
@@ -158,6 +274,7 @@ $logBox.ReadOnly = $true
 $logBox.Dock = 'Fill'
 $logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
 $tabOverview.Controls.Add($logBox)
+$tabOverview.Controls.SetChildIndex($logBox, 0)
 
 # --- Queue ---
 $tabQueue = _New-Tab 'Queue'
@@ -165,45 +282,122 @@ $queueTop = New-Object System.Windows.Forms.Panel
 $queueTop.Dock = 'Top'
 $queueTop.Height = 36
 $tabQueue.Controls.Add($queueTop)
-$cmbQueueState = New-Object System.Windows.Forms.ComboBox
-$cmbQueueState.DropDownStyle = 'DropDownList'
-@('pending', 'running', 'failed', 'succeeded') | ForEach-Object { [void]$cmbQueueState.Items.Add($_) }
-$cmbQueueState.SelectedIndex = 1
-$cmbQueueState.Location = New-Object System.Drawing.Point(8, 6)
-$cmbQueueState.Width = 140
-$queueTop.Controls.Add($cmbQueueState)
 $btnQueueRefresh = New-Object System.Windows.Forms.Button
 $btnQueueRefresh.Text = 'Refresh'
-$btnQueueRefresh.Location = New-Object System.Drawing.Point(156, 4)
+$btnQueueRefresh.Location = New-Object System.Drawing.Point(8, 4)
 $queueTop.Controls.Add($btnQueueRefresh)
 $btnRequeue = New-Object System.Windows.Forms.Button
 $btnRequeue.Text = 'Requeue selected'
-$btnRequeue.Location = New-Object System.Drawing.Point(250, 4)
+$btnRequeue.Location = New-Object System.Drawing.Point(100, 4)
 $btnRequeue.Width = 140
 $queueTop.Controls.Add($btnRequeue)
 $btnRecover = New-Object System.Windows.Forms.Button
 $btnRecover.Text = 'Recover stale'
-$btnRecover.Location = New-Object System.Drawing.Point(400, 4)
+$btnRecover.Location = New-Object System.Drawing.Point(250, 4)
 $btnRecover.Width = 120
 $queueTop.Controls.Add($btnRecover)
 $btnOpenJson = New-Object System.Windows.Forms.Button
 $btnOpenJson.Text = 'Open JSON'
-$btnOpenJson.Location = New-Object System.Drawing.Point(528, 4)
+$btnOpenJson.Location = New-Object System.Drawing.Point(380, 4)
 $btnOpenJson.Width = 100
 $queueTop.Controls.Add($btnOpenJson)
 $chkWritebackOnly = New-Object System.Windows.Forms.CheckBox
 $chkWritebackOnly.Text = 'Writeback-only requeue'
-$chkWritebackOnly.Location = New-Object System.Drawing.Point(640, 8)
+$chkWritebackOnly.Location = New-Object System.Drawing.Point(496, 8)
 $chkWritebackOnly.AutoSize = $true
 $queueTop.Controls.Add($chkWritebackOnly)
-$gridQueue = New-Object System.Windows.Forms.DataGridView
-$gridQueue.Dock = 'Fill'
-$gridQueue.ReadOnly = $true
-$gridQueue.AllowUserToAddRows = $false
-$gridQueue.SelectionMode = 'FullRowSelect'
-$gridQueue.AutoSizeColumnsMode = 'Fill'
-$tabQueue.Controls.Add($gridQueue)
-$tabQueue.Controls.SetChildIndex($gridQueue, 0)
+
+$queueLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$queueLayout.Dock = 'Fill'
+$queueLayout.ColumnCount = 2
+$queueLayout.RowCount = 2
+$queueLayout.Padding = New-Object System.Windows.Forms.Padding(4)
+[void]$queueLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$queueLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$queueLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+[void]$queueLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+$tabQueue.Controls.Add($queueLayout)
+$tabQueue.Controls.SetChildIndex($queueLayout, 0)
+
+function _Ops-OpenJobJson($Grid) {
+    $row = $Grid.CurrentRow
+    if (-not $row) { return }
+    $p = ''
+    try { $p = [string]$row.DataBoundItem.path } catch { }
+    if ($p -and (Test-Path -LiteralPath $p)) { Start-Process -FilePath 'notepad.exe' -ArgumentList $p }
+}
+
+function _New-JobGrid {
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = 'Fill'
+    $grid.ReadOnly = $true
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.SelectionMode = 'FullRowSelect'
+    $grid.MultiSelect = $true
+    $grid.RowHeadersVisible = $false
+    $grid.AutoGenerateColumns = $false
+    $grid.AutoSizeColumnsMode = 'Fill'
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    foreach ($c in @(
+            @{ Name = 'jobId'; Header = 'jobId' }
+            @{ Name = 'type'; Header = 'type' }
+            @{ Name = 'sourceName'; Header = 'sourceName' }
+            @{ Name = 'checkpoint'; Header = 'checkpoint' }
+            @{ Name = 'lastWriteTime'; Header = 'lastWriteTime' }
+        )) {
+        $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $col.Name = $c.Name
+        $col.DataPropertyName = $c.Name
+        $col.HeaderText = $c.Header
+        [void]$grid.Columns.Add($col)
+    }
+    $grid.Add_CellFormatting({
+        $e = $args[1]
+        if (-not $e -or $e.ColumnIndex -lt 0 -or $e.RowIndex -lt 0) { return }
+        $col = $this.Columns[$e.ColumnIndex]
+        if ($col.DataPropertyName -ne 'jobId') { return }
+        $item = $this.Rows[$e.RowIndex].DataBoundItem
+        $locked = $false
+        try { $locked = [bool]$item.locked } catch { }
+        if ($locked) {
+            $e.Value = ('[L] {0}' -f $item.jobId)
+            $e.FormattingApplied = $true
+        }
+    })
+    $grid.Add_CellDoubleClick({ _Ops-OpenJobJson $this })
+    return $grid
+}
+
+function _New-QueuePane([string]$Title) {
+    $box = New-Object System.Windows.Forms.GroupBox
+    $box.Text = $Title
+    $box.Dock = 'Fill'
+    $box.Padding = New-Object System.Windows.Forms.Padding(6)
+    $grid = _New-JobGrid
+    $box.Controls.Add($grid)
+    return @{ box = $box; grid = $grid }
+}
+
+$panePending = _New-QueuePane 'Pending'
+$paneRunning = _New-QueuePane 'Running'
+$paneFailed = _New-QueuePane 'Failed'
+$paneSucceeded = _New-QueuePane 'Succeeded'
+$queueLayout.Controls.Add($panePending.box, 0, 0)
+$queueLayout.Controls.Add($paneRunning.box, 1, 0)
+$queueLayout.Controls.Add($paneFailed.box, 0, 1)
+$queueLayout.Controls.Add($paneSucceeded.box, 1, 1)
+$gridPending = $panePending.grid
+$gridRunning = $paneRunning.grid
+$gridFailed = $paneFailed.grid
+$gridSucceeded = $paneSucceeded.grid
+$script:QueueGrids = @($gridPending, $gridRunning, $gridFailed, $gridSucceeded)
+$script:QueuePanes = @{
+    pending = $panePending
+    running = $paneRunning
+    failed = $paneFailed
+    succeeded = $paneSucceeded
+}
 
 # --- Runs ---
 $tabRuns = _New-Tab 'Runs'
@@ -231,13 +425,10 @@ $btnReconcileSs.AutoSize = $true
 $btnEnqReport = New-Object System.Windows.Forms.Button
 $btnEnqReport.Text = 'Enqueue QC_REPORTING_SCAN'
 $btnEnqReport.AutoSize = $true
-$btnEnqComment = New-Object System.Windows.Forms.Button
-$btnEnqComment.Text = 'Enqueue QC_COMMENT_STATUS_SYNC'
-$btnEnqComment.AutoSize = $true
 $btnTickHint = New-Object System.Windows.Forms.Button
 $btnTickHint.Text = 'Run audit tick now'
 $btnTickHint.AutoSize = $true
-[void]$runsBtns.Controls.AddRange(@($btnFullScan, $btnReconcileSs, $btnEnqReport, $btnEnqComment, $btnTickHint))
+[void]$runsBtns.Controls.AddRange(@($btnFullScan, $btnReconcileSs, $btnEnqReport, $btnTickHint))
 
 # --- Sheets ---
 $tabSheets = _New-Tab 'Sheets'
@@ -325,16 +516,6 @@ $txtNotif.Dock = 'Fill'
 $txtNotif.Font = New-Object System.Drawing.Font('Consolas', 9)
 $tabNotif.Controls.Add($txtNotif)
 
-# --- Hosts ---
-$tabHosts = _New-Tab 'Hosts'
-$txtHosts = New-Object System.Windows.Forms.TextBox
-$txtHosts.Multiline = $true
-$txtHosts.ScrollBars = 'Both'
-$txtHosts.ReadOnly = $true
-$txtHosts.Dock = 'Fill'
-$txtHosts.Font = New-Object System.Drawing.Font('Consolas', 9)
-$tabHosts.Controls.Add($txtHosts)
-
 # --- Maintenance ---
 $tabMaint = _New-Tab 'Maintenance'
 $lstMaint = New-Object System.Windows.Forms.ListBox
@@ -373,28 +554,6 @@ foreach ($item in $script:MaintCatalog) {
     [void]$lstMaint.Items.Add(('{0}  [{1}]  {2}' -f $item.label, $item.danger, $item.script))
 }
 
-function _Ops-ApplyHeader {
-    $st = _Ops-RefreshStatus
-    $d = $st.Data
-    $script:SuppressToggle = $true
-    $chkOn.Checked = [bool]$d.pipelineOn
-    $script:SuppressToggle = $false
-    $lblState.Text = ('State: {0}   task={1} ({2})   lock={3}' -f $d.stateLabel, $d.task.state, $(if ($d.task.enabled) { 'enabled' } else { 'disabled' }), $d.lock.text)
-    $dryTxt = 'n/a'
-    try { if ($d.dryRun -and $d.dryRun.globalDryRun) { $dryTxt = 'global dry-run ON' } elseif ($d.dryRun) { $dryTxt = 'dry-run layered' } else { $dryTxt = 'live' } } catch { }
-    $wm = 'n/a'
-    if ($null -ne $d.watermarkAgeSeconds) { $wm = ('{0}s ago' -f $d.watermarkAgeSeconds) }
-    $lblLine2.Text = ('PW={0}   SQL={1}   DryRun={2}   watermark={3}' -f $d.pwText, $d.sqlEnabled, $dryTxt, $wm)
-    $tick = ''
-    if ($d.lastTick -and $d.lastTick.ts) { $tick = [string]$d.lastTick.ts }
-    $stall = ''
-    if ($d.lastStall) { $stall = [string]$d.lastStall.code }
-    $notifFail = ''
-    if ($d.lastNotificationFail) { $notifFail = [string]$d.lastNotificationFail.code }
-    $lblLine3.Text = ('Queue pending={0} running={1} failed={2} locks={3}  local={4} remote={5}  lastTick={6}  stall={7}  notifFail={8}' -f `
-            $d.queue.pending, $d.queue.running, $d.queue.failed, $d.queue.locks, $d.localRunning, $d.remoteRunning, $tick, $stall, $notifFail)
-}
-
 function _Ops-BindGrid($Grid, $Rows) {
     $al = New-Object System.Collections.ArrayList
     foreach ($r in @($Rows)) { [void]$al.Add($r) }
@@ -402,20 +561,164 @@ function _Ops-BindGrid($Grid, $Rows) {
     $Grid.DataSource = $al
 }
 
+function _Ops-ApplyHeader {
+    param([switch]$Light)
+    $st = _Ops-RefreshStatus -Light:$Light
+    $d = $st.Data
+    $script:SuppressToggle = $true
+    $chkOn.Checked = [bool]$d.pipelineOn
+    $script:SuppressToggle = $false
+    $script:StateColor = _Ops-StateColor ([string]$d.stateLabel)
+    $pnlBubble.Invalidate()
+    $lblState.Text = ('{0}    task={1} ({2})    lock={3}' -f $d.stateLabel, $d.task.state, $(if ($d.task.enabled) { 'enabled' } else { 'disabled' }), $d.lock.text)
+    $dryTxt = 'n/a'
+    try {
+        if ($d.dryRunText) { $dryTxt = [string]$d.dryRunText }
+        else { $dryTxt = Get-QCOpsDryRunHeaderText -Policy $d.dryRun }
+    } catch { }
+    $wm = 'n/a'
+    if ($null -ne $d.watermarkAgeSeconds) { $wm = ('{0}s ago' -f $d.watermarkAgeSeconds) }
+    $lblLine2.Text = ('PW={0}   SQL={1}   DryRun={2}   watermark={3}' -f $d.pwText, $d.sqlEnabled, $dryTxt, $wm)
+
+    if (-not $Light.IsPresent) {
+        $qrow = [pscustomobject]@{
+            pending = $d.queue.pending
+            running = $d.queue.running
+            failed = $d.queue.failed
+            succeeded = $d.queue.succeeded
+            locks = $d.queue.locks
+        }
+        _Ops-BindGrid $gridQueueCounts @($qrow)
+        try { $gridQueueCounts.ClearSelection() } catch { }
+    }
+
+    $remoteBits = New-Object System.Collections.Generic.List[string]
+    [void]$remoteBits.Add(('This host {0}: {1} running' -f $d.hostName, $d.localRunning))
+    [void]$remoteBits.Add(('{0}: {1} running' -f $d.modellingHost, $d.remoteRunning))
+    $names = @()
+    try { $names = @($d.remoteJobNames) } catch { }
+    if ($names.Count -gt 0) { [void]$remoteBits.Add(('jobs: ' + ($names -join ', '))) }
+    if ($d.throttleSummary) { [void]$remoteBits.Add(('throttle: ' + [string]$d.throttleSummary)) }
+    $lblRemote.Text = ($remoteBits -join '   |   ')
+
+    $tick = ''
+    if ($d.lastTick -and $d.lastTick.ts) { $tick = [string]$d.lastTick.ts }
+    $stall = ''
+    if ($d.lastStall) { $stall = [string]$d.lastStall.code }
+    $notifFail = ''
+    if ($d.lastNotificationFail) { $notifFail = [string]$d.lastNotificationFail.code }
+    $lblLine3.Text = ('lastTick={0}   stall={1}   notifFail={2}' -f $tick, $stall, $notifFail)
+}
+
+function _Ops-EventTime($Obj) {
+    $raw = $null
+    try { if ($Obj.ts) { $raw = [string]$Obj.ts } } catch { }
+    if (-not $raw) { return $null }
+    try {
+        return [datetime]::Parse($raw, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+    } catch {
+        return $null
+    }
+}
+
+function _Ops-RenderOverviewLog {
+    $window = [string]$cmbLogTime.SelectedItem
+    $type = [string]$cmbLogType.SelectedItem
+    $codeFilter = ([string]$txtLogCode.Text).Trim()
+    $cutoff = $null
+    $now = [datetime]::UtcNow
+    switch ($window) {
+        'Last 15 min' { $cutoff = $now.AddMinutes(-15) }
+        'Last hour' { $cutoff = $now.AddHours(-1) }
+        'Last 6 hours' { $cutoff = $now.AddHours(-6) }
+        'Last 24 hours' { $cutoff = $now.AddHours(-24) }
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($o in @($script:LogEvents)) {
+        $src = ''
+        $level = ''
+        $code = ''
+        try { $src = [string]$o.logSource } catch { }
+        try { $level = [string]$o.level } catch { }
+        try { $code = [string]$o.code } catch { }
+        if ($cutoff) {
+            $ts = _Ops-EventTime $o
+            if ($ts -and $ts.ToUniversalTime() -lt $cutoff) { continue }
+        }
+        if ($type -eq 'Watcher' -and $src -ne 'watcher') { continue }
+        if ($type -eq 'Processor' -and $src -ne 'processor') { continue }
+        if ($type -eq 'Error' -and $level -notmatch '(?i)error') { continue }
+        if ($type -eq 'Warning' -and $level -notmatch '(?i)warning') { continue }
+        if ($codeFilter -and $code -notlike ('*{0}*' -f $codeFilter) -and ("$(_Ops-FormatEvent $o)" -notlike ('*{0}*' -f $codeFilter))) { continue }
+        [void]$lines.Add((_Ops-FormatEvent $o))
+    }
+    $logBox.Text = ($lines -join [Environment]::NewLine)
+}
+
 function _Ops-RefreshOverviewLog {
     $root = [string]$script:Status.Data.queueRoot
-    $ev = Get-QCOpsRecentLogEvents -QueueRoot $root -MaxLines 50
-    $lines = New-Object System.Collections.Generic.List[string]
-    foreach ($o in @($ev.watcher)) { [void]$lines.Add((_Ops-FormatEvent $o)) }
-    foreach ($o in @($ev.processor)) { [void]$lines.Add((_Ops-FormatEvent $o)) }
-    $logBox.Text = (($lines | Select-Object -Last 80) -join [Environment]::NewLine)
+    $window = [string]$cmbLogTime.SelectedItem
+    $files = 1
+    $lines = 80
+    switch ($window) {
+        'Last hour' { $files = 2; $lines = 80 }
+        'Last 6 hours' { $files = 6; $lines = 50 }
+        'Last 24 hours' { $files = 8; $lines = 40 }
+        'All loaded' { $files = 3; $lines = 80 }
+    }
+    $logDir = Join-Path $root '_logs'
+    $stamp = $window
+    if (Test-Path -LiteralPath $logDir) {
+        $latest = @(Get-ChildItem -LiteralPath $logDir -Filter '*.jsonl' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 2)
+        foreach ($f in $latest) { $stamp += ('|{0}:{1}' -f $f.LastWriteTimeUtc.Ticks, $f.Length) }
+    }
+    if ($stamp -eq $script:LogStamp -and $script:LogEvents.Count -gt 0) {
+        _Ops-RenderOverviewLog
+        return
+    }
+    $ev = Get-QCOpsRecentLogEvents -QueueRoot $root -MaxLines $lines -MaxFiles $files -Unfiltered
+    $script:LogEvents = @($ev.events)
+    $script:LogStamp = $stamp
+    _Ops-RenderOverviewLog
 }
 
 function _Ops-RefreshQueue {
-    $state = [string]$cmbQueueState.SelectedItem
-    if (-not $state) { $state = 'running' }
-    $rows = @(Get-QCOpsRunningJobRows -QueueRoot $script:Status.Data.queueRoot -State $state)
-    _Ops-BindGrid $gridQueue $rows
+    $root = [string]$script:Status.Data.queueRoot
+    $stamp = ''
+    foreach ($state in @('pending', 'running', 'failed', 'succeeded', 'locks')) {
+        $dir = Join-Path $root $state
+        if (Test-Path -LiteralPath $dir) {
+            $stamp += (Get-Item -LiteralPath $dir).LastWriteTimeUtc.Ticks.ToString() + '|'
+        }
+    }
+    if ($stamp -eq $script:QueueStamp -and $stamp) { return }
+    $script:QueueStamp = $stamp
+    $limits = @{ pending = 150; running = 50; failed = 100; succeeded = 100 }
+    foreach ($state in @('pending', 'running', 'failed', 'succeeded')) {
+        $lim = [int]$limits[$state]
+        $rows = @(Get-QCOpsRunningJobRows -QueueRoot $root -State $state -Limit $lim | Sort-Object lastWriteTimeUtc -Descending)
+        $pane = $script:QueuePanes[$state]
+        $shown = $rows.Count
+        $extra = ''
+        if ($shown -ge $lim) { $extra = '+' }
+        $pane.box.Text = ('{0} ({1}{2})' -f (Get-Culture).TextInfo.ToTitleCase($state), $shown, $extra)
+        _Ops-BindGrid $pane.grid $rows
+    }
+}
+
+function _Ops-SelectedJobPaths {
+    $paths = New-Object System.Collections.Generic.List[string]
+    foreach ($g in @($script:QueueGrids)) {
+        foreach ($row in @($g.SelectedRows)) {
+            try {
+                $p = [string]$row.DataBoundItem.path
+                if ($p) { [void]$paths.Add($p) }
+            } catch { }
+        }
+    }
+    return @($paths)
 }
 
 function _Ops-RefreshRuns {
@@ -436,23 +739,6 @@ function _Ops-RefreshNotif {
         [void]$sb.AppendLine(('{0}  {1}  success={2}  {3}' -f $r.sent_at, $r.event_type, $r.success, $r.document_name))
     }
     $txtNotif.Text = $sb.ToString()
-}
-
-function _Ops-RefreshHosts {
-    $res = Get-QCOpsHostSummary -Config $script:Cfg
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine(('This host: {0}   modelling PC: {1}' -f $res.Data.localHost, $res.Data.modellingHost))
-    foreach ($h in @($res.Data.byHost.Keys)) {
-        $jobs = @($res.Data.byHost[$h])
-        [void]$sb.AppendLine(('{0}: {1} running' -f $h, $jobs.Count))
-        foreach ($j in $jobs) {
-            [void]$sb.AppendLine(('  {0} {1} {2}' -f $j.type, $j.sourceName, $j.checkpoint))
-        }
-    }
-    foreach ($t in @($res.Data.throttleFiles)) {
-        [void]$sb.AppendLine(('Throttle {0}: {1}' -f $t.file, ($t.doc | ConvertTo-Json -Compress)))
-    }
-    $txtHosts.Text = $sb.ToString()
 }
 
 $chkOn.Add_CheckedChanged({
@@ -482,37 +768,40 @@ $chkOn.Add_CheckedChanged({
     _Ops-ApplyHeader
 })
 
+$cmbLogTime.Add_SelectedIndexChanged({
+    $script:LogStamp = ''
+    _Ops-RefreshOverviewLog
+})
+$cmbLogType.Add_SelectedIndexChanged({ _Ops-RenderOverviewLog })
+$btnLogApply.Add_Click({
+    $script:LogStamp = ''
+    _Ops-RefreshOverviewLog
+})
+$txtLogCode.Add_KeyDown({
+    $e = $args[1]
+    if ($e -and $e.KeyCode -eq 'Enter') { _Ops-RenderOverviewLog }
+})
+
 $btnQueueRefresh.Add_Click({ _Ops-RefreshQueue })
-$cmbQueueState.Add_SelectedIndexChanged({ _Ops-RefreshQueue })
 $btnRequeue.Add_Click({
-    $paths = @()
-    foreach ($row in @($gridQueue.SelectedRows)) {
-        try { $paths += [string]$row.DataBoundItem.path } catch { }
-    }
+    $paths = @(_Ops-SelectedJobPaths)
     if ($paths.Count -eq 0) { _Ops-Msg 'Select one or more jobs.'; return }
     $r = Invoke-QCOpsRequeueJobs -Config $script:Cfg -JobPaths $paths -WritebackOnly:$chkWritebackOnly.Checked
     _Ops-Msg $r.Message
+    $script:QueueStamp = ''
     _Ops-RefreshQueue
     _Ops-ApplyHeader
 })
 $btnRecover.Add_Click({
     $r = Invoke-QCOpsRecoverStaleJobs -Config $script:Cfg
     _Ops-Msg $(if ($r.IsSuccess) { $r.Message } else { $r.Message })
+    $script:QueueStamp = ''
     _Ops-RefreshQueue
 })
 $btnOpenJson.Add_Click({
-    foreach ($row in @($gridQueue.SelectedRows)) {
-        $p = ''
-        try { $p = [string]$row.DataBoundItem.path } catch { }
+    foreach ($p in @(_Ops-SelectedJobPaths)) {
         if ($p -and (Test-Path -LiteralPath $p)) { Start-Process -FilePath 'notepad.exe' -ArgumentList $p }
     }
-})
-$gridQueue.Add_CellDoubleClick({
-    $row = $gridQueue.CurrentRow
-    if (-not $row) { return }
-    $p = ''
-    try { $p = [string]$row.DataBoundItem.path } catch { }
-    if ($p -and (Test-Path -LiteralPath $p)) { Start-Process -FilePath 'notepad.exe' -ArgumentList $p }
 })
 
 $btnFullScan.Add_Click({
@@ -537,10 +826,6 @@ $btnReconcileSs.Add_Click({
 })
 $btnEnqReport.Add_Click({
     $r = Invoke-QCOpsEnqueueJobType -Config $script:Cfg -JobType 'QC_REPORTING_SCAN'
-    _Ops-Msg $r.Message
-})
-$btnEnqComment.Add_Click({
-    $r = Invoke-QCOpsEnqueueJobType -Config $script:Cfg -JobType 'QC_COMMENT_STATUS_SYNC'
     _Ops-Msg $r.Message
 })
 
@@ -612,28 +897,33 @@ $btnMaint.Add_Click({
 })
 
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 2000
-$script:SlowTick = 0
+$timer.Interval = 5000
+$script:TickN = 0
 $timer.Add_Tick({
     try {
-        _Ops-ApplyHeader
+        if ($form.WindowState -eq 'Minimized') { return }
+        $script:TickN++
+        $full = (($script:TickN % 3) -eq 0)
+        if ($full) { _Ops-ApplyHeader } else { _Ops-ApplyHeader -Light }
+        if ($full -and $tabs.SelectedTab -eq $tabOverview) { _Ops-RefreshOverviewLog }
+        if ($full -and $tabs.SelectedTab -eq $tabQueue) { _Ops-RefreshQueue }
+        if ((($script:TickN % 6) -eq 0) -and $tabs.SelectedTab -eq $tabRuns) { _Ops-RefreshRuns }
+        if ((($script:TickN % 6) -eq 0) -and $tabs.SelectedTab -eq $tabNotif) { _Ops-RefreshNotif }
+    } catch { }
+})
+
+$tabs.Add_SelectedIndexChanged({
+    try {
         if ($tabs.SelectedTab -eq $tabOverview) { _Ops-RefreshOverviewLog }
-        $script:SlowTick++
-        if ($script:SlowTick -ge 5) {
-            $script:SlowTick = 0
-            if ($tabs.SelectedTab -eq $tabQueue) { _Ops-RefreshQueue }
-            if ($tabs.SelectedTab -eq $tabRuns) { _Ops-RefreshRuns }
-            if ($tabs.SelectedTab -eq $tabNotif) { _Ops-RefreshNotif }
-            if ($tabs.SelectedTab -eq $tabHosts) { _Ops-RefreshHosts }
-        }
+        elseif ($tabs.SelectedTab -eq $tabQueue) { _Ops-RefreshQueue }
+        elseif ($tabs.SelectedTab -eq $tabRuns) { _Ops-RefreshRuns }
+        elseif ($tabs.SelectedTab -eq $tabNotif) { _Ops-RefreshNotif }
     } catch { }
 })
 
 $form.Add_Shown({
     _Ops-ApplyHeader
     _Ops-RefreshOverviewLog
-    _Ops-RefreshQueue
-    _Ops-RefreshRuns
     $timer.Start()
 })
 $form.Add_FormClosed({ $timer.Stop() })
