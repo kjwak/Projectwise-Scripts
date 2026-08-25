@@ -84,7 +84,7 @@ Implementations in `modules/Ops/` (no flat shim):
 
 | File | Purpose |
 | --- | --- |
-| Ops/QC.OpsConsole.psm1 | Logon-session pipeline status, scheduled-task on/off, queue inspect, ops-request full scan. Does not start the dashboard. |
+| Ops/QC.OpsConsole.psm1 | Logon-session pipeline status, scheduled-task on/off, queue inspect, status-set batch countdown, ops-request full scan. Does not start the dashboard. |
 
 ### ProjectWise
 

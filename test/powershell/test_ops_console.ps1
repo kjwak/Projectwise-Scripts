@@ -15,6 +15,7 @@ Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force -WarningA
 Import-Module (Join-Path $modulesRoot 'Queue\QC.Queue.Json.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Ops\QC.OpsConsole.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulesRoot 'Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
 
 Assert-True (Get-Command Get-QCOpsPipelineStatus -ErrorAction SilentlyContinue) 'Get-QCOpsPipelineStatus exported'
 Assert-Eq (Get-QCOpsExpectedHost) 'PXBENTLEY01' 'ops console host is PXBENTLEY01'
@@ -116,6 +117,53 @@ try {
     Assert-True (($watchCmd -match $includeRx) -and ($watchCmd -notmatch $excludeRx)) 'watcher remains stoppable'
     Assert-True (($dashCmd -match $includeRx) -and ($dashCmd -notmatch $excludeRx)) 'dashboard remains stoppable'
 
+    Assert-Eq (Get-QCOpsPendingJobPriority -JobType 'QC_PREPEND' -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN')) 1 'prepend is priority 1'
+    Assert-Eq (Get-QCOpsPendingJobPriority -JobType 'STATUS_SET_GEN' -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN')) 2 'status set is priority 2'
+    Assert-Eq (Get-QCOpsPendingJobPriority -JobType 'QC_REPORTING_SCAN' -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN')) 3 'unlisted types sort after prefer list'
+
+    $batchCfg = @{
+        queue = @{ rootDir = $queueRoot }
+        statusSetBatching = @{
+            enabled = $true
+            intervalMinutes = 15
+            dirtyFolderStorePath = (Join-Path (Join-Path $queueRoot '_watcher') 'statusset-dirty-folders.json')
+        }
+    }
+    $now = [datetime]::SpecifyKind(([datetime]::UtcNow), 'Utc')
+    $last = $now.AddMinutes(-5)
+    $watcherDir = Join-Path $queueRoot '_watcher'
+    New-Item -ItemType Directory -Path $watcherDir -Force | Out-Null
+    @{
+        version = 1
+        lastBatchRunUtc = $last.ToString('o')
+        folders = @{
+            'documents\proj\cadd\sheets' = @{ folderPath = 'Documents\Proj\CADD\Sheets'; lastSeenUtc = $now.ToString('o') }
+        }
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $batchCfg.statusSetBatching.dirtyFolderStorePath -Encoding utf8
+    $sched = Get-QCStatusSetBatchSchedule -Config $batchCfg -NowUtc $now
+    Assert-True $sched.IsSuccess 'batch schedule succeeds'
+    Assert-Eq $sched.Data.dirtyFolderCount 1 'one dirty folder'
+    Assert-True (-not [bool]$sched.Data.due) 'batch is not due before interval'
+    Assert-True ($sched.Data.minutesUntil -ge 9 -and $sched.Data.minutesUntil -le 11) 'about 10 minutes until next batch'
+    $batchTxt = Get-QCOpsStatusSetBatchHeaderText -Schedule $sched
+    Assert-True ($batchTxt -like 'Status-set batch:*dirty*') 'header mentions dirty folders'
+    Assert-True ($batchTxt -like '*in *m*') 'header shows minutes until next run'
+
+    $pendingPath = Join-Path (Join-Path $queueRoot 'pending') 'job-status.json'
+    @{
+        id = 'job-status'
+        type = 'STATUS_SET_GEN'
+        sourceName = 'Sheets'
+        checkpoint = ''
+    } | ConvertTo-Json | Set-Content -LiteralPath $pendingPath -Encoding utf8
+    $pendingRows = @(Get-QCOpsRunningJobRows -QueueRoot $queueRoot -State 'pending' -PreferJobTypes @('QC_PREPEND', 'STATUS_SET_GEN'))
+    Assert-True ($pendingRows.Count -ge 1) 'pending row exists'
+    $ssRow = @($pendingRows | Where-Object { $_.jobId -eq 'job-status' })[0]
+    Assert-Eq $ssRow.priority 2 'pending STATUS_SET_GEN row has prefer rank 2'
+
+    $stBatch = Get-QCOpsPipelineStatus -Config $batchCfg -TaskName 'QC-OpsConsole-Test-DoesNotExist'
+    Assert-True ($stBatch.Data.statusSetBatchText -like 'Status-set batch:*') 'pipeline status includes status-set batch text'
+
     $guiPath = Join-Path $repoRoot 'scripts\service\Start-QCOpsConsole.ps1'
     $guiText = Get-Content -LiteralPath $guiPath -Raw
     Assert-True ($guiText -notmatch "(?m)^\s*(Start-Process|&).{0,120}Start-QCPipelineDashboard") 'GUI does not start the dashboard'
@@ -123,6 +171,8 @@ try {
     Assert-True ($guiText -match 'NoGui') 'GUI keeps text console fallback'
     Assert-True ($guiText -notmatch "_New-Tab 'Hosts'") 'Hosts tab removed'
     Assert-True ($guiText -notmatch 'QC_COMMENT_STATUS_SYNC') 'Runs tab does not enqueue comment sync'
+    Assert-True ($guiText -match 'IncludePriority') 'pending queue grid includes priority'
+    Assert-True ($guiText -match 'statusSetBatchText') 'header binds status-set batch schedule'
 
     $regPath = Join-Path $repoRoot 'scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1'
     $regText = Get-Content -LiteralPath $regPath -Raw

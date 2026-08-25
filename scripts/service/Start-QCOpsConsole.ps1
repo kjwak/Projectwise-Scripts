@@ -328,6 +328,7 @@ function _Ops-OpenJobJson($Grid) {
 }
 
 function _New-JobGrid {
+    param([switch]$IncludePriority)
     $grid = New-Object System.Windows.Forms.DataGridView
     $grid.Dock = 'Fill'
     $grid.ReadOnly = $true
@@ -339,17 +340,23 @@ function _New-JobGrid {
     $grid.AutoGenerateColumns = $false
     $grid.AutoSizeColumnsMode = 'Fill'
     $grid.BackgroundColor = [System.Drawing.Color]::White
-    foreach ($c in @(
-            @{ Name = 'jobId'; Header = 'jobId' }
-            @{ Name = 'type'; Header = 'type' }
-            @{ Name = 'sourceName'; Header = 'sourceName' }
-            @{ Name = 'checkpoint'; Header = 'checkpoint' }
-            @{ Name = 'lastWriteTime'; Header = 'lastWriteTime' }
-        )) {
+    $cols = @()
+    if ($IncludePriority) {
+        $cols += @{ Name = 'priority'; Header = 'priority'; Weight = 18 }
+    }
+    $cols += @(
+        @{ Name = 'jobId'; Header = 'jobId'; Weight = 40 }
+        @{ Name = 'type'; Header = 'type'; Weight = 28 }
+        @{ Name = 'sourceName'; Header = 'sourceName'; Weight = 50 }
+        @{ Name = 'checkpoint'; Header = 'checkpoint'; Weight = 28 }
+        @{ Name = 'lastWriteTime'; Header = 'lastWriteTime'; Weight = 32 }
+    )
+    foreach ($c in $cols) {
         $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $col.Name = $c.Name
         $col.DataPropertyName = $c.Name
         $col.HeaderText = $c.Header
+        $col.FillWeight = [single]$c.Weight
         [void]$grid.Columns.Add($col)
     }
     $grid.Add_CellFormatting({
@@ -369,17 +376,17 @@ function _New-JobGrid {
     return $grid
 }
 
-function _New-QueuePane([string]$Title) {
+function _New-QueuePane([string]$Title, [switch]$IncludePriority) {
     $box = New-Object System.Windows.Forms.GroupBox
     $box.Text = $Title
     $box.Dock = 'Fill'
     $box.Padding = New-Object System.Windows.Forms.Padding(6)
-    $grid = _New-JobGrid
+    $grid = _New-JobGrid -IncludePriority:$IncludePriority
     $box.Controls.Add($grid)
     return @{ box = $box; grid = $grid }
 }
 
-$panePending = _New-QueuePane 'Pending'
+$panePending = _New-QueuePane 'Pending' -IncludePriority
 $paneRunning = _New-QueuePane 'Running'
 $paneFailed = _New-QueuePane 'Failed'
 $paneSucceeded = _New-QueuePane 'Succeeded'
@@ -462,42 +469,151 @@ $tabSheets.Controls.SetChildIndex($txtSheetOut, 0)
 $tabSql = _New-Tab 'SQL'
 $sqlTop = New-Object System.Windows.Forms.Panel
 $sqlTop.Dock = 'Top'
-$sqlTop.Height = 72
+$sqlTop.Height = 112
 $tabSql.Controls.Add($sqlTop)
+
 $cmbSql = New-Object System.Windows.Forms.ComboBox
 $cmbSql.DropDownStyle = 'DropDownList'
 @('v_poller_health', 'v_job_summary', 'poll_runs', 'processing_jobs', 'audit_events', 'notification_log') | ForEach-Object { [void]$cmbSql.Items.Add($_) }
 $cmbSql.SelectedIndex = 0
-$cmbSql.Location = New-Object System.Drawing.Point(8, 6)
-$cmbSql.Width = 220
+$cmbSql.Location = New-Object System.Drawing.Point(8, 8)
+$cmbSql.Width = 180
 $sqlTop.Controls.Add($cmbSql)
+
+$lblSqlRange = New-Object System.Windows.Forms.Label
+$lblSqlRange.Text = 'Range'
+$lblSqlRange.Location = New-Object System.Drawing.Point(196, 12)
+$lblSqlRange.AutoSize = $true
+$sqlTop.Controls.Add($lblSqlRange)
+
+$cmbSqlRange = New-Object System.Windows.Forms.ComboBox
+$cmbSqlRange.DropDownStyle = 'DropDownList'
+Get-QCOpsSqlTimeRangeChoices | ForEach-Object { [void]$cmbSqlRange.Items.Add($_) }
+$cmbSqlRange.SelectedItem = 'Last 24 hours'
+$cmbSqlRange.Location = New-Object System.Drawing.Point(240, 8)
+$cmbSqlRange.Width = 130
+$sqlTop.Controls.Add($cmbSqlRange)
+
 $btnSqlLoad = New-Object System.Windows.Forms.Button
 $btnSqlLoad.Text = 'Load'
-$btnSqlLoad.Location = New-Object System.Drawing.Point(236, 4)
+$btnSqlLoad.Location = New-Object System.Drawing.Point(378, 6)
 $sqlTop.Controls.Add($btnSqlLoad)
+
 $lblWatermark = New-Object System.Windows.Forms.Label
-$lblWatermark.Location = New-Object System.Drawing.Point(330, 8)
-$lblWatermark.Size = New-Object System.Drawing.Size(500, 20)
+$lblWatermark.Location = New-Object System.Drawing.Point(460, 12)
+$lblWatermark.Size = New-Object System.Drawing.Size(520, 20)
 $sqlTop.Controls.Add($lblWatermark)
-$txtWmUtc = New-Object System.Windows.Forms.TextBox
-$txtWmUtc.Location = New-Object System.Drawing.Point(8, 40)
-$txtWmUtc.Width = 280
-$txtWmUtc.Text = ''
-$sqlTop.Controls.Add($txtWmUtc)
+
+$lblSqlJob = New-Object System.Windows.Forms.Label
+$lblSqlJob.Text = 'Job type'
+$lblSqlJob.Location = New-Object System.Drawing.Point(8, 44)
+$lblSqlJob.AutoSize = $true
+$sqlTop.Controls.Add($lblSqlJob)
+
+$cmbSqlJobType = New-Object System.Windows.Forms.ComboBox
+$cmbSqlJobType.DropDownStyle = 'DropDownList'
+Get-QCOpsSqlJobTypeChoices | ForEach-Object { [void]$cmbSqlJobType.Items.Add($_) }
+$cmbSqlJobType.SelectedIndex = 0
+$cmbSqlJobType.Location = New-Object System.Drawing.Point(70, 40)
+$cmbSqlJobType.Width = 190
+$sqlTop.Controls.Add($cmbSqlJobType)
+
+$lblSqlPath = New-Object System.Windows.Forms.Label
+$lblSqlPath.Text = 'Source path'
+$lblSqlPath.Location = New-Object System.Drawing.Point(270, 44)
+$lblSqlPath.AutoSize = $true
+$sqlTop.Controls.Add($lblSqlPath)
+
+$cmbSqlSourcePath = New-Object System.Windows.Forms.ComboBox
+$cmbSqlSourcePath.DropDownStyle = 'DropDown'
+$cmbSqlSourcePath.Location = New-Object System.Drawing.Point(348, 40)
+$cmbSqlSourcePath.Width = 320
+try {
+    Get-QCOpsWatchFolderChoices -Config $script:Cfg | ForEach-Object { [void]$cmbSqlSourcePath.Items.Add($_) }
+} catch { }
+$sqlTop.Controls.Add($cmbSqlSourcePath)
+
+function _Ops-NewSqlDatePicker([int]$X, [int]$Y) {
+    $dtp = New-Object System.Windows.Forms.DateTimePicker
+    $dtp.Format = [System.Windows.Forms.DateTimePickerFormat]::Custom
+    $dtp.CustomFormat = 'yyyy-MM-dd HH:mm'
+    $dtp.ShowUpDown = $false
+    $dtp.Location = New-Object System.Drawing.Point($X, $Y)
+    $dtp.Width = 168
+    $dtp.Value = [datetime]::Now
+    return $dtp
+}
+
+$lblSqlFrom = New-Object System.Windows.Forms.Label
+$lblSqlFrom.Text = 'From'
+$lblSqlFrom.AutoSize = $true
+$sqlTop.Controls.Add($lblSqlFrom)
+$dtpSqlFrom = _Ops-NewSqlDatePicker 44 76
+$dtpSqlFrom.Value = [datetime]::Now.AddDays(-1)
+$sqlTop.Controls.Add($dtpSqlFrom)
+
+$lblSqlTo = New-Object System.Windows.Forms.Label
+$lblSqlTo.Text = 'To'
+$lblSqlTo.AutoSize = $true
+$sqlTop.Controls.Add($lblSqlTo)
+$dtpSqlTo = _Ops-NewSqlDatePicker 246 76
+$sqlTop.Controls.Add($dtpSqlTo)
+
+$lblWm = New-Object System.Windows.Forms.Label
+$lblWm.Text = 'Rewind to'
+$lblWm.AutoSize = $true
+$sqlTop.Controls.Add($lblWm)
+$dtpWm = _Ops-NewSqlDatePicker 78 76
+$dtpWm.Value = [datetime]::Now.AddHours(-1)
+$sqlTop.Controls.Add($dtpWm)
+$lblWmLocal = New-Object System.Windows.Forms.Label
+$lblWmLocal.Text = '(local)'
+$lblWmLocal.AutoSize = $true
+$sqlTop.Controls.Add($lblWmLocal)
+
 $txtWmConfirm = New-Object System.Windows.Forms.TextBox
-$txtWmConfirm.Location = New-Object System.Drawing.Point(296, 40)
 $txtWmConfirm.Width = 180
 $sqlTop.Controls.Add($txtWmConfirm)
 $btnWmRewind = New-Object System.Windows.Forms.Button
 $btnWmRewind.Text = 'Rewind watermark'
-$btnWmRewind.Location = New-Object System.Drawing.Point(484, 38)
 $btnWmRewind.Width = 140
 $sqlTop.Controls.Add($btnWmRewind)
 $lblWmHint = New-Object System.Windows.Forms.Label
-$lblWmHint.Text = 'UTC datetime + type REWIND WATERMARK'
-$lblWmHint.Location = New-Object System.Drawing.Point(632, 42)
+$lblWmHint.Text = 'type REWIND WATERMARK'
 $lblWmHint.AutoSize = $true
 $sqlTop.Controls.Add($lblWmHint)
+
+function _Ops-LayoutSqlFilters {
+    $tbl = [string]$cmbSql.SelectedItem
+    $custom = ([string]$cmbSqlRange.SelectedItem -eq 'Custom')
+    $jobOk = ($tbl -in @('processing_jobs', 'v_job_summary'))
+    $pathOk = ($tbl -in @('processing_jobs', 'audit_events', 'notification_log'))
+    $cmbSqlJobType.Enabled = $jobOk
+    $cmbSqlSourcePath.Enabled = $pathOk
+    $lblSqlFrom.Visible = $custom
+    $dtpSqlFrom.Visible = $custom
+    $lblSqlTo.Visible = $custom
+    $dtpSqlTo.Visible = $custom
+    $wmX = 8
+    if ($custom) {
+        $lblSqlFrom.Location = New-Object System.Drawing.Point(8, 80)
+        $dtpSqlFrom.Location = New-Object System.Drawing.Point(44, 76)
+        $lblSqlTo.Location = New-Object System.Drawing.Point(220, 80)
+        $dtpSqlTo.Location = New-Object System.Drawing.Point(246, 76)
+        $wmX = 430
+    }
+    $lblWm.Location = New-Object System.Drawing.Point($wmX, 80)
+    $dtpWm.Location = New-Object System.Drawing.Point(($wmX + 70), 76)
+    $lblWmLocal.Location = New-Object System.Drawing.Point(($wmX + 242), 80)
+    $txtWmConfirm.Location = New-Object System.Drawing.Point(($wmX + 292), 78)
+    $btnWmRewind.Location = New-Object System.Drawing.Point(($wmX + 480), 76)
+    $lblWmHint.Location = New-Object System.Drawing.Point(($wmX + 628), 80)
+}
+
+$cmbSql.Add_SelectedIndexChanged({ _Ops-LayoutSqlFilters })
+$cmbSqlRange.Add_SelectedIndexChanged({ _Ops-LayoutSqlFilters })
+_Ops-LayoutSqlFilters
+
 $gridSql = New-Object System.Windows.Forms.DataGridView
 $gridSql.Dock = 'Fill'
 $gridSql.ReadOnly = $true
@@ -607,7 +723,9 @@ function _Ops-ApplyHeader {
     if ($d.lastStall) { $stall = [string]$d.lastStall.code }
     $notifFail = ''
     if ($d.lastNotificationFail) { $notifFail = [string]$d.lastNotificationFail.code }
-    $lblLine3.Text = ('lastTick={0}   stall={1}   notifFail={2}' -f $tick, $stall, $notifFail)
+    $batchTxt = 'Status-set batch: n/a'
+    try { if ($d.statusSetBatchText) { $batchTxt = [string]$d.statusSetBatchText } } catch { }
+    $lblLine3.Text = ($batchTxt + [Environment]::NewLine + ('lastTick={0}   stall={1}   notifFail={2}' -f $tick, $stall, $notifFail))
 }
 
 function _Ops-EventTime($Obj) {
@@ -696,9 +814,18 @@ function _Ops-RefreshQueue {
     if ($stamp -eq $script:QueueStamp -and $stamp) { return }
     $script:QueueStamp = $stamp
     $limits = @{ pending = 150; running = 50; failed = 100; succeeded = 100 }
+    $prefer = @(Get-QCOpsPreferJobTypes -Config $script:Cfg)
     foreach ($state in @('pending', 'running', 'failed', 'succeeded')) {
         $lim = [int]$limits[$state]
-        $rows = @(Get-QCOpsRunningJobRows -QueueRoot $root -State $state -Limit $lim | Sort-Object lastWriteTimeUtc -Descending)
+        $rowLimit = $lim
+        if ($state -eq 'pending') { $rowLimit = 0 }
+        $rows = @(Get-QCOpsRunningJobRows -QueueRoot $root -State $state -Limit $rowLimit -PreferJobTypes $prefer)
+        if ($state -eq 'pending') {
+            $rows = @($rows | Sort-Object @{ Expression = { [int]$_.priority } }, @{ Expression = { $_.lastWriteTimeUtc } })
+        } else {
+            $rows = @($rows | Sort-Object lastWriteTimeUtc -Descending)
+        }
+        if ($lim -gt 0 -and $rows.Count -gt $lim) { $rows = @($rows | Select-Object -First $lim) }
         $pane = $script:QueuePanes[$state]
         $shown = $rows.Count
         $extra = ''
@@ -849,22 +976,35 @@ $btnPwCompare.Add_Click({
     }
 })
 
+function _Ops-HideSqlSourceFolderColumn {
+    foreach ($name in @('source_folder', 'sourceFolder')) {
+        try {
+            $col = $gridSql.Columns[$name]
+            if ($col) { $col.Visible = $false }
+        } catch { }
+    }
+}
+
+$gridSql.Add_DataBindingComplete({ _Ops-HideSqlSourceFolderColumn })
+
 $btnSqlLoad.Add_Click({
     $name = [string]$cmbSql.SelectedItem
-    $r = Get-QCOpsSqlTablePreview -Config $script:Cfg -TableOrView $name -Top 80
+    $range = Resolve-QCOpsSqlTimeRange -Range ([string]$cmbSqlRange.SelectedItem) -CustomFrom $dtpSqlFrom.Value -CustomTo $dtpSqlTo.Value
+    if (-not $range.IsSuccess) { _Ops-Msg $range.Message; return }
+    $jobType = [string]$cmbSqlJobType.SelectedItem
+    if (-not $cmbSqlJobType.Enabled) { $jobType = '' }
+    $sourcePath = [string]$cmbSqlSourcePath.Text
+    if (-not $cmbSqlSourcePath.Enabled) { $sourcePath = '' }
+    $r = Get-QCOpsSqlTablePreview -Config $script:Cfg -TableOrView $name -Top 80 -FromUtc $range.Data.fromUtc -ToUtc $range.Data.toUtc -JobType $jobType -SourcePath $sourcePath
     if (-not $r.IsSuccess) { _Ops-Msg $r.Message; return }
     $gridSql.DataSource = $r.Data.table
+    _Ops-HideSqlSourceFolderColumn
     $wm = $script:Status.Data.watermarkUtc
     $lblWatermark.Text = ('Watermark: {0}' -f $wm)
 })
 $btnWmRewind.Add_Click({
-    $raw = [string]$txtWmUtc.Text
-    $dt = $null
-    try {
-        $dt = [datetime]::Parse($raw, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
-        if ($dt.Kind -ne [DateTimeKind]::Utc) { $dt = $dt.ToUniversalTime() }
-    } catch { $dt = $null }
-    if (-not $dt) { _Ops-Msg 'Enter a UTC datetime (ISO-8601).'; return }
+    $dt = $dtpWm.Value
+    if ($dt.Kind -ne [DateTimeKind]::Utc) { $dt = $dt.ToUniversalTime() }
     $r = Set-QCOpsAuditWatermark -Config $script:Cfg -WatermarkUtc $dt -ConfirmText ([string]$txtWmConfirm.Text)
     _Ops-Msg $r.Message
     _Ops-ApplyHeader

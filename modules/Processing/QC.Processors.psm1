@@ -2726,6 +2726,15 @@ function Invoke-StatusSetProcessor {
     $qpdfExe = if ($ss.ContainsKey('qpdfExe') -and $ss.qpdfExe) { [string]$ss.qpdfExe } else { 'qpdf' }
     $forceRebuild = $false
     if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    if (-not $forceRebuild) {
+        try { if ($Job.ContainsKey('forceRebuild') -and [bool]$Job.forceRebuild) { $forceRebuild = $true } } catch { }
+        try { if ([string]$Job.checkpoint -eq 'full_rebuild') { $forceRebuild = $true } } catch { }
+        try {
+            $md = $null
+            if ($Job.ContainsKey('metadata')) { $md = $Job.metadata }
+            if ($md -is [hashtable] -and $md.ContainsKey('forceRebuild') -and [bool]$md.forceRebuild) { $forceRebuild = $true }
+        } catch { }
+    }
     $promptForCredential = $false
     if ($ss.ContainsKey('promptForCredential')) { try { $promptForCredential = [bool]$ss.promptForCredential } catch { $promptForCredential = $false } }
     $writeBackToPW = $false

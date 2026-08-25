@@ -147,6 +147,25 @@ function _SSS-GetHashtableBool([hashtable]$Map, [string]$Name, [bool]$Default) {
     try { return [bool]$Map[$Name] } catch { return $Default }
 }
 
+function _SSS-JobRequestsForceRebuild {
+    param($Job)
+    if ($null -eq $Job) { return $false }
+    try {
+        if ($Job -is [hashtable]) {
+            if ($Job.ContainsKey('forceRebuild') -and [bool]$Job['forceRebuild']) { return $true }
+            if ($Job.ContainsKey('checkpoint') -and [string]$Job['checkpoint'] -eq 'full_rebuild') { return $true }
+            $md = $null
+            if ($Job.ContainsKey('metadata')) { $md = $Job['metadata'] }
+            if ($md -is [hashtable] -and $md.ContainsKey('forceRebuild') -and [bool]$md['forceRebuild']) { return $true }
+            return $false
+        }
+        if ([bool]$Job.forceRebuild) { return $true }
+        if ([string]$Job.checkpoint -eq 'full_rebuild') { return $true }
+        if ($Job.metadata -and [bool]$Job.metadata.forceRebuild) { return $true }
+    } catch { }
+    return $false
+}
+
 function _SSS-GetHashtableInt([hashtable]$Map, [string]$Name, [int]$Default) {
     if (-not $Map -or -not $Map.ContainsKey($Name) -or $null -eq $Map[$Name]) { return $Default }
     try { return [int]$Map[$Name] } catch { return $Default }
@@ -1380,6 +1399,7 @@ function Invoke-StatusSetNativeJob {
 
     $forceRebuild = $false
     if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    if (-not $forceRebuild) { $forceRebuild = _SSS-JobRequestsForceRebuild -Job $Job }
     $writeBackToPW = $false
     if ($ss.ContainsKey('writeBackToPW')) { try { $writeBackToPW = [bool]$ss.writeBackToPW } catch { $writeBackToPW = $false } }
 
@@ -2682,6 +2702,7 @@ function Invoke-StatusSetNativeJob {
 
     $forceRebuild = $false
     if ($ss.ContainsKey('forceRebuild')) { try { $forceRebuild = [bool]$ss.forceRebuild } catch { $forceRebuild = $false } }
+    if (-not $forceRebuild) { $forceRebuild = _SSS-JobRequestsForceRebuild -Job $Job }
     $writeBackToPW = $false
     if ($ss.ContainsKey('writeBackToPW')) { try { $writeBackToPW = [bool]$ss.writeBackToPW } catch { $writeBackToPW = $false } }
 

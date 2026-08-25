@@ -188,6 +188,57 @@ function Get-QCStatusSetDirtyFolderStorePath {
     return [string]$settings.dirtyFolderStorePath
 }
 
+function Get-QCStatusSetBatchSchedule {
+    <#
+    .SYNOPSIS
+    Next dirty-folder STATUS_SET_GEN batch time from lastBatchRunUtc + intervalMinutes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$RepoRoot = '',
+        [datetime]$NowUtc = [datetime]::UtcNow
+    )
+    $now = $NowUtc
+    if ($now.Kind -ne [DateTimeKind]::Utc) { $now = $now.ToUniversalTime() }
+    $settings = Get-QCStatusSetBatchingSettings -Config $Config -RepoRoot $RepoRoot
+    $dirtyCount = 0
+    $lastRun = $null
+    try {
+        $store = _SSB-ReadDirtyFolderStore -Path ([string]$settings.dirtyFolderStorePath)
+        if ($store.folders) { $dirtyCount = @($store.folders.Keys).Count }
+        $lastRun = _SSB-ParseUtc $store.lastBatchRunUtc
+    } catch { }
+    $intervalMin = [int]$settings.intervalMinutes
+    $enabled = [bool]$settings.enabled
+    $due = $false
+    $nextUtc = $null
+    if ($enabled) {
+        if (-not $lastRun) {
+            $due = ($dirtyCount -gt 0)
+            if ($due) { $nextUtc = $now }
+        } else {
+            $nextUtc = $lastRun.AddMinutes($intervalMin)
+            if ($now -ge $nextUtc) { $due = $true }
+        }
+    }
+    $minutesUntil = $null
+    if ($enabled -and $nextUtc -and -not $due) {
+        $minutesUntil = [int][Math]::Max(0, [Math]::Ceiling(($nextUtc - $now).TotalMinutes))
+    }
+    return New-QCSuccessResult -Code 'STATUSSET_BATCH_SCHEDULE' -Message 'Status-set batch schedule.' -Data @{
+        enabled = $enabled
+        intervalMinutes = $intervalMin
+        quietPeriodSeconds = [int]$settings.quietPeriodSeconds
+        dirtyFolderCount = $dirtyCount
+        lastBatchRunUtc = $(if ($lastRun) { $lastRun.ToString('o') } else { $null })
+        nextBatchUtc = $(if ($nextUtc) { $nextUtc.ToString('o') } else { $null })
+        due = $due
+        minutesUntil = $minutesUntil
+        storePath = [string]$settings.dirtyFolderStorePath
+    }
+}
+
 function _SSB-NewEmptyStore {
     return @{
         version = 1
@@ -785,4 +836,4 @@ function Invoke-StatusSetDirtyFolderBatch {
     return New-QCSuccessResult -Code 'STATUSSET_BATCH_INTERVAL_DONE' -Message 'Batch run completed.' -Data $batchStats
 }
 
-Export-ModuleMember -Function Get-QCStatusSetBatchingSettings, Get-QCStatusSetDirtyFolderStorePath, Mark-StatusSetDirtyFolder, Invoke-StatusSetFolderEvaluation, Invoke-StatusSetDirtyFolderBatch
+Export-ModuleMember -Function Get-QCStatusSetBatchingSettings, Get-QCStatusSetDirtyFolderStorePath, Get-QCStatusSetBatchSchedule, Mark-StatusSetDirtyFolder, Invoke-StatusSetFolderEvaluation, Invoke-StatusSetDirtyFolderBatch

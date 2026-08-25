@@ -9,6 +9,7 @@ Import-Module (Join-Path $modulesRoot 'Core\Core.Results.psm1') -Force
 Import-Module (Join-Path $modulesRoot 'Core\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $modulesRoot 'Queue\QC.Queue.Json.psm1') -Force
 Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulesRoot 'Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Database\Core.Database.psm1') -Force -WarningAction SilentlyContinue
 
 $script:QCOpsDefaultTaskName = 'QC-PipelineDashboard'
@@ -284,18 +285,102 @@ function Get-QCOpsJsonlLastCodeTime {
     return $null
 }
 
+function Get-QCOpsPreferJobTypes {
+    [CmdletBinding()]
+    param([hashtable]$Config)
+    $prefer = New-Object System.Collections.Generic.List[string]
+    try {
+        $sel = $null
+        if ($Config -and $Config.queue) {
+            $q = $Config.queue
+            if ($q -is [hashtable] -and $q.ContainsKey('selection')) { $sel = $q.selection }
+            elseif ($q.PSObject.Properties['selection']) { $sel = $q.selection }
+        }
+        $raw = $null
+        if ($sel -is [hashtable] -and $sel.ContainsKey('preferJobTypes')) { $raw = $sel.preferJobTypes }
+        elseif ($sel -and $sel.PSObject.Properties['preferJobTypes']) { $raw = $sel.preferJobTypes }
+        foreach ($t in @($raw)) {
+            $s = ([string]$t).Trim()
+            if ($s) { [void]$prefer.Add($s) }
+        }
+    } catch { }
+    return @($prefer.ToArray())
+}
+
+function Get-QCOpsPendingJobPriority {
+    [CmdletBinding()]
+    param(
+        [string]$JobType,
+        [string[]]$PreferJobTypes = @()
+    )
+    $list = @($PreferJobTypes | Where-Object { $_ })
+    if ($list.Count -eq 0) { return 1 }
+    $jt = ([string]$JobType).Trim()
+    for ($i = 0; $i -lt $list.Count; $i++) {
+        if ([string]$list[$i] -eq $jt) { return ($i + 1) }
+    }
+    return ($list.Count + 1)
+}
+
+function Get-QCOpsStatusSetBatchHeaderText {
+    [CmdletBinding()]
+    param($Schedule)
+    $d = $null
+    try {
+        if ($Schedule -and $Schedule.PSObject.Properties['IsSuccess'] -and $Schedule.IsSuccess) { $d = $Schedule.Data }
+        elseif ($Schedule -and $Schedule.PSObject.Properties['enabled']) { $d = $Schedule }
+        elseif ($Schedule -is [hashtable]) { $d = $Schedule }
+    } catch { }
+    if (-not $d) { return 'Status-set batch: n/a' }
+    $enabled = $true
+    try { $enabled = [bool]$d.enabled } catch { }
+    $interval = 15
+    try { $interval = [int]$d.intervalMinutes } catch { }
+    $dirty = 0
+    try { $dirty = [int]$d.dirtyFolderCount } catch { }
+    if (-not $enabled) { return 'Status-set batch: off' }
+    $nextLocal = ''
+    try {
+        if ($d.nextBatchUtc) {
+            $next = [datetime]::Parse([string]$d.nextBatchUtc).ToUniversalTime().ToLocalTime()
+            $nextLocal = $next.ToString('yyyy-MM-dd HH:mm')
+        }
+    } catch { }
+    $due = $false
+    try { $due = [bool]$d.due } catch { }
+    if ($dirty -le 0 -and -not $due) {
+        if ($nextLocal) {
+            return ('Status-set batch: idle (0 dirty); next {0} local; every {1}m' -f $nextLocal, $interval)
+        }
+        return ('Status-set batch: idle (0 dirty); every {0}m' -f $interval)
+    }
+    if ($due) {
+        return ('Status-set batch: {0} dirty folder(s); due now (every {1}m)' -f $dirty, $interval)
+    }
+    $inMin = $null
+    try { if ($null -ne $d.minutesUntil) { $inMin = [int]$d.minutesUntil } } catch { }
+    if ($nextLocal -and $null -ne $inMin) {
+        return ('Status-set batch: {0} dirty folder(s); next {1} local (in {2}m; every {3}m)' -f $dirty, $nextLocal, $inMin, $interval)
+    }
+    if ($nextLocal) {
+        return ('Status-set batch: {0} dirty folder(s); next {1} local; every {2}m' -f $dirty, $nextLocal, $interval)
+    }
+    return ('Status-set batch: {0} dirty folder(s); every {1}m' -f $dirty, $interval)
+}
+
 function Get-QCOpsRunningJobRows {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$QueueRoot,
         [string]$State = 'running',
-        [int]$Limit = 0
+        [int]$Limit = 0,
+        [string[]]$PreferJobTypes = @()
     )
     $dir = Join-Path $QueueRoot $State
     $out = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $dir)) { return @() }
     $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-    if ($Limit -gt 0 -and $files.Count -gt $Limit) {
+    if ($Limit -gt 0 -and $State -ne 'pending' -and $files.Count -gt $Limit) {
         $files = @($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First $Limit)
     }
     foreach ($f in $files) {
@@ -317,6 +402,10 @@ function Get-QCOpsRunningJobRows {
                 elseif ($j.PSObject.Properties['checkpoint']) { $ckpt = [string]$j.checkpoint }
             } catch { }
         }
+        $pri = 0
+        if ($State -eq 'pending') {
+            $pri = Get-QCOpsPendingJobPriority -JobType $type -PreferJobTypes $PreferJobTypes
+        }
         $locked = $false
         try {
             $lockPath = Join-Path (Join-Path $QueueRoot 'locks') ($id + '.lock')
@@ -326,6 +415,7 @@ function Get-QCOpsRunningJobRows {
             state = $State
             jobId = $id
             type = $type
+            priority = $pri
             sourceName = $src
             sourceFolder = $folder
             machineName = $machine
@@ -461,6 +551,12 @@ function Get-QCOpsPipelineStatus {
     if (-not $Light.IsPresent) {
         $opsReq = (Get-QCWatcherOpsRequest -Config $Config -QueueRoot $queueRoot)
     }
+    $statusSetBatch = $null
+    try {
+        if (Get-Command Get-QCStatusSetBatchSchedule -ErrorAction SilentlyContinue) {
+            $statusSetBatch = Get-QCStatusSetBatchSchedule -Config $Config
+        }
+    } catch { }
 
     return New-QCSuccessResult -Code 'OPS_STATUS' -Message $stateLabel -Data @{
         hostName = $localHost
@@ -488,6 +584,8 @@ function Get-QCOpsPipelineStatus {
         throttleSummary = $throttleSummary
         inFlightPrepend = $inFlight
         opsRequest = $opsReq
+        statusSetBatch = $statusSetBatch
+        statusSetBatchText = (Get-QCOpsStatusSetBatchHeaderText -Schedule $statusSetBatch)
         light = [bool]$Light.IsPresent
     }
 }
@@ -749,22 +847,193 @@ function Invoke-QCOpsEnqueueJobType {
     return (Add-QCQueueJob -Job $job -Config $Config)
 }
 
+function Get-QCOpsSqlTimeRangeChoices {
+    return @(
+        'Last 15 min'
+        'Last 1 hour'
+        'Last 6 hours'
+        'Last 24 hours'
+        'Last 7 days'
+        'Last 30 days'
+        'All'
+        'Custom'
+    )
+}
+
+function Get-QCOpsSqlJobTypeChoices {
+    return @(
+        'All'
+        'QC_PREPEND'
+        'STATUS_SET_GEN'
+        'QC_RENDITION'
+        'QC_COMMENT_STATUS_SYNC'
+        'QC_REPORTING_SCAN'
+        'QC_NOTIFICATION'
+        'QC_STATE'
+    )
+}
+
+function Resolve-QCOpsSqlTimeRange {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Range,
+        [datetime]$CustomFrom,
+        [datetime]$CustomTo,
+        [datetime]$NowUtc = [datetime]::UtcNow
+    )
+    $now = $NowUtc
+    if ($now.Kind -ne [DateTimeKind]::Utc) { $now = $now.ToUniversalTime() }
+    $toUtc = $now
+    $fromUtc = $null
+    $unbounded = $false
+    switch -Regex ($Range.Trim()) {
+        '^Last 15 min$' { $fromUtc = $now.AddMinutes(-15) }
+        '^Last 1 hour$' { $fromUtc = $now.AddHours(-1) }
+        '^Last 6 hours$' { $fromUtc = $now.AddHours(-6) }
+        '^Last 24 hours$' { $fromUtc = $now.AddHours(-24) }
+        '^Last 7 days$' { $fromUtc = $now.AddDays(-7) }
+        '^Last 30 days$' { $fromUtc = $now.AddDays(-30) }
+        '^All$' { $unbounded = $true }
+        '^Custom$' {
+            if ($CustomFrom -eq [datetime]::MinValue -or $CustomTo -eq [datetime]::MinValue) {
+                return New-QCFailureResult -Code 'OPS_SQL_CUSTOM_RANGE' -Message 'Pick a custom from and to datetime.'
+            }
+            $fromUtc = $CustomFrom
+            $toUtc = $CustomTo
+            if ($fromUtc.Kind -ne [DateTimeKind]::Utc) { $fromUtc = $fromUtc.ToUniversalTime() }
+            if ($toUtc.Kind -ne [DateTimeKind]::Utc) { $toUtc = $toUtc.ToUniversalTime() }
+            if ($fromUtc -gt $toUtc) {
+                return New-QCFailureResult -Code 'OPS_SQL_RANGE_ORDER' -Message 'Custom range From must be earlier than To.'
+            }
+        }
+        default {
+            return New-QCFailureResult -Code 'OPS_SQL_BAD_RANGE' -Message ('Unknown time range: ' + $Range)
+        }
+    }
+    return New-QCSuccessResult -Code 'OPS_SQL_RANGE' -Message 'Time range resolved.' -Data @{
+        range = $Range
+        fromUtc = $fromUtc
+        toUtc = $(if ($unbounded) { $null } else { $toUtc })
+        unbounded = $unbounded
+    }
+}
+
+function Get-QCOpsSqlPreviewCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TableOrView,
+        [int]$Top = 80,
+        [AllowNull()]$FromUtc = $null,
+        [AllowNull()]$ToUtc = $null,
+        [string]$JobType = '',
+        [string]$SourcePath = ''
+    )
+    $safe = $TableOrView -replace '[^A-Za-z0-9_]', ''
+    $catalog = @{
+        v_poller_health = @{ kind = 'poller'; timeCol = 'started_at' }
+        v_job_summary   = @{ kind = 'job_summary'; timeCol = 'created_at' }
+        poll_runs       = @{ kind = 'table'; timeCol = 'started_at'; from = 'poll_runs' }
+        processing_jobs = @{ kind = 'table'; timeCol = 'created_at'; from = 'processing_jobs' }
+        audit_events    = @{ kind = 'table'; timeCol = 'captured_at'; from = 'audit_events' }
+        notification_log = @{ kind = 'table'; timeCol = 'sent_at'; from = 'notification_log' }
+    }
+    if (-not $catalog.ContainsKey($safe)) {
+        return New-QCFailureResult -Code 'OPS_SQL_BAD_NAME' -Message 'Invalid table or view name.'
+    }
+    $meta = $catalog[$safe]
+    $topN = [Math]::Max(1, [Math]::Min(500, [int]$Top))
+    $params = @{}
+    $where = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $FromUtc -and $null -ne $ToUtc) {
+        $fromDt = [datetime]$FromUtc
+        $toDt = [datetime]$ToUtc
+        if ($fromDt.Kind -ne [DateTimeKind]::Utc) { $fromDt = $fromDt.ToUniversalTime() }
+        if ($toDt.Kind -ne [DateTimeKind]::Utc) { $toDt = $toDt.ToUniversalTime() }
+        [void]$where.Add(('[{0}] >= @fromUtc' -f $meta.timeCol))
+        [void]$where.Add(('[{0}] <= @toUtc' -f $meta.timeCol))
+        $params.fromUtc = [datetimeoffset]([datetime]::SpecifyKind($fromDt, [DateTimeKind]::Utc))
+        $params.toUtc = [datetimeoffset]([datetime]::SpecifyKind($toDt, [DateTimeKind]::Utc))
+    }
+    $jt = ([string]$JobType).Trim()
+    if ($jt -and $jt -ne 'All') {
+        if ($jt -notmatch '^[A-Za-z0-9_]+$') {
+            return New-QCFailureResult -Code 'OPS_SQL_BAD_JOB_TYPE' -Message 'Job type contains invalid characters.'
+        }
+        if ($safe -in @('processing_jobs', 'v_job_summary')) {
+            [void]$where.Add('job_type = @jobType')
+            $params.jobType = $jt
+        }
+    }
+    $sp = ([string]$SourcePath).Trim()
+    if ($sp) {
+        $like = '%' + (($sp -replace '\[', '[[]') -replace '%', '[%]' -replace '_', '[_]') + '%'
+        if ($safe -eq 'processing_jobs') {
+            [void]$where.Add('source_path LIKE @sourcePath')
+            $params.sourcePath = $like
+        } elseif ($safe -eq 'audit_events') {
+            [void]$where.Add('(pw_itemname LIKE @sourcePath OR resolved_folder LIKE @sourcePath)')
+            $params.sourcePath = $like
+        } elseif ($safe -eq 'notification_log') {
+            [void]$where.Add('(document_name LIKE @sourcePath OR folder_path LIKE @sourcePath)')
+            $params.sourcePath = $like
+        }
+    }
+    $whereSql = ''
+    if ($where.Count -gt 0) { $whereSql = ' WHERE ' + ($where -join ' AND ') }
+    $sql = ''
+    switch ($meta.kind) {
+        'poller' {
+            $sql = @"
+SELECT TOP ($topN)
+    id, started_at, duration_ms, events_fetched, events_relevant, jobs_enqueued,
+    CASE WHEN error_message IS NOT NULL THEN 'ERROR' ELSE 'OK' END AS run_status,
+    watermark_after
+FROM poll_runs
+$whereSql
+ORDER BY started_at DESC
+"@
+        }
+        'job_summary' {
+            $sql = @"
+SELECT job_type, status, COUNT(*) AS job_count, AVG(duration_ms) AS avg_duration_ms, MAX(completed_at) AS last_completed
+FROM processing_jobs
+$whereSql
+GROUP BY job_type, status
+ORDER BY job_type, status
+"@
+        }
+        default {
+            $sql = "SELECT TOP ($topN) * FROM [$($meta.from)]$whereSql ORDER BY [$($meta.timeCol)] DESC"
+        }
+    }
+    return New-QCSuccessResult -Code 'OPS_SQL_PREVIEW_SQL' -Message 'Preview SQL built.' -Data @{
+        sql = $sql
+        parameters = $params
+        hideColumns = @('source_folder', 'sourceFolder')
+        table = $safe
+    }
+}
+
 function Get-QCOpsSqlTablePreview {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$TableOrView,
-        [int]$Top = 50
+        [int]$Top = 50,
+        [AllowNull()]$FromUtc = $null,
+        [AllowNull()]$ToUtc = $null,
+        [string]$JobType = '',
+        [string]$SourcePath = ''
     )
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
         return New-QCFailureResult -Code 'OPS_SQL_DISABLED' -Message 'database.enabled is false.'
     }
-    $safe = $TableOrView -replace '[^A-Za-z0-9_]', ''
-    if ([string]::IsNullOrWhiteSpace($safe)) {
-        return New-QCFailureResult -Code 'OPS_SQL_BAD_NAME' -Message 'Invalid table or view name.'
-    }
-    $sql = "SELECT TOP ($Top) * FROM [$safe]"
-    return (Invoke-QCDatabaseQuery -Config $Config -Sql $sql)
+    $cmd = Get-QCOpsSqlPreviewCommand -TableOrView $TableOrView -Top $Top -FromUtc $FromUtc -ToUtc $ToUtc -JobType $JobType -SourcePath $SourcePath
+    if (-not $cmd.IsSuccess) { return $cmd }
+    $r = Invoke-QCDatabaseQuery -Config $Config -Sql $cmd.Data.sql -Parameters $cmd.Data.parameters
+    if (-not $r.IsSuccess) { return $r }
+    $r.Data.hideColumns = @($cmd.Data.hideColumns)
+    return $r
 }
 
 function Search-QCOpsSheets {
@@ -869,19 +1138,120 @@ function Get-QCOpsHostSummary {
     }
 }
 
+function Get-QCOpsWatchFolderChoices {
+    [CmdletBinding()]
+    param([hashtable]$Config)
+    $out = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    $add = {
+        param([string]$Path)
+        $p = ([string]$Path).Trim()
+        if ([string]::IsNullOrWhiteSpace($p)) { return }
+        if ($seen.ContainsKey($p.ToLowerInvariant())) { return }
+        $seen[$p.ToLowerInvariant()] = $true
+        [void]$out.Add($p)
+    }
+    try {
+        $roots = $null
+        if ($Config -and $Config.projectWise -and $Config.projectWise.watchList) {
+            $roots = $Config.projectWise.watchList.roots
+        }
+        foreach ($r in @($roots)) {
+            $path = ''
+            try { $path = [string]$r.path } catch { }
+            & $add $path
+            $sheets = ''
+            try { $sheets = [string]$r.sheetsPathFromProject } catch { }
+            if ($path -and $sheets) { & $add ($path.TrimEnd('\') + '\' + $sheets.TrimStart('\')) }
+        }
+    } catch { }
+    return @($out.ToArray())
+}
+
 function Get-QCOpsMaintenanceCatalog {
     [CmdletBinding()]
     param()
     $repo = Get-QCOpsRepoRoot
     $m = Join-Path $repo 'scripts\maintenance'
     return @(
-        @{ id = 'reconcile-status-sets'; label = 'Reconcile status sets'; script = (Join-Path $m 'Reconcile-QCStatusSets.ps1'); danger = 'Low'; args = @() }
-        @{ id = 'sync-sheet-index'; label = 'Sync sheet index for folder'; script = (Join-Path $m 'Sync-QCFolderSheetIndex.ps1'); danger = 'Low'; args = @(); needsFolder = $true }
-        @{ id = 'refresh-sheet-states'; label = 'Refresh sheet_index states from PW'; script = (Join-Path $m 'Refresh-SheetIndexStates.ps1'); danger = 'Medium'; args = @() }
-        @{ id = 'repair-folder-paths'; label = 'Repair folder path casing'; script = (Join-Path $m 'Repair-QCDocumentsFolderPaths.ps1'); danger = 'Low'; args = @('-Table', 'all') }
-        @{ id = 'db-retention'; label = 'Database retention (audit_events)'; script = (Join-Path $m 'Invoke-QCDatabaseRetention.ps1'); danger = 'Medium'; args = @() }
-        @{ id = 'reset-folder-workflow'; label = 'Reset folder workflow + telemetry'; script = (Join-Path $m 'Reset-QCFolderWorkflow.ps1'); danger = 'High'; args = @('-ConfirmReset'); needsFolder = $true }
-        @{ id = 'rewind-watermark'; label = 'Rewind audit watermark'; script = '(module) Set-QCOpsAuditWatermark'; danger = 'High'; args = @(); confirmText = 'REWIND WATERMARK' }
+        @{
+            id = 'reconcile-status-sets'
+            label = 'Reconcile status sets'
+            script = (Join-Path $m 'Reconcile-QCStatusSets.ps1')
+            danger = 'Low'
+            flags = @(
+                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'sync-sheet-index'
+            label = 'Sync sheet index for folder'
+            script = (Join-Path $m 'Sync-QCFolderSheetIndex.ps1')
+            danger = 'Low'
+            flags = @(
+                @{ name = 'FolderPath'; kind = 'folder'; param = '-FolderPath'; required = $true }
+                @{ name = 'ConfirmWrites'; kind = 'bool'; param = '-ConfirmWrites'; default = 'Off' }
+                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
+                @{ name = 'OneLevelDeep'; kind = 'bool'; param = '-OneLevelDeep'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'refresh-sheet-states'
+            label = 'Refresh sheet_index states from PW'
+            script = (Join-Path $m 'Refresh-SheetIndexStates.ps1')
+            danger = 'Medium'
+            flags = @(
+                @{ name = 'FolderPathFilter'; kind = 'folder'; param = '-FolderPathFilter' }
+                @{ name = 'ConfirmWrites'; kind = 'bool'; param = '-ConfirmWrites'; default = 'Off' }
+                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
+                @{ name = 'IncludeQcPdfGuids'; kind = 'bool'; param = '-IncludeQcPdfGuids'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'repair-folder-paths'
+            label = 'Repair folder path casing'
+            script = (Join-Path $m 'Repair-QCDocumentsFolderPaths.ps1')
+            danger = 'Low'
+            flags = @(
+                @{ name = 'Table'; kind = 'choice'; param = '-Table'; options = @('all', 'telemetry', 'sheet_index', 'processing_jobs', 'audit_events', 'document_activity'); default = 'all' }
+                @{ name = 'WhatIf'; kind = 'bool'; param = '-WhatIf'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'db-retention'
+            label = 'Database retention (audit_events)'
+            script = (Join-Path $m 'Invoke-QCDatabaseRetention.ps1')
+            danger = 'Medium'
+            flags = @(
+                @{ name = 'AuditEventsDays'; kind = 'choice'; param = '-AuditEventsDays'; options = @('Default', '30', '60', '90', '180', '365'); default = 'Default' }
+                @{ name = 'ConfirmDeletes'; kind = 'bool'; param = '-ConfirmDeletes'; default = 'Off' }
+                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'On' }
+                @{ name = 'AuditIncludeUnprocessed'; kind = 'bool'; param = '-AuditIncludeUnprocessed'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'reset-folder-workflow'
+            label = 'Reset folder workflow + telemetry'
+            script = (Join-Path $m 'Reset-QCFolderWorkflow.ps1')
+            danger = 'High'
+            flags = @(
+                @{ name = 'FolderPath'; kind = 'folder'; param = '-FolderPath'; required = $true }
+                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'On' }
+                @{ name = 'ConfirmReset'; kind = 'bool'; param = '-ConfirmReset'; default = 'Off' }
+                @{ name = 'KeepLanePdfRegistry'; kind = 'bool'; param = '-KeepLanePdfRegistry'; default = 'Off' }
+            )
+        }
+        @{
+            id = 'rewind-watermark'
+            label = 'Rewind audit watermark'
+            script = '(module) Set-QCOpsAuditWatermark'
+            danger = 'High'
+            confirmText = 'REWIND WATERMARK'
+            flags = @(
+                @{ name = 'When'; kind = 'choice'; options = @('1 hour ago', '6 hours ago', '1 day ago', '7 days ago', 'Custom UTC'); default = '1 hour ago' }
+                @{ name = 'CustomUtc'; kind = 'text'; placeholder = '2026-08-24T12:00:00Z' }
+            )
+        }
     )
 }
 
