@@ -173,6 +173,17 @@ try {
     Assert-True ($guiText -notmatch 'QC_COMMENT_STATUS_SYNC') 'Runs tab does not enqueue comment sync'
     Assert-True ($guiText -match 'IncludePriority') 'pending queue grid includes priority'
     Assert-True ($guiText -match 'statusSetBatchText') 'header binds status-set batch schedule'
+    Assert-True ($guiText -match 'QueueScoreLabels') 'header queue counts use stretching scoreboard'
+    Assert-True ($guiText -notmatch 'gridQueueCounts') 'header no longer uses a fixed DataGridView for counts'
+    Assert-True ($guiText -match "Source folder") 'SQL filter is source folder'
+    Assert-True ($guiText -match 'cmbSqlSourceFolder') 'SQL folder combo exists'
+    Assert-True ($guiText -notmatch "Source path") 'SQL filter is not source path'
+
+    $sqlCmd = Get-QCOpsSqlPreviewCommand -TableOrView 'processing_jobs' -SourceFolder 'Documents\Proj\CADD\Sheets' -JobType 'STATUS_SET_GEN'
+    Assert-True $sqlCmd.IsSuccess 'preview SQL builds'
+    Assert-True ($sqlCmd.Data.sql -match 'source_folder LIKE') 'preview filters source_folder'
+    Assert-True ($sqlCmd.Data.sql -notmatch 'source_path LIKE') 'preview does not filter source_path'
+    Assert-True ($sqlCmd.Data.parameters.ContainsKey('sourceFolder')) 'sourceFolder parameter set'
 
     $regPath = Join-Path $repoRoot 'scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1'
     $regText = Get-Content -LiteralPath $regPath -Raw

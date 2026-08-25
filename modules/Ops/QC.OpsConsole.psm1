@@ -926,7 +926,7 @@ function Get-QCOpsSqlPreviewCommand {
         [AllowNull()]$FromUtc = $null,
         [AllowNull()]$ToUtc = $null,
         [string]$JobType = '',
-        [string]$SourcePath = ''
+        [string]$SourceFolder = ''
     )
     $safe = $TableOrView -replace '[^A-Za-z0-9_]', ''
     $catalog = @{
@@ -964,18 +964,18 @@ function Get-QCOpsSqlPreviewCommand {
             $params.jobType = $jt
         }
     }
-    $sp = ([string]$SourcePath).Trim()
-    if ($sp) {
-        $like = '%' + (($sp -replace '\[', '[[]') -replace '%', '[%]' -replace '_', '[_]') + '%'
-        if ($safe -eq 'processing_jobs') {
-            [void]$where.Add('source_path LIKE @sourcePath')
-            $params.sourcePath = $like
+    $sf = ([string]$SourceFolder).Trim()
+    if ($sf) {
+        $like = '%' + (($sf -replace '\[', '[[]') -replace '%', '[%]' -replace '_', '[_]') + '%'
+        if ($safe -in @('processing_jobs', 'v_job_summary')) {
+            [void]$where.Add('source_folder LIKE @sourceFolder')
+            $params.sourceFolder = $like
         } elseif ($safe -eq 'audit_events') {
-            [void]$where.Add('(pw_itemname LIKE @sourcePath OR resolved_folder LIKE @sourcePath)')
-            $params.sourcePath = $like
+            [void]$where.Add('resolved_folder LIKE @sourceFolder')
+            $params.sourceFolder = $like
         } elseif ($safe -eq 'notification_log') {
-            [void]$where.Add('(document_name LIKE @sourcePath OR folder_path LIKE @sourcePath)')
-            $params.sourcePath = $like
+            [void]$where.Add('folder_path LIKE @sourceFolder')
+            $params.sourceFolder = $like
         }
     }
     $whereSql = ''
@@ -1023,12 +1023,12 @@ function Get-QCOpsSqlTablePreview {
         [AllowNull()]$FromUtc = $null,
         [AllowNull()]$ToUtc = $null,
         [string]$JobType = '',
-        [string]$SourcePath = ''
+        [string]$SourceFolder = ''
     )
     if (-not (Test-QCDatabaseEnabled -Config $Config)) {
         return New-QCFailureResult -Code 'OPS_SQL_DISABLED' -Message 'database.enabled is false.'
     }
-    $cmd = Get-QCOpsSqlPreviewCommand -TableOrView $TableOrView -Top $Top -FromUtc $FromUtc -ToUtc $ToUtc -JobType $JobType -SourcePath $SourcePath
+    $cmd = Get-QCOpsSqlPreviewCommand -TableOrView $TableOrView -Top $Top -FromUtc $FromUtc -ToUtc $ToUtc -JobType $JobType -SourceFolder $SourceFolder
     if (-not $cmd.IsSuccess) { return $cmd }
     $r = Invoke-QCDatabaseQuery -Config $Config -Sql $cmd.Data.sql -Parameters $cmd.Data.parameters
     if (-not $r.IsSuccess) { return $r }

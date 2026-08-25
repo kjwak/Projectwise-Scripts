@@ -141,18 +141,33 @@ $form.MinimumSize = New-Object System.Drawing.Size(1000, 640)
 
 $header = New-Object System.Windows.Forms.Panel
 $header.Dock = 'Top'
-$header.Height = 148
+$header.Height = 156
+$header.Padding = New-Object System.Windows.Forms.Padding(8, 6, 8, 6)
 $header.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 250)
 $form.Controls.Add($header)
 
+$headerSplit = New-Object System.Windows.Forms.TableLayoutPanel
+$headerSplit.Dock = 'Fill'
+$headerSplit.ColumnCount = 2
+$headerSplit.RowCount = 1
+$headerSplit.Margin = New-Object System.Windows.Forms.Padding(0)
+[void]$headerSplit.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 58)))
+[void]$headerSplit.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 42)))
+[void]$headerSplit.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$header.Controls.Add($headerSplit)
+
+$leftHead = New-Object System.Windows.Forms.Panel
+$leftHead.Dock = 'Fill'
+$headerSplit.Controls.Add($leftHead, 0, 0)
+
 $chkOn = New-Object System.Windows.Forms.CheckBox
 $chkOn.Text = 'Pipeline on'
-$chkOn.Location = New-Object System.Drawing.Point(12, 10)
+$chkOn.Location = New-Object System.Drawing.Point(4, 6)
 $chkOn.AutoSize = $true
-$header.Controls.Add($chkOn)
+$leftHead.Controls.Add($chkOn)
 
 $pnlBubble = New-Object System.Windows.Forms.Panel
-$pnlBubble.Location = New-Object System.Drawing.Point(140, 12)
+$pnlBubble.Location = New-Object System.Drawing.Point(132, 8)
 $pnlBubble.Size = New-Object System.Drawing.Size(18, 18)
 $pnlBubble.Add_Paint({
     $e = $args[1]
@@ -166,48 +181,81 @@ $pnlBubble.Add_Paint({
     $brush.Dispose()
     $pen.Dispose()
 })
-$header.Controls.Add($pnlBubble)
+$leftHead.Controls.Add($pnlBubble)
 
 $lblState = New-Object System.Windows.Forms.Label
-$lblState.Location = New-Object System.Drawing.Point(164, 11)
-$lblState.Size = New-Object System.Drawing.Size(700, 20)
+$lblState.Location = New-Object System.Drawing.Point(156, 6)
+$lblState.Size = New-Object System.Drawing.Size(400, 20)
+$lblState.Anchor = 'Top,Left,Right'
 $lblState.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $lblState.Text = 'State: ...'
-$header.Controls.Add($lblState)
+$leftHead.Controls.Add($lblState)
 
 $lblLine2 = New-Object System.Windows.Forms.Label
-$lblLine2.Location = New-Object System.Drawing.Point(12, 34)
-$lblLine2.Size = New-Object System.Drawing.Size(700, 18)
-$header.Controls.Add($lblLine2)
-
-$gridQueueCounts = New-Object System.Windows.Forms.DataGridView
-$gridQueueCounts.Location = New-Object System.Drawing.Point(720, 8)
-$gridQueueCounts.Size = New-Object System.Drawing.Size(540, 72)
-$gridQueueCounts.ReadOnly = $true
-$gridQueueCounts.AllowUserToAddRows = $false
-$gridQueueCounts.AllowUserToDeleteRows = $false
-$gridQueueCounts.AllowUserToResizeRows = $false
-$gridQueueCounts.RowHeadersVisible = $false
-$gridQueueCounts.ColumnHeadersHeight = 24
-$gridQueueCounts.ColumnHeadersHeightSizeMode = 'DisableResizing'
-$gridQueueCounts.ScrollBars = 'None'
-$gridQueueCounts.AutoSizeColumnsMode = 'Fill'
-$gridQueueCounts.BackgroundColor = [System.Drawing.Color]::White
-$gridQueueCounts.BorderStyle = 'FixedSingle'
-$gridQueueCounts.EnableHeadersVisualStyles = $true
-$header.Controls.Add($gridQueueCounts)
+$lblLine2.Location = New-Object System.Drawing.Point(4, 30)
+$lblLine2.Size = New-Object System.Drawing.Size(400, 18)
+$lblLine2.Anchor = 'Top,Left,Right'
+$leftHead.Controls.Add($lblLine2)
 
 $lblRemote = New-Object System.Windows.Forms.Label
-$lblRemote.Location = New-Object System.Drawing.Point(12, 56)
-$lblRemote.Size = New-Object System.Drawing.Size(700, 36)
+$lblRemote.Location = New-Object System.Drawing.Point(4, 52)
+$lblRemote.Size = New-Object System.Drawing.Size(400, 40)
+$lblRemote.Anchor = 'Top,Left,Right'
 $lblRemote.Text = 'Remote: ...'
-$header.Controls.Add($lblRemote)
+$leftHead.Controls.Add($lblRemote)
 
 $lblLine3 = New-Object System.Windows.Forms.Label
-$lblLine3.Location = New-Object System.Drawing.Point(12, 96)
-$lblLine3.Size = New-Object System.Drawing.Size(1240, 44)
+$lblLine3.Location = New-Object System.Drawing.Point(4, 96)
+$lblLine3.Size = New-Object System.Drawing.Size(400, 44)
+$lblLine3.Anchor = 'Top,Left,Right'
 $lblLine3.Text = ''
-$header.Controls.Add($lblLine3)
+$leftHead.Controls.Add($lblLine3)
+
+$rightHead = New-Object System.Windows.Forms.Panel
+$rightHead.Dock = 'Fill'
+$rightHead.Padding = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$headerSplit.Controls.Add($rightHead, 1, 0)
+
+$queueScore = New-Object System.Windows.Forms.TableLayoutPanel
+$queueScore.Dock = 'Fill'
+$queueScore.ColumnCount = 5
+$queueScore.RowCount = 2
+$queueScore.BackColor = [System.Drawing.Color]::White
+$queueScore.CellBorderStyle = 'Single'
+$queueScore.Margin = New-Object System.Windows.Forms.Padding(0)
+[void]$queueScore.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 38)))
+[void]$queueScore.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 62)))
+$headerNames = @('pending', 'running', 'failed', 'succeeded', 'locks')
+$script:QueueScoreLabels = @{}
+$qi = 0
+foreach ($name in $headerNames) {
+    [void]$queueScore.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 20)))
+    $h = New-Object System.Windows.Forms.Label
+    $h.Text = $name
+    $h.Dock = 'Fill'
+    $h.TextAlign = 'MiddleCenter'
+    $h.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $h.Margin = New-Object System.Windows.Forms.Padding(0)
+    $queueScore.Controls.Add($h, $qi, 0)
+    $c = New-Object System.Windows.Forms.Label
+    $c.Text = '0'
+    $c.Dock = 'Fill'
+    $c.TextAlign = 'MiddleCenter'
+    $c.Font = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+    $c.Margin = New-Object System.Windows.Forms.Padding(0)
+    $queueScore.Controls.Add($c, $qi, 1)
+    $script:QueueScoreLabels[$name] = $c
+    $qi++
+}
+$rightHead.Controls.Add($queueScore)
+
+$leftHead.Add_Resize({
+    $w = [Math]::Max(180, $leftHead.ClientSize.Width - 12)
+    $lblState.Width = [Math]::Max(120, $w - 156)
+    $lblLine2.Width = $w
+    $lblRemote.Width = $w
+    $lblLine3.Width = $w
+})
 
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
@@ -519,19 +567,19 @@ $cmbSqlJobType.Width = 190
 $sqlTop.Controls.Add($cmbSqlJobType)
 
 $lblSqlPath = New-Object System.Windows.Forms.Label
-$lblSqlPath.Text = 'Source path'
+$lblSqlPath.Text = 'Source folder'
 $lblSqlPath.Location = New-Object System.Drawing.Point(270, 44)
 $lblSqlPath.AutoSize = $true
 $sqlTop.Controls.Add($lblSqlPath)
 
-$cmbSqlSourcePath = New-Object System.Windows.Forms.ComboBox
-$cmbSqlSourcePath.DropDownStyle = 'DropDown'
-$cmbSqlSourcePath.Location = New-Object System.Drawing.Point(348, 40)
-$cmbSqlSourcePath.Width = 320
+$cmbSqlSourceFolder = New-Object System.Windows.Forms.ComboBox
+$cmbSqlSourceFolder.DropDownStyle = 'DropDown'
+$cmbSqlSourceFolder.Location = New-Object System.Drawing.Point(360, 40)
+$cmbSqlSourceFolder.Width = 420
 try {
-    Get-QCOpsWatchFolderChoices -Config $script:Cfg | ForEach-Object { [void]$cmbSqlSourcePath.Items.Add($_) }
+    Get-QCOpsWatchFolderChoices -Config $script:Cfg | ForEach-Object { [void]$cmbSqlSourceFolder.Items.Add($_) }
 } catch { }
-$sqlTop.Controls.Add($cmbSqlSourcePath)
+$sqlTop.Controls.Add($cmbSqlSourceFolder)
 
 function _Ops-NewSqlDatePicker([int]$X, [int]$Y) {
     $dtp = New-Object System.Windows.Forms.DateTimePicker
@@ -587,9 +635,9 @@ function _Ops-LayoutSqlFilters {
     $tbl = [string]$cmbSql.SelectedItem
     $custom = ([string]$cmbSqlRange.SelectedItem -eq 'Custom')
     $jobOk = ($tbl -in @('processing_jobs', 'v_job_summary'))
-    $pathOk = ($tbl -in @('processing_jobs', 'audit_events', 'notification_log'))
+    $folderOk = ($tbl -in @('processing_jobs', 'v_job_summary', 'audit_events', 'notification_log'))
     $cmbSqlJobType.Enabled = $jobOk
-    $cmbSqlSourcePath.Enabled = $pathOk
+    $cmbSqlSourceFolder.Enabled = $folderOk
     $lblSqlFrom.Visible = $custom
     $dtpSqlFrom.Visible = $custom
     $lblSqlTo.Visible = $custom
@@ -697,15 +745,18 @@ function _Ops-ApplyHeader {
     $lblLine2.Text = ('PW={0}   SQL={1}   DryRun={2}   watermark={3}' -f $d.pwText, $d.sqlEnabled, $dryTxt, $wm)
 
     if (-not $Light.IsPresent) {
-        $qrow = [pscustomobject]@{
+        $counts = @{
             pending = $d.queue.pending
             running = $d.queue.running
             failed = $d.queue.failed
             succeeded = $d.queue.succeeded
             locks = $d.queue.locks
         }
-        _Ops-BindGrid $gridQueueCounts @($qrow)
-        try { $gridQueueCounts.ClearSelection() } catch { }
+        foreach ($k in @($script:QueueScoreLabels.Keys)) {
+            $n = 0
+            try { $n = [int]$counts[$k] } catch { $n = 0 }
+            $script:QueueScoreLabels[$k].Text = [string]$n
+        }
     }
 
     $remoteBits = New-Object System.Collections.Generic.List[string]
@@ -993,9 +1044,9 @@ $btnSqlLoad.Add_Click({
     if (-not $range.IsSuccess) { _Ops-Msg $range.Message; return }
     $jobType = [string]$cmbSqlJobType.SelectedItem
     if (-not $cmbSqlJobType.Enabled) { $jobType = '' }
-    $sourcePath = [string]$cmbSqlSourcePath.Text
-    if (-not $cmbSqlSourcePath.Enabled) { $sourcePath = '' }
-    $r = Get-QCOpsSqlTablePreview -Config $script:Cfg -TableOrView $name -Top 80 -FromUtc $range.Data.fromUtc -ToUtc $range.Data.toUtc -JobType $jobType -SourcePath $sourcePath
+    $sourceFolder = [string]$cmbSqlSourceFolder.Text
+    if (-not $cmbSqlSourceFolder.Enabled) { $sourceFolder = '' }
+    $r = Get-QCOpsSqlTablePreview -Config $script:Cfg -TableOrView $name -Top 80 -FromUtc $range.Data.fromUtc -ToUtc $range.Data.toUtc -JobType $jobType -SourceFolder $sourceFolder
     if (-not $r.IsSuccess) { _Ops-Msg $r.Message; return }
     $gridSql.DataSource = $r.Data.table
     _Ops-HideSqlSourceFolderColumn
