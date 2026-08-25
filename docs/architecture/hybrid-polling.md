@@ -86,6 +86,7 @@ Each tick (typical production config):
   1. Invoke-QCWatcherAuditTick → Invoke-AuditTrailScan (primary steady-state path; page heartbeats during long ingest)
   2. Process candidates (STATUS_SET_GEN, QC_PREPEND, QC_COMMENT_STATUS_SYNC, etc.)
   3. At configured wall-clock times (auditPoller.fullScanSchedule.times), while slot unpaid:
+       → Warm watch-folder GUID cache once per slot (Get-PWFoldersHashTableByGuid + Sheets folders)
        → Process up to checkEveryNFolders Sheets folders (reconciliation chunk)
        → Checkpoint progress; yield so next tick repeats step 1 before more folders
        → Mark slot complete only when the folder queue is empty
@@ -132,6 +133,10 @@ Committed production excerpt (see `appsettings.json` for full `auditPoller` bloc
 | `fullScanSchedule.times` | `06:00`, `18:00` | Wall-clock full reconciliation (preferred over `reconcileEveryNCycles`) |
 | `fullScanSchedule.preempt.enabled` | true | Yield between folder chunks so audit/QC events run each tick |
 | `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Max Sheets folders processed per continuous tick during an unpaid slot |
+| `folderGuidCache.warmOnScheduledReconciliation` | **true** | Warm watch-folder GUIDs **once per 06:00 / 18:00 slot**, after that tick's audit scan. Not on watcher start. |
+| `folderGuidCache.warmWatchRootsOnStart` | **false** | Deprecated no-op. Audit ticks load `pw_folder_cache` from SQL; they do not walk the PW folder tree. |
+| `folderGuidCache.warmSheetsFoldersOnStart` | true | When recon warm runs, also register `CADD\Sheets` folders under each watch root. |
+| `folderGuidCache.folderCacheTtlSeconds` | 86400 | SQL TTL for `pw_folder_cache` (covers the gap between 6am and 6pm slots). |
 | `reconcileEveryNCycles` | (unset) | **Legacy:** full scan every N ticks when `fullScanSchedule.times` is empty |
 | `fallbackToFullScan` | **false** | When **true**, fall back to full folder scan if audit trail query fails for that tick |
 
@@ -143,7 +148,9 @@ Audit-trail scanning typically processes 2000+ events in 70–90 seconds, compar
 
 GUID resolution is batched (200 GUIDs per `Get-PWDocumentsByGUIDs` call) to minimize PW API round-trips.
 
-**Folder resolution (Jun 2026):** `pw_parentguid` on document audit rows is the containing folder GUID. Resolution: `Get-PWFoldersByGUIDs` (batch with one canonical GUID per parent, then per-GUID retry with brace variants if needed), optional SQL `dms_proj` → `Get-PWFolders -FolderID`, then `Get-PWDocumentsByGUIDs` for document parents. Call `GetFullPath()` before reading path properties. Paths are normalized to `Documents\...` for watch-root matching. `Get-PWFoldersHashTableByGuid` is only for subtree enumeration by path/ID, not arbitrary GUID lists. Cache: `pw_folder_cache` + `Sync-AuditPollerWatchFolderGuidCache` (`auditPoller.folderGuidCache`).
+**Folder resolution (Jun 2026):** `pw_parentguid` on document audit rows is the containing folder GUID. Resolution: `Get-PWFoldersByGUIDs` (batch with one canonical GUID per parent, then per-GUID retry with brace variants if needed), optional SQL `dms_proj` → `Get-PWFolders -FolderID`, then `Get-PWDocumentsByGUIDs` for document parents. Call `GetFullPath()` before reading path properties. Paths are normalized to `Documents\...` for watch-root matching. `Get-PWFoldersHashTableByGuid` is only for subtree enumeration by path/ID, not arbitrary GUID lists.
+
+**Folder GUID cache warm (Aug 2026):** `Sync-AuditPollerWatchFolderGuidCache` (`Get-PWFoldersHashTableByGuid` + watch-root/`CADD\Sheets` registration) runs **only** from `Invoke-QCAuditFolderGuidCacheWarmForReconciliation` at the start of each unpaid `fullScanSchedule` slot (`06:00` / `18:00`). It is once-per-slot in-process so preempted recon ticks do not re-walk the tree. Watcher startup and audit ticks load `pw_folder_cache` from SQL (`folderCacheTtlSeconds`, default 24h) and never block job discovery on a full-datasource folder index. If SQL cache is empty (first deploy or TTL expiry before the next slot), the parent-GUID filter bypasses (`empty_cache`) until reconciliation warms it; `DOCUMENT_STATE` (1012) remains exempt.
 
 If lookup fails, a **negative cache** row is written (`resolve_failed = 1`, empty `folder_path`, TTL `auditPoller.negativeCacheTtlSeconds`, default 30 minutes). Delete that row (or wait for `expires_at`) before retrying after a fix. Watcher logs: `AUDIT_FOLDER_GUID_NOT_FOUND` (no PW object) vs `AUDIT_FOLDER_GUID_NO_PATH` (object returned but path not extracted).
 

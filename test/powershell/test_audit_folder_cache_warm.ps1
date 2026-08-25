@@ -134,4 +134,38 @@ _Assert ($global:QcWarmHbCalls[1].interval -eq 0) 'new stage uses interval 0'
 Remove-Item -Path Function:\Write-QCWatcherPhaseHeartbeat -ErrorAction SilentlyContinue
 Remove-Variable -Name QcWarmHbCalls -Scope Global -ErrorAction SilentlyContinue
 
+# Audit ticks must not PW-warm: empty in-process cache bypasses the gate
+$mod.Invoke({
+    $script:AuditPoller_FolderGuidCache = @{}
+    $script:AuditPoller_WatchFolderCacheWarmed = $false
+    $script:AuditPoller_WarmedReconSlotKey = $null
+}) | Out-Null
+$emptyCacheCfg = @{ auditPoller = @{ folderGuidCache = @{ filterByParentGuidCache = $true; warmOnScheduledReconciliation = $true } } }
+$emptyCacheRow = @{ o_action = 1007; o_parentguid = '00000000-0000-0000-0000-000000000099'; o_itemname = 'sheet.pdf' }
+$emptyCacheStats = @{}
+$emptyCacheGate = Invoke-QCAuditParentGuidCacheGate -Rows @($emptyCacheRow) -Config $emptyCacheCfg -WatchRootConfigs @() -Stats $emptyCacheStats
+_Assert (-not $emptyCacheGate.active) 'empty cache bypasses parent GUID filter'
+_Assert ($emptyCacheGate.kept.Count -eq 1) 'empty cache keeps rows instead of dropping them'
+_Assert ($emptyCacheStats.parentGuidFilterBypassReason -eq 'empty_cache') 'bypass reason is empty_cache'
+$warmedAfterGate = $mod.Invoke({ [bool]$script:AuditPoller_WatchFolderCacheWarmed })
+_Assert (-not $warmedAfterGate) 'parent GUID gate must not mark the PW folder-tree cache as warmed'
+
+# Reconciliation wrapper: disabled skip, once-per-slot skip, new slot re-invokes
+$disabledWarm = Invoke-QCAuditFolderGuidCacheWarmForReconciliation -Config @{
+    auditPoller = @{ folderGuidCache = @{ warmOnScheduledReconciliation = $false } }
+} -SlotKey '2026-08-25|06:00'
+_Assert ($disabledWarm.IsSuccess) 'disabled warm is success skip'
+_Assert ($disabledWarm.Code -eq 'FOLDER_CACHE_WARM_SKIPPED') 'disabled warm code'
+_Assert ($disabledWarm.Data.reason -eq 'disabled') 'disabled reason'
+
+$slotA = '2026-08-25|06:00'
+$firstSlot = Invoke-QCAuditFolderGuidCacheWarmForReconciliation -Config $emptyCacheCfg -WatchRootConfigs @() -SlotKey $slotA
+_Assert ($firstSlot.Code -eq 'FOLDER_CACHE_WARM_SKIPPED') 'no PW session: Sync skips without walking folders'
+$mod.Invoke({ param($k) $script:AuditPoller_WarmedReconSlotKey = $k }, @($slotA)) | Out-Null
+$secondSlot = Invoke-QCAuditFolderGuidCacheWarmForReconciliation -Config $emptyCacheCfg -WatchRootConfigs @() -SlotKey $slotA
+_Assert ($secondSlot.Data.reason -eq 'already_warmed_this_slot') 'same slot does not re-warm after a successful warm'
+$slotB = Invoke-QCAuditFolderGuidCacheWarmForReconciliation -Config $emptyCacheCfg -WatchRootConfigs @() -SlotKey '2026-08-25|18:00'
+_Assert ($slotB.Code -eq 'FOLDER_CACHE_WARM_SKIPPED') 'new slot is allowed to attempt warm again'
+_Assert ($slotB.Data.reason -ne 'already_warmed_this_slot') 'new slot is not treated as already warmed'
+
 Write-Host 'OK: audit folder cache warm tests passed.' -ForegroundColor Green

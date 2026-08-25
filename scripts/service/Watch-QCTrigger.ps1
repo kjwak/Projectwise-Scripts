@@ -404,6 +404,7 @@ $script:WatchRequiredCommands = @(
     'Get-PWDocumentWorkflowStateMapByGuid'
     'Ensure-PWDiscoveryModuleLoaded'
     'Invoke-AuditTrailScan'
+    'Invoke-QCAuditFolderGuidCacheWarmForReconciliation'
     'Sync-AuditPollerWatchFolderGuidCache'
     'Get-AuditTrailPollWindow'
     'Get-AuditTrailCaptureWatermark'
@@ -2175,6 +2176,18 @@ if ($statusSetRules.Count -ge 0) {
                     scheduledTime = [string]$fullScanPlan.scheduledTime
                     scheduledTimes = @($fullScanPlan.scheduledTimes)
                     slotKey = [string]$fullScanPlan.slotKey
+                }
+                try {
+                    $reconWatchRoots = @()
+                    if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
+                        $reconWatchRoots = @($watchList.roots | ForEach-Object { ConvertTo-HashtableDeep -Value $_ })
+                    }
+                    $warmRes = Invoke-QCAuditFolderGuidCacheWarmForReconciliation -Config $config -WatchRootConfigs $reconWatchRoots -SlotKey ([string]$fullScanPlan.slotKey)
+                    if ($warmRes -and -not $warmRes.IsSuccess) {
+                        _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'AUDIT_FOLDER_CACHE_WARM_FAILED' -Message ([string]$warmRes.Message) -Data $(if ($warmRes.Data) { $warmRes.Data } else { @{ code = [string]$warmRes.Code } })
+                    }
+                } catch {
+                    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'AUDIT_FOLDER_CACHE_WARM_FAILED' -Message ('Folder GUID cache warm threw: ' + $_.Exception.Message) -Data @{}
                 }
                 $histSlotKey = if ($fullScanPlan.slotKey) { [string]$fullScanPlan.slotKey } else { 'cycle|{0}' -f $cycleNum }
                 if ($script:statusSetHistoryRetentionSlotKey -ne $histSlotKey) {

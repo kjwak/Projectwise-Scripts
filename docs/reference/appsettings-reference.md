@@ -423,6 +423,11 @@ Logs: `WATCH_PW_PROACTIVE_RECONNECT` then the normal `WATCH_PW_CONNECT_*` path.
 | `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
 | `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. |
 | `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Folders per continuous tick during an unpaid scheduled full scan. |
+| `folderGuidCache.warmOnScheduledReconciliation` | true | Warm watch-folder GUIDs once per `fullScanSchedule` slot. Audit ticks do not walk the PW folder tree. |
+| `folderGuidCache.warmWatchRootsOnStart` | false | Deprecated no-op. Do not warm on watcher start. |
+| `folderGuidCache.warmSheetsFoldersOnStart` | true | When recon warm runs, also register Sheets folders under each watch root. |
+| `folderGuidCache.filterByParentGuidCache` | true | Skip audit events whose parent folder GUID is not in `pw_folder_cache` (1012 exempt). |
+| `folderGuidCache.folderCacheTtlSeconds` | 86400 | SQL TTL for `pw_folder_cache`. |
 | `reconcileEveryNCycles` | — | Legacy fallback when `fullScanSchedule.times` is empty. |
 | `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events, enqueue `QC_PREPEND` when workflow state is **Initiate Origination** and/or when description has `QC_Archivist` (state must still be **Initiate Origination** for the tag path). |
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on lane QC PDFs. |

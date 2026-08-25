@@ -5,8 +5,8 @@ Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force
 
 $v = Get-AuditPollerLogicVersion
-if ($v -ne '2026-06-04-ingest-qc-actions-only-v7') {
-    throw "Expected audit poller logic v7, got: $v"
+if ($v -ne '2026-08-24-folder-guid-cache-recon-only-v12') {
+    throw "Expected audit poller logic v12, got: $v"
 }
 
 foreach ($code in @(1001, 1002, 1003, 1006, 1007, 1012, 1015, 1020)) {

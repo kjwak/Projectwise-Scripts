@@ -74,6 +74,7 @@ function Test-QCRemoteWorkerHostJobEvent {
             'WORKER_START'
             'WORKER_BUDGET'
             'WORKER_LEASE'
+            'WORKER_LOCK_RACE'
             'WORKER_DB_SCHEMA_INIT_FAILED'
             'WORKER_QUEUE_DUPLICATE_CLEANUP'
             'JOB_TELEMETRY_WRITTEN'
@@ -116,13 +117,6 @@ function Write-QCRemoteWorkerHostJobLine {
     }
     if ($code -eq 'WORKER_STAGE' -and -not $jobId) { return $false }
 
-    if ($code -eq 'WORKER_LOCK_RACE') {
-        if ($jobId) {
-            try { $activeJobs.Remove($jobId) | Out-Null } catch { }
-        }
-        return $false
-    }
-
     $msg = [string]$Obj.message
     $parts = New-Object System.Collections.Generic.List[string]
     [void]$parts.Add(('[{0}]' -f (Get-Date -Format 'HH:mm:ss')))
@@ -146,7 +140,7 @@ function Write-QCRemoteWorkerHostJobLine {
     Write-Host ($parts -join ' ') -ForegroundColor $color
 
     if ($jobId) {
-        if ($code -match '^(WORKER_SELECTED|WORKER_CLAIMING)$') {
+        if ($code -eq 'WORKER_SELECTED') {
             $activeJobs[$jobId] = $(if ($src) { $src } else { $jobType })
         } elseif ($code -match '^(WORKER_SUCCEEDED|WORKER_FAILED|WORKER_JOB_UNHANDLED)$') {
             try { $activeJobs.Remove($jobId) | Out-Null } catch { }

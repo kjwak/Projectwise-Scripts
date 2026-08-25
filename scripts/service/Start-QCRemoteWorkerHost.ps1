@@ -231,7 +231,6 @@ try {
     }
 } catch { }
 
-$nextWorkerIndex = 1
 $lastSpawnAt = [DateTime]::MinValue
 $lastRecoveryAt = [DateTime]::UtcNow
 $lastStatusAt = [DateTime]::MinValue
@@ -330,8 +329,9 @@ try {
         if ($spawnPlan.shouldSpawn) {
             $now = Get-Date
             if (($now - $lastSpawnAt).TotalMilliseconds -ge [int]$rh.spawnStaggerMs) {
-                $label = "RW$nextWorkerIndex"
-                $nextWorkerIndex++
+                $idx = 1
+                while ($script:WorkerSlots.ContainsKey("RW$idx")) { $idx++ }
+                $label = "RW$idx"
                 $xArgs = @(
                     '-AppSettingsPath', $AppSettingsPath,
                     '-MaxJobs', [string]([int]$rh.maxJobsPerWorker),

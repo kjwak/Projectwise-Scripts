@@ -45,7 +45,7 @@ Long silent phases emit throttled `WATCH_PHASE_HEARTBEAT`:
 
 | Phase key | Where | Interval |
 | --- | --- | --- |
-| `audit_folder_guid_cache_warm` | `Sync-AuditPollerWatchFolderGuidCache` + `Find-PWSheetsFoldersUnderRoot` | Immediate on stage change; 30s while the same stage repeats |
+| `audit_folder_guid_cache_warm` | `Invoke-QCAuditFolderGuidCacheWarmForReconciliation` at the start of each 06:00 / 18:00 slot (`Sync-AuditPollerWatchFolderGuidCache` + `Find-PWSheetsFoldersUnderRoot`). Not on watcher start or audit ticks. | Immediate on stage change; 30s while the same stage repeats |
 | `full_reconciliation_scan` | Scheduled full folder scan loop | 180s (start is immediate) |
 | `statusset_sheet_index` | Sheet index reconciliation (`Invoke-QCWatcherLongRunningWork`) | start/end + work progress |
 | `audit_trail_scan` | `Invoke-AuditTrailScan` page callback | 60s |

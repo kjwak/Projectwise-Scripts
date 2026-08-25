@@ -12,7 +12,7 @@ function _Assert($cond, $msg) {
 }
 
 $v = Get-AuditPollerLogicVersion
-_Assert ($v -eq '2026-07-29-parent-guid-cache-gate-v11') "Expected parent-guid gate logic version, got: $v"
+_Assert ($v -eq '2026-08-24-folder-guid-cache-recon-only-v12') "Expected parent-guid gate logic version, got: $v"
 
 $watchGuid = '9475dfe8-1a85-46de-8986-3e59744591ca'
 $otherGuid = '00000000-0000-0000-0000-000000000099'
