@@ -46,3 +46,4 @@ test/output/
 # Local archive of superseded repo snapshot (nested .git; not part of this project)
 archive/old files/
 old files/
+notifications/dedupe/sent-keys.jsonl
