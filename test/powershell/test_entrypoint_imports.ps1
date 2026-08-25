@@ -115,6 +115,19 @@ Import-QCModuleImpl 'Workflow\QC.ProcessType.psm1'
 Import-QCModuleImpl 'Diagnostics\QC.DebugMcp.psm1'
 Assert-Command 'Initialize-QCDebugMcpContext' 'QC.DebugMcp loads from Diagnostics folder'
 
+Write-Host '=== Ops console bootstrap (shared restore helper) ===' -ForegroundColor Cyan
+Import-QCModuleBootstrapSet -FeatureModules @(
+    'Core\Core.Results.psm1'
+    'Core\Core.Runtime.psm1'
+    'Queue\QC.Queue.Json.psm1'
+    'Ops\QC.OpsConsole.psm1'
+) -RequiredCommands @(
+    'Get-QCAppSettingsConfig'
+    'Get-QCOpsPipelineStatus'
+    'Start-QCOpsPipeline'
+    'Stop-QCOpsPipeline'
+) -Context 'ops console entrypoint test'
+
 Write-Host '=== Flat compatibility shims removed (Phase 4H) ===' -ForegroundColor Cyan
 $removedShims = @('Core.Results.psm1', 'QC.Queue.Json.psm1', 'QC.JobFactory.psm1')
 foreach ($shim in $removedShims) {

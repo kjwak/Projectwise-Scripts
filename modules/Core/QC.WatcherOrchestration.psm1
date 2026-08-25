@@ -510,6 +510,7 @@ function Get-QCFullScanScheduleTimesFromConfig {
         $hhmm = '{0:D2}:{1:D2}' -f $h, $m
         if ($normalized -notcontains $hhmm) { [void]$normalized.Add($hhmm) }
     }
+    if ($normalized.Count -eq 0) { return [string[]]@() }
     return @($normalized | Sort-Object)
 }
 
@@ -522,6 +523,90 @@ function _QCWO-GetFullScanScheduleStatePath {
     }
     if ([string]::IsNullOrWhiteSpace($root)) { return $null }
     return Join-Path (Join-Path $root '_watcher') 'full-scan-schedule-state.json'
+}
+
+function Get-QCWatcherOpsRequestPath {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config,
+        [string]$QueueRoot = ''
+    )
+    $root = $QueueRoot
+    if ([string]::IsNullOrWhiteSpace($root) -and $Config) {
+        $q = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'queue'
+        if ($q -and $q.ContainsKey('rootDir') -and $q.rootDir) { $root = [string]$q.rootDir }
+        elseif ($q -and $q.ContainsKey('root') -and $q.root) { $root = [string]$q.root }
+    }
+    if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+    return Join-Path (Join-Path $root '_watcher') 'ops-request.json'
+}
+
+function Get-QCWatcherOpsRequest {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config,
+        [string]$QueueRoot = ''
+    )
+    $path = Get-QCWatcherOpsRequestPath -Config $Config -QueueRoot $QueueRoot
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $action = ''
+        try { $action = [string]$doc.action } catch { }
+        if ([string]::IsNullOrWhiteSpace($action)) { return $null }
+        $requestedAtUtc = ''
+        try { $requestedAtUtc = [string]$doc.requestedAtUtc } catch { }
+        $requestedBy = ''
+        try { $requestedBy = [string]$doc.requestedBy } catch { }
+        return @{
+            action = $action.Trim()
+            requestedAtUtc = $requestedAtUtc
+            requestedBy = $requestedBy
+            path = $path
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Set-QCWatcherOpsRequest {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config,
+        [string]$QueueRoot = '',
+        [Parameter(Mandatory)][string]$Action,
+        [string]$RequestedBy = ''
+    )
+    $path = Get-QCWatcherOpsRequestPath -Config $Config -QueueRoot $QueueRoot
+    if (-not $path) {
+        return New-QCFailureResult -Code 'OPS_REQUEST_NO_QUEUE' -Message 'Queue root is missing; cannot write ops-request.json.'
+    }
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($RequestedBy)) { $RequestedBy = [string]$env:USERNAME }
+    $payload = @{
+        action = $Action.Trim()
+        requestedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        requestedBy = $RequestedBy
+    }
+    ($payload | ConvertTo-Json -Compress) | Set-Content -LiteralPath $path -Encoding utf8
+    return New-QCSuccessResult -Code 'OPS_REQUEST_WRITTEN' -Message 'Operator request written.' -Data $payload
+}
+
+function Clear-QCWatcherOpsRequest {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Config,
+        [string]$QueueRoot = ''
+    )
+    $path = Get-QCWatcherOpsRequestPath -Config $Config -QueueRoot $QueueRoot
+    if ($path -and (Test-Path -LiteralPath $path)) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    return $false
 }
 
 function Test-QCFullScanScheduleSlotComplete {
@@ -819,7 +904,22 @@ function Get-QCFullFolderScanReconciliationPlan {
         reconcileEvery = $null
     }
 
-    $times = Get-QCFullScanScheduleTimesFromConfig -Config $Config
+    $opsReq = Get-QCWatcherOpsRequest -Config $Config -QueueRoot $QueueRoot
+    if ($opsReq -and ([string]$opsReq.action -ieq 'fullScan')) {
+        $stamp = [string]$opsReq.requestedAtUtc
+        if ([string]::IsNullOrWhiteSpace($stamp)) { $stamp = (Get-Date).ToUniversalTime().ToString('o') }
+        return @{
+            due = $true
+            mode = 'ops_request'
+            reason = 'ops_request'
+            scheduledTime = $null
+            slotKey = ('ops_request|{0}' -f $stamp)
+            scheduledTimes = @(Get-QCFullScanScheduleTimesFromConfig -Config $Config)
+            reconcileEvery = $null
+        }
+    }
+
+    $times = @(Get-QCFullScanScheduleTimesFromConfig -Config $Config)
     if ($times.Count -gt 0) {
         Set-QCDisplayTimeZoneFromConfig -Config $Config
         $now = Get-QCWallClockNow
@@ -1263,4 +1363,4 @@ function Invoke-QCWatcherAuditTick {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick, Get-QCWatcherOpsRequestPath, Get-QCWatcherOpsRequest, Set-QCWatcherOpsRequest, Clear-QCWatcherOpsRequest

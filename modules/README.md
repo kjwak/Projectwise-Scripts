@@ -4,7 +4,7 @@ Production QC uses the **TYPSA three-lane model** (`Production` / `Review` / `Ch
 
 ## Folder layout (Phase 4E+)
 
-Active module implementations live in responsibility-based subfolders (`Core/`, `Database/`, `ProjectWise/`, `Workflow/`, `Queue/`, `Processing/`, `Notifications/`, `Reporting/`, `Diagnostics/`).
+Active module implementations live in responsibility-based subfolders (`Core/`, `Database/`, `ProjectWise/`, `Workflow/`, `Queue/`, `Processing/`, `Notifications/`, `Reporting/`, `Diagnostics/`, `Ops/`).
 
 **Phase 4F:** Production scripts, tests, and loaders import **folder implementation paths** (for example `modules/Core/Core.Results.psm1`, `modules/Queue/QC.Queue.Json.psm1`).
 
@@ -137,3 +137,10 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
 ### `PW.Discovery.psm1`
 - **Purpose**: discovery interface for PW candidates plus shared ProjectWise metadata/folder traversal helpers used by the watcher.
 - **Key exports**: `Resolve-WatchPaths`, `Get-PWTriggerCandidates`, `Get-PWCandidateMetadata`, `Get-PWDocName`, `Get-PWDocDescription`, `Get-PWDocLastModifiedUtc`, `ConvertTo-PWCmdletFolderPath`, `ConvertTo-PWCanonicalDocumentsFolderPath`, `Get-PWDocumentsInFolder`, `Find-PWSheetsFoldersUnderRoot`.
+
+## Ops
+
+### Ops/QC.OpsConsole.psm1
+- **Purpose**: logon-session control plane for the Session 0 `QC-PipelineDashboard` task. Status, Enable/Disable, safer stop, queue requeue/recover, ops-request full scan, SQL inspect, maintenance wrappers.
+- **Does not** start `Start-QCPipelineDashboard.ps1`. SQL remains telemetry.
+- **UI**: `scripts/service/Start-QCOpsConsole.ps1` (STA WinForms). ProjectWise compares run in `Invoke-QCOpsPwCompare.ps1` (`powershell.exe -MTA`).

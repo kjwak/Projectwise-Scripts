@@ -4,7 +4,7 @@
 
 The pipeline is **audit-driven**: incremental `dms_audt` ingest into SQL, trigger evaluation on `audit_events.processed = 0`, and a durable watermark in `watcher_state` (plus local file mirror). Periodic full folder scans are reconciliation-only, not the steady-state path.
 
-On the QC server (`PXBENTLEY01`), `Watch-QCTrigger.ps1` is spawned by `Start-QCPipelineDashboard.ps1`. Register that dashboard as a boot task with [`scripts/deployment/Register-QCPipelineDashboardTask.ps1`](../../scripts/deployment/Register-QCPipelineDashboardTask.ps1) so the watcher starts after reboot without an interactive logon.
+On the QC server (`PXBENTLEY01`), `Watch-QCTrigger.ps1` is spawned by `Start-QCPipelineDashboard.ps1`. Register that dashboard as a boot task with [`scripts/deployment/Register-QCPipelineDashboardTask.ps1`](../../scripts/deployment/Register-QCPipelineDashboardTask.ps1) so the watcher starts after reboot without an interactive logon. The logon operator surface is [`Register-QCPipelineDashboardLogonConsole.ps1`](../../scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1) → [`Start-QCOpsConsole.ps1`](../../scripts/service/Start-QCOpsConsole.ps1) (WinForms; `-NoGui` is the text tail). The GUI must not start a second dashboard.
 
 ---
 
@@ -48,6 +48,8 @@ Full folder reconciliation runs once per schedule slot per calendar day (after t
 **Cooperative preemption (July 2026):** With `fullScanSchedule.preempt.enabled` (default on), each continuous tick processes at most `checkEveryNFolders` folders, then yields so the next tick can run audit again before more folders. Progress is stored in `queue/_watcher/full-scan-progress.json` (and `watcher_state` when DB is enabled) so a restart resumes mid-slot instead of rewalking from the top. The schedule slot is marked complete only when the remaining folder queue is empty.
 
 **Crash fix:** `Invoke-QCWatcherLongRunningWork` no longer uses `System.Threading.Timer` heartbeats (those crashed the watcher ~180s into large `statusset_sheet_index` work). Progress is same-runspace only.
+
+**Operator full scan (ops console):** while the dashboard watcher is live, do **not** spawn a second `Watch-QCTrigger`. The ops GUI writes `queue/_watcher/ops-request.json` (`action=fullScan`, `requestedAtUtc`, `requestedBy`). `Get-QCFullFolderScanReconciliationPlan` treats that as due (`mode=ops_request`); after the scan finishes the watcher deletes the file. “Run audit tick now” is a no-op while the pipeline is on (the watcher is already cycling). If the pipeline is off, a one-shot `Watch-QCTrigger.ps1` is allowed.
 
 Per-folder reconcile noise goes to `Watch-QCTrigger-Reconcile_{yyyy-MM-dd_HH}.jsonl`; lifecycle events (`WATCH_RECONCILE_CYCLE`, `WATCH_FULL_SCAN_PREEMPT` / `RESUME`, slot done/failed) stay in the main watcher JSONL.
 

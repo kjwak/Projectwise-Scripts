@@ -27,7 +27,8 @@ $tests = @(
     'test\powershell\test_audit_watch_match.ps1',
     'test\powershell\test_audit_events_db.ps1',
     'test\powershell\test_audit_workflow_triggers.ps1',
-    'test\powershell\test_watcher_module_bootstrap.ps1'
+    'test\powershell\test_watcher_module_bootstrap.ps1',
+    'test\powershell\test_ops_console.ps1'
 )
 $fail = 0
 foreach ($t in $tests) {

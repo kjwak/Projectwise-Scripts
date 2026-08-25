@@ -14,7 +14,19 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
   - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.
-- **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not. On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`. The terminal UI is not visible in Session 0; watcher and workers still run. Do not register this on the modelling PC.
+- **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not (Session 0, no TUI). On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`.
+- **Logon console:** `scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1` (Startup shortcut → `Start-QCOpsConsole.ps1` WinForms; `-NoGui` → `Watch-QCPipelineDashboardConsole.ps1` text tail). Does not start a second dashboard. Do not register this on the modelling PC.
+
+### `Start-QCOpsConsole.ps1`
+- **Purpose**: logon-session WinForms console (STA) on the QC server.
+- **Does not** start `Start-QCPipelineDashboard.ps1`. Close anytime; Session 0 keeps running.
+- **On/off**: Enable/Disable scheduled task `QC-PipelineDashboard`, then `Stop-QCPipeline.ps1` (GUI process names are excluded).
+- **Full scan while live**: writes `queue/_watcher/ops-request.json`; the live watcher honors it.
+- **Host**: `PXBENTLEY01` only (`-Force` to override).
+
+### `Watch-QCPipelineDashboardConsole.ps1`
+- **Purpose**: read-only log tail for the QC server boot task.
+- **Does not** start watcher, workers, or a second dashboard. Close anytime.
 
 ### `Start-QCRemoteWorkerHost.ps1`
 - **Purpose**: processor-only supervisor for a remote worker host.
@@ -75,7 +87,7 @@ Maintenance and operator recovery scripts live under `scripts/maintenance/`. Com
   for legacy UPDATE-only behavior.
 
 ### `Stop-QCPipeline.ps1`
-- **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs).
+- **Purpose**: kill dashboard/watcher/worker PowerShell processes (useful for cleaning stale runs). Does **not** match `Start-QCOpsConsole.ps1`, `Watch-QCPipelineDashboardConsole.ps1`, or `Invoke-QCOpsPwCompare.ps1`.
 
 See `scripts/maintenance/` for queue purge/requeue/repair, database retention/removal, sheet-index sync/reconcile, and related operator tools (`Purge-QCPendingByFilters`, `Requeue-QCJobs`, `Invoke-QCDatabaseRetention`, etc.).
 
@@ -94,6 +106,9 @@ Status-set processing scripts live under `scripts/processing/`. Deployment helpe
 
 ### `deployment/Register-QCPipelineDashboardTask.ps1`
 - **Purpose**: QC server only. Registers `QC-PipelineDashboard` to run `Start-QCPipelineDashboard.ps1` at startup whether the user is logged on or not. Defaults to the `Prepend PDF QC` clone on `PXBENTLEY01`.
+
+### `deployment/Register-QCPipelineDashboardLogonConsole.ps1`
+- **Purpose**: QC server only. Startup shortcut that opens `Start-QCOpsConsole.ps1` (`-STA`). Does not start a second dashboard. Text tail: `Start-QCOpsConsole.ps1 -NoGui`.
 
 ### `deployment/Register-QCRemoteWorkerHostTask.ps1`
 - **Purpose**: modelling PC only. Registers `QC-RemoteWorkerHost` to run `Start-QCRemoteWorkerHost.ps1` at startup with `-AllowUncQueue`.

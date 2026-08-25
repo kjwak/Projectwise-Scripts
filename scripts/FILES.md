@@ -42,7 +42,7 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 
 | Location | Examples |
 | --- | --- |
-| `deployment/` | `Promote-DevToMain`, `Sync-OverlayReviewStamp`, `Register-QCPipelineDashboardTask`, `Register-QCRemoteWorkerHostTask` |
+| `deployment/` | `Promote-DevToMain`, `Sync-OverlayReviewStamp`, `Register-QCPipelineDashboardTask`, `Register-QCPipelineDashboardLogonConsole`, `Register-QCRemoteWorkerHostTask` |
 
 `Publish-QCPipelineCode.ps1` remains at `scripts/` root (high-risk publish entrypoint; not moved in Phase 4 processing/deployment move).
 
@@ -62,14 +62,18 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 | `Reconcile-QCStatusSets.ps1` | Compatibility wrapper → `maintenance/Reconcile-QCStatusSets.ps1`. |
 | `Requeue-QCJobs.ps1` | Compatibility wrapper → `maintenance/Requeue-QCJobs.ps1`. |
 | `Promote-DevToMain.ps1` | Compatibility wrapper → `deployment/Promote-DevToMain.ps1` (git dev→main promote helper). |
-| `Register-QCPipelineDashboardTask.ps1` | QC-server boot task for `Start-QCPipelineDashboard.ps1` (lives in `deployment/` only). |
+| `Register-QCPipelineDashboardTask.ps1` | QC-server boot task for `Start-QCPipelineDashboard.ps1` (Session 0; lives in `deployment/` only). |
+| `Register-QCPipelineDashboardLogonConsole.ps1` | QC-server Startup shortcut → `Start-QCOpsConsole.ps1` (WinForms; `-NoGui` text tail). |
+| `Start-QCOpsConsole.ps1` | Logon ops GUI; observes/controls `QC-PipelineDashboard`; never starts a second dashboard. |
+| `Invoke-QCOpsPwCompare.ps1` | MTA child helper for SQL vs ProjectWise compare (GUI cannot host pwps_dab). |
+| `Watch-QCPipelineDashboardConsole.ps1` | Read-only tail of watcher/worker logs; does not start the dashboard. |
 | `Register-QCRemoteWorkerHostTask.ps1` | Modelling-PC boot task for `Start-QCRemoteWorkerHost.ps1` (lives in `deployment/` only). |
 | `Run-CombineStatusSet.ps1` | Compatibility wrapper → `processing/Run-CombineStatusSet.ps1` (launcher reading `statusSet.localRoot` from appsettings). |
 | `Run-QCProcessor.ps1` | Worker entrypoint that claims pending queue jobs, dispatches processors, renews locks, records logs, and transitions job states. |
 | `Show-QCQueueDiag.ps1` | Compatibility wrapper → `diagnostics/Show-QCQueueDiag.ps1`. |
 | `Show-QCStatus.ps1` | Compatibility wrapper → `diagnostics/Show-QCStatus.ps1`. |
 | `Start-QCPipelineDashboard.ps1` | Unified dashboard entrypoint that runs watcher and worker processes while rendering live terminal status. |
-| `Stop-QCPipeline.ps1` | Safety/operations helper that finds and stops PowerShell processes running this repo's watcher, worker, or dashboard scripts. |
+| `Stop-QCPipeline.ps1` | Safety/operations helper that finds and stops PowerShell processes running this repo's watcher, worker, or dashboard scripts. Does not match the logon ops GUI. |
 | `Sync-OverlayReviewStamp.ps1` | Compatibility wrapper → `deployment/Sync-OverlayReviewStamp.ps1` (sync overlay Python into PyInstaller bundle). |
 | `Test-PWConnection.ps1` | Compatibility wrapper → `diagnostics/Test-PWConnection.ps1`. |
 | `Watch-QCTrigger.ps1` | One-shot trigger scan that discovers local/ProjectWise candidates, evaluates rules and filters, and enqueues queue jobs. |

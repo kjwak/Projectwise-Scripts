@@ -7,8 +7,8 @@ Runs the QC server dashboard (watcher + local workers) as the specified user eve
 that user is not logged on (LogonType Password). Adds a startup delay so SQL, ProjectWise,
 and local disks are usually ready after reboot.
 
-The terminal UI is not visible in Session 0. The watcher and workers still run; use
-queue\_logs and Show-QCQueueDiag for status. Do not register this on the modelling PC.
+The terminal UI is not visible in Session 0. Use Register-QCPipelineDashboardLogonConsole.ps1
+for a read-only log window at logon. Do not register this on the modelling PC.
 
 Requires elevation to register. You will be prompted for the run-as account password
 unless -Credential is supplied.
@@ -18,9 +18,6 @@ unless -Credential is supplied.
 
 .EXAMPLE
 .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -RepoRoot 'C:\Users\jflint\Documents\github\Prepend PDF QC'
-
-.EXAMPLE
-.\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -StartupDelaySeconds 120 -Credential (Get-Credential)
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -166,7 +163,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 5) `
     -MultipleInstances IgnoreNew
 
-$desc = 'QC pipeline dashboard (watcher + workers). Starts at boot whether the user is logged on or not. Terminal UI is not visible in Session 0.'
+$desc = 'QC pipeline dashboard (watcher + workers). Starts at boot whether the user is logged on or not. Terminal UI is not visible in Session 0; use the logon log console.'
 
 if ($PSCmdlet.ShouldProcess($TaskName, 'Register scheduled task')) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -196,7 +193,8 @@ if ($PSCmdlet.ShouldProcess($TaskName, 'Register scheduled task')) {
     Write-Host "  Script:   $dashScript" -ForegroundColor Gray
     Write-Host "  Working:  $RepoRoot" -ForegroundColor Gray
     Write-Host ''
-    Write-Host 'The dashboard TUI is not visible while this task runs in Session 0. Watcher and workers still run.' -ForegroundColor Yellow
+    Write-Host 'Session 0 has no desktop. Open a read-only log window at logon with:' -ForegroundColor Yellow
+    Write-Host '  .\scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1' -ForegroundColor Cyan
     Write-Host 'Do not start a second interactive dashboard on this host (singleton lock / duplicate watchers).' -ForegroundColor Yellow
     Write-Host ''
     Write-Host ("Test now:  Start-ScheduledTask -TaskName '{0}'" -f $TaskName) -ForegroundColor Cyan

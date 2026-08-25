@@ -57,6 +57,7 @@ $script:QCModulePathMap = @{
     'QC.Workflow.psm1' = 'Workflow\QC.Workflow.psm1'
     'QC.ProcessType.psm1' = 'Workflow\QC.ProcessType.psm1'
     'QC.DebugMcp.psm1' = 'Diagnostics\QC.DebugMcp.psm1'
+    'QC.OpsConsole.psm1' = 'Ops\QC.OpsConsole.psm1'
 }
 
 function Resolve-QCModulePath {

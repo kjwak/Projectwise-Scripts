@@ -15,10 +15,11 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 |--------|---------|
 | `scripts/service/Watch-QCTrigger.ps1` | Watcher: audit/reconcile, filters, triggers, enqueue |
 | `scripts/service/Run-QCProcessor.ps1` | Worker: dequeue, lock, dispatch processor, transition job state |
-| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI (QC server only) |
+| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI (QC server only, Session 0 boot task) |
+| `scripts/service/Start-QCOpsConsole.ps1` | Logon WinForms console: observes/controls the boot task; never starts a second dashboard |
 | `scripts/service/Start-QCRemoteWorkerHost.ps1` | Processor-only supervisor for a remote host (no watcher/dashboard) |
 
-**Boot without login:** on `PXBENTLEY01` run `scripts/deployment/Register-QCPipelineDashboardTask.ps1` (elevated) so `Start-QCPipelineDashboard.ps1` starts at reboot from `C:\Users\jflint\Documents\github\Prepend PDF QC`. On the modelling PC use `Register-QCRemoteWorkerHostTask.ps1` instead — do not register the dashboard there. The boot dashboard runs in Session 0 (TUI not visible).
+**Boot without login:** on `PXBENTLEY01` run `scripts/deployment/Register-QCPipelineDashboardTask.ps1` (elevated) so `Start-QCPipelineDashboard.ps1` starts at reboot from `C:\Users\jflint\Documents\github\Prepend PDF QC` (Session 0, no TUI). For the operator GUI at logon, run `Register-QCPipelineDashboardLogonConsole.ps1` (Startup shortcut → `Start-QCOpsConsole.ps1`; `-NoGui` is the text tail). The GUI must not launch the dashboard. On/off is Enable/Disable of `QC-PipelineDashboard` plus `Stop-QCPipeline.ps1`. Manual full scan while the watcher is live writes `queue/_watcher/ops-request.json` — do not spawn a second `Watch-QCTrigger`. On the modelling PC use `Register-QCRemoteWorkerHostTask.ps1` instead — do not register the dashboard there.
 
 Pass `-AppSettingsPath` to override config (e.g. `.\appsettings.test.json` for safe local runs).
 
@@ -58,7 +59,7 @@ When `database.enabled` is true:
 1. **Primary:** `watcher_state` table (`audit_watermark_utc` / related keys) in SQL — see `modules/Database/Core.Database.psm1`, `modules/ProjectWise/PW.AuditPoller.psm1`.
 2. **Mirror / fallback:** `queue/_watcher/audit-capture-watermark.txt` and `poll_runs.watermark_after`.
 
-Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled or hybrid downtime). Watch-folder GUID cache PW warm (`Get-PWFoldersHashTableByGuid`) runs **only** at `fullScanSchedule` slots (`06:00` / `18:00`); audit ticks load `pw_folder_cache` from SQL. See `docs/architecture/hybrid-polling.md`.
+Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled, hybrid downtime, or an operator `ops-request.json` fullScan). Watch-folder GUID cache PW warm (`Get-PWFoldersHashTableByGuid`) runs **only** at `fullScanSchedule` slots (`06:00` / `18:00`) and operator-requested full scans; audit ticks load `pw_folder_cache` from SQL. See `docs/architecture/hybrid-polling.md`.
 
 ### Prepend mode
 

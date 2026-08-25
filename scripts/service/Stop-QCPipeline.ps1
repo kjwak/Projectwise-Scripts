@@ -21,10 +21,16 @@ $patterns = @(
     'run_prepend_qc'
 )
 $rx = ($patterns -join '|')
+$excludeRx = 'Start-QCOpsConsole|Watch-QCPipelineDashboardConsole|Invoke-QCOpsPwCompare'
 
 $me = $PID
 $procs = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
-    Where-Object { $_.CommandLine -and ($_.CommandLine -match $rx) -and ($_.ProcessId -ne $me) }
+    Where-Object {
+        $_.CommandLine -and
+        ($_.CommandLine -match $rx) -and
+        ($_.CommandLine -notmatch $excludeRx) -and
+        ($_.ProcessId -ne $me)
+    }
 
 if (-not $procs -or @($procs).Count -eq 0) {
     Write-Host "No QC pipeline processes found." -ForegroundColor Green

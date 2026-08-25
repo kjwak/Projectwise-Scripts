@@ -17,6 +17,7 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `Notifications/` | Email notifications, Graph, templates, threads, watcher alerts |
 | `Reporting/` | Reporting scan aggregation |
 | `Diagnostics/` | MCP debug module |
+| `Ops/` | Logon ops console control plane (no flat shim) |
 
 Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`. **Phase 4F:** active scripts/tests import folder implementation paths; shims remain for compatibility.
 
@@ -76,6 +77,14 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | `QC.WatcherOrchestration.psm1` | Watcher tick orchestration shared by trigger scan entrypoints. |
 | `QC.Worker.psm1` | Shared worker retry/state-transition policy for moving locked jobs between queue states. |
 | `QC.Workflow.psm1` | Optional QC workflow/state/attribute writeback framework for ProjectWise. |
+
+### Ops
+
+Implementations in `modules/Ops/` (no flat shim):
+
+| File | Purpose |
+| --- | --- |
+| Ops/QC.OpsConsole.psm1 | Logon-session pipeline status, scheduled-task on/off, queue inspect, ops-request full scan. Does not start the dashboard. |
 
 ### ProjectWise
 

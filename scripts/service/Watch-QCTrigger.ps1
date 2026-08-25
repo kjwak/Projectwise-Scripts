@@ -2161,10 +2161,12 @@ if ($statusSetRules.Count -ge 0) {
                 $watcherRanReconciliationScan = $true
                 $runMode = 'reconciliation'
                 $reconciliationReason = [string]$fullScanPlan.reason
-                if ($fullScanPlan.mode -eq 'schedule' -and $fullScanPlan.slotKey) {
+                if ($fullScanPlan.slotKey -and ($fullScanPlan.mode -in @('schedule', 'ops_request'))) {
                     $script:fullScanScheduleInFlightSlotKey = [string]$fullScanPlan.slotKey
                 }
-                $scanMsg = if ($fullScanPlan.mode -eq 'schedule') {
+                $scanMsg = if ($fullScanPlan.mode -eq 'ops_request') {
+                    'Running full folder scan (operator request).'
+                } elseif ($fullScanPlan.mode -eq 'schedule') {
                     "Running full folder scan (scheduled time $($fullScanPlan.scheduledTime))."
                 } else {
                     "Running full folder scan (reconciliation cycle $cycleNum, every $reconcileEvery)."
@@ -2989,12 +2991,24 @@ if ($statusSetRules.Count -ge 0) {
                 # Keep slot in-flight; do not mark complete.
             } elseif ($script:fullScanScheduleInFlightSlotKey) {
                 try {
-                    $slotDone = Set-QCFullScanScheduleSlotComplete -Config $config -SlotKey $script:fullScanScheduleInFlightSlotKey -QueueRoot $queueRoot
-                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
-                        slotKey = $script:fullScanScheduleInFlightSlotKey
-                        persisted = [bool]$slotDone
-                        completedFolders = [int]$completedFolders.Count
-                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    if ([string]$script:fullScanScheduleInFlightSlotKey -like 'ops_request|*') {
+                        $cleared = $false
+                        if (Get-Command -Name 'Clear-QCWatcherOpsRequest' -ErrorAction SilentlyContinue) {
+                            $cleared = [bool](Clear-QCWatcherOpsRequest -Config $config -QueueRoot $queueRoot)
+                        }
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_OPS_REQUEST_DONE' -Message 'Operator full-scan request completed.' -Data @{
+                            slotKey = $script:fullScanScheduleInFlightSlotKey
+                            cleared = $cleared
+                            completedFolders = [int]$completedFolders.Count
+                        } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    } else {
+                        $slotDone = Set-QCFullScanScheduleSlotComplete -Config $config -SlotKey $script:fullScanScheduleInFlightSlotKey -QueueRoot $queueRoot
+                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_DONE' -Message 'Marked scheduled full-scan slot complete.' -Data @{
+                            slotKey = $script:fullScanScheduleInFlightSlotKey
+                            persisted = [bool]$slotDone
+                            completedFolders = [int]$completedFolders.Count
+                        } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    }
                 } catch {
                     _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'WATCH_FULL_SCAN_SCHEDULE_SLOT_FAILED' -Message 'Could not persist full-scan schedule slot completion.' -Data @{
                         slotKey = $script:fullScanScheduleInFlightSlotKey
