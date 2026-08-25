@@ -14,7 +14,7 @@ This clone on the drainage modelling workstation (AZTEC002799) is a **processor 
 | Local `qcPrepend` temp/output on fast disk (E: / F:) | Audit polling, enqueue, reconciliation sweeps |
 | Read-only diagnostics (`Show-QCQueueDiag.ps1`) | UNC claims without `-AllowUncQueue` / `workers.remoteHost.allowUncQueue` |
 
-The supervisor tails `queue\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim, stage, success, and failure to the console. By default it shows **this host only** (`RW*` worker labels). Pass `-ShowAllWorkers` to `Start-QCRemoteWorkerHost.ps1` if you need QC-server worker lines too. Heartbeat lines say `idle` or `busy=N <document>`. Post-prepend steps (tag clear, workflow writeback) emit `QC_PREPEND_*` progress lines so the console is not silent while the job remains in `running\`.
+The supervisor and logon console (`Watch-QCRemoteWorkerHostConsole.ps1`) take **in-flight work from `queue\running`** for this host (`machineName`). Heartbeat `idle` / `busy=N <document>` is that snapshot, not JSONL. `QUEUE_RUNNING` prints when a new running file appears and JSONL never logged `WORKER_SELECTED`. JSONL is still tailed for stage/success/failure (`RW*` by default; `-ShowAllWorkers` / `-AllWorkers` includes QC-server jobs). Pass `-AllWorkers` on the logon console to include every host in `running\`.
 
 Restrict this host with gitignored `workers.enabledJobTypes` (modelling PC: `["QC_PREPEND"]` so `STATUS_SET_GEN` stays on the QC server). Empty/omitted `enabledJobTypes` means all types — do not set that in committed `appsettings.json`.
 
@@ -61,7 +61,7 @@ Do not manually move the job to `succeeded\` unless prepend **and** workflow wri
 
 When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`).
 
-- **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**.
+- **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**. After a worker lease-exits, the next spawn reuses the lowest free `RW*` label (do not keep incrementing to `RW102`).
 - **In-flight work always finishes** (prepend, reconnect, writeback, notification).
 - **Fail-open:** missing, malformed, unreadable, stale (`sampledAtUtc` older than `max(3 * sampleSeconds, 30s)`), `reason=sample_error`, or the **first** process-CPU sample (no prior snapshot to compare) does **not** pause claims.
 - Process-name patterns identify CAD/hydro apps (case-insensitive wildcards vs `Win32_Process.Name`, `.exe` optional). When `processCpuPercent` is set (typical **15**), a matching app sitting idle (HEC-RAS open on `dteam` with no model running) is **not** busy — the matched process **plus descendants** (solver children) must use CPU over `sampleSeconds`. `processMemoryMb` is optional and usually left at `0`. When both process gates are `0`, a name match alone still counts as busy. QC supervisor/worker PIDs and their descendant tree are excluded; other PowerShell processes are not.
@@ -87,6 +87,8 @@ Do not run QC processors under the shared interactive D-Team login. Use a dedica
 ```
 
 Runs `Start-QCRemoteWorkerHost.ps1` at startup with a short delay, **whether the user is logged on or not**. You will be prompted for the run-as password (stored with the task). Unregister with `-Unregister`.
+
+The QC server (`PXBENTLEY01`) uses a different registrar — `Register-QCPipelineDashboardTask.ps1` — do not run that here.
 
 **Log console at logon:** read-only tail in a PowerShell window (does not start a second supervisor):
 

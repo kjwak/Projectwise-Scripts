@@ -5,6 +5,7 @@ $tests = @(
     'test\powershell\test_recover_orphan_pid.ps1',
     'test\powershell\test_get_next_excludes.ps1',
     'test\powershell\test_enabled_job_types.ps1',
+    'test\powershell\test_remote_worker_host_log_view.ps1',
     'test\powershell\test_host_throttle.ps1',
     'test\powershell\test_queue_json.ps1',
     'test\powershell\test_qc_prepend_child_wait_and_checkpoint.ps1',

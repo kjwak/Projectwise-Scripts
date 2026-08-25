@@ -18,6 +18,8 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 | `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI (QC server only) |
 | `scripts/service/Start-QCRemoteWorkerHost.ps1` | Processor-only supervisor for a remote host (no watcher/dashboard) |
 
+**Boot without login:** on `PXBENTLEY01` run `scripts/deployment/Register-QCPipelineDashboardTask.ps1` (elevated) so `Start-QCPipelineDashboard.ps1` starts at reboot from `C:\Users\jflint\Documents\github\Prepend PDF QC`. On the modelling PC use `Register-QCRemoteWorkerHostTask.ps1` instead — do not register the dashboard there. The boot dashboard runs in Session 0 (TUI not visible).
+
 Pass `-AppSettingsPath` to override config (e.g. `.\appsettings.test.json` for safe local runs).
 
 There are **no** watcher/worker scripts at the repository root.
@@ -125,7 +127,7 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 
 This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, temp roots, and `workers.enabledJobTypes` go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
 
-Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md). Host throttle (`workers.remoteHost.throttle` in `appsettings.local.json`) should use `processCpuPercent` so idle CAD/hydro GUIs (HEC-RAS open, no model running) do not scale QC down; name match alone is only for `processCpuPercent: 0`.
+Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md). `Watch-QCRemoteWorkerHostConsole.ps1` heartbeat follows `queue\running` for this host, not JSONL. Host throttle (`workers.remoteHost.throttle` in `appsettings.local.json`) should use `processCpuPercent` so idle CAD/hydro GUIs (HEC-RAS open, no model running) do not scale QC down; name match alone is only for `processCpuPercent: 0`.
 
 `QC_PREPEND` is not safely repeatable after the lane PDF (`*-rev.pdf` / `*-chk.pdf` / `*-prod.pdf`) exists. The worker persists `job.checkpoint` (`prepend_complete` then `writeback_complete`). Stale recovery must resume **writeback only** when `prepend_complete` is set — do not rerun prepend from heartbeat/PID/log inference.
 

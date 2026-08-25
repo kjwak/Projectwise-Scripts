@@ -42,7 +42,7 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 
 | Location | Examples |
 | --- | --- |
-| `deployment/` | `Promote-DevToMain`, `Sync-OverlayReviewStamp` |
+| `deployment/` | `Promote-DevToMain`, `Sync-OverlayReviewStamp`, `Register-QCPipelineDashboardTask`, `Register-QCRemoteWorkerHostTask` |
 
 `Publish-QCPipelineCode.ps1` remains at `scripts/` root (high-risk publish entrypoint; not moved in Phase 4 processing/deployment move).
 
@@ -62,6 +62,8 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 | `Reconcile-QCStatusSets.ps1` | Compatibility wrapper → `maintenance/Reconcile-QCStatusSets.ps1`. |
 | `Requeue-QCJobs.ps1` | Compatibility wrapper → `maintenance/Requeue-QCJobs.ps1`. |
 | `Promote-DevToMain.ps1` | Compatibility wrapper → `deployment/Promote-DevToMain.ps1` (git dev→main promote helper). |
+| `Register-QCPipelineDashboardTask.ps1` | QC-server boot task for `Start-QCPipelineDashboard.ps1` (lives in `deployment/` only). |
+| `Register-QCRemoteWorkerHostTask.ps1` | Modelling-PC boot task for `Start-QCRemoteWorkerHost.ps1` (lives in `deployment/` only). |
 | `Run-CombineStatusSet.ps1` | Compatibility wrapper → `processing/Run-CombineStatusSet.ps1` (launcher reading `statusSet.localRoot` from appsettings). |
 | `Run-QCProcessor.ps1` | Worker entrypoint that claims pending queue jobs, dispatches processors, renews locks, records logs, and transitions job states. |
 | `Show-QCQueueDiag.ps1` | Compatibility wrapper → `diagnostics/Show-QCQueueDiag.ps1`. |

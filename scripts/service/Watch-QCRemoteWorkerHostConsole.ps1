@@ -3,8 +3,9 @@
 Live console for the QC remote worker host scheduled task (read-only tail).
 
 .DESCRIPTION
-Does not start the supervisor. Tails queue\_logs\Run-QCProcessor_*.jsonl and prints
-job activity from this host's RW* workers by default. Close the window anytime.
+Does not start the supervisor. Heartbeat and new claims follow queue\running for this
+host. JSONL is stage/success/failure detail only (this host's RW* workers by default).
+Close the window anytime.
 
 .EXAMPLE
 .\scripts\service\Watch-QCRemoteWorkerHostConsole.ps1
@@ -83,12 +84,19 @@ Initialize-QCRemoteWorkerHostLogView -LocalWorkersOnly:(-not $AllWorkers.IsPrese
 
 Write-Host ("[{0}] QC remote worker log console host={1} queue={2}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $queueRoot) -ForegroundColor Cyan
 Write-Host ("  scheduled task: {0} ({1})" -f $ScheduledTaskName, $taskState) -ForegroundColor Gray
-Write-Host ("  filter: {0} types={1}" -f $(if ($AllWorkers.IsPresent) { 'all workers in JSONL' } else { 'RW* workers only (-AllWorkers for server lines too)' }), $types) -ForegroundColor Gray
-Write-Host '  read-only tail — supervisor runs in the scheduled task. Close this window anytime.' -ForegroundColor Gray
+Write-Host ("  filter: {0} types={1}" -f $(if ($AllWorkers.IsPresent) { 'all hosts in running\\ + all JSONL workers' } else { 'this host running\\ + RW* JSONL (-AllWorkers for server too)' }), $types) -ForegroundColor Gray
+Write-Host '  claims come from running\, not JSONL. Supervisor runs in the scheduled task. Close this window anytime.' -ForegroundColor Gray
+$seed = Sync-QCRemoteWorkerHostRunningView -QueueRoot $queueRoot -HostName $hostName -AllHosts:$AllWorkers.IsPresent -Quiet
+$seedNames = @($seed.Jobs | ForEach-Object { if ($_.sourceName) { $_.sourceName } else { $_.jobId } })
+if (@($seed.Jobs).Count -gt 0) {
+    Write-Host ("  running now ({0}): {1}" -f @($seed.Jobs).Count, ($seedNames -join ', ')) -ForegroundColor Cyan
+} else {
+    Write-Host '  running now: none' -ForegroundColor DarkGray
+}
 Write-Host ''
 
 if ($RecentLines -gt 0) {
-    Write-Host ("--- last {0} matching lines ---" -f $RecentLines) -ForegroundColor DarkGray
+    Write-Host ("--- last {0} matching JSONL lines ---" -f $RecentLines) -ForegroundColor DarkGray
     Show-QCRemoteWorkerHostRecentJsonLogs -LogDir $logDir -MaxLines $RecentLines
     Write-Host '--- live ---' -ForegroundColor DarkGray
 }
@@ -97,11 +105,12 @@ $lastStatusAt = [DateTime]::MinValue
 
 while ($true) {
     try { Drain-QCRemoteWorkerHostJsonLogs -LogDir $logDir } catch { }
+    try { Sync-QCRemoteWorkerHostRunningView -QueueRoot $queueRoot -HostName $hostName -AllHosts:$AllWorkers.IsPresent | Out-Null } catch { }
 
     if (([DateTime]::UtcNow - $lastStatusAt).TotalSeconds -ge 10) {
         $lastStatusAt = [DateTime]::UtcNow
         $taskState = _Get-ScheduledTaskStateText -Name $ScheduledTaskName
-        $busyTxt = Get-QCRemoteWorkerHostBusySummary
+        $busyTxt = Get-QCRemoteWorkerHostBusySummary -QueueRoot $queueRoot -HostName $hostName -AllHosts:$AllWorkers.IsPresent
         Write-Host ("[{0}] task={1} {2}" -f (Get-Date -Format 'HH:mm:ss'), $taskState, $busyTxt) -ForegroundColor DarkGray
     }
 

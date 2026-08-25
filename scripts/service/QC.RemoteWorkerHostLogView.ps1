@@ -1,9 +1,11 @@
-# Dot-source helpers for tailing Run-QCProcessor JSONL on the remote worker host.
+# Dot-source helpers for the remote worker host console.
 # Used by Start-QCRemoteWorkerHost.ps1 (supervisor) and Watch-QCRemoteWorkerHostConsole.ps1 (logon viewer).
+# In-flight work is read from queue\running (this host's machineName). JSONL is stage detail only.
 
 if (-not $script:QCRemoteWorkerLogView) {
     $script:QCRemoteWorkerLogView = @{
         ActiveJobs = @{}
+        RunningIds = @{}
         ProcJsonLog = @{
             hour = ''
             offset = [int64]0
@@ -22,6 +24,7 @@ function Initialize-QCRemoteWorkerHostLogView {
         [string]$WorkerLabelPattern = '^RW'
     )
     $script:QCRemoteWorkerLogView.ActiveJobs = @{}
+    $script:QCRemoteWorkerLogView.RunningIds = @{}
     $script:QCRemoteWorkerLogView.ProcJsonLog = @{
         hour = ''
         offset = [int64]0
@@ -30,6 +33,110 @@ function Initialize-QCRemoteWorkerHostLogView {
     }
     $script:QCRemoteWorkerLogView.LocalWorkersOnly = [bool]$LocalWorkersOnly.IsPresent
     $script:QCRemoteWorkerLogView.WorkerLabelPattern = [string]$WorkerLabelPattern
+}
+
+function Get-QCNextRemoteWorkerLabel {
+    param([string[]]$CurrentLabels = @())
+    $used = @{}
+    foreach ($l in @($CurrentLabels)) {
+        if ([string]$l -match '^RW(\d+)$') {
+            $n = 0
+            try { $n = [int]$Matches[1] } catch { $n = 0 }
+            if ($n -gt 0) { $used[$n] = $true }
+        }
+    }
+    $idx = 1
+    while ($used.ContainsKey($idx)) { $idx++ }
+    return ('RW{0}' -f $idx)
+}
+
+function Get-QCRemoteWorkerHostRunningJobs {
+    param(
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [string]$HostName = '',
+        [switch]$AllHosts
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($QueueRoot)) { return @() }
+    $runningDir = Join-Path $QueueRoot 'running'
+    if (-not (Test-Path -LiteralPath $runningDir)) { return @() }
+    $wantHost = ([string]$HostName).Trim()
+    foreach ($f in @(Get-ChildItem -LiteralPath $runningDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        $j = $null
+        try { $j = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $j = $null }
+        $jobId = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+        $type = ''; $src = ''; $machine = ''; $label = ''
+        if ($j) {
+            try { if ($j.id) { $jobId = [string]$j.id } } catch { }
+            try { if ($j.type) { $type = [string]$j.type } } catch { }
+            try {
+                if ($j.sourceName) { $src = [string]$j.sourceName }
+                elseif ($j.sourcePath) { $src = [System.IO.Path]::GetFileName([string]$j.sourcePath) }
+            } catch { }
+            try {
+                if ($j.PSObject.Properties['machineName'] -and $j.machineName) { $machine = ([string]$j.machineName).Trim() }
+            } catch { }
+            try {
+                if ($j.PSObject.Properties['workerLabel'] -and $j.workerLabel) { $label = [string]$j.workerLabel }
+            } catch { }
+        }
+        if (-not $AllHosts.IsPresent) {
+            if ([string]::IsNullOrWhiteSpace($wantHost)) { continue }
+            if ([string]::IsNullOrWhiteSpace($machine)) { continue }
+            if ($machine.ToUpperInvariant() -ne $wantHost.ToUpperInvariant()) { continue }
+        }
+        [void]$out.Add([pscustomobject]@{
+            jobId = $jobId
+            type = $type
+            sourceName = $src
+            machineName = $machine
+            workerLabel = $label
+        })
+    }
+    return @($out.ToArray())
+}
+
+function Sync-QCRemoteWorkerHostRunningView {
+    param(
+        [Parameter(Mandatory)][string]$QueueRoot,
+        [string]$HostName = '',
+        [switch]$AllHosts,
+        [switch]$Quiet
+    )
+    if (-not $script:QCRemoteWorkerLogView.RunningIds) { $script:QCRemoteWorkerLogView.RunningIds = @{} }
+    if (-not $script:QCRemoteWorkerLogView.ActiveJobs) { $script:QCRemoteWorkerLogView.ActiveJobs = @{} }
+    $jobs = @(Get-QCRemoteWorkerHostRunningJobs -QueueRoot $QueueRoot -HostName $HostName -AllHosts:$AllHosts)
+    $current = @{}
+    foreach ($j in $jobs) {
+        if ($j.jobId) { $current[[string]$j.jobId] = $j }
+    }
+    $prev = $script:QCRemoteWorkerLogView.RunningIds
+    $activeJobs = $script:QCRemoteWorkerLogView.ActiveJobs
+    $entered = New-Object System.Collections.Generic.List[object]
+    foreach ($id in @($current.Keys)) {
+        if ($prev.ContainsKey($id)) { continue }
+        $j = $current[$id]
+        $src = $(if ($j.sourceName) { [string]$j.sourceName } else { [string]$j.type })
+        $alreadyLogged = $activeJobs.ContainsKey($id)
+        $prev[$id] = $src
+        $activeJobs[$id] = $src
+        if (-not $Quiet.IsPresent -and -not $alreadyLogged) { [void]$entered.Add($j) }
+    }
+    foreach ($id in @($prev.Keys)) {
+        if (-not $current.ContainsKey($id)) { $prev.Remove($id) | Out-Null }
+    }
+    if (-not $Quiet.IsPresent) {
+        foreach ($j in $entered) {
+            $parts = New-Object System.Collections.Generic.List[string]
+            [void]$parts.Add(('[{0}]' -f (Get-Date -Format 'HH:mm:ss')))
+            [void]$parts.Add('QUEUE_RUNNING')
+            if ($j.type) { [void]$parts.Add([string]$j.type) }
+            if ($j.sourceName) { [void]$parts.Add([string]$j.sourceName) }
+            if ($j.jobId) { [void]$parts.Add([string]$j.jobId) }
+            Write-Host ($parts -join ' ') -ForegroundColor Cyan
+        }
+    }
+    return @{ Jobs = $jobs; Entered = @($entered.ToArray()) }
 }
 
 function Get-QCRemoteWorkerHostProcessorJsonlPath {
@@ -112,10 +219,25 @@ function Write-QCRemoteWorkerHostJobLine {
     }
 
     $activeJobs = $script:QCRemoteWorkerLogView.ActiveJobs
+    $runningIds = $script:QCRemoteWorkerLogView.RunningIds
     if (-not $src -and $jobId -and $activeJobs -and $activeJobs.ContainsKey($jobId)) {
         try { $src = [string]$activeJobs[$jobId] } catch { }
     }
     if ($code -eq 'WORKER_STAGE' -and -not $jobId) { return $false }
+
+    # running\ already showed this claim; JSONL SELECTED is duplicate, not a second start.
+    if ($code -eq 'WORKER_SELECTED' -and $jobId) {
+        $already = $false
+        if ($activeJobs -and $activeJobs.ContainsKey($jobId)) { $already = $true }
+        if ($runningIds -and $runningIds.ContainsKey($jobId)) { $already = $true }
+        if ($already) {
+            if ($src) {
+                if ($activeJobs) { $activeJobs[$jobId] = $src }
+                if ($runningIds) { $runningIds[$jobId] = $src }
+            }
+            return $true
+        }
+    }
 
     $msg = [string]$Obj.message
     $parts = New-Object System.Collections.Generic.List[string]
@@ -236,6 +358,20 @@ function Show-QCRemoteWorkerHostRecentJsonLogs {
 }
 
 function Get-QCRemoteWorkerHostBusySummary {
+    param(
+        [string]$QueueRoot = '',
+        [string]$HostName = '',
+        [switch]$AllHosts
+    )
+    if (-not [string]::IsNullOrWhiteSpace($QueueRoot)) {
+        $jobs = @(Get-QCRemoteWorkerHostRunningJobs -QueueRoot $QueueRoot -HostName $HostName -AllHosts:$AllHosts)
+        $busyN = @($jobs).Count
+        if ($busyN -le 0) { return 'idle' }
+        $names = @($jobs | ForEach-Object {
+            if ($_.sourceName) { [string]$_.sourceName } elseif ($_.type) { [string]$_.type } else { [string]$_.jobId }
+        } | Where-Object { $_ } | Select-Object -First 3)
+        return 'busy=' + $busyN + ' ' + ($names -join ',')
+    }
     $activeJobs = $script:QCRemoteWorkerLogView.ActiveJobs
     $busyN = @($activeJobs.Keys).Count
     if ($busyN -le 0) { return 'idle' }

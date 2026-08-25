@@ -91,6 +91,7 @@ $hostScript = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\Sta
 $logView = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\QC.RemoteWorkerHostLogView.ps1') -Raw
 Assert-True ($hostScript -match 'Drain-QCRemoteWorkerHostJsonLogs') 'remote host tails processor JSONL'
 Assert-True ($logView -match 'WORKER_SELECTED') 'remote host prints WORKER_SELECTED'
-Assert-True ($hostScript -match 'Tailing processor JSON logs') 'remote host announces console job activity'
+Assert-True ($logView -match 'Get-QCRemoteWorkerHostRunningJobs') 'remote host busy summary can read running\\'
+Assert-True ($hostScript -match 'Claims follow running') 'remote host announces queue-backed claims'
 
 Write-Host 'test_enabled_job_types: passed' -ForegroundColor Green

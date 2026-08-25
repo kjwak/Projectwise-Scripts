@@ -83,18 +83,19 @@ Assert-True (Test-Path -LiteralPath $legacyShim) 'legacy/prepend_qc.ps1 wrapper 
 $legacyText = Get-Content -LiteralPath $legacyShim -Raw
 Assert-True ($legacyText -match 'scripts\\processing\\Invoke-QCPrependPw\.ps1') 'legacy prepend forwards to Invoke-QCPrependPw'
 
-Write-Host '=== No in-repo scheduled task registration ===' -ForegroundColor Cyan
+Write-Host '=== No scheduled-task registration outside scripts/deployment ===' -ForegroundColor Cyan
 $repoPs1 = Get-ChildItem -Path $repoRoot -Recurse -Filter '*.ps1' -File |
     Where-Object {
         $_.FullName -notmatch '\\\.git\\' -and
         $_.FullName -notmatch '\\test\\' -and
-        $_.FullName -notmatch '\\archive\\'
+        $_.FullName -notmatch '\\archive\\' -and
+        $_.FullName -notmatch '\\scripts\\deployment\\'
     }
 $schedHits = @($repoPs1 | Where-Object {
     $c = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
     $c -and ($c -match 'Register-ScheduledTask|\bschtasks\b')
 })
-Assert-True ($schedHits.Count -eq 0) 'no Register-ScheduledTask or schtasks in production ps1 files'
+Assert-True ($schedHits.Count -eq 0) 'no Register-ScheduledTask or schtasks outside scripts/deployment'
 
 if ($fail -gt 0) {
     Write-Host "test_server_path_audit.ps1 failed: $fail" -ForegroundColor Red

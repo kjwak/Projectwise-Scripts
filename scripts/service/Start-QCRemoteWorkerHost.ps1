@@ -93,6 +93,22 @@ function _Get-ChildLogDir([string]$QueueRoot) {
     return $logDir
 }
 
+function _Test-WorkerSlotAlive($child) {
+    if (-not $child -or -not $child.process) { return $false }
+    $proc = $child.process
+    try { $proc.Refresh() } catch { }
+    try {
+        if ($proc.HasExited) { return $false }
+    } catch { return $false }
+    $id = 0
+    try { $id = [int]$proc.Id } catch { return $false }
+    if ($id -le 0) { return $false }
+    $live = $null
+    try { $live = Get-Process -Id $id -ErrorAction SilentlyContinue } catch { $live = $null }
+    if (-not $live) { return $false }
+    try { return ($live.ProcessName -in @('powershell', 'pwsh')) } catch { return $true }
+}
+
 function _Start-WorkerProcess {
     param(
         [string]$ScriptPath,
@@ -169,6 +185,7 @@ if (Test-Path -LiteralPath $lockPath) {
 $script:HostLockPath = $lockPath
 $script:WorkerSlots = @{}
 Initialize-QCRemoteWorkerHostLogView -SkipExisting -LocalWorkersOnly:(-not $ShowAllWorkers.IsPresent)
+$seed = Sync-QCRemoteWorkerHostRunningView -QueueRoot $queueRoot -HostName $hostName -AllHosts:$ShowAllWorkers.IsPresent -Quiet
 
 if (Get-Command -Name 'Test-QCStampAssetsAvailable' -ErrorAction SilentlyContinue) {
     $stampMod = Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1'
@@ -220,9 +237,15 @@ Write-QCJsonLog -Level 'Information' -Code 'REMOTE_HOST_START' -Message 'Remote 
 
 Write-Host ("[{0}] remote-host started host={1} queue={2} types={3}" -f (Get-Date -Format 'HH:mm:ss'), $hostName, $queueRoot, $(if (@($rh.enabledJobTypes).Count -gt 0) { $rh.enabledJobTypes -join ',' } else { '(all)' })) -ForegroundColor Gray
 if (-not $ShowAllWorkers.IsPresent) {
-    Write-Host 'Console shows this host only (RW* workers). Pass -ShowAllWorkers to include QC-server worker lines.' -ForegroundColor Gray
+    Write-Host 'Console shows this host only (running\\ machineName + RW* JSONL). Pass -ShowAllWorkers to include QC-server jobs.' -ForegroundColor Gray
 }
-Write-Host 'Tailing processor JSON logs: claim, stage, success, and failure print here. Idle heartbeat every 10s.' -ForegroundColor Gray
+Write-Host 'Claims follow running\\. JSONL is stage/success/failure. Idle heartbeat every 10s.' -ForegroundColor Gray
+$seedNames = @($seed.Jobs | ForEach-Object { if ($_.sourceName) { $_.sourceName } else { $_.jobId } })
+if (@($seed.Jobs).Count -gt 0) {
+    Write-Host ("  running now ({0}): {1}" -f @($seed.Jobs).Count, ($seedNames -join ', ')) -ForegroundColor Cyan
+} else {
+    Write-Host '  running now: none' -ForegroundColor DarkGray
+}
 
 try {
     $rec = Recover-QCStaleJobs -Config $cfg
@@ -246,9 +269,7 @@ try {
         $dead = @()
         foreach ($lbl in @($script:WorkerSlots.Keys)) {
             $child = $script:WorkerSlots[$lbl]
-            $alive = $false
-            try { $alive = -not $child.process.HasExited } catch { $alive = $false }
-            if (-not $alive) { $dead += $lbl }
+            if (-not (_Test-WorkerSlotAlive $child)) { $dead += $lbl }
         }
         foreach ($lbl in $dead) { $script:WorkerSlots.Remove($lbl) | Out-Null }
 
@@ -329,9 +350,7 @@ try {
         if ($spawnPlan.shouldSpawn) {
             $now = Get-Date
             if (($now - $lastSpawnAt).TotalMilliseconds -ge [int]$rh.spawnStaggerMs) {
-                $idx = 1
-                while ($script:WorkerSlots.ContainsKey("RW$idx")) { $idx++ }
-                $label = "RW$idx"
+                $label = Get-QCNextRemoteWorkerLabel -CurrentLabels @($script:WorkerSlots.Keys)
                 $xArgs = @(
                     '-AppSettingsPath', $AppSettingsPath,
                     '-MaxJobs', [string]([int]$rh.maxJobsPerWorker),
@@ -357,6 +376,7 @@ try {
         }
 
         try { Drain-QCRemoteWorkerHostJsonLogs -LogDir $logDir } catch { }
+        try { Sync-QCRemoteWorkerHostRunningView -QueueRoot $queueRoot -HostName $hostName -AllHosts:$ShowAllWorkers.IsPresent | Out-Null } catch { }
 
         if (([DateTime]::UtcNow - $lastStatusAt).TotalSeconds -ge 10) {
             $lastStatusAt = [DateTime]::UtcNow
@@ -365,7 +385,7 @@ try {
                 try { $pids += [int]$script:WorkerSlots[$lbl].process.Id } catch { }
             }
             $types = if (@($rh.enabledJobTypes).Count -gt 0) { ($rh.enabledJobTypes -join ',') } else { '(all)' }
-            $busyTxt = Get-QCRemoteWorkerHostBusySummary
+            $busyTxt = Get-QCRemoteWorkerHostBusySummary -QueueRoot $queueRoot -HostName $hostName -AllHosts:$ShowAllWorkers.IsPresent
             $thReason = [string]$throttleDecision.reason
             if ([string]::IsNullOrWhiteSpace($thReason)) { $thReason = 'disabled' }
             $thPause = if ([bool]$throttleDecision.pauseNewClaims) { 'pause' } elseif ($want -lt $pool) { 'reduce' } else { 'run' }

@@ -63,6 +63,7 @@ Project documentation for the Prepend PDF QC pipeline. For a quick repo overview
 | [`engineering/remote-worker-architecture-intent.md`](engineering/remote-worker-architecture-intent.md) | **Intent:** remote QC workers on modelling PC while server coordinates queue |
 | [`engineering/remote-worker-host-guardrails.md`](engineering/remote-worker-host-guardrails.md) | **In force:** modelling-PC clone is a processor host only; no watcher/dashboard; UNC claims need `-AllowUncQueue` |
 
+
 ---
 
 ## Archive — phase migration summaries

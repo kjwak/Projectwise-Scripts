@@ -14,6 +14,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
   - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.
+- **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not. On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`. The terminal UI is not visible in Session 0; watcher and workers still run. Do not register this on the modelling PC.
 
 ### `Start-QCRemoteWorkerHost.ps1`
 - **Purpose**: processor-only supervisor for a remote worker host.
@@ -23,7 +24,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
 - **Stop**: `Stop-QCPipeline.ps1` (also matches this supervisor).
 - **Boot task**: `scripts/deployment/Register-QCRemoteWorkerHostTask.ps1 -AllowUncQueue` (runs at startup when user is logged off).
 - **Logon console**: `scripts/deployment/Register-QCRemoteWorkerHostLogonConsole.ps1` (Startup shortcut → read-only log tail).
-- **Console**: tails `queueRoot\_logs\Run-QCProcessor_{yyyy-MM-dd_HH}.jsonl` and prints claim/stage/success/failure. Heartbeat shows `idle` or `busy=N <document>`.
+- **Console**: in-flight work comes from `queueRoot\running` for this host (`machineName`). JSONL is stage/success/failure only. Heartbeat shows `idle` or `busy=N <document>`.
 
 ### `Watch-QCTrigger.ps1`
 - **Purpose**: one-shot watcher tick (detect → filter → trigger → job → dedupe → enqueue).
@@ -90,6 +91,12 @@ Status-set processing scripts live under `scripts/processing/`. Deployment helpe
 
 ### `deployment/Promote-DevToMain.ps1` (wrapper: `Promote-DevToMain.ps1`)
 - **Purpose**: promote `dev` to `main` and push (git workflow helper).
+
+### `deployment/Register-QCPipelineDashboardTask.ps1`
+- **Purpose**: QC server only. Registers `QC-PipelineDashboard` to run `Start-QCPipelineDashboard.ps1` at startup whether the user is logged on or not. Defaults to the `Prepend PDF QC` clone on `PXBENTLEY01`.
+
+### `deployment/Register-QCRemoteWorkerHostTask.ps1`
+- **Purpose**: modelling PC only. Registers `QC-RemoteWorkerHost` to run `Start-QCRemoteWorkerHost.ps1` at startup with `-AllowUncQueue`.
 
 ### `deployment/Sync-OverlayReviewStamp.ps1` (wrapper: `Sync-OverlayReviewStamp.ps1`)
 - **Purpose**: sync `tools/overlay/qc_review_stamp.py` into the PyInstaller onedir bundle.

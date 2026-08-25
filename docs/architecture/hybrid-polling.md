@@ -4,6 +4,8 @@
 
 The pipeline is **audit-driven**: incremental `dms_audt` ingest into SQL, trigger evaluation on `audit_events.processed = 0`, and a durable watermark in `watcher_state` (plus local file mirror). Periodic full folder scans are reconciliation-only, not the steady-state path.
 
+On the QC server (`PXBENTLEY01`), `Watch-QCTrigger.ps1` is spawned by `Start-QCPipelineDashboard.ps1`. Register that dashboard as a boot task with [`scripts/deployment/Register-QCPipelineDashboardTask.ps1`](../../scripts/deployment/Register-QCPipelineDashboardTask.ps1) so the watcher starts after reboot without an interactive logon.
+
 ---
 
 ## How It Works
