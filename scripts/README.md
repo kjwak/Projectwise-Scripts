@@ -14,7 +14,7 @@ This folder contains the runnable PowerShell entrypoints for the QC pipeline.
   - Singleton guard via `queueRoot\_dashboard.lock` (prevents multiple dashboards spawning too many processes).
   - Persistent child logs under `queueRoot\_logs\` (stdout/stderr) for post-mortem when AV kills processes.
   - Periodic `Recover-QCStaleJobs` to requeue orphaned `running\` jobs.
-- **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not (Session 0, no TUI). On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`.
+- **Boot task (QC server only):** `scripts/deployment/Register-QCPipelineDashboardTask.ps1` registers `QC-PipelineDashboard` at startup, whether the user is logged on or not (Session 0, no TUI). On `PXBENTLEY01` it defaults to `C:\Users\jflint\Documents\github\Prepend PDF QC`. It also grants the run-as account Enable/Disable on the task so the logon ops GUI can toggle Pipeline on/off without elevation. For a task that already exists, re-run elevated with `-GrantOperatorAccess`.
 - **Logon console:** `scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1` (Startup shortcut → `Start-QCOpsConsole.ps1` WinForms; `-NoGui` → `Watch-QCPipelineDashboardConsole.ps1` text tail). Does not start a second dashboard. Do not register this on the modelling PC.
 
 ### `Start-QCOpsConsole.ps1`
@@ -105,7 +105,10 @@ Status-set processing scripts live under `scripts/processing/`. Deployment helpe
 - **Purpose**: promote `dev` to `main` and push (git workflow helper).
 
 ### `deployment/Register-QCPipelineDashboardTask.ps1`
-- **Purpose**: QC server only. Registers `QC-PipelineDashboard` to run `Start-QCPipelineDashboard.ps1` at startup whether the user is logged on or not. Defaults to the `Prepend PDF QC` clone on `PXBENTLEY01`.
+- **Purpose**: QC server only. Registers `QC-PipelineDashboard` to run `Start-QCPipelineDashboard.ps1` at startup whether the user is logged on or not. Defaults to the `Prepend PDF QC` clone on `PXBENTLEY01`. Grants the run-as account task ACL for unelevated Enable/Disable. Existing task: `-GrantOperatorAccess`.
+
+### `deployment/Set-QCScheduledTaskOperatorAcl.ps1`
+- **Purpose**: Elevated helper that adds a Full Control ACE on one scheduled task for a Windows account. Called by the dashboard registrar; can be run standalone.
 
 ### `deployment/Register-QCPipelineDashboardLogonConsole.ps1`
 - **Purpose**: QC server only. Startup shortcut that opens `Start-QCOpsConsole.ps1` (`-STA`). Does not start a second dashboard. Text tail: `Start-QCOpsConsole.ps1 -NoGui`.

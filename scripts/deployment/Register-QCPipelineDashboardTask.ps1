@@ -8,13 +8,18 @@ that user is not logged on (LogonType Password). Adds a startup delay so SQL, Pr
 and local disks are usually ready after reboot.
 
 The terminal UI is not visible in Session 0. Use Register-QCPipelineDashboardLogonConsole.ps1
-for a read-only log window at logon. Do not register this on the modelling PC.
+for the logon ops GUI. Do not register this on the modelling PC.
 
 Requires elevation to register. You will be prompted for the run-as account password
-unless -Credential is supplied.
+unless -Credential is supplied. After register, the run-as account is granted Enable/Disable
+on the task so the unelevated ops GUI can toggle Pipeline on/off. For a task that already
+exists, re-run elevated with -GrantOperatorAccess (no password / no recreate).
 
 .EXAMPLE
 .\scripts\deployment\Register-QCPipelineDashboardTask.ps1
+
+.EXAMPLE
+.\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess
 
 .EXAMPLE
 .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -RepoRoot 'C:\Users\jflint\Documents\github\Prepend PDF QC'
@@ -44,7 +49,10 @@ param(
     [switch]$Force,
 
     [Parameter(Mandatory = $false)]
-    [switch]$Unregister
+    [switch]$Unregister,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$GrantOperatorAccess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,6 +116,15 @@ if (-not $Force.IsPresent) {
     if ($hostName -ine $expectedHost) {
         throw "This task is for QC server $expectedHost (this host is $hostName). RDP to $expectedHost and re-run, or pass -Force to override."
     }
+}
+
+if ($GrantOperatorAccess.IsPresent) {
+    if ([string]::IsNullOrWhiteSpace($UserName)) {
+        $UserName = [string]$env:USERDOMAIN + '\' + [string]$env:USERNAME
+    }
+    $aclHelper = Join-Path $PSScriptRoot 'Set-QCScheduledTaskOperatorAcl.ps1'
+    & $aclHelper -TaskName $TaskName -UserName $UserName
+    return
 }
 
 if ($Credential) {
@@ -184,6 +201,14 @@ if ($PSCmdlet.ShouldProcess($TaskName, 'Register scheduled task')) {
     $verify = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $verify) {
         throw "Scheduled task '$TaskName' was not created. Re-run from an elevated PowerShell window."
+    }
+
+    $aclHelper = Join-Path $PSScriptRoot 'Set-QCScheduledTaskOperatorAcl.ps1'
+    try {
+        & $aclHelper -TaskName $TaskName -UserName $UserName
+    } catch {
+        Write-Host ("Warning: could not grant unelevated Pipeline on/off to {0}: {1}" -f $UserName, $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host 'Re-run elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess' -ForegroundColor Yellow
     }
 
     Write-Host ''

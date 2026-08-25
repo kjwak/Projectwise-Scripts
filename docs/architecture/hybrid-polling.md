@@ -4,7 +4,7 @@
 
 The pipeline is **audit-driven**: incremental `dms_audt` ingest into SQL, trigger evaluation on `audit_events.processed = 0`, and a durable watermark in `watcher_state` (plus local file mirror). Periodic full folder scans are reconciliation-only, not the steady-state path.
 
-On the QC server (`PXBENTLEY01`), `Watch-QCTrigger.ps1` is spawned by `Start-QCPipelineDashboard.ps1`. Register that dashboard as a boot task with [`scripts/deployment/Register-QCPipelineDashboardTask.ps1`](../../scripts/deployment/Register-QCPipelineDashboardTask.ps1) so the watcher starts after reboot without an interactive logon. The logon operator surface is [`Register-QCPipelineDashboardLogonConsole.ps1`](../../scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1) → [`Start-QCOpsConsole.ps1`](../../scripts/service/Start-QCOpsConsole.ps1) (WinForms; `-NoGui` is the text tail). The GUI must not start a second dashboard.
+On the QC server (`PXBENTLEY01`), `Watch-QCTrigger.ps1` is spawned by `Start-QCPipelineDashboard.ps1`. Register that dashboard as a boot task with [`scripts/deployment/Register-QCPipelineDashboardTask.ps1`](../../scripts/deployment/Register-QCPipelineDashboardTask.ps1) so the watcher starts after reboot without an interactive logon. The logon operator surface is [`Register-QCPipelineDashboardLogonConsole.ps1`](../../scripts/deployment/Register-QCPipelineDashboardLogonConsole.ps1) → [`Start-QCOpsConsole.ps1`](../../scripts/service/Start-QCOpsConsole.ps1) (WinForms; `-NoGui` is the text tail). The GUI must not start a second dashboard. Pipeline on/off uses Enable/Disable of `QC-PipelineDashboard`; the registrar grants the run-as account that permission so the unelevated GUI can toggle it (`-GrantOperatorAccess` for an existing task).
 
 ---
 

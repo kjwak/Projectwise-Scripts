@@ -191,11 +191,27 @@ try {
     Assert-True ($regText -match "-STA") 'logon shortcut launches -STA'
     Assert-True ($regText -match 'Watch-QCPipelineDashboardConsole') 'text console remains fallback'
 
+    $bootRegPath = Join-Path $repoRoot 'scripts\deployment\Register-QCPipelineDashboardTask.ps1'
+    $bootRegText = Get-Content -LiteralPath $bootRegPath -Raw
+    Assert-True ($bootRegText -match 'GrantOperatorAccess') 'boot registrar can grant operator ACL'
+    Assert-True ($bootRegText -match 'Set-QCScheduledTaskOperatorAcl\.ps1') 'boot registrar calls ACL helper'
+
+    $aclPath = Join-Path $repoRoot 'scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1'
+    $aclText = Get-Content -LiteralPath $aclPath -Raw
+    Assert-True ($aclText -match 'SetSecurityDescriptor') 'ACL helper writes task DACL'
+    Assert-True ($aclText -match '\(A;;FA;;;') 'ACL helper grants Full Control ACE'
+
+    $opsText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Ops\QC.OpsConsole.psm1') -Raw
+    Assert-True ($opsText -match 'OPS_TASK_ACCESS_DENIED') 'ops module reports task access denied'
+    Assert-True ($opsText -match 'GrantOperatorAccess') 'access-denied message points at GrantOperatorAccess'
+
     $parseFiles = @(
         'scripts\service\Start-QCOpsConsole.ps1'
         'scripts\service\Invoke-QCOpsPwCompare.ps1'
         'modules\Ops\QC.OpsConsole.psm1'
         'scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1'
+        'scripts\deployment\Register-QCPipelineDashboardTask.ps1'
+        'scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1'
     )
     foreach ($rel in $parseFiles) {
         $full = Join-Path $repoRoot $rel
