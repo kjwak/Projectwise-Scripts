@@ -45,7 +45,7 @@ At each configured wall-clock time (`auditPoller.fullScanSchedule.times`, e.g. `
 
 Full folder reconciliation runs once per schedule slot per calendar day (after the configured time), not on the first audit tick. At the start of each slot the watcher also thins status-set `_history` PDFs and manifest `.bak_*` copies (`statusSet.historyRetention`; once per slot, including preempted scans).
 
-**Cooperative preemption (July 2026):** With `fullScanSchedule.preempt.enabled` (default on), each continuous tick processes at most `checkEveryNFolders` folders, then yields so the next tick can run audit again before more folders. Progress is stored in `queue/_watcher/full-scan-progress.json` (and `watcher_state` when DB is enabled) so a restart resumes mid-slot instead of rewalking from the top. The schedule slot is marked complete only when the remaining folder queue is empty.
+**Cooperative preemption (July 2026, updated Aug 2026):** With `fullScanSchedule.preempt.enabled` (default on), each continuous tick processes at most `checkEveryNFolders` folders, then yields so the next tick can run audit again before more folders. The folder list is discovered **once per slot** and stored in `queue/_watcher/full-scan-progress.json` (and `watcher_state` when DB is enabled). Later ticks resume that remaining queue and do **not** re-run `Find-PWSheetsFoldersUnderRoot` or oneLevel expand. `preempt.skipSheetIndex` (default on) skips per-folder `sheet_index` during preempted recon so a large folder cannot stall the watermark for minutes; audit `DOCUMENT_ATTR` / `DOCUMENT_STATE` still update `sheet_index`. The schedule slot is marked complete only when the remaining folder queue is empty.
 
 **Crash fix:** `Invoke-QCWatcherLongRunningWork` no longer uses `System.Threading.Timer` heartbeats (those crashed the watcher ~180s into large `statusset_sheet_index` work). Progress is same-runspace only.
 
@@ -91,8 +91,9 @@ Each tick (typical production config):
   2. Process candidates (STATUS_SET_GEN, QC_PREPEND, QC_COMMENT_STATUS_SYNC, etc.)
   3. At configured wall-clock times (auditPoller.fullScanSchedule.times), while slot unpaid:
        → Warm watch-folder GUID cache once per slot (Get-PWFoldersHashTableByGuid + Sheets folders)
-       → Process up to checkEveryNFolders Sheets folders (reconciliation chunk)
-       → Checkpoint progress; yield so next tick repeats step 1 before more folders
+       → If no remaining folder queue for this slot: discover Sheets folders + oneLevel expand once
+       → Process up to checkEveryNFolders remaining folders (STATUS_SET_GEN; sheet_index skipped when preempt.skipSheetIndex)
+       → Checkpoint remaining queue; yield so next tick repeats step 1 (no tree rediscovery)
        → Mark slot complete only when the folder queue is empty
   4. Invoke-QCQueueStartupCheck — queue stats + stale/orphan running\ recovery
   5. Write poll_runs telemetry to database
@@ -124,7 +125,7 @@ Committed production excerpt (see `appsettings.json` for full `auditPoller` bloc
     "lookbackSeconds": 120,
     "fullScanSchedule": {
       "times": ["06:00", "18:00"],
-      "preempt": { "enabled": true, "checkEveryNFolders": 1 }
+      "preempt": { "enabled": true, "checkEveryNFolders": 1, "skipSheetIndex": true }
     },
     "fallbackToFullScan": false
   }
@@ -137,6 +138,7 @@ Committed production excerpt (see `appsettings.json` for full `auditPoller` bloc
 | `fullScanSchedule.times` | `06:00`, `18:00` | Wall-clock full reconciliation (preferred over `reconcileEveryNCycles`) |
 | `fullScanSchedule.preempt.enabled` | true | Yield between folder chunks so audit/QC events run each tick |
 | `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Max Sheets folders processed per continuous tick during an unpaid slot |
+| `fullScanSchedule.preempt.skipSheetIndex` | **true** | Skip per-folder `sheet_index` on preempted recon ticks so a large folder cannot stall the watermark. Audit still updates `sheet_index`. |
 | `folderGuidCache.warmOnScheduledReconciliation` | **true** | Warm watch-folder GUIDs **once per 06:00 / 18:00 slot**, after that tick's audit scan. Not on watcher start. |
 | `folderGuidCache.warmWatchRootsOnStart` | **false** | Deprecated no-op. Audit ticks load `pw_folder_cache` from SQL; they do not walk the PW folder tree. |
 | `folderGuidCache.warmSheetsFoldersOnStart` | true | When recon warm runs, also register `CADD\Sheets` folders under each watch root. |
@@ -162,7 +164,7 @@ If lookup fails, a **negative cache** row is written (`resolve_failed = 1`, empt
 
 ## Sheet Index Population
 
-During full-folder reconciliation scans, paired sheets are batch-upserted via `Write-QCSheetIndexBatch`. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events; lane-independent behavior is canonical (`QCProcess.EnableLegacySiblingStateSync: false`). Legacy sibling sync, when enabled, aligns DGN, sheet PDF, and lane QC PDFs (`*-prod/-rev/-chk.pdf`; legacy `*-qc.pdf` bridge).
+During full-folder reconciliation, paired sheets can be batch-upserted via `Write-QCSheetIndexBatch`. With `fullScanSchedule.preempt.skipSheetIndex` (default **true**), preempted recon ticks skip that batch so STATUS_SET_GEN cannot stall the next audit tick. Between reconciliation cycles, `Sync-PWSheetIndexOwnership` updates attributes from audit `DOCUMENT_ATTR` events. `Sync-PWAssociatedSheetWorkflowState` runs on audit `DOCUMENT_STATE` events; lane-independent behavior is canonical (`QCProcess.EnableLegacySiblingStateSync: false`). Legacy sibling sync, when enabled, aligns DGN, sheet PDF, and lane QC PDFs (`*-prod/-rev/-chk.pdf`; legacy `*-qc.pdf` bridge).
 
 ### Workflow and attribute triggers (`QC.AuditTriggers.psm1`)
 

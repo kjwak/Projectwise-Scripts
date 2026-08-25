@@ -30,10 +30,15 @@ $config = @{
 $preempt = Get-QCFullScanPreemptSettings -Config $config
 Assert-True $preempt.enabled 'preempt enabled from config'
 Assert-Eq $preempt.checkEveryNFolders 2 'checkEveryNFolders from config'
+Assert-True $preempt.skipSheetIndex 'skipSheetIndex defaults true when omitted'
 
 $preemptOff = Get-QCFullScanPreemptSettings -Config @{ auditPoller = @{ fullScanSchedule = @{ preempt = @{ enabled = $false } } } }
 Assert-True (-not $preemptOff.enabled) 'preempt can be disabled'
 Assert-Eq $preemptOff.checkEveryNFolders 1 'default checkEveryNFolders is 1'
+Assert-True $preemptOff.skipSheetIndex 'skipSheetIndex still defaults true when omitted'
+
+$preemptIndexOn = Get-QCFullScanPreemptSettings -Config @{ auditPoller = @{ fullScanSchedule = @{ preempt = @{ enabled = $true; skipSheetIndex = $false } } } }
+Assert-True (-not $preemptIndexOn.skipSheetIndex) 'skipSheetIndex can be disabled'
 
 # --- progress checkpoint ---
 $slotKey = 'full_scan_schedule|2026-07-17|06:00'
@@ -50,6 +55,11 @@ Assert-Eq $loaded.slotKey $slotKey 'loaded slotKey'
 Assert-Eq $loaded.completedFolders.Count 1 'one completed folder'
 Assert-Eq $loaded.folderQueue.Count 2 'two remaining folders'
 Assert-Eq ([string]$loaded.folderQueue[0].FolderPath) 'Documents\B\Sheets' 'first remaining path'
+
+Assert-True (Test-QCFullScanCanResumeFolderQueue -Progress $loaded -SlotKey $slotKey) 'checkpoint with remaining queue can resume'
+Assert-True (-not (Test-QCFullScanCanResumeFolderQueue -Progress $loaded -SlotKey 'full_scan_schedule|2026-07-17|18:00')) 'mismatched slot cannot resume'
+Assert-True (-not (Test-QCFullScanCanResumeFolderQueue -Progress $null -SlotKey $slotKey)) 'null progress cannot resume'
+Assert-True (-not (Test-QCFullScanCanResumeFolderQueue -Progress @{ slotKey = $slotKey; folderQueue = @() } -SlotKey $slotKey)) 'empty remaining queue cannot resume'
 
 $wrongSlot = Get-QCFullScanProgress -Config $config -QueueRoot $tempRoot -SlotKey 'full_scan_schedule|2026-07-17|18:00'
 Assert-Eq $wrongSlot.folderQueue.Count 0 'mismatched slot returns empty queue'
@@ -89,6 +99,11 @@ $fn = Get-Command Invoke-QCWatcherLongRunningWork
 $def = $fn.ScriptBlock.ToString()
 Assert-True ($def -notmatch 'New-Object\s+System\.Threading\.Timer') 'Invoke-QCWatcherLongRunningWork must not construct System.Threading.Timer'
 Assert-True ($def -notmatch '\[System\.Threading\.TimerCallback\]') 'Invoke-QCWatcherLongRunningWork must not use TimerCallback'
+
+$watchSrc = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts/service/Watch-QCTrigger.ps1') -Raw -Encoding UTF8
+Assert-True ($watchSrc -match 'Test-QCFullScanCanResumeFolderQueue') 'watcher resumes from checkpoint before folder rediscovery'
+Assert-True ($watchSrc -match 'skippedTreeWalk') 'watcher logs skippedTreeWalk on checkpoint resume'
+Assert-True ($watchSrc -match 'WATCH_PW_STATUSSET_INDEX_SKIPPED_PREEMPT') 'watcher skips sheet_index on preempted recon'
 
 Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host 'OK: QC full-scan preempt/checkpoint/timer-free tests passed.' -ForegroundColor Green

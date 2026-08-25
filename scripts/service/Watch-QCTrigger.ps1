@@ -357,6 +357,7 @@ $script:WatchRequiredCommands = @(
     'Set-QCFullScanScheduleSlotComplete'
     'Get-QCFullScanPreemptSettings'
     'Get-QCFullScanProgress'
+    'Test-QCFullScanCanResumeFolderQueue'
     'Set-QCFullScanProgress'
     'Clear-QCFullScanProgress'
     'Invoke-QCWatcherAuditTick'
@@ -2218,6 +2219,42 @@ if ($statusSetRules.Count -ge 0) {
                 throw ('PW.Discovery exports unavailable before full folder scan: ' + ($missingScan -join ', '))
             }
 
+            $preemptSettings = @{ enabled = $true; checkEveryNFolders = 1; skipSheetIndex = $true }
+            if (Get-Command -Name 'Get-QCFullScanPreemptSettings' -ErrorAction SilentlyContinue) {
+                $preemptSettings = Get-QCFullScanPreemptSettings -Config $config
+            }
+            $slotKeyForProgress = [string]$script:fullScanScheduleInFlightSlotKey
+            $completedFolders = [System.Collections.Generic.List[string]]::new()
+            $progressLoaded = $null
+            $resumeFromCheckpoint = $false
+            $pwFolders = @()
+
+            if ($slotKeyForProgress -and (Get-Command -Name 'Get-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
+                $progressLoaded = Get-QCFullScanProgress -Config $config -QueueRoot $queueRoot -SlotKey $slotKeyForProgress
+                $canResume = $false
+                if (Get-Command -Name 'Test-QCFullScanCanResumeFolderQueue' -ErrorAction SilentlyContinue) {
+                    $canResume = [bool](Test-QCFullScanCanResumeFolderQueue -Progress $progressLoaded -SlotKey $slotKeyForProgress)
+                } elseif ($progressLoaded -and $progressLoaded.slotKey -eq $slotKeyForProgress -and @($progressLoaded.folderQueue).Count -gt 0) {
+                    $canResume = $true
+                }
+                if ($progressLoaded -and $progressLoaded.slotKey -eq $slotKeyForProgress) {
+                    foreach ($cf in @($progressLoaded.completedFolders)) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$cf)) { [void]$completedFolders.Add([string]$cf) }
+                    }
+                }
+                if ($canResume) {
+                    $resumeFromCheckpoint = $true
+                    $pwFolders = @($progressLoaded.folderQueue)
+                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Resuming full reconciliation from checkpoint; skipping ProjectWise folder rediscovery.' -Data @{
+                        slotKey = $slotKeyForProgress
+                        remainingFolders = [int]$pwFolders.Count
+                        completedFolders = [int]$completedFolders.Count
+                        skippedTreeWalk = $true
+                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                }
+            }
+
+            if (-not $resumeFromCheckpoint) {
             $pwFolders = @()
             if ($watchList -and $watchList.ContainsKey('roots') -and $watchList.roots) {
                 foreach ($r in @($watchList.roots)) {
@@ -2372,45 +2409,21 @@ if ($statusSetRules.Count -ge 0) {
                 sample = @($pwFolders | Select-Object -First 5 | ForEach-Object { [string]$_.FolderPath })
             }
 
-            $preemptSettings = @{ enabled = $true; checkEveryNFolders = 1 }
-            if (Get-Command -Name 'Get-QCFullScanPreemptSettings' -ErrorAction SilentlyContinue) {
-                $preemptSettings = Get-QCFullScanPreemptSettings -Config $config
-            }
-            $slotKeyForProgress = [string]$script:fullScanScheduleInFlightSlotKey
-            $completedFolders = [System.Collections.Generic.List[string]]::new()
-            $progressLoaded = $null
-            if ($slotKeyForProgress -and (Get-Command -Name 'Get-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
-                $progressLoaded = Get-QCFullScanProgress -Config $config -QueueRoot $queueRoot -SlotKey $slotKeyForProgress
-                if ($progressLoaded -and $progressLoaded.slotKey -eq $slotKeyForProgress) {
-                    foreach ($cf in @($progressLoaded.completedFolders)) {
-                        if (-not [string]::IsNullOrWhiteSpace([string]$cf)) { [void]$completedFolders.Add([string]$cf) }
-                    }
-                    if (@($progressLoaded.folderQueue).Count -gt 0) {
-                        $pwFolders = @($progressLoaded.folderQueue)
-                        _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Resuming full reconciliation from checkpoint.' -Data @{
-                            slotKey = $slotKeyForProgress
-                            remainingFolders = [int]$pwFolders.Count
-                            completedFolders = [int]$completedFolders.Count
-                        } -AlsoTag 'Watch-QCTrigger-Reconcile'
-                    }
-                }
-            }
-
-            if ($completedFolders.Count -gt 0 -and (-not $progressLoaded -or @($progressLoaded.folderQueue).Count -eq 0)) {
+            if ($completedFolders.Count -gt 0) {
                 $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
                 foreach ($cf in $completedFolders) { [void]$completedSet.Add($cf) }
                 $pwFolders = @($pwFolders | Where-Object {
                     $p = [string]$_.FolderPath
                     -not [string]::IsNullOrWhiteSpace($p) -and -not $completedSet.Contains($p)
                 })
-                if ($completedFolders.Count -gt 0) {
-                    _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Skipping folders already completed for this schedule slot.' -Data @{
-                        slotKey = $slotKeyForProgress
-                        remainingFolders = [int]$pwFolders.Count
-                        completedFolders = [int]$completedFolders.Count
-                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
-                }
+                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_FULL_SCAN_RESUME' -Message 'Skipping folders already completed for this schedule slot.' -Data @{
+                    slotKey = $slotKeyForProgress
+                    remainingFolders = [int]$pwFolders.Count
+                    completedFolders = [int]$completedFolders.Count
+                    skippedTreeWalk = $false
+                } -AlsoTag 'Watch-QCTrigger-Reconcile'
             }
+            } # end: prepare folders when no checkpoint queue
 
             if ($slotKeyForProgress -and (Get-Command -Name 'Set-QCFullScanProgress' -ErrorAction SilentlyContinue)) {
                 [void](Set-QCFullScanProgress -Config $config -SlotKey $slotKeyForProgress -CompletedFolders @($completedFolders) -FolderQueue @($pwFolders) -QueueRoot $queueRoot)
@@ -2626,9 +2639,22 @@ if ($statusSetRules.Count -ge 0) {
                             }
 
                             # Sheet index is telemetry only — run after enqueue so large folders do not block STATUS_SET_GEN.
+                            # Preempted recon skips it so a large folder cannot stall the next audit tick; audit DOCUMENT_ATTR/STATE still updates sheet_index.
                             $skipSheetIndex = $false
+                            $skipSheetIndexForPreempt = $false
                             $idxInFlightRes = Test-QCStatusSetJobInFlight -Config $config -SourceFolder $fp
                             if ($idxInFlightRes.IsSuccess -and [bool]$idxInFlightRes.Data.inFlight) { $skipSheetIndex = $true }
+                            if ([bool]$preemptSettings.enabled -and [bool]$preemptSettings.skipSheetIndex) {
+                                $skipSheetIndexForPreempt = $true
+                                $skipSheetIndex = $true
+                            }
+                            if ($skipSheetIndexForPreempt -and $state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config) -and -not ($idxInFlightRes.IsSuccess -and [bool]$idxInFlightRes.Data.inFlight)) {
+                                _Watch-WriteJsonLog -Flush -Level 'Information' -Code 'WATCH_PW_STATUSSET_INDEX_SKIPPED_PREEMPT' -Message 'Skipping sheet_index on preempted reconciliation so the next audit tick is not stalled.' -Data @{
+                                    folder = $fp
+                                    pairedCount = [int]$state.pairedCount
+                                    slotKey = $slotKeyForProgress
+                                }
+                            }
                             if (-not $skipSheetIndex -and $state.pairedSheets -and (Test-QCDatabaseEnabled -Config $config)) {
                                 $folderPhase = 'statusset_sheet_index'
                                 $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -2987,6 +3013,8 @@ if ($statusSetRules.Count -ge 0) {
                     remainingFolders = [int]$finalRemaining.Count
                     completedFolders = [int]$completedFolders.Count
                     preemptEnabled = [bool]$preemptSettings.enabled
+                    skipSheetIndex = [bool]$preemptSettings.skipSheetIndex
+                    skippedTreeWalk = [bool]$resumeFromCheckpoint
                 } -AlsoTag 'Watch-QCTrigger-Reconcile'
                 # Keep slot in-flight; do not mark complete.
             } elseif ($script:fullScanScheduleInFlightSlotKey) {

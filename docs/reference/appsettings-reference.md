@@ -421,8 +421,9 @@ Logs: `WATCH_PW_PROACTIVE_RECONNECT` then the normal `WATCH_PW_CONNECT_*` path.
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
 | `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
-| `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. |
+| `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. Later ticks skip PW tree rediscovery when a remaining folder queue exists. |
 | `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Folders per continuous tick during an unpaid scheduled full scan. |
+| `fullScanSchedule.preempt.skipSheetIndex` | true | When true (default), skip per-folder `sheet_index` on preempted recon so a large folder cannot stall the audit watermark. |
 | `folderGuidCache.warmOnScheduledReconciliation` | true | Warm watch-folder GUIDs once per `fullScanSchedule` slot. Audit ticks do not walk the PW folder tree. |
 | `folderGuidCache.warmWatchRootsOnStart` | false | Deprecated no-op. Do not warm on watcher start. |
 | `folderGuidCache.warmSheetsFoldersOnStart` | true | When recon warm runs, also register Sheets folders under each watch root. |

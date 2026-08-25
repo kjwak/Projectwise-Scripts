@@ -680,6 +680,7 @@ function Get-QCFullScanPreemptSettings {
     $defaults = @{
         enabled = $true
         checkEveryNFolders = 1
+        skipSheetIndex = $true
     }
     $ap = _QCWO-GetConfigSectionHashtable -Config $Config -Key 'auditPoller'
     $sched = $null
@@ -693,6 +694,7 @@ function Get-QCFullScanPreemptSettings {
     $out = @{
         enabled = [bool]$defaults.enabled
         checkEveryNFolders = [int]$defaults.checkEveryNFolders
+        skipSheetIndex = [bool]$defaults.skipSheetIndex
     }
     if ($preempt) {
         if ($preempt.ContainsKey('enabled') -and $null -ne $preempt.enabled) {
@@ -700,6 +702,9 @@ function Get-QCFullScanPreemptSettings {
         }
         if ($preempt.ContainsKey('checkEveryNFolders') -and $null -ne $preempt.checkEveryNFolders) {
             try { $out.checkEveryNFolders = [int]$preempt.checkEveryNFolders } catch { }
+        }
+        if ($preempt.ContainsKey('skipSheetIndex') -and $null -ne $preempt.skipSheetIndex) {
+            try { $out.skipSheetIndex = [bool]$preempt.skipSheetIndex } catch { }
         }
     }
     if ($out.checkEveryNFolders -lt 1) { $out.checkEveryNFolders = 1 }
@@ -785,6 +790,25 @@ function Get-QCFullScanProgress {
         folderQueue = @($queue)
         updatedAt = if ($doc.updatedAt) { [string]$doc.updatedAt } else { $null }
     }
+}
+
+function Test-QCFullScanCanResumeFolderQueue {
+    <#
+    .SYNOPSIS
+    True when a schedule slot already has a remaining folder queue and must not rediscover the PW tree.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$Progress,
+        [string]$SlotKey = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SlotKey)) { return $false }
+    if (-not $Progress) { return $false }
+    $loadedSlot = [string]$Progress.slotKey
+    if ($loadedSlot -ne $SlotKey) { return $false }
+    $remaining = @($Progress.folderQueue | Where-Object { $_ })
+    return ($remaining.Count -gt 0)
 }
 
 function Set-QCFullScanProgress {
@@ -1363,4 +1387,4 @@ function Invoke-QCWatcherAuditTick {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick, Get-QCWatcherOpsRequestPath, Get-QCWatcherOpsRequest, Set-QCWatcherOpsRequest, Clear-QCWatcherOpsRequest
+Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Test-QCFullScanCanResumeFolderQueue, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick, Get-QCWatcherOpsRequestPath, Get-QCWatcherOpsRequest, Set-QCWatcherOpsRequest, Clear-QCWatcherOpsRequest

@@ -59,7 +59,7 @@ When `database.enabled` is true:
 1. **Primary:** `watcher_state` table (`audit_watermark_utc` / related keys) in SQL — see `modules/Database/Core.Database.psm1`, `modules/ProjectWise/PW.AuditPoller.psm1`.
 2. **Mirror / fallback:** `queue/_watcher/audit-capture-watermark.txt` and `poll_runs.watermark_after`.
 
-Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled, hybrid downtime, or an operator `ops-request.json` fullScan). Watch-folder GUID cache PW warm (`Get-PWFoldersHashTableByGuid`) runs **only** at `fullScanSchedule` slots (`06:00` / `18:00`) and operator-requested full scans; audit ticks load `pw_folder_cache` from SQL. See `docs/architecture/hybrid-polling.md`.
+Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled, hybrid downtime, or an operator `ops-request.json` fullScan). Unpaid 06:00/18:00 recon ticks must not stall the audit watermark: resume the checkpointed folder queue (do not rediscover the PW tree every tick) and skip per-folder `sheet_index` when `fullScanSchedule.preempt.skipSheetIndex` is true. Watch-folder GUID cache PW warm (`Get-PWFoldersHashTableByGuid`) runs **only** at `fullScanSchedule` slots (`06:00` / `18:00`) and operator-requested full scans; audit ticks load `pw_folder_cache` from SQL. See `docs/architecture/hybrid-polling.md`.
 
 ### Prepend mode
 

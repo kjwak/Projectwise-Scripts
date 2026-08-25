@@ -47,7 +47,7 @@ Long silent phases emit throttled `WATCH_PHASE_HEARTBEAT`:
 | --- | --- | --- |
 | `audit_folder_guid_cache_warm` | `Invoke-QCAuditFolderGuidCacheWarmForReconciliation` at the start of each 06:00 / 18:00 slot (`Sync-AuditPollerWatchFolderGuidCache` + `Find-PWSheetsFoldersUnderRoot`). Not on watcher start or audit ticks. | Immediate on stage change; 30s while the same stage repeats |
 | `full_reconciliation_scan` | Scheduled full folder scan loop | 180s (start is immediate) |
-| `statusset_sheet_index` | Sheet index reconciliation (`Invoke-QCWatcherLongRunningWork`) | start/end + work progress |
+| `statusset_sheet_index` | Sheet index reconciliation (`Invoke-QCWatcherLongRunningWork`). Skipped on preempted recon when `fullScanSchedule.preempt.skipSheetIndex` is true (default). | start/end + work progress |
 | `audit_trail_scan` | `Invoke-AuditTrailScan` page callback | 60s |
 
 Cache-warm stages include `starting`, `building_path_index`, `discovering_sheets`, `checking_sheets_path`, `listing_children`, `registering_sheets_folder`, and `done`. The dashboard Status/Stage line shows the current stage, folder path, and elapsed seconds so a long AZDOT walk does not look frozen on `starting`.
