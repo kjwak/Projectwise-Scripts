@@ -62,8 +62,8 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 | `Reconcile-QCStatusSets.ps1` | Compatibility wrapper → `maintenance/Reconcile-QCStatusSets.ps1`. |
 | `Requeue-QCJobs.ps1` | Compatibility wrapper → `maintenance/Requeue-QCJobs.ps1`. |
 | `Promote-DevToMain.ps1` | Compatibility wrapper → `deployment/Promote-DevToMain.ps1` (git dev→main promote helper). |
-| `Register-QCPipelineDashboardTask.ps1` | QC-server boot task for `Start-QCPipelineDashboard.ps1` (Session 0; lives in `deployment/` only). `-GrantOperatorAccess` adds unelevated Enable/Disable for the ops GUI. |
-| `Set-QCScheduledTaskOperatorAcl.ps1` | Elevated helper: grant Full Control ACE on a scheduled task to a Windows account. |
+| `Register-QCPipelineDashboardTask.ps1` | QC-server boot task for `Start-QCPipelineDashboard.ps1` (Session 0; lives in `deployment/` only). `-GrantOperatorAccess` adds a Full Control ACE so the unelevated ops GUI can toggle on/off. |
+| `Set-QCScheduledTaskOperatorAcl.ps1` | Elevated helper: grant Full Control ACE on a scheduled task (no-ops only if FA/GA already exists for that account). |
 | `Register-QCPipelineDashboardLogonConsole.ps1` | QC-server Startup shortcut → `Start-QCOpsConsole.ps1` (WinForms; `-NoGui` text tail). |
 | `Start-QCOpsConsole.ps1` | Logon ops GUI; observes/controls `QC-PipelineDashboard`; never starts a second dashboard. |
 | `Invoke-QCOpsPwCompare.ps1` | MTA child helper for SQL vs ProjectWise compare (GUI cannot host pwps_dab). |

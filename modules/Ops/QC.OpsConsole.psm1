@@ -874,6 +874,42 @@ function Get-QCOpsPipelineStatus {
     }
 }
 
+function Test-QCOpsAccessDeniedMessage {
+    param([string]$Message)
+    return [bool]($Message -match 'Access is denied|UnauthorizedAccess|0x80070005|E_ACCESSDENIED')
+}
+
+function Invoke-QCOpsScheduledTaskCom {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TaskName,
+        [Parameter(Mandatory)][ValidateSet('Enable', 'Disable', 'Start', 'Stop')][string]$Action
+    )
+    # CIM Enable/Disable/Start-ScheduledTask ignore the task DACL and demand admin.
+    # IRegisteredTask honors the Full Control ACE granted by Set-QCScheduledTaskOperatorAcl.
+    $svc = New-Object -ComObject 'Schedule.Service'
+    $svc.Connect()
+    $folder = $svc.GetFolder('\')
+    $task = $null
+    try { $task = $folder.GetTask($TaskName) } catch { $task = $null }
+    if (-not $task) {
+        throw ("Scheduled task '{0}' was not found." -f $TaskName)
+    }
+    switch ($Action) {
+        'Enable' { $task.Enabled = $true }
+        'Disable' { $task.Enabled = $false }
+        'Start' {
+            try {
+                [void]$task.Run($null)
+            } catch {
+                $err = [string]$_.Exception.Message
+                if ($err -notmatch 'already running|0x8004131F|0x41301') { throw }
+            }
+        }
+        'Stop' { $task.Stop(0) }
+    }
+}
+
 function Start-QCOpsPipeline {
     [CmdletBinding()]
     param(
@@ -886,26 +922,26 @@ function Start-QCOpsPipeline {
         return New-QCFailureResult -Code 'OPS_TASK_MISSING' -Message ("Scheduled task '{0}' is not registered." -f $TaskName)
     }
     try {
-        Enable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
+        Invoke-QCOpsScheduledTaskCom -TaskName $TaskName -Action Enable
     } catch {
         $err = [string]$_.Exception.Message
-        if ($err -match 'Access is denied|UnauthorizedAccess|0x80070005') {
+        if (Test-QCOpsAccessDeniedMessage -Message $err) {
             return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message (
-                "Enable-ScheduledTask access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
+                "Enable task access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
             )
         }
-        return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message ("Enable-ScheduledTask failed: {0}" -f $err)
+        return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message ("Enable task failed: {0}" -f $err)
     }
     try {
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        Invoke-QCOpsScheduledTaskCom -TaskName $TaskName -Action Start
     } catch {
         $err = [string]$_.Exception.Message
-        if ($err -match 'Access is denied|UnauthorizedAccess|0x80070005') {
+        if (Test-QCOpsAccessDeniedMessage -Message $err) {
             return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message (
-                "Start-ScheduledTask access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
+                "Start task access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
             )
         }
-        return New-QCFailureResult -Code 'OPS_TASK_START_FAILED' -Message ("Start-ScheduledTask failed: {0}" -f $err)
+        return New-QCFailureResult -Code 'OPS_TASK_START_FAILED' -Message ("Start task failed: {0}" -f $err)
     }
     return New-QCSuccessResult -Code 'OPS_PIPELINE_STARTED' -Message 'Pipeline task enabled and started.'
 }
@@ -933,17 +969,17 @@ function Stop-QCOpsPipeline {
     $task = Get-QCOpsScheduledTaskState -TaskName $TaskName
     if ($task.registered) {
         try {
-            Disable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
+            Invoke-QCOpsScheduledTaskCom -TaskName $TaskName -Action Disable
         } catch {
             $err = [string]$_.Exception.Message
-            if ($err -match 'Access is denied|UnauthorizedAccess|0x80070005') {
+            if (Test-QCOpsAccessDeniedMessage -Message $err) {
                 return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message (
-                    "Disable-ScheduledTask access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
+                    "Disable task access denied. Once, elevated: .\scripts\deployment\Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess"
                 )
             }
-            return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message ("Disable-ScheduledTask failed: {0}" -f $err)
+            return New-QCFailureResult -Code 'OPS_TASK_ACCESS_DENIED' -Message ("Disable task failed: {0}" -f $err)
         }
-        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
+        try { Invoke-QCOpsScheduledTaskCom -TaskName $TaskName -Action Stop } catch { }
     }
     if (-not $SkipProcessKill.IsPresent) {
         $stopScript = Join-Path (Get-QCOpsRepoRoot) 'scripts\service\Stop-QCPipeline.ps1'

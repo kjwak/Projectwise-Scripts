@@ -5,18 +5,23 @@ Grants a Windows account Enable/Disable/Start/Stop on one scheduled task.
 .DESCRIPTION
 Task Scheduler default DACL on tasks created from an elevated registrar is
 Administrators-only. The logon ops GUI runs unelevated, so Pipeline on/off
-fails with Access is denied until this ACE exists.
+fails with Access is denied until a Full Control ACE exists for that account.
 
-Requires elevation. Safe to re-run; no-ops if the SID is already on the DACL.
+The run-as / owner SID is often already on the descriptor (O: owner, or a
+Read ACE). That is not enough for Enable/Disable. This script no-ops only
+when a Full Control (FA/GA) ACE for the account is already on the DACL.
+
+Requires elevation. Safe to re-run.
 
 .EXAMPLE
 .\scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1
-.\scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1 -TaskName QC-PipelineDashboard -UserName 'TYPSA\jflint'
+.\scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1 -TaskName QC-PipelineDashboard -UserName 'AZTEC\jflint'
 #>
 [CmdletBinding()]
 param(
     [string]$TaskName = 'QC-PipelineDashboard',
-    [string]$UserName = ''
+    [string]$UserName = '',
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +30,15 @@ function Test-IsElevated {
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $p = New-Object System.Security.Principal.WindowsPrincipal($id)
     return $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-QCScheduledTaskHasFullControlAce {
+    param(
+        [Parameter(Mandatory)][string]$Sddl,
+        [Parameter(Mandatory)][string]$Sid
+    )
+    $escaped = [regex]::Escape($Sid)
+    return [bool]($Sddl -match ('\(A;[^;]*;(?:FA|GA);[^;]*;[^;]*;' + $escaped + '\)'))
 }
 
 if (-not (Test-IsElevated)) {
@@ -54,20 +68,25 @@ if (-not $task) {
 }
 
 $sddl = ''
-try { $sddl = [string]$task.GetSecurityDescriptor(4) } catch { $sddl = '' }
+try { $sddl = [string]$task.GetSecurityDescriptor(7) } catch { $sddl = '' }
 if ([string]::IsNullOrWhiteSpace($sddl)) {
-    try { $sddl = [string]$task.GetSecurityDescriptor(7) } catch { $sddl = '' }
+    try { $sddl = [string]$task.GetSecurityDescriptor(4) } catch { $sddl = '' }
 }
 if ([string]::IsNullOrWhiteSpace($sddl)) {
     throw ("Could not read security descriptor for task '{0}'." -f $TaskName)
 }
 
-if ($sddl -match [regex]::Escape($sid)) {
-    Write-Host ("Operator access already present on {0} for {1}" -f $TaskName, $UserName) -ForegroundColor Green
+if (-not $Force.IsPresent -and (Test-QCScheduledTaskHasFullControlAce -Sddl $sddl -Sid $sid)) {
+    Write-Host ("Full Control ACE already present on {0} for {1}" -f $TaskName, $UserName) -ForegroundColor Green
     return
 }
 
 $ace = "(A;;FA;;;$sid)"
+if ($sddl -match [regex]::Escape($ace)) {
+    Write-Host ("Full Control ACE already present on {0} for {1}" -f $TaskName, $UserName) -ForegroundColor Green
+    return
+}
+
 $daclAt = $sddl.IndexOf('D:')
 if ($daclAt -ge 0) {
     $after = $sddl.Substring($daclAt + 2)

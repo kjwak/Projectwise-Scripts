@@ -250,10 +250,15 @@ try {
     $aclText = Get-Content -LiteralPath $aclPath -Raw
     Assert-True ($aclText -match 'SetSecurityDescriptor') 'ACL helper writes task DACL'
     Assert-True ($aclText -match '\(A;;FA;;;') 'ACL helper grants Full Control ACE'
+    Assert-True ($aclText -match 'Test-QCScheduledTaskHasFullControlAce') 'ACL helper requires Full Control ACE, not SID-anywhere'
+    Assert-True ($aclText -notmatch 'if \(\$sddl -match \[regex\]::Escape\(\$sid\)\)') 'ACL helper does not no-op on owner/read SID'
 
     $opsText = Get-Content -LiteralPath (Join-Path $repoRoot 'modules\Ops\QC.OpsConsole.psm1') -Raw
     Assert-True ($opsText -match 'OPS_TASK_ACCESS_DENIED') 'ops module reports task access denied'
     Assert-True ($opsText -match 'GrantOperatorAccess') 'access-denied message points at GrantOperatorAccess'
+    Assert-True ($opsText -match "Schedule\.Service") 'ops toggle uses Task Scheduler COM'
+    Assert-True ($opsText -match '\$task\.Enabled\s*=') 'ops toggle sets IRegisteredTask.Enabled'
+    Assert-True ($opsText -notmatch 'Disable-ScheduledTask') 'ops toggle does not use CIM Disable-ScheduledTask'
 
     $parseFiles = @(
         'scripts\service\Start-QCOpsConsole.ps1'

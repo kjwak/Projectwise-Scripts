@@ -11,9 +11,10 @@ The terminal UI is not visible in Session 0. Use Register-QCPipelineDashboardLog
 for the logon ops GUI. Do not register this on the modelling PC.
 
 Requires elevation to register. You will be prompted for the run-as account password
-unless -Credential is supplied. After register, the run-as account is granted Enable/Disable
-on the task so the unelevated ops GUI can toggle Pipeline on/off. For a task that already
-exists, re-run elevated with -GrantOperatorAccess (no password / no recreate).
+unless -Credential is supplied. After register, the run-as account is granted a Full
+Control ACE so the unelevated ops GUI can toggle Pipeline on/off. For a task that already
+exists, re-run elevated with -GrantOperatorAccess (no password / no recreate). Owner SID
+or Read on the task is not sufficient.
 
 .EXAMPLE
 .\scripts\deployment\Register-QCPipelineDashboardTask.ps1
