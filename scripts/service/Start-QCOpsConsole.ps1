@@ -50,6 +50,9 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Get-QCOpsPipelineStatus'
     'Start-QCOpsPipeline'
     'Stop-QCOpsPipeline'
+    'Format-QCDisplayTime'
+    'ConvertFrom-QCDisplayWallClock'
+    'Get-QCWallClockNow'
 ) -Context 'ops console bootstrap'
 
 if ($NoGui.IsPresent) {
@@ -97,7 +100,7 @@ function _Ops-FormatEvent($Obj) {
     $code = ''; $msg = ''; $ts = ''; $src = ''; $level = ''
     try { $code = [string]$Obj.code } catch { }
     try { $msg = [string]$Obj.message } catch { }
-    try { if ($Obj.ts) { $ts = [string]$Obj.ts } } catch { }
+    try { if ($Obj.ts) { $ts = Format-QCDisplayTime -Value $Obj.ts } } catch { }
     try { if ($Obj.logSource) { $src = [string]$Obj.logSource } } catch { }
     try { if ($Obj.level) { $level = [string]$Obj.level } } catch { }
     return ('{0}  {1}  {2}  {3}  {4}' -f $ts, $src, $level, $code, $msg)
@@ -613,7 +616,7 @@ function _Ops-NewSqlDatePicker([int]$X, [int]$Y) {
     $dtp.ShowUpDown = $false
     $dtp.Location = New-Object System.Drawing.Point($X, $Y)
     $dtp.Width = 168
-    $dtp.Value = [datetime]::Now
+    $dtp.Value = Get-QCWallClockNow
     return $dtp
 }
 
@@ -637,10 +640,10 @@ $lblWm.Text = 'Rewind to'
 $lblWm.AutoSize = $true
 $sqlTop.Controls.Add($lblWm)
 $dtpWm = _Ops-NewSqlDatePicker 78 76
-$dtpWm.Value = [datetime]::Now.AddHours(-1)
+$dtpWm.Value = (Get-QCWallClockNow).AddHours(-1)
 $sqlTop.Controls.Add($dtpWm)
 $lblWmLocal = New-Object System.Windows.Forms.Label
-$lblWmLocal.Text = '(local)'
+$lblWmLocal.Text = '(Arizona)'
 $lblWmLocal.AutoSize = $true
 $sqlTop.Controls.Add($lblWmLocal)
 
@@ -692,6 +695,13 @@ $gridSql.Dock = 'Fill'
 $gridSql.ReadOnly = $true
 $gridSql.AllowUserToAddRows = $false
 $gridSql.AutoSizeColumnsMode = 'DisplayedCells'
+$gridSql.Add_CellFormatting({
+    $e = $args[1]
+    if (-not $e -or $null -eq $e.Value -or $e.Value -is [DBNull]) { return }
+    if ($e.Value -isnot [datetime] -and $e.Value -isnot [datetimeoffset]) { return }
+    $e.Value = Format-QCDisplayTime -Value $e.Value
+    $e.FormattingApplied = $true
+})
 $tabSql.Controls.Add($gridSql)
 $tabSql.Controls.SetChildIndex($gridSql, 0)
 
@@ -766,7 +776,13 @@ function _Ops-ApplyHeader {
         else { $dryTxt = Get-QCOpsDryRunHeaderText -Policy $d.dryRun }
     } catch { }
     $wm = 'n/a'
-    if ($null -ne $d.watermarkAgeSeconds) { $wm = ('{0}s ago' -f $d.watermarkAgeSeconds) }
+    if ($d.watermarkUtc) {
+        $wm = (Format-QCDisplayTime -Value $d.watermarkUtc)
+        if ($null -ne $d.watermarkAgeSeconds) { $wm = ('{0} AZ ({1}s ago)' -f $wm, $d.watermarkAgeSeconds) }
+        else { $wm = ($wm + ' AZ') }
+    } elseif ($null -ne $d.watermarkAgeSeconds) {
+        $wm = ('{0}s ago' -f $d.watermarkAgeSeconds)
+    }
     $lblLine2.Text = ('PW={0}   SQL={1}   DryRun={2}   watermark={3}' -f $d.pwText, $d.sqlEnabled, $dryTxt, $wm)
 
     if (-not $Light.IsPresent) {
@@ -801,7 +817,7 @@ function _Ops-ApplyHeader {
     }
 
     $tick = ''
-    if ($d.lastTick -and $d.lastTick.ts) { $tick = [string]$d.lastTick.ts }
+    if ($d.lastTick -and $d.lastTick.ts) { $tick = Format-QCDisplayTime -Value $d.lastTick.ts }
     $stall = ''
     if ($d.lastStall) { $stall = [string]$d.lastStall.code }
     $notifFail = ''
@@ -953,7 +969,7 @@ function _Ops-RefreshNotif {
     foreach ($k in @($res.Data.recentKeys)) { [void]$sb.AppendLine([string]$k) }
     [void]$sb.AppendLine('--- notification_log ---')
     foreach ($r in @($res.Data.sqlRows)) {
-        [void]$sb.AppendLine(('{0}  {1}  success={2}  {3}' -f $r.sent_at, $r.event_type, $r.success, $r.document_name))
+        [void]$sb.AppendLine(('{0}  {1}  success={2}  {3}' -f (Format-QCDisplayTime -Value $r.sent_at), $r.event_type, $r.success, $r.document_name))
     }
     $txtNotif.Text = $sb.ToString()
 }
@@ -1090,11 +1106,10 @@ $btnSqlLoad.Add_Click({
     $gridSql.DataSource = $r.Data.table
     _Ops-HideSqlSourceFolderColumn
     $wm = $script:Status.Data.watermarkUtc
-    $lblWatermark.Text = ('Watermark: {0}' -f $wm)
+    $lblWatermark.Text = ('Watermark: {0} AZ' -f (Format-QCDisplayTime -Value $wm))
 })
 $btnWmRewind.Add_Click({
-    $dt = $dtpWm.Value
-    if ($dt.Kind -ne [DateTimeKind]::Utc) { $dt = $dt.ToUniversalTime() }
+    $dt = ConvertFrom-QCDisplayWallClock -WallClock $dtpWm.Value
     $r = Set-QCOpsAuditWatermark -Config $script:Cfg -WatermarkUtc $dt -ConfirmText ([string]$txtWmConfirm.Text)
     _Ops-Msg $r.Message
     _Ops-ApplyHeader
@@ -1116,7 +1131,7 @@ $btnMaint.Add_Click({
         return
     }
     if ([string]$item.id -eq 'rewind-watermark') {
-        _Ops-Msg 'Use the SQL tab Rewind watermark box (UTC datetime + REWIND WATERMARK).'
+        _Ops-Msg 'Use the SQL tab Rewind watermark box (Arizona datetime + REWIND WATERMARK).'
         return
     }
     if (-not (_Ops-Confirm ('Run {0}?' -f $item.script))) { return }

@@ -515,15 +515,14 @@ function Get-QCOpsStatusSetBatchHeaderText {
     $nextLocal = ''
     try {
         if ($d.nextBatchUtc) {
-            $next = [datetime]::Parse([string]$d.nextBatchUtc).ToUniversalTime().ToLocalTime()
-            $nextLocal = $next.ToString('yyyy-MM-dd HH:mm')
+            $nextLocal = Format-QCDisplayTime -Value $d.nextBatchUtc -Format 'yyyy-MM-dd HH:mm'
         }
     } catch { }
     $due = $false
     try { $due = [bool]$d.due } catch { }
     if ($dirty -le 0 -and -not $due) {
         if ($nextLocal) {
-            return ('Status-set batch: idle (0 dirty); next {0} local; every {1}m' -f $nextLocal, $interval)
+            return ('Status-set batch: idle (0 dirty); next {0} AZ; every {1}m' -f $nextLocal, $interval)
         }
         return ('Status-set batch: idle (0 dirty); every {0}m' -f $interval)
     }
@@ -533,10 +532,10 @@ function Get-QCOpsStatusSetBatchHeaderText {
     $inMin = $null
     try { if ($null -ne $d.minutesUntil) { $inMin = [int]$d.minutesUntil } } catch { }
     if ($nextLocal -and $null -ne $inMin) {
-        return ('Status-set batch: {0} dirty folder(s); next {1} local (in {2}m; every {3}m)' -f $dirty, $nextLocal, $inMin, $interval)
+        return ('Status-set batch: {0} dirty folder(s); next {1} AZ (in {2}m; every {3}m)' -f $dirty, $nextLocal, $inMin, $interval)
     }
     if ($nextLocal) {
-        return ('Status-set batch: {0} dirty folder(s); next {1} local; every {2}m' -f $dirty, $nextLocal, $interval)
+        return ('Status-set batch: {0} dirty folder(s); next {1} AZ; every {2}m' -f $dirty, $nextLocal, $interval)
     }
     return ('Status-set batch: {0} dirty folder(s); every {1}m' -f $dirty, $interval)
 }
@@ -627,7 +626,7 @@ function Get-QCOpsDeferredStatusSetRows {
             deferred = $true
             path = ''
             lastWriteTimeUtc = $when
-            lastWriteTime = ($when.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
+            lastWriteTime = (Format-QCDisplayTime -Value $when)
         })
     }
     return @($out.ToArray())
@@ -693,7 +692,7 @@ function Get-QCOpsRunningJobRows {
                 deferred = $false
                 path = $f.FullName
                 lastWriteTimeUtc = $f.LastWriteTimeUtc
-                lastWriteTime = ($f.LastWriteTimeUtc.ToString('yyyy-MM-dd HH:mm:ss') + 'Z')
+                lastWriteTime = (Format-QCDisplayTime -Value $f.LastWriteTimeUtc)
             })
         }
     }
@@ -1084,7 +1083,7 @@ function Get-QCOpsLastRuns {
     $rows = New-Object System.Collections.Generic.List[object]
     $add = {
         param($Kind, $LastUtc, $Detail)
-        [void]$rows.Add([pscustomobject]@{ kind = $Kind; lastUtc = $LastUtc; detail = $Detail })
+        [void]$rows.Add([pscustomobject]@{ kind = $Kind; lastTime = (Format-QCDisplayTime -Value $LastUtc); detail = $Detail })
     }
     if (Test-QCDatabaseEnabled -Config $Config) {
         try {
@@ -1236,10 +1235,8 @@ function Resolve-QCOpsSqlTimeRange {
             if ($CustomFrom -eq [datetime]::MinValue -or $CustomTo -eq [datetime]::MinValue) {
                 return New-QCFailureResult -Code 'OPS_SQL_CUSTOM_RANGE' -Message 'Pick a custom from and to datetime.'
             }
-            $fromUtc = $CustomFrom
-            $toUtc = $CustomTo
-            if ($fromUtc.Kind -ne [DateTimeKind]::Utc) { $fromUtc = $fromUtc.ToUniversalTime() }
-            if ($toUtc.Kind -ne [DateTimeKind]::Utc) { $toUtc = $toUtc.ToUniversalTime() }
+            $fromUtc = ConvertFrom-QCDisplayWallClock -WallClock $CustomFrom
+            $toUtc = ConvertFrom-QCDisplayWallClock -WallClock $CustomTo
             if ($fromUtc -gt $toUtc) {
                 return New-QCFailureResult -Code 'OPS_SQL_RANGE_ORDER' -Message 'Custom range From must be earlier than To.'
             }

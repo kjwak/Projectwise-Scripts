@@ -126,6 +126,9 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Get-QCOpsPipelineStatus'
     'Start-QCOpsPipeline'
     'Stop-QCOpsPipeline'
+    'Format-QCDisplayTime'
+    'ConvertFrom-QCDisplayWallClock'
+    'Get-QCWallClockNow'
 ) -Context 'ops console entrypoint test'
 
 Write-Host '=== Flat compatibility shims removed (Phase 4H) ===' -ForegroundColor Cyan

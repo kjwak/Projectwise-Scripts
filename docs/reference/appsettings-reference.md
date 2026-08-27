@@ -20,11 +20,18 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 
 Optional: other machine-only paths in `appsettings.local.json` or `appsettings.test.local.json`.
 
+## runtime
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `displayTimeZoneId` | `US Mountain Standard Time` | Windows time zone id for wall-clock display (Arizona, no DST). QC Pipeline Ops timestamps, log hour buckets, and full-scan `HH:mm` slots use this zone — not the operator PC's local zone. |
+
 ## Section map
 
 | Section | Role |
 |---------|------|
 | `projectWise` | PW datasource, credentials, watch roots |
+| `runtime` | Display time zone (Arizona MST) |
 | `dryRun` | Global enqueue/processor safety |
 | `filters` | Allow/deny paths for watcher |
 | `triggers.rules` | Event → job type mapping |
@@ -192,7 +199,7 @@ Local host control plane for the modelling PC. Never abort in-flight jobs. Enabl
 | `processNamePatterns` | Case-insensitive wildcards vs `Win32_Process.Name` (`.exe` optional), e.g. `OpenRoads*`, `ras*`. |
 | `busyRecommendedSlots` | Desired worker children while busy (default **1**). **0** pauses all new claims. Extra children are not killed; they idle and stop claiming. In-flight jobs always finish. |
 
-Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
+Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Each sample deletes and recreates that file so it inherits the queue-root ACL. If ops shows a frozen throttle sample, delete the file on the QC server queue root; the supervisor rewrites it on the next sample. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
 
 **How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
 

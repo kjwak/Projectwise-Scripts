@@ -248,6 +248,20 @@ try {
     Assert-Eq ([int]$readBack.maxParallel) 5 'round-trip maxParallel'
     Assert-True ([string]$readBack.sampledAtUtc.EndsWith('Z')) 'sampledAtUtc is UTC Z'
 
+    $written2 = Write-QCHostThrottleStatus -Path $statusPath -HostName 'TESTHOST' -SampledAtUtc $now.AddSeconds(10) -Evaluation @{
+        enabled = $true
+        pauseNewClaims = $false
+        recommendedSlots = 5
+        reason = 'normal'
+        matchedProcesses = @()
+        cpuPercent = 3
+        memoryPercent = 20
+        maxParallel = 5
+    }
+    $read2 = Read-QCHostThrottleStatus -Path $statusPath
+    Assert-Eq ([string]$read2.reason) 'normal' 'rewrite replaces existing throttle file'
+    Assert-Eq ([int]$read2.recommendedSlots) 5 'rewrite updates slots'
+
     Assert-Eq (Get-QCHostThrottleHealth -Status $readBack -NowUtc $now) 'throttled' 'paused fresh status is throttled'
     Assert-Eq (Get-QCHostThrottleHealth -Status $null) 'stale' 'missing status is stale'
     $disabledHealth = @{

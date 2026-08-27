@@ -581,7 +581,24 @@ function Write-QCHostThrottleStatus {
     try {
         $json = ($payload | ConvertTo-Json -Compress -Depth 6)
         [System.IO.File]::WriteAllText($tmp, $json, $enc)
-        Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+        # Replace by delete+move so the new file inherits the queue-root ACL.
+        # Move-Item -Force onto a dest with a broken DACL (common on UNC) leaves
+        # a stale unread/unwritable throttle.json and ops shows frozen samples.
+        if (Test-Path -LiteralPath $Path) {
+            try { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop } catch { }
+        }
+        if (Test-Path -LiteralPath $Path) {
+            [System.IO.File]::WriteAllText($Path, $json, $enc)
+            try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch { }
+        } else {
+            Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
+            try {
+                $item = Get-Item -LiteralPath $Path
+                $acl = $item.GetAccessControl()
+                $acl.SetAccessRuleProtection($false, $false)
+                $item.SetAccessControl($acl)
+            } catch { }
+        }
     } catch {
         try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
         throw

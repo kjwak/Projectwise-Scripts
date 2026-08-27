@@ -115,6 +115,67 @@ function Format-QCTimestamp {
     }
 }
 
+function ConvertTo-QCDisplayDateTime {
+    <#
+    .SYNOPSIS
+    Converts a UTC (or Unspecified-as-UTC) DateTime to the configured display zone as Unspecified wall clock.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][datetime]$DateTime)
+    $utc = if ($DateTime.Kind -eq [DateTimeKind]::Unspecified) {
+        [datetime]::SpecifyKind($DateTime, [DateTimeKind]::Utc)
+    } else {
+        $DateTime.ToUniversalTime()
+    }
+    return [TimeZoneInfo]::ConvertTimeFromUtc($utc, (Get-QCDisplayTimeZone))
+}
+
+function ConvertFrom-QCDisplayWallClock {
+    <#
+    .SYNOPSIS
+    Interprets a DateTimePicker / Unspecified wall clock as the configured display zone and returns UTC.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][datetime]$WallClock)
+    $unspec = [datetime]::SpecifyKind($WallClock, [DateTimeKind]::Unspecified)
+    return [TimeZoneInfo]::ConvertTimeToUtc($unspec, (Get-QCDisplayTimeZone))
+}
+
+function Format-QCDisplayTime {
+    <#
+    .SYNOPSIS
+    Formats a DateTime, DateTimeOffset, or ISO string for ops display in the configured zone (Arizona MST by default).
+    Unspecified DateTime values are treated as UTC (SQL telemetry).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Value,
+        [string]$Format = 'yyyy-MM-dd HH:mm:ss'
+    )
+    if ($null -eq $Value) { return '' }
+    try { if ($Value -is [DBNull]) { return '' } } catch { }
+    if ($Value -is [datetimeoffset]) {
+        $local = [TimeZoneInfo]::ConvertTime([datetimeoffset]$Value, (Get-QCDisplayTimeZone))
+        return $local.ToString($Format)
+    }
+    if ($Value -is [datetime]) {
+        $dt = [datetime]$Value
+        $utc = if ($dt.Kind -eq [DateTimeKind]::Local) { $dt.ToUniversalTime() } else { [datetime]::SpecifyKind($dt, [DateTimeKind]::Utc) }
+        $local = [TimeZoneInfo]::ConvertTimeFromUtc($utc, (Get-QCDisplayTimeZone))
+        return $local.ToString($Format)
+    }
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return '' }
+    if ($Format -eq 'yyyy-MM-dd HH:mm:ss') { return (Format-QCTimestamp -IsoString $s) }
+    try {
+        $dto = [DateTimeOffset]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture)
+        $local = [TimeZoneInfo]::ConvertTime($dto, (Get-QCDisplayTimeZone))
+        return $local.ToString($Format)
+    } catch {
+        return (Format-QCTimestamp -IsoString $s)
+    }
+}
+
 function Get-QCTimestampShort {
     <#
     .SYNOPSIS

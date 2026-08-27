@@ -228,6 +228,23 @@ try {
     Assert-True ($guiText -match "Source folder") 'SQL filter is source folder'
     Assert-True ($guiText -match 'cmbSqlSourceFolder') 'SQL folder combo exists'
     Assert-True ($guiText -notmatch "Source path") 'SQL filter is not source path'
+    Assert-True ($guiText -match "\(Arizona\)") 'SQL watermark picker is Arizona wall clock'
+    Assert-True ($guiText -notmatch "\(local\)") 'SQL watermark picker is not machine-local'
+    Assert-True ($guiText -match 'Format-QCDisplayTime') 'GUI formats times through display zone helper'
+    Assert-True ($guiText -match 'ConvertFrom-QCDisplayWallClock') 'watermark rewind treats picker as Arizona'
+
+    $utcNoon = [datetime]::SpecifyKind([datetime]'2026-08-27T19:00:00', 'Utc')
+    Assert-Eq (Format-QCDisplayTime -Value $utcNoon) '2026-08-27 12:00:00' 'UTC 19:00 formats as Arizona 12:00'
+    $azWall = [datetime]::SpecifyKind([datetime]'2026-08-27T12:00:00', 'Unspecified')
+    $fromAz = ConvertFrom-QCDisplayWallClock -WallClock $azWall
+    Assert-Eq $fromAz.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') '2026-08-27 19:00:00' 'Arizona noon converts to 19:00 UTC'
+    $customRange = Resolve-QCOpsSqlTimeRange -Range 'Custom' -CustomFrom $azWall -CustomTo $azWall.AddHours(1)
+    Assert-True $customRange.IsSuccess 'custom SQL range accepts Arizona wall clock'
+    Assert-Eq ([datetime]$customRange.Data.fromUtc).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') '2026-08-27 19:00:00' 'custom from is Arizona-interpreted UTC'
+
+    Assert-True ($defRow.lastWriteTime -notlike '*Z') 'deferred lastWriteTime is Arizona display, not Zulu'
+    Assert-True ($batchTxt -like '*AZ*') 'status-set batch header labels Arizona time'
+    Assert-True ($batchTxt -notlike '* local*') 'status-set batch header does not say local'
 
     $sqlCmd = Get-QCOpsSqlPreviewCommand -TableOrView 'processing_jobs' -SourceFolder 'Documents\Proj\CADD\Sheets' -JobType 'STATUS_SET_GEN'
     Assert-True $sqlCmd.IsSuccess 'preview SQL builds'
