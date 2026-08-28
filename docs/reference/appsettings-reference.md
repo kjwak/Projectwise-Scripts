@@ -199,7 +199,7 @@ Local host control plane for the modelling PC. Never abort in-flight jobs. Enabl
 | `processNamePatterns` | Case-insensitive wildcards vs `Win32_Process.Name` (`.exe` optional), e.g. `OpenRoads*`, `ras*`. |
 | `busyRecommendedSlots` | Desired worker children while busy (default **1**). **0** pauses all new claims. Extra children are not killed; they idle and stop claiming. In-flight jobs always finish. |
 
-Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Each sample deletes and recreates that file so it inherits the queue-root ACL. If ops shows a frozen throttle sample, delete the file on the QC server queue root; the supervisor rewrites it on the next sample. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
+Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Samples overwrite that file in place. If ops shows a frozen throttle sample (file needs admin to delete), elevate-delete it on the QC server queue root; the supervisor recreates it on the next sample. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
 
 **How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
 

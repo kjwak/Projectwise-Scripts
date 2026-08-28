@@ -59,7 +59,7 @@ Do not manually move the job to `succeeded\` unless prepend **and** workflow wri
 
 ## Host resource throttle
 
-When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`). Each write deletes and recreates that file so UNC share ACLs stay inherited. If the file becomes unreadable (ops throttle frozen), delete it on the QC-server queue root; the next sample recreates it.
+When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`). Updates overwrite that file in place (Write, not Delete). If the file is already unreadable (ops throttle frozen / Explorer needs admin to delete it), elevate-delete it once on the QC-server queue root; the next sample recreates it.
 
 - **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**. After a worker lease-exits, the next spawn reuses the lowest free `RW*` label (do not keep incrementing to `RW102`).
 - **In-flight work always finishes** (prepend, reconnect, writeback, notification).

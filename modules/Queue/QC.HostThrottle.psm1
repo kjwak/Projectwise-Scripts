@@ -580,24 +580,14 @@ function Write-QCHostThrottleStatus {
     $enc = New-Object System.Text.UTF8Encoding $false
     try {
         $json = ($payload | ConvertTo-Json -Compress -Depth 6)
-        [System.IO.File]::WriteAllText($tmp, $json, $enc)
-        # Replace by delete+move so the new file inherits the queue-root ACL.
-        # Move-Item -Force onto a dest with a broken DACL (common on UNC) leaves
-        # a stale unread/unwritable throttle.json and ops shows frozen samples.
-        if (Test-Path -LiteralPath $Path) {
-            try { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop } catch { }
-        }
+        # Overwrite in place so updates need Write, not Delete. Delete+recreate on a
+        # UNC share often leaves a non-inheriting DACL (admin-only delete/replace);
+        # ops then shows a frozen sample and the unelevated supervisor cannot heal it.
         if (Test-Path -LiteralPath $Path) {
             [System.IO.File]::WriteAllText($Path, $json, $enc)
-            try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch { }
         } else {
+            [System.IO.File]::WriteAllText($tmp, $json, $enc)
             Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
-            try {
-                $item = Get-Item -LiteralPath $Path
-                $acl = $item.GetAccessControl()
-                $acl.SetAccessRuleProtection($false, $false)
-                $item.SetAccessControl($acl)
-            } catch { }
         }
     } catch {
         try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
