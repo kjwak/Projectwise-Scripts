@@ -892,6 +892,41 @@ function _SSS-PWGetDocName([object]$Doc) {
     return _SSS-GetDocName $Doc
 }
 
+# Office/media/text extensions that must never count as CAD partners for PDF pairing.
+$script:StatusSetNonCadExtPattern = '(?i)\.(pdf|xlsx|xls|doc|docx|txt|zip|jpg|jpeg|png|gif|bmp|tif|tiff|log|xml|json|csv)$'
+
+function _SSS-IsNonCadDocumentName {
+    <#
+    .SYNOPSIS
+    True when a document name is clearly not a CAD sheet partner (PDF/office/media/etc.).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $true }
+    return [bool]($Name -match $script:StatusSetNonCadExtPattern)
+}
+
+function _SSS-TryGetCadStem {
+    <#
+    .SYNOPSIS
+    Returns the pairing stem for a CAD document name, or $null if not CAD.
+    .DESCRIPTION
+    Matches legacy combine_status_set pairing:
+      - *.dgn / *.dwg  -> stem without that extension
+      - extensionless (and other non-denylisted names) -> full name lowercased
+    PDF and office/media names return $null.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    if ($Name -match '(?i)\.pdf$') { return $null }
+    if (_SSS-IsNonCadDocumentName -Name $Name) { return $null }
+    if ($Name -match '(?i)\.(dgn|dwg)$') {
+        return ($Name -replace '(?i)\.(dgn|dwg)$', '').ToLowerInvariant()
+    }
+    return $Name.ToLowerInvariant()
+}
+
 function _SSS-GetDocLastModified([object]$Doc) {
     # Prefer FileUpdateDateUtc (stable for "reprint"/new version detection).
     # Fall back to other date columns for older PW return shapes.
@@ -1126,23 +1161,18 @@ function Write-StatusSetManifestLegacy([string]$ManifestPath, [hashtable]$Manife
 
 function _SSS-SelectPairedPdfDocsLegacy([object[]]$AllDocs) {
     $hasCad = @{}
-    $nonCadExt = '\.(pdf|xlsx|xls|doc|docx|txt|zip|jpg|jpeg|png|gif|bmp|tif|tiff|log|xml|json|csv)$'
     foreach ($doc in @($AllDocs)) {
         $name = _SSS-GetDocName $doc
-        if (-not $name) { continue }
-        if ($name -match '\.pdf$') { continue }
-        if ($name -match $nonCadExt) { continue }
-        if ($name -match '\.(dgn|dwg)$') { $base = ($name -replace '\.(dgn|dwg)$', '').ToLowerInvariant() }
-        else { $base = $name.ToLowerInvariant() }
-        $hasCad[$base] = $true
+        $cadStem = _SSS-TryGetCadStem -Name $name
+        if ($cadStem) { $hasCad[$cadStem] = $true }
     }
     $pdfDocs = @()
     foreach ($doc in @($AllDocs)) {
         $name = _SSS-GetDocName $doc
-        if (-not $name -or $name -notmatch '\.pdf$') { continue }
+        if (-not $name -or $name -notmatch '(?i)\.pdf$') { continue }
         if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
-        $base = ($name -replace '\.pdf$', '').ToLowerInvariant()
-        if (-not $hasCad[$base]) { continue }
+        $base = ([System.IO.Path]::GetFileNameWithoutExtension($name)).ToLowerInvariant()
+        if (-not $base -or -not $hasCad[$base]) { continue }
         $pdfDocs += $doc
     }
     return @($pdfDocs | Sort-Object { _SSS-GetDocName $_ })
@@ -1160,16 +1190,24 @@ function Get-StatusSetLocalFolderState {
     )
 
     $pdfs = @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.pdf' -ErrorAction SilentlyContinue)
+    # Include *.dgn/*.dwg and extensionless (or other non-denylist) CAD partners in the same tree.
+    $cadSeen = @{}
     $cads = @()
-    $cads += @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.dgn' -ErrorAction SilentlyContinue)
-    $cads += @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -Filter '*.dwg' -ErrorAction SilentlyContinue)
+    foreach ($f in @(Get-ChildItem -LiteralPath $RootFolder -Recurse -File -ErrorAction SilentlyContinue)) {
+        $cadStem = _SSS-TryGetCadStem -Name ([string]$f.Name)
+        if (-not $cadStem) { continue }
+        $full = [string]$f.FullName
+        if ($cadSeen.ContainsKey($full)) { continue }
+        $cadSeen[$full] = $true
+        $cads += $f
+    }
 
     $cadByDir = @{}
     foreach ($c in $cads) {
         $dir = [string]$c.DirectoryName
         if (-not $cadByDir.ContainsKey($dir)) { $cadByDir[$dir] = @{} }
-        $stem = [System.IO.Path]::GetFileNameWithoutExtension([string]$c.Name)
-        if ($stem) { $cadByDir[$dir][$stem.ToLowerInvariant()] = $c }
+        $stem = _SSS-TryGetCadStem -Name ([string]$c.Name)
+        if ($stem) { $cadByDir[$dir][$stem] = $c }
     }
 
     $lines = @()
@@ -1271,22 +1309,18 @@ function Get-StatusSetPWFolderState {
 
     $hasCad = @{}
     $pdfDocs = @()
-    $nonCadExt = '\.(pdf|xlsx|xls|doc|docx|txt|zip|jpg|jpeg|png|gif|bmp|tif|tiff|log|xml|json|csv)$'
     foreach ($doc in @($docs)) {
         $name = _SSS-GetDocName $doc
-        if (-not $name) { continue }
-        if ($name -match '\.pdf$') { continue }
-        if ($name -match $nonCadExt) { continue }
-        if ($name -match '\.(dgn|dwg)$') { $base = ($name -replace '\.(dgn|dwg)$','').ToLowerInvariant() } else { $base = $name.ToLowerInvariant() }
-        $hasCad[$base] = $true
+        $cadStem = _SSS-TryGetCadStem -Name $name
+        if ($cadStem) { $hasCad[$cadStem] = $true }
     }
     foreach ($doc in @($docs)) {
         $name = _SSS-GetDocName $doc
-        if (-not $name -or $name -notmatch '\.pdf$') { continue }
+        if (-not $name -or $name -notmatch '(?i)\.pdf$') { continue }
         if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.pdf$') { continue }
-        $base = ($name -replace '\.pdf$','').ToLowerInvariant()
-        if (-not $hasCad[$base]) { continue }
+        $base = ([System.IO.Path]::GetFileNameWithoutExtension($name)).ToLowerInvariant()
+        if (-not $base -or -not $hasCad[$base]) { continue }
         $pdfDocs += $doc
     }
     $pdfDocs = @($pdfDocs | Sort-Object { _SSS-GetDocName $_ })
@@ -1819,15 +1853,41 @@ function _SSS-BuildPWStatusSetState {
     $listingDetails = @()
     $dateCols = @('Name','DocumentID','DocumentGUID','FileUpdatedDate','FileUpdateDate','DocumentUpdateDate','VersionModifiedDate','Version Modified Date','FileSize','Size','StateName')
     foreach ($p in @($paths | Select-Object -Unique)) {
-        # Targeted query: only the extensions that can affect pairing/fingerprint.
+        # Fast path: PDFs + named *.dgn/*.dwg.
         $docsForPath = @(_SSS-PWListDocsInFolderByExtensions -FolderPath $p -Extensions @('.pdf','.dgn','.dwg') -DateCols $dateCols)
+        $extListingMethod = 'unknown'
+        try { if ($script:_SSS_LastDocListingMethod) { $extListingMethod = [string]$script:_SSS_LastDocListingMethod } } catch { }
+
+        # Merge CAD partners whose DocumentName has no .dgn/.dwg suffix (common in PW).
+        $fullListingMethod = $null
+        $allInFolder = @(_SSS-PWListDocsInFolder -FolderPath $p -DateCols $dateCols)
+        if (@($allInFolder).Count -gt 0) {
+            $fullListingMethod = 'folder_full'
+        } else {
+            $allInFolder = @(_SSS-PWListDocsInFolderViaDiscovery -FolderPath $p)
+            if (@($allInFolder).Count -gt 0) { $fullListingMethod = 'discovery_folder' }
+        }
+        $mergedCadExtra = 0
+        foreach ($extra in @($allInFolder)) {
+            $en = _SSS-PWGetDocName -Doc $extra
+            if (-not (_SSS-TryGetCadStem -Name $en)) { continue }
+            # Skip names already covered by the extension query; dedupe below.
+            if ($en -match '(?i)\.(dgn|dwg)$') { continue }
+            $docsForPath += $extra
+            $mergedCadExtra++
+        }
+        $docsForPath = @(_SSS-DedupePwDocRows -Docs $docsForPath)
         $docs += @($docsForPath)
-        $pathListingMethod = 'unknown'
-        try { if ($script:_SSS_LastDocListingMethod) { $pathListingMethod = [string]$script:_SSS_LastDocListingMethod } } catch { }
+
+        $pathListingMethod = $extListingMethod
+        if ($mergedCadExtra -gt 0 -and $fullListingMethod) {
+            $pathListingMethod = ('{0}+{1}' -f $extListingMethod, $fullListingMethod)
+        }
         $listingDetails += @{
             folderPath = [string]$p
             listingMethod = $pathListingMethod
             documentCount = [int]@($docsForPath).Count
+            extensionlessCadMerged = [int]$mergedCadExtra
         }
     }
     $pdfs = @()
@@ -1838,14 +1898,14 @@ function _SSS-BuildPWStatusSetState {
         if ($name -match '(?i)-(prod|chk|rev|qc)\.pdf$') { continue }
         if ($name -match '(?i)_statusset\.pdf$') { continue }
         if ($name -match '(?i)\.pdf$') { $pdfs += $d; continue }
-        if ($name -match '(?i)\.dgn$') { $dgns += $d; continue }
+        if (_SSS-TryGetCadStem -Name $name) { $dgns += $d; continue }
     }
 
     $dgnByStem = @{}
     foreach ($d in $dgns) {
         $n = _SSS-PWGetDocName -Doc $d
-        $stem = [System.IO.Path]::GetFileNameWithoutExtension($n)
-        if ($stem) { $dgnByStem[$stem.ToLowerInvariant()] = $d }
+        $stem = _SSS-TryGetCadStem -Name $n
+        if ($stem) { $dgnByStem[$stem] = $d }
     }
 
     $lines = @()
