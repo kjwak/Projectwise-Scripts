@@ -44,9 +44,24 @@ try {
     # After steal, the lock should now belong to current PID.
     $after = Get-Content -LiteralPath $lock1 -Raw | ConvertFrom-Json
     Assert-True ([int]$after.pid -eq $PID) "Stolen lock should record current PID, got $($after.pid)"
+    Assert-True ([string]$after.machineName -eq $env:COMPUTERNAME) "Stolen lock should record machineName"
 
     # cleanup
     Remove-Item -LiteralPath $lock1 -Force
+
+    # 1b) Other-host lock with a dead PID must NOT be stolen (PID is not meaningful here).
+    $lockRemote = Join-Path $tmp 'remote.lock'
+    $payloadRemote = @{
+        pid = $deadPid
+        machineName = 'QC-REMOTE-TEST-HOST'
+        createdAtUtc = ([DateTime]::UtcNow.ToString('o'))
+    } | ConvertTo-Json -Compress
+    Set-Content -LiteralPath $lockRemote -Value $payloadRemote -Encoding utf8
+    $okRemote = & $acquire $lockRemote 800
+    Assert-True (-not $okRemote) 'AcquireLockFile must not steal another host per-job lock based on local PID'
+    $stillRemote = Get-Content -LiteralPath $lockRemote -Raw | ConvertFrom-Json
+    Assert-True ([string]$stillRemote.machineName -eq 'QC-REMOTE-TEST-HOST') 'remote lock payload should be unchanged'
+    Remove-Item -LiteralPath $lockRemote -Force
 
     # 2) Lock file owned by a LIVE PID (this process) -> must NOT be stolen, must time out.
     $lock2 = Join-Path $tmp 'live.lock'

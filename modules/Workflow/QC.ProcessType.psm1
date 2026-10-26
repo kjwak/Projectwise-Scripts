@@ -609,7 +609,18 @@ function _QCPT-ResolveStampAssetPath {
     if (_QCPT-IsBlank $rel) { return $null }
     if (-not [System.IO.Path]::IsPathRooted($rel)) {
         if (_QCPT-IsBlank $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
-        $rel = Join-Path $RepoRoot $rel
+        $base = $RepoRoot
+        $stampsRoot = if ($Settings -and $Settings.stampsRoot) { [string]$Settings.stampsRoot } else { '' }
+        if (-not (_QCPT-IsBlank $stampsRoot)) {
+            if (-not [System.IO.Path]::IsPathRooted($stampsRoot)) {
+                $stampsRoot = Join-Path $RepoRoot $stampsRoot
+            }
+            $base = $stampsRoot
+            if ($rel -match '^stamps[/\\]') {
+                $rel = ($rel -replace '^stamps[/\\]', '')
+            }
+        }
+        $rel = Join-Path $base $rel
     }
     return $rel
 }
@@ -828,6 +839,28 @@ function Resolve-QCStampForProcess {
         }
     }
 
+    if (-not (Test-Path -LiteralPath $stampPath)) {
+        _QCPT-Log -Code 'QC_STAMP_UNRESOLVED' -Level 'Warning' `
+            -Message 'Stamp asset file not found on disk.' `
+            -Data @{
+                qc_process_type = $normalized
+                resolvedStampProfile = $profileName
+                resolvedStampName = $stampName
+                stampPath = $stampPath
+            }
+        return @{
+            IsSuccess = $false
+            Code = 'QC_STAMP_UNRESOLVED'
+            Message = "Stamp template not found: $stampPath"
+            qc_process_type = $normalized
+            resolvedStampProfile = $profileName
+            resolvedStampName = $stampName
+            stampPath = $stampPath
+            usedFallback = $usedFallback
+            matchedRootOverride = if ($matchedOverride) { $matchedOverride.Name } else { $null }
+        }
+    }
+
     $suffix = Get-QCProcessTypePdfSuffix -ProcessType $normalized -Config $Config
     _QCPT-Log -Code 'QC_STAMP_RESOLVED' -Level 'Information' `
         -Message 'Stamp resolved for process type.' `
@@ -877,6 +910,32 @@ function Resolve-QCProcessTypeFromContext {
     return $null
 }
 
+function Test-QCStampAssetsAvailable {
+    <#
+    .SYNOPSIS
+    Returns stamp asset names whose configured files are missing on disk (for remote-worker startup checks).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$RepoRoot = ''
+    )
+
+    if (_QCPT-IsBlank $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
+    $settings = Get-QCProcessTypeSettings -Config $Config
+    $assets = _QCPT-ToHashtable $settings.StampAssets
+    if (-not $assets) { return @() }
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @($assets.Keys)) {
+        $path = _QCPT-ResolveStampAssetPath -Settings $settings -StampName ([string]$name) -RepoRoot $RepoRoot
+        if (_QCPT-IsBlank $path -or -not (Test-Path -LiteralPath $path)) {
+            [void]$missing.Add([string]$name)
+        }
+    }
+    return @($missing)
+}
+
 Export-ModuleMember -Function `
     Get-QCProcessTypeSettings, `
     Test-QCProcessTypeUnsetValue, `
@@ -897,4 +956,5 @@ Export-ModuleMember -Function `
     Resolve-QCLaneQcPdf, `
     Resolve-QCStampForProcess, `
     Get-QCStampProfileLayout, `
+    Test-QCStampAssetsAvailable, `
     Resolve-QCProcessTypeFromContext

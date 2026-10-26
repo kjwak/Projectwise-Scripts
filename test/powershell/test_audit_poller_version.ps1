@@ -5,8 +5,8 @@ Import-Module (Join-Path $repoRoot 'modules\Core\Core.Runtime.psm1') -Force
 Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force
 
 $v = Get-AuditPollerLogicVersion
-if ($v -ne '2026-06-05-parent-guid-cache-gate-v10') {
-    throw "Expected audit poller logic v10, got: $v"
+if ($v -ne '2026-08-24-folder-guid-cache-recon-only-v12') {
+    throw "Expected audit poller logic v12, got: $v"
 }
 
 $h = @{ pw_action = 1012; pw_objguid = 'test-guid'; resolved_folder = 'Documents\Caltrans\X\CADD\Sheets\Seg_1' }

@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "pw-qc-debug": {
+      "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "args": [
+        "-NoLogo",
+        "-MTA",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "tools/pw-qc-mcp/server.ps1"
+      ],
+      "env": {
+        "PWQC_SQL_SERVER": "192.168.22.90",
+        "PWQC_SQL_DATABASE": "QC_Pipeline",
+        "PWQC_SQL_TRUST_CERT": "yes"
+      }
+    }
+  }
+}

@@ -86,6 +86,8 @@ try {
     Assert-True ($getA.IsSuccess -and $getA.Data.found) 'Get-QCJobById should find job-a'
     Assert-Eq $getA.Data.state 'running' 'job-a should be in running after lock'
     Assert-Eq $getA.Data.job.status 'running' 'Status should be updated in job file'
+    Assert-Eq ([string]$getA.Data.job['machineName']) ([string]$env:COMPUTERNAME) 'running job records machineName'
+    Assert-Eq ([int]$getA.Data.job['pid']) ([int]$PID) 'running job records pid'
 
     # move job
     $mv = Move-QCJob -JobId 'job-a' -FromState 'running' -ToState 'succeeded' -Config $config
@@ -93,6 +95,9 @@ try {
     $stats3 = Get-QCQueueStats -Config $config
     Assert-Eq $stats3.Data.states.running 0 'Running count should be 0 after move'
     Assert-Eq $stats3.Data.states.succeeded 1 'Succeeded count should be 1 after move'
+    $succA = Get-QCJobById -JobId 'job-a' -Config $config
+    Assert-Eq ([string]$succA.Data.job['machineName']) ([string]$env:COMPUTERNAME) 'succeeded job keeps machineName'
+    Assert-Eq ([int]$succA.Data.job['pid']) ([int]$PID) 'succeeded job keeps pid'
 
     # stale recovery (running -> pending, then running -> failed based on attempts)
     $lockB = Lock-QCJob -JobId 'job-b' -Config $config
@@ -112,6 +117,10 @@ try {
     Assert-True $rec1.IsSuccess 'Recover-QCStaleJobs should succeed'
     $stats4 = Get-QCQueueStats -Config $config
     Assert-Eq $stats4.Data.states.pending 1 'Recovery should requeue stale job-b back to pending (attempt 1)'
+    $pendingB = Get-QCJobById -JobId 'job-b' -Config $config
+    Assert-Eq $pendingB.Data.state 'pending' 'job-b should be pending after first recover'
+    $pendingHasHost = $pendingB.Data.job.ContainsKey('machineName') -and -not [string]::IsNullOrWhiteSpace([string]$pendingB.Data.job['machineName'])
+    Assert-True (-not $pendingHasHost) 'requeued pending job clears machineName'
 
     # Lock again, force stale again, expect failed because maxAttempts=2
     $lockB2 = Lock-QCJob -JobId 'job-b' -Config $config
@@ -127,6 +136,28 @@ try {
     Assert-True $rec2.IsSuccess 'Second recovery should succeed'
     $stats5 = Get-QCQueueStats -Config $config
     Assert-Eq $stats5.Data.states.failed 1 'Recovery should move job-b to failed on max attempts'
+    $failB = Get-QCJobById -JobId 'job-b' -Config $config
+    Assert-Eq ([string]$failB.Data.job['machineName']) ([string]$env:COMPUTERNAME) 'failed recovery keeps machineName'
+
+    # prepend/writeback checkpoint survives stale requeue (must not be inferred from logs/PID)
+    $jobC = New-TestJob -Id 'job-c' -DedupeKey 'dq_c'
+    $enqC = Add-QCQueueJob -Job $jobC -Config $config
+    Assert-True $enqC.IsSuccess 'Enqueue job-c should succeed'
+    $lockC = Lock-QCJob -JobId 'job-c' -Config $config
+    Assert-True $lockC.IsSuccess 'Lock job-c should succeed'
+    $cLoc = Get-QCJobById -JobId 'job-c' -Config $config
+    $jobC2 = $cLoc.Data.job
+    Set-QCJobCheckpoint -JobId 'job-c' -Config $config -Job $jobC2 -Checkpoint 'prepend_complete' -CheckpointData '{"exitCode":0}'
+    $staleUtcC = [DateTime]::UtcNow.AddSeconds(-10).ToString('o')
+    $jobC2.startedAtUtc = $staleUtcC
+    $jobC2.heartbeatUtc = $staleUtcC
+    $runningPathC = Join-Path (Join-Path $root 'running') 'job-c.json'
+    Set-Content -LiteralPath $runningPathC -Value ($jobC2 | ConvertTo-Json -Depth 50) -Encoding utf8
+    $recC = Recover-QCStaleJobs -Config $config
+    Assert-True $recC.IsSuccess 'Checkpointed job recovery should succeed'
+    $pendingC = Get-QCJobById -JobId 'job-c' -Config $config
+    Assert-Eq $pendingC.Data.state 'pending' 'job-c should be pending after recover'
+    Assert-Eq ([string]$pendingC.Data.job.checkpoint) 'prepend_complete' 'stale recovery must preserve prepend_complete checkpoint'
 
     # recent jobs
     $recent = Get-QCRecentJobs -Config $config -Limit 10

@@ -39,6 +39,7 @@ $script:QCModulePathMap = @{
     'QC.StatusSetBatching.psm1' = 'Core\QC.StatusSetBatching.psm1'
     'Core.Database.psm1' = 'Database\Core.Database.psm1'
     'QC.Queue.Json.psm1' = 'Queue\QC.Queue.Json.psm1'
+    'QC.HostThrottle.psm1' = 'Queue\QC.HostThrottle.psm1'
     'QC.JobFactory.psm1' = 'Queue\QC.JobFactory.psm1'
     'QC.Worker.psm1' = 'Queue\QC.Worker.psm1'
     'QC.Filters.psm1' = 'Queue\QC.Filters.psm1'
@@ -56,6 +57,7 @@ $script:QCModulePathMap = @{
     'QC.Workflow.psm1' = 'Workflow\QC.Workflow.psm1'
     'QC.ProcessType.psm1' = 'Workflow\QC.ProcessType.psm1'
     'QC.DebugMcp.psm1' = 'Diagnostics\QC.DebugMcp.psm1'
+    'QC.OpsConsole.psm1' = 'Ops\QC.OpsConsole.psm1'
 }
 
 function Resolve-QCModulePath {

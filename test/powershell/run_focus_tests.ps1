@@ -1,9 +1,16 @@
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tests = @(
     'test\powershell\test_lock_steal_dead_pid.ps1',
+    'test\powershell\test_host_aware_locks.ps1',
     'test\powershell\test_recover_orphan_pid.ps1',
     'test\powershell\test_get_next_excludes.ps1',
+    'test\powershell\test_enabled_job_types.ps1',
+    'test\powershell\test_remote_worker_host_log_view.ps1',
+    'test\powershell\test_host_throttle.ps1',
     'test\powershell\test_queue_json.ps1',
+    'test\powershell\test_queue_retention.ps1',
+    'test\powershell\test_qc_prepend_child_wait_and_checkpoint.ps1',
+    'test\powershell\test_fast_prepend_enqueue.ps1',
     'test\powershell\test_orphan_lock_recovery.ps1',
     'test\powershell\test_merge_statusset_qpdf.ps1',
     'test\powershell\test_statusset_workspace_dir.ps1',
@@ -21,7 +28,8 @@ $tests = @(
     'test\powershell\test_audit_watch_match.ps1',
     'test\powershell\test_audit_events_db.ps1',
     'test\powershell\test_audit_workflow_triggers.ps1',
-    'test\powershell\test_watcher_module_bootstrap.ps1'
+    'test\powershell\test_watcher_module_bootstrap.ps1',
+    'test\powershell\test_ops_console.ps1'
 )
 $fail = 0
 foreach ($t in $tests) {

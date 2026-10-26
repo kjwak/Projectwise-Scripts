@@ -46,6 +46,7 @@ $folderMap = @{
     'QC.WatcherAlerts.psm1' = 'Notifications'
     'QC.Reporting.psm1' = 'Reporting'
     'QC.DebugMcp.psm1' = 'Diagnostics'
+    'QC.OpsConsole.psm1' = 'Ops'
 }
 
 $fail = 0
@@ -86,6 +87,7 @@ $importChecks = @(
     @{ Module = 'ProjectWise\PW.Connection.psm1'; Command = 'Ensure-PWDiscoveryCmdlets' }
     @{ Module = 'ProjectWise\PW.Discovery.psm1'; Command = 'Get-PWDocName' }
     @{ Module = 'Diagnostics\QC.DebugMcp.psm1'; Command = 'Initialize-QCDebugMcpContext' }
+    @{ Module = 'Ops\QC.OpsConsole.psm1'; Command = 'Get-QCOpsPipelineStatus' }
 )
 
 foreach ($check in $importChecks) {

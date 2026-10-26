@@ -17,6 +17,7 @@ Modules own the reusable pipeline logic. Scripts should call these functions ins
 | `Notifications/` | Email notifications, Graph, templates, threads, watcher alerts |
 | `Reporting/` | Reporting scan aggregation |
 | `Diagnostics/` | MCP debug module |
+| `Ops/` | Logon ops console control plane (no flat shim) |
 
 Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/<Folder>/<Name>.psm1`. **Phase 4F:** active scripts/tests import folder implementation paths; shims remain for compatibility.
 
@@ -66,7 +67,7 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | `QC.PdfExport.psm1` | `Export-QCPdfToStaging` — ProjectWise PDF download to staging. |
 | `QC.ProcessType.psm1` | `QC_Process_Type` normalization, lane PDF resolution, and stamp configuration. |
 | `QC.Processors.psm1` | Processor dispatch and implementations for QC prepend, status-set, comment sync, reporting, and related job types. |
-| `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, and recent-job reporting. |
+| `QC.Queue.Json.psm1` | JSON-backed queue storage, locking, state transitions, stale-job recovery, dedupe checks, stats, recent-job reporting, and recon-slot succeeded/`_logs` retention. |
 | `QC.Rendition.psm1` | ProjectWise PDF rendition request helpers. |
 | `QC.Reporting.psm1` | Read-only QC reporting aggregation and JSON snapshot generation for `QC_REPORTING_SCAN` jobs. |
 | `QC.ReviewStamp.psm1` | QC review stamp processor integration. |
@@ -76,6 +77,14 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | `QC.WatcherOrchestration.psm1` | Watcher tick orchestration shared by trigger scan entrypoints. |
 | `QC.Worker.psm1` | Shared worker retry/state-transition policy for moving locked jobs between queue states. |
 | `QC.Workflow.psm1` | Optional QC workflow/state/attribute writeback framework for ProjectWise. |
+
+### Ops
+
+Implementations in `modules/Ops/` (no flat shim):
+
+| File | Purpose |
+| --- | --- |
+| Ops/QC.OpsConsole.psm1 | Logon-session pipeline status, scheduled-task on/off, queue inspect, status-set batch countdown, ops-request full scan. Does not start the dashboard. |
 
 ### ProjectWise
 

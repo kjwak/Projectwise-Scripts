@@ -17,7 +17,7 @@
 #   -OverlayOldFromHistoryOnly:$false: persistent work\<sheet>_current_master.pdf.
 #
 # REQUIREMENTS:
-#   - pwps_dab module installed
+#   - pwps (Open-PWConnection) and pwps_dab (discovery) — loaded via PW.Connection, not pwps_dab alone
 #   - qpdf installed and on PATH (or set $QpdfExe to full path) - used when overlay exe not found, and to seed LocalRoot\work\<historyBase>_current_master.pdf on first overlay run (same role as test\run_f0548dv206_qc_two_step.ps1)
 #   - dist\qc_overlay_prepend\qc_overlay_prepend.exe (onedir build) or dist\qc_overlay_prepend.exe (onefile) - optional layered overlay
 #
@@ -38,6 +38,9 @@ param(
 
   [Parameter(Mandatory=$false)]
   [string] $IncomingDocName = "input1.pdf",
+
+  [Parameter(Mandatory=$false)]
+  [string] $IncomingDocumentGuid = "",
 
   [Parameter(Mandatory=$false)]
   [string] $HistoryDocName = "",  # default: (IncomingDocName base)-qc.pdf
@@ -185,7 +188,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
     throw "MTA relaunch: could not resolve script path (PSCommandPath / MyInvocation). Tried: $scriptPath"
   }
   $paramNames = @(
-    'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'HistoryDocName', 'HistoryDocumentName', 'LocalRoot', 'QpdfExe',
+    'DatasourceName', 'IncomingFolderPath', 'IncomingDocName', 'IncomingDocumentGuid', 'HistoryDocName', 'HistoryDocumentName', 'LocalRoot', 'QpdfExe',
     'QcOverlayExe', 'OverlayCurrentMasterPath', 'OverlayOldFromHistoryOnly', 'OverlaySheetWorkDir', 'NoOverlayLayers',
     'PromptForCredential', 'LogDir', 'AppsettingsPath', 'PrependTrigger', 'QcProcessType', 'QcPdfSuffix'
   )
@@ -267,16 +270,75 @@ function Get-PwCredential {
   return [pscredential]::new($user, $sec)
 }
 
-function Connect-PW([string]$dsName) {
-  $cred = Get-PwCredential
-  try {
-    Open-PWConnection -DatasourceName $dsName -UserName $cred.UserName -Password $cred.Password | Out-Null
-  } catch {
-    if ($_.Exception.Message -match 'connection is already open') {
-      Close-PWConnection -ErrorAction SilentlyContinue
-      Open-PWConnection -DatasourceName $dsName -UserName $cred.UserName -Password $cred.Password | Out-Null
-    } else { throw }
+function Get-PrependPwFolderPathCandidates([string]$FolderPath) {
+  $seen = @{}
+  $list = New-Object System.Collections.Generic.List[string]
+  $add = {
+    param([string]$p)
+    if ([string]::IsNullOrWhiteSpace($p)) { return }
+    $t = $p.Trim().TrimEnd('\')
+    $k = $t.ToLowerInvariant()
+    if ($seen.ContainsKey($k)) { return }
+    $seen[$k] = $true
+    [void]$list.Add($t)
   }
+  & $add $FolderPath
+  if (Get-Command -Name ConvertTo-PWCmdletFolderPath -ErrorAction SilentlyContinue) {
+    & $add (ConvertTo-PWCmdletFolderPath -InternalFolderPath $FolderPath)
+  } else {
+    $stripped = $FolderPath
+    while ($stripped -match '^(?i)Documents\\') { $stripped = $stripped -replace '^(?i)Documents\\', '' }
+    & $add $stripped
+  }
+  if (Get-Command -Name ConvertTo-PWCanonicalDocumentsFolderPath -ErrorAction SilentlyContinue) {
+    & $add (ConvertTo-PWCanonicalDocumentsFolderPath -FolderPathProperty $FolderPath)
+  } else {
+    $t = ([string]$FolderPath).Trim().TrimStart('\').TrimEnd('\')
+    if ($t -notmatch '^(?i)documents\\') { & $add ('Documents\' + $t) } else { & $add $t }
+  }
+  return @($list)
+}
+
+function Find-PrependPwDocument {
+  param(
+    [string]$FolderPath,
+    [string]$DocumentName,
+    [string]$DocumentGuid = ''
+  )
+  $guid = ([string]$DocumentGuid).Trim()
+  if ($guid -and (Get-Command -Name Get-PWDocumentsByGUIDs -ErrorAction SilentlyContinue)) {
+    try {
+      $docs = @(Get-PWDocumentsByGUIDs -DocumentGUIDs @($guid) -ErrorAction Stop)
+      if ($docs.Count -gt 0) {
+        Write-Log "Resolved '$DocumentName' by GUID $guid"
+        return ($docs | Select-Object -First 1)
+      }
+      Write-Log "GUID lookup returned no document: $guid" -Severity WARNING
+    } catch {
+      Write-Log ("GUID lookup failed for ${guid}: $($_.Exception.Message)") -Severity WARNING
+    }
+  }
+
+  $searchCmd = Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue
+  if (-not $searchCmd) { return $null }
+  foreach ($fp in (Get-PrependPwFolderPathCandidates $FolderPath)) {
+    $params = @{
+      FolderPath     = $fp
+      JustThisFolder = $true
+      DocumentName   = $DocumentName
+      ErrorAction    = 'SilentlyContinue'
+    }
+    if ($searchCmd.Parameters.ContainsKey('PopulatePath')) { $params['PopulatePath'] = $true }
+    try {
+      $doc = & $searchCmd @params | Select-Object -First 1
+      if ($doc) {
+        Write-Log "Resolved '$DocumentName' by search FolderPath='$fp'"
+        $script:ResolvedPwFolderPath = $fp
+        return $doc
+      }
+    } catch { }
+  }
+  return $null
 }
 
 # Retry a scriptblock on transient "Access denied" / "in use" (e.g. antivirus, PW). Throws after last attempt.
@@ -420,6 +482,7 @@ Write-Log "Starting prepend test..."
 Write-Log "Datasource: $DatasourceName"
 Write-Log "Folder (incoming + history): $IncomingFolderPath"
 Write-Log "Incoming doc:    $IncomingDocName"
+if (-not [string]::IsNullOrWhiteSpace($IncomingDocumentGuid)) { Write-Log "Incoming GUID:   $IncomingDocumentGuid" }
 Write-Log "History doc:     $HistoryDocName"
 if (-not [string]::IsNullOrWhiteSpace($QcProcessType)) { Write-Log "QC process type: $QcProcessType" }
 if (-not [string]::IsNullOrWhiteSpace($QcPdfSuffix)) { Write-Log "QC PDF suffix:   $QcPdfSuffix" }
@@ -452,8 +515,23 @@ if (-not $haveQpdf) {
   Write-Log "qpdf not available at '$QpdfExe' (merge fallback and current-master seed disabled). Install qpdf or add tools\qpdf under the script folder." -Severity WARNING
 }
 
-# Load module + connect IMS
-Import-Module pwps_dab -Force
+# Load pwps (Open-PWConnection) + pwps_dab (discovery). Workers spawn with -NoProfile;
+# Import-Module pwps_dab alone can succeed on workstation installs without Open-PWConnection.
+# Test-PWConnection.ps1 already uses this loader; prepend must too.
+$pwConnMod = Join-Path $prependQcRepoRoot 'modules\ProjectWise\PW.Connection.psm1'
+if (-not (Test-Path -LiteralPath $pwConnMod)) {
+  throw "PW.Connection module not found: $pwConnMod"
+}
+Import-Module $pwConnMod -Force
+$apt = [System.Threading.Thread]::CurrentThread.GetApartmentState()
+if (-not (Import-PWCmdletModules)) {
+  throw "ProjectWise cmdlets not loaded (Open-PWConnection and/or Get-PWDocumentsBySearch missing). Import pwps_dab/pwps or run under ProjectWise PowerShell. Apartment=$apt. If pwps_dab is installed but still missing, this process must run in MTA."
+}
+$hasSearch = [bool](Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)
+Write-Log ("PW cmdlets loaded (Open-PWConnection ok, Get-PWDocumentsBySearch=$hasSearch, apartment=$apt)")
+if (-not $hasSearch) {
+  throw "pwps_dab Get-PWDocumentsBySearch is not visible in this session after Import-PWCmdletModules. Apartment=$apt."
+}
 $repoRootForMods = $prependQcRepoRoot
 $pwDiscoveryMod = Join-Path $repoRootForMods 'modules\ProjectWise\PW.Discovery.psm1'
 if (Test-Path -LiteralPath $pwDiscoveryMod) {
@@ -761,15 +839,32 @@ function Invoke-QcReviewStampIfNeeded {
 #Write-Log "Connecting via IMS..."
 #Open-PWConnection -DatasourceName $DatasourceName -BentleyIMS | Out-Null
 Write-Log "Connecting with stored credential..."
-Connect-PW $DatasourceName
-
-
-# Resolve incoming doc (exact name search)
-Write-Log "Resolving incoming document..."
-$incomingDoc = Get-PWDocumentsBySearch -FolderPath $IncomingFolderPath -JustThisFolder -DocumentName $IncomingDocName -PopulatePath
-if (-not $incomingDoc) {
-  throw "Incoming document not found: '$IncomingDocName' in '$IncomingFolderPath'"
+$cred = Get-PwCredential
+$connRes = Connect-PW -DatasourceName $DatasourceName -Credential $cred
+if (-not $connRes.IsSuccess) {
+  throw ("{0}: {1}" -f $connRes.Code, $connRes.Message)
 }
+# Connect can drop pwps_dab from the caller session; require the search cmdlet here,
+# not only inside PW.Connection's module scope.
+if (-not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+  $discRes = Ensure-PWDiscoveryCmdlets
+  if (-not $discRes.IsSuccess -or -not (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)) {
+    throw "Get-PWDocumentsBySearch missing after connect. $($discRes.Code): $($discRes.Message)"
+  }
+}
+
+
+# Resolve incoming doc: GUID first (job metadata), then folder-path variants
+# (with/without Documents\). Audit jobs store a lowercased folder; search by that
+# string alone can return empty even when the document exists.
+Write-Log "Resolving incoming document..."
+$script:ResolvedPwFolderPath = $IncomingFolderPath
+$incomingDoc = Find-PrependPwDocument -FolderPath $IncomingFolderPath -DocumentName $IncomingDocName -DocumentGuid $IncomingDocumentGuid
+if (-not $incomingDoc) {
+  $tried = (Get-PrependPwFolderPathCandidates $IncomingFolderPath) -join '; '
+  throw "Incoming document not found: '$IncomingDocName' in '$IncomingFolderPath' (guid='$IncomingDocumentGuid'; tried $tried)"
+}
+if ($script:ResolvedPwFolderPath) { $IncomingFolderPath = $script:ResolvedPwFolderPath }
 Write-Log ("Incoming resolved: DocumentID={0}, FullPath={1}" -f $incomingDoc.DocumentID, $incomingDoc.FullPath)
 
 # Export incoming doc to local
@@ -855,7 +950,7 @@ if ($haveOverlay) {
 
 # Resolve history doc (exact name search)
 Write-Log "Checking for existing history document..."
-$historyDoc = Get-PWDocumentsBySearch -FolderPath $IncomingFolderPath -JustThisFolder -DocumentName $HistoryDocName -PopulatePath
+$historyDoc = Find-PrependPwDocument -FolderPath $IncomingFolderPath -DocumentName $HistoryDocName
 
 $localHistory = Join-Path $tempWorkDir $HistoryDocName   # history export will go to TEMP
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"

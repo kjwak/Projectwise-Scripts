@@ -8,7 +8,7 @@
 # global-scope exports.
 
 # Bump when trigger/candidate logic changes; appears in WATCH_AUDIT_SCAN_DONE logs.
-$script:AuditPollerLogicVersion = '2026-07-29-parent-guid-cache-gate-v11'
+$script:AuditPollerLogicVersion = '2026-08-24-folder-guid-cache-recon-only-v12'
 
 $script:QCRelevantActions = @{
     1001 = 'DOCUMENT_CREATE'
@@ -88,6 +88,8 @@ $script:AuditPoller_FolderGuidCache = @{}
 $script:AuditPoller_UnresolvedFolderGuids = @{}
 $script:AuditPoller_WatchFolderCacheWarmed = $false
 $script:AuditPoller_PwFolderGuidByPath = $null
+$script:AuditPoller_WarmHeartbeat = $null
+$script:AuditPoller_WarmedReconSlotKey = $null
 
 function _AuditPoller-LoadDocFolderCache {
     param([hashtable]$Config)
@@ -796,6 +798,7 @@ function Invoke-QCAuditParentGuidCacheGate {
     Keeps audit rows whose o_parentguid / pw_parentguid is in the warmed folder GUID cache.
     Skips PW folder/doc resolution for events outside watched folders. No-op when disabled or cache is empty.
     Action codes in parentGuidFilterExemptActionCodes (default: DOCUMENT_STATE / 1012) always pass.
+    Loads pw_folder_cache from SQL; does not walk the ProjectWise folder tree.
     #>
     [CmdletBinding()]
     param(
@@ -823,9 +826,8 @@ function Invoke-QCAuditParentGuidCacheGate {
         return @{ kept = @($Rows); skipped = @(); active = $false; cacheSize = 0 }
     }
 
-    if (-not $script:AuditPoller_WatchFolderCacheWarmed) {
-        try { Sync-AuditPollerWatchFolderGuidCache -Config $Config -WatchRootConfigs $WatchRootConfigs | Out-Null } catch { }
-    }
+    # Audit ticks load the persisted SQL cache only. The expensive PW folder-tree
+    # warm (Get-PWFoldersHashTableByGuid) runs during scheduled reconciliation.
     [void](_AuditPoller-LoadFolderGuidCache -Config $Config)
 
     $cacheSize = $script:AuditPoller_FolderGuidCache.Count
@@ -1386,27 +1388,88 @@ function _AuditPoller-WriteWarmHeartbeat {
     )
 
     if (-not (Get-Command -Name 'Write-QCWatcherPhaseHeartbeat' -ErrorAction SilentlyContinue)) { return }
+    $interval = 30
+    $prevStage = ''
+    try {
+        if ($HeartbeatState.Value -and $HeartbeatState.Value.ContainsKey('stage')) {
+            $prevStage = [string]$HeartbeatState.Value.stage
+        }
+    } catch { }
+    if ($Stage -and $Stage -ne $prevStage) { $interval = 0 }
+    try {
+        if (-not $HeartbeatState.Value) {
+            $HeartbeatState.Value = @{
+                lastUtc = [DateTime]::MinValue
+                startedUtc = (Get-Date).ToUniversalTime()
+            }
+        }
+        $HeartbeatState.Value['stage'] = $Stage
+    } catch { }
     $payload = @{ stage = $Stage }
-    foreach ($key in @($Data.Keys)) { $payload[$key] = $Data[$key] }
+    foreach ($key in @($Data.Keys)) {
+        if ($key -eq 'stage') { continue }
+        $payload[$key] = $Data[$key]
+    }
     Write-QCWatcherPhaseHeartbeat -Phase 'audit_folder_guid_cache_warm' `
         -Message "Audit folder GUID cache warm: $Stage" `
-        -Data $payload -IntervalSeconds 180 -HeartbeatState $HeartbeatState | Out-Null
+        -Data $payload -IntervalSeconds $interval -HeartbeatState $HeartbeatState | Out-Null
+}
+
+function Invoke-QCAuditFolderGuidCacheWarmForReconciliation {
+    <#
+    .SYNOPSIS
+    Warms the watch-folder GUID cache once per scheduled reconciliation slot (06:00 / 18:00).
+    Audit ticks must not call this; they load pw_folder_cache from SQL instead.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [array]$WatchRootConfigs = @(),
+        [string]$SlotKey = ''
+    )
+
+    if (-not (_AuditPoller-GetAuditPollerBool -Config $Config -Key 'warmOnScheduledReconciliation' -Default $true)) {
+        return New-QCSuccessResult -Code 'FOLDER_CACHE_WARM_SKIPPED' -Message 'warmOnScheduledReconciliation is false.' -Data @{
+            warmed = 0
+            reason = 'disabled'
+        }
+    }
+
+    $key = if ([string]::IsNullOrWhiteSpace($SlotKey)) { '' } else { $SlotKey.Trim() }
+    if ($key -and $script:AuditPoller_WarmedReconSlotKey -eq $key) {
+        return New-QCSuccessResult -Code 'FOLDER_CACHE_WARM_SKIPPED' -Message 'Folder GUID cache already warmed for this reconciliation slot.' -Data @{
+            warmed = 0
+            reason = 'already_warmed_this_slot'
+            slotKey = $key
+            cacheSize = $script:AuditPoller_FolderGuidCache.Count
+        }
+    }
+
+    $res = Sync-AuditPollerWatchFolderGuidCache -Config $Config -WatchRootConfigs $WatchRootConfigs
+    if ($res -and $res.Data -is [hashtable]) {
+        $res.Data['slotKey'] = $key
+    }
+    if ($key -and $res -and $res.IsSuccess -and $res.Code -eq 'FOLDER_CACHE_WARM_OK') {
+        $script:AuditPoller_WarmedReconSlotKey = $key
+    }
+    return $res
 }
 
 function Sync-AuditPollerWatchFolderGuidCache {
     <#
     .SYNOPSIS
     Pre-warms folder GUID -> path cache from projectWise.watchList.roots (and optional Sheets subfolders).
+
+    .DESCRIPTION
+    Call from scheduled reconciliation only (Invoke-QCAuditFolderGuidCacheWarmForReconciliation).
+    Do not invoke from audit ticks or watcher startup — Get-PWFoldersHashTableByGuid walks the
+    entire datasource and blocks job discovery for minutes.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [array]$WatchRootConfigs = @()
     )
-
-    if (-not (_AuditPoller-GetAuditPollerBool -Config $Config -Key 'warmWatchRootsOnStart' -Default $true)) {
-        return New-QCSuccessResult -Code 'FOLDER_CACHE_WARM_SKIPPED' -Message 'warmWatchRootsOnStart is false.' -Data @{ warmed = 0 }
-    }
 
     if (-not (_AuditPoller-TestPwDatasourceLoggedIn)) {
         if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
@@ -1448,20 +1511,37 @@ function Sync-AuditPollerWatchFolderGuidCache {
     }
     $warmDiagRef = [ref]$warmDiag
 
-    [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
-
     $warmHeartbeat = [ref]@{
         lastUtc = [DateTime]::MinValue
         startedUtc = (Get-Date).ToUniversalTime()
+        stage = ''
     }
     _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'starting' -Data @{
         watchRootCount = @($normalized).Count
         warmSheets = [bool]$warmSheets
     }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'building_path_index' -Data @{
+        watchRootCount = @($normalized).Count
+    }
+    [void](_AuditPoller-EnsurePwFolderGuidByPathIndex)
+
+    $script:AuditPoller_WarmHeartbeat = $warmHeartbeat
+    $findProgress = {
+        param($info)
+        if (-not $info) { return }
+        if (-not $script:AuditPoller_WarmHeartbeat) { return }
+        $stage = 'discovering_sheets'
+        try { if ($info.stage) { $stage = [string]$info.stage } } catch { }
+        _AuditPoller-WriteWarmHeartbeat -HeartbeatState $script:AuditPoller_WarmHeartbeat -Stage $stage -Data $info
+    }
 
     foreach ($cfg in $normalized) {
         $rootPath = _AuditPoller-GetWatchRootPathFromConfig -Cfg $cfg
         if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+        _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'registering_watch_root' -Data @{
+            rootPath = $rootPath
+            rootGuidCount = [int]$rootGuidCount
+        }
         if (Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue) {
             try {
                 $f = $null
@@ -1500,7 +1580,11 @@ function Sync-AuditPollerWatchFolderGuidCache {
 
         if (Get-Command -Name 'Find-PWSheetsFoldersUnderRoot' -ErrorAction SilentlyContinue) {
             try {
-                foreach ($sp in @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth)) {
+                _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'discovering_sheets' -Data @{
+                    rootPath = $rootPath
+                    projectDepth = [int]$projectDepth
+                }
+                foreach ($sp in @(Find-PWSheetsFoldersUnderRoot -RootPath $rootPath -SheetsSuffix $suffix -DatasourceName $ds -ProjectDepth $projectDepth -ProgressCallback $findProgress)) {
                     [void]$discoveryEntries.Add($sp)
                 }
             } catch { }
@@ -1572,6 +1656,13 @@ function Sync-AuditPollerWatchFolderGuidCache {
     if ($debugLogPaths -and $debugPaths.Count -gt 0) {
         $warmLogData.debugPaths = @($debugPaths | Select-Object -Unique)
     }
+    _AuditPoller-WriteWarmHeartbeat -HeartbeatState $warmHeartbeat -Stage 'done' -Data @{
+        warmed = [int]$warmed
+        rootGuidCount = [int]$rootGuidCount
+        sheetsParentGuidCount = [int]$sheetsParentGuidCount
+        oneLevelChildGuidCount = [int]$oneLevelChildGuidCount
+    }
+    $script:AuditPoller_WarmHeartbeat = $null
     if (Get-Command -Name 'Write-QCJsonLog' -ErrorAction SilentlyContinue) {
         Write-QCJsonLog -Flush -Level 'Information' -Code 'AUDIT_FOLDER_CACHE_WARMED' -Message "Watch folder GUID cache warmed ($warmed folders)." -Data $warmLogData
     }
@@ -2848,10 +2939,6 @@ function Invoke-AuditTrailScan {
         }
     }
 
-    if (-not $script:AuditPoller_WatchFolderCacheWarmed) {
-        try { Sync-AuditPollerWatchFolderGuidCache -Config $Config -WatchRootConfigs $WatchRootConfigs | Out-Null } catch { }
-    }
-
     [void](_AuditPoller-LoadDocFolderCache -Config $Config)
     [void](_AuditPoller-LoadFolderGuidCache -Config $Config)
     $docToFolder = @{}
@@ -3022,4 +3109,4 @@ function Test-QCAuditIngestAllowedActionCode {
     return _AuditPoller-TestAuditIngestAllowedActionCode -ActionCode $ActionCode
 }
 
-Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Get-QCAuditParentGuidFilterSkipReason, Resolve-QCAuditSheetsDiscoveryFolderPath, Get-QCAuditSheetsDiscoveryOneLevelDeep, Get-QCAuditWatchListFolderEntriesFromConfig, Get-QCAuditCacheWarmFolderPathCandidates, Test-QCAuditCacheWarmFolderPathExcluded, Register-AuditPollerFolderGuidCacheEntry, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode
+Export-ModuleMember -Function Invoke-AuditTrailScan, Invoke-QCAuditParentGuidCacheGate, Get-QCAuditParentGuidFilterSkipReason, Resolve-QCAuditSheetsDiscoveryFolderPath, Get-QCAuditSheetsDiscoveryOneLevelDeep, Get-QCAuditWatchListFolderEntriesFromConfig, Get-QCAuditCacheWarmFolderPathCandidates, Test-QCAuditCacheWarmFolderPathExcluded, Register-AuditPollerFolderGuidCacheEntry, Invoke-QCAuditFolderGuidCacheWarmForReconciliation, Sync-AuditPollerWatchFolderGuidCache, Get-AuditTrailHighWaterMark, Get-AuditTrailHighWaterMarkFromDatabase, Get-AuditTrailCaptureWatermark, Set-AuditTrailCaptureWatermark, Get-AuditTrailPollWindow, Get-AuditPollCycleCounter, Reset-AuditPollCycleCounter, Get-AuditPollerLogicVersion, Get-PWAuditTrailActionName, Test-QCAuditIngestAllowedActionCode

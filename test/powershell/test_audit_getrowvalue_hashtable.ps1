@@ -19,8 +19,8 @@ if ($h['pw_action'] -ne 1012) {
 }
 
 Import-Module (Join-Path $repoRoot 'modules\ProjectWise\PW.AuditPoller.psm1') -Force
-if ((Get-AuditPollerLogicVersion) -ne '2026-06-03-hashtable-row-v3') {
-    throw 'Expected audit poller logic v3'
+if ((Get-AuditPollerLogicVersion) -ne '2026-08-24-folder-guid-cache-recon-only-v12') {
+    throw 'Expected audit poller logic v12'
 }
 
-Write-Host 'OK: DB hashtable row shape + poller v3.' -ForegroundColor Green
+Write-Host 'OK: DB hashtable row shape + poller v12.' -ForegroundColor Green

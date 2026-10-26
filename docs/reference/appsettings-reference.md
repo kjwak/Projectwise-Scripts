@@ -20,11 +20,18 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 
 Optional: other machine-only paths in `appsettings.local.json` or `appsettings.test.local.json`.
 
+## runtime
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `displayTimeZoneId` | `US Mountain Standard Time` | Windows time zone id for wall-clock display (Arizona, no DST). QC Pipeline Ops timestamps, log hour buckets, and full-scan `HH:mm` slots use this zone — not the operator PC's local zone. |
+
 ## Section map
 
 | Section | Role |
 |---------|------|
 | `projectWise` | PW datasource, credentials, watch roots |
+| `runtime` | Display time zone (Arizona MST) |
 | `dryRun` | Global enqueue/processor safety |
 | `filters` | Allow/deny paths for watcher |
 | `triggers.rules` | Event → job type mapping |
@@ -132,10 +139,25 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 
 | Key | Description |
 |-----|-------------|
-| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `_locks`, `_watcher`. |
+| `rootDir` | `pending`, `running`, `succeeded`, `failed`, `locks`, `_logs`, `_watcher`. |
 | `recover.maxAttempts` | Failed jobs retried up to this count. |
+| `recover.staleSeconds` | Requeue `running` jobs whose heartbeat is older than this (default 900). Cross-host jobs use this instead of local PID. |
+| `recover.crossHostLockStaleSeconds` | Age after which another host's abandoned `_queue_write.lock` or pending per-job lock may be reclaimed (default 90). Never used to steal a **running** other-host job lock. |
 | `lockAcquireTimeoutMs` | Wait for per-job lock file. |
 | `selection.preferJobTypes` | Worker picks preferred types first when multiple pending. |
+| `retention` | Once per scheduled/operator full-scan slot, delete aged `succeeded/` jobs and `_logs` files. See below. |
+
+### queue.retention
+
+Runs at the start of each reconciliation slot (`06:00` / `18:00` and operator full scans), including preempted scans. Does not touch `pending/`, `running/`, `failed/`, or `_watcher`. Dedupe-index entries for deleted succeeded jobs are pruned so `Test-QCDuplicateJob` does not keep blocking after the files are gone.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Skip cleanup when false. |
+| `succeededHours` | `24` | Delete `succeeded/*.json` whose last write is older than this. `0` disables succeeded cleanup. |
+| `logsHours` | `24` | Delete files under `queue/_logs` older than this (recursive). `0` disables log cleanup. Active logs are kept because their last-write time is recent. |
+
+Global `dryRun` skips deletes (counts only). `failed/` is left for diagnosis.
 
 ---
 
@@ -158,6 +180,34 @@ Rules are evaluated by **priority** (lower number wins). Common `jobType` values
 | `maxJobsPerWorker` | Jobs per process before exit. |
 | `leaseSeconds` | Stale `running` job recovery threshold. |
 | `idleSleepMs` | Sleep when queue empty (also watcher default if `watcher.idleSleepMs` unset). |
+| `enabledJobTypes` | Per-host allow-list of job types to claim. **`[]` or omit = all types** (QC server default). Does not affect the watcher or enqueue. Combined with `Get-NextQCJob -ExcludeJobTypes`. Known types: `QC_PREPEND`, `STATUS_SET_GEN`, `QC_RENDITION`, `QC_COMMENT_STATUS_SYNC`, `QC_REPORTING_SCAN`. |
+| `remoteHost.allowUncQueue` | Remote processor hosts only. When `false` (default), `Run-QCProcessor.ps1` / `Start-QCRemoteWorkerHost.ps1` refuse a UNC `queue.rootDir` unless `-AllowUncQueue` is passed. Keep `false` on the QC server. |
+| `remoteHost.throttle` | Remote processor host only. Resource throttle; **missing or `enabled: false` = off** (committed/server default). See below. |
+
+### `workers.remoteHost.throttle`
+
+Local host control plane for the modelling PC. Never abort in-flight jobs. Enable only in gitignored `appsettings.local.json`, then restart `QC-RemoteWorkerHost`.
+
+| Key | Description |
+|-----|-------------|
+| `enabled` | Default `false`. When false, no sampling pause. |
+| `sampleSeconds` | Supervisor sample interval (default `10`). Status older than `max(3 * sampleSeconds, 30)` seconds is ignored (fail-open). |
+| `cpuPercent` | Pause/scale when machine-wide CPU is at/above this percent. `0` or omit = ignore CPU. |
+| `memoryPercent` | Pause/scale when physical memory utilization is at/above this percent. `0` or omit = ignore memory. |
+| `processCpuPercent` | Scale only when **matched modelling apps** (and their child processes) use at least this much CPU, as percent of one logical processor summed over the process tree. Measured over `sampleSeconds`. `0` = a matching name alone is enough (idle HEC-RAS would throttle). Typical: `15`–`25`. |
+| `processMemoryMb` | Optional working-set floor in MB for the matched tree. `0` = ignore. Prefer CPU for “model is running”. |
+| `processNamePatterns` | Case-insensitive wildcards vs `Win32_Process.Name` (`.exe` optional), e.g. `OpenRoads*`, `ras*`. |
+| `busyRecommendedSlots` | Desired worker children while busy (default **1**). **0** pauses all new claims. Extra children are not killed; they idle and stop claiming. In-flight jobs always finish. |
+
+Status file: `queue\_remote_worker.{COMPUTERNAME}.throttle.json`. Samples overwrite that file in place. If ops shows a frozen throttle sample (file needs admin to delete), elevate-delete it on the QC server queue root; the supervisor recreates it on the next sample. Reasons: `disabled`, `normal`, `matched_process`, `process_cpu_threshold`, `process_memory_threshold`, `cpu_threshold`, `memory_threshold`, `multiple_signals`, `sample_error`.
+
+**How to split work across hosts** (edit the live file on each machine, then restart that host’s workers):
+
+| Host | `workers.enabledJobTypes` |
+|------|---------------------------|
+| QC server (keep status sets here) | `["STATUS_SET_GEN"]` — add `QC_COMMENT_STATUS_SYNC`, `QC_RENDITION`, `QC_REPORTING_SCAN` if those should stay on the server |
+| Modelling PC (prepend only) | `["QC_PREPEND"]` in gitignored `appsettings.local.json` (already set) |
+| Single host / rollback | `[]` (claim everything) |
 
 ---
 
@@ -186,12 +236,16 @@ Register `QC_RENDITION` in `processors.processorMap` and `queue.selection.prefer
 |-----|-------------|
 | `historyRoot` / `outputRoot` / `tempRoot` | Overlay working directories (used by `local` mode and overlay staging). |
 | `mode` | **`projectWise`** (production): `Invoke-QCPrependProcessor` spawns `scripts\processing\Invoke-QCPrependPw.ps1` for PW export, overlay merge, and lane PDF upload. **`local`**: disk-only path in `QC.Processors.psm1` (tests/staging; no PW file I/O). **`legacyPw`** / **`pw`**: deprecated aliases for `projectWise`. |
+| `fastAuditEnqueue` | Default **`false`**. When `true`, the watcher enqueues `QC_PREPEND` right after the `DOCUMENT_STATE` live-state read (Initiate Origination / Initiate Verification) so a burst of sheets can sit in `pending/` together. Sibling sync / `sheet_index` attr work runs as a **second pass** in the same tick. Path D (DGN + description) is skipped for that candidate when this tick already enqueued. Process type may be empty at enqueue; the worker confirms live state, DGN pair, and lane **before** overlay and no-op-succeeds (`QC_PREPEND_SKIPPED_*`) if the job is not a real prepend. Enable on the QC server overlay; do not flip the committed default until soak. |
 | `projectWiseScriptPath` | Optional override for the ProjectWise prepend script (default `scripts\processing\Invoke-QCPrependPw.ps1`). |
 | `legacyScriptPath` | Deprecated alias for `projectWiseScriptPath`. |
 | `enableOverlay` | Use `qc_overlay_prepend.exe` when available. |
 | `overlaySkipIncomingAboveMb` | When `> 0`, skip layered overlay if the **incoming** PDF is larger than this many megabytes (`Mb * 1024 * 1024`); fall back to qpdf simple prepend + stamps (no Old/New/Current layers). Default `5`. Set `0` to disable the size gate. |
 | `qpdfExePath` | Path to qpdf binary. |
 | `overlayExePath` | Path to `qc_overlay_prepend.exe` (default `dist\qc_overlay_prepend\qc_overlay_prepend.exe`). |
+| `childWaitTimeoutSeconds` | Optional cap on waiting for the ProjectWise prepend **PowerShell child PID** (`0` = wait until that process exits). Does not wait for Bentley/ProjectWise descendants. |
+
+`QC_PREPEND` persists `job.checkpoint` (`prepend_complete`, `writeback_running`, `writeback_complete`) so a retry after a successful lane-PDF create resumes **writeback only**. See [`docs/engineering/remote-worker-host-guardrails.md`](../engineering/remote-worker-host-guardrails.md).
 
 ---
 
@@ -387,8 +441,14 @@ Logs: `WATCH_PW_PROACTIVE_RECONNECT` then the normal `WATCH_PW_CONNECT_*` path.
 | `lookbackSeconds` | 120 | Steady window if watermark missing. |
 | `initialLookbackSeconds` | 14400 | First capture only (4h). Delete `queue/_watcher/audit-capture-watermark.txt` to re-run. |
 | `fullScanSchedule.times` | (none) | Wall-clock times (`HH:mm`) in `runtime.displayTimeZoneId` for full folder scans (once per slot per day). |
-| `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. |
+| `fullScanSchedule.preempt.enabled` | true | When true, process at most `checkEveryNFolders` per tick and resume via `queue/_watcher/full-scan-progress.json`. Later ticks skip PW tree rediscovery when a remaining folder queue exists. |
 | `fullScanSchedule.preempt.checkEveryNFolders` | 1 | Folders per continuous tick during an unpaid scheduled full scan. |
+| `fullScanSchedule.preempt.skipSheetIndex` | true | When true (default), skip per-folder `sheet_index` on preempted recon so a large folder cannot stall the audit watermark. |
+| `folderGuidCache.warmOnScheduledReconciliation` | true | Warm watch-folder GUIDs once per `fullScanSchedule` slot. Audit ticks do not walk the PW folder tree. |
+| `folderGuidCache.warmWatchRootsOnStart` | false | Deprecated no-op. Do not warm on watcher start. |
+| `folderGuidCache.warmSheetsFoldersOnStart` | true | When recon warm runs, also register Sheets folders under each watch root. |
+| `folderGuidCache.filterByParentGuidCache` | true | Skip audit events whose parent folder GUID is not in `pw_folder_cache` (1012 exempt). |
+| `folderGuidCache.folderCacheTtlSeconds` | 86400 | SQL TTL for `pw_folder_cache`. |
 | `reconcileEveryNCycles` | — | Legacy fallback when `fullScanSchedule.times` is empty. |
 | `qcPrependAuditActions` | see JSON | On paired sheet PDF audit events, enqueue `QC_PREPEND` when workflow state is **Initiate Origination** and/or when description has `QC_Archivist` (state must still be **Initiate Origination** for the tag path). |
 | `workflowTriggers` | see JSON | `DOCUMENT_STATE` / `DOCUMENT_ATTR` → `sheet_index`, `document_state_history`, `transition_events`, optional email on lane QC PDFs. |

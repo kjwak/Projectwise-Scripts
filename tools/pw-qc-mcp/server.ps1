@@ -1,11 +1,26 @@
 # pw-qc-debug MCP server (PowerShell, read-only diagnostics).
-# Communicates via MCP stdio transport (Content-Length framed JSON-RPC 2.0).
+# Communicates via MCP stdio transport (newline-delimited JSON-RPC 2.0).
+#
+# SQL tools run on this stdio thread. ProjectWise tools are dispatched to
+# pw_qc_worker.ps1 so Connect-PW cannot stall get_recent_errors / get_process_health.
 
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$VerbosePreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+$script:McpUtf8 = New-Object System.Text.UTF8Encoding $false
+$script:McpStdin = [Console]::OpenStandardInput()
+$script:McpStdout = [Console]::OpenStandardOutput()
+$script:McpWriteLock = New-Object object
+$script:McpSync = [hashtable]::Synchronized(@{ PwBusy = $false })
+$script:PwToolNames = @(
+    'compare_projectwise_to_database'
+    'warm_projectwise_session'
+    'get_qc_process_type_diagnostics'
+)
 
 $repoRoot = $env:PWQC_REPO_ROOT
 if ([string]::IsNullOrWhiteSpace($repoRoot)) {
@@ -26,8 +41,6 @@ function Initialize-McpRuntime {
         'Get-QCAppSettingsConfig'
         'Search-QCDebugSheet'
     ) -Context 'pw-qc-mcp server'
-    Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
-    Test-QCRequiredCommands -Names @('Invoke-PWAuthenticatedCommand') -Context 'pw-qc-mcp server ProjectWise'
     $appSettings = $env:PWQC_APPSETTINGS
     if ([string]::IsNullOrWhiteSpace($appSettings)) {
         $appSettings = Join-Path $repoRoot 'appsettings.json'
@@ -68,37 +81,10 @@ function ConvertTo-McpHashtable {
     return $Value
 }
 
-function Read-McpMessage {
-    $stdin = [Console]::OpenStandardInput()
-    $headers = @{}
-    while ($true) {
-        $line = Read-McpLine $stdin
-        if ($null -eq $line) { return $null }
-        if ($line -eq '') { break }
-        $idx = $line.IndexOf(':')
-        if ($idx -gt 0) {
-            $name = $line.Substring(0, $idx).Trim().ToLowerInvariant()
-            $value = $line.Substring($idx + 1).Trim()
-            $headers[$name] = $value
-        }
-    }
-    if (-not $headers.ContainsKey('content-length')) { return $null }
-    $length = [int]$headers['content-length']
-    $buffer = New-Object byte[] $length
-    $offset = 0
-    while ($offset -lt $length) {
-        $read = $stdin.Read($buffer, $offset, $length - $offset)
-        if ($read -le 0) { break }
-        $offset += $read
-    }
-    return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $offset)
-}
-
 function Read-McpLine {
-    param([System.IO.Stream]$Stream)
     $bytes = New-Object System.Collections.Generic.List[byte]
     while ($true) {
-        $b = $Stream.ReadByte()
+        $b = $script:McpStdin.ReadByte()
         if ($b -lt 0) {
             if ($bytes.Count -eq 0) { return $null }
             break
@@ -106,22 +92,53 @@ function Read-McpLine {
         if ($b -eq 10) { break }
         if ($b -ne 13) { $bytes.Add([byte]$b) }
     }
-    return [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
+    return $script:McpUtf8.GetString($bytes.ToArray())
+}
+
+function Read-McpMessage {
+    # MCP stdio is newline-delimited JSON. Content-Length (LSP) is accepted as a fallback.
+    while ($true) {
+        $line = Read-McpLine
+        if ($null -eq $line) { return $null }
+        if ($line -eq '') { continue }
+        if ($line -match '^Content-Length:\s*(\d+)\s*$') {
+            $length = [int]$Matches[1]
+            while ($true) {
+                $headerLine = Read-McpLine
+                if ($null -eq $headerLine -or $headerLine -eq '') { break }
+            }
+            $buffer = New-Object byte[] $length
+            $offset = 0
+            while ($offset -lt $length) {
+                $read = $script:McpStdin.Read($buffer, $offset, $length - $offset)
+                if ($read -le 0) { break }
+                $offset += $read
+            }
+            return $script:McpUtf8.GetString($buffer, 0, $offset)
+        }
+        return $line
+    }
 }
 
 function Write-McpMessage {
     param([Parameter(Mandatory)]$Payload)
     if ($Payload -is [string]) {
-        $body = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+        $json = $Payload.Trim()
     } else {
         $json = $Payload | ConvertTo-Json -Depth 80 -Compress
-        $body = [System.Text.Encoding]::UTF8.GetBytes($json)
     }
-    $header = [System.Text.Encoding]::ASCII.GetBytes("Content-Length: $($body.Length)`r`n`r`n")
-    $stdout = [Console]::OpenStandardOutput()
-    $stdout.Write($header, 0, $header.Length)
-    $stdout.Write($body, 0, $body.Length)
-    $stdout.Flush()
+    if ($json.Contains("`n") -or $json.Contains("`r")) {
+        $json = ($json -replace '[\r\n]+', ' ')
+    }
+    $body = $script:McpUtf8.GetBytes($json)
+    [System.Threading.Monitor]::Enter($script:McpWriteLock)
+    try {
+        $script:McpStdout.Write($body, 0, $body.Length)
+        $script:McpStdout.WriteByte(10)
+        $script:McpStdout.Flush()
+    } finally {
+        [System.Threading.Monitor]::Exit($script:McpWriteLock)
+    }
 }
 
 function Send-McpJsonResult {
@@ -165,6 +182,7 @@ $script:McpTools = @(
     (New-McpToolSchema -Name 'get_data_integrity_report' -Description 'Compare package/document identity and flag stale or inconsistent rows.'),
     (New-McpToolSchema -Name 'get_qc_process_type_diagnostics' -Description 'Compare qc_process_type across lane filenames (*-prod/*-chk/*-rev), sheet_index, lane registry, and ProjectWise.'),
     (New-McpToolSchema -Name 'compare_projectwise_to_database' -Description 'Read-only comparison of live ProjectWise workflow state vs QC_Pipeline telemetry.'),
+    (New-McpToolSchema -Name 'warm_projectwise_session' -Description 'Pre-connect ProjectWise in the MCP worker. Call before compare_projectwise_to_database to reduce timeout risk.' -Required @()),
     (New-McpToolSchema -Name 'get_recent_errors' -Description 'Recent warning/error automation events from automation_events (DB-first).' -ExtraProperties @{
         limit = @{ type = 'integer'; description = 'Max events (default 100).'; default = 100 }
         hours = @{ type = 'integer'; description = 'Lookback hours (default 168).'; default = 168 }
@@ -257,6 +275,159 @@ function Get-LookupArguments {
     return $args
 }
 
+function Stop-McpPwWorker {
+    $proc = $script:McpSync.PwWorker
+    $script:McpSync.PwWorker = $null
+    $script:McpSync.PwBusy = $false
+    if ($null -eq $proc) { return }
+    try { if ($proc.StandardInput) { $proc.StandardInput.Close() } } catch { }
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+    try { [void]$proc.WaitForExit(3000) } catch { }
+}
+
+function Start-McpPwToolAsync {
+    param(
+        $McpId,
+        [string]$ToolName,
+        [hashtable]$ToolArgs
+    )
+    if ([bool]$script:McpSync.PwBusy) {
+        Send-McpResponse -Id $McpId -Result @{
+            content = @(@{ type = 'text'; text = 'ProjectWise MCP worker is busy. Retry this tool after the in-flight PW call finishes.' })
+            isError = $true
+        }
+        return
+    }
+    $script:McpSync.PwBusy = $true
+    $requestId = [guid]::NewGuid().ToString('N')
+    $req = @{ id = $requestId; tool = $ToolName; arguments = $ToolArgs } | ConvertTo-Json -Depth 20 -Compress
+    $appSettings = $env:PWQC_APPSETTINGS
+    if ([string]::IsNullOrWhiteSpace($appSettings)) { $appSettings = Join-Path $repoRoot 'appsettings.json' }
+    $envMap = [hashtable]::Synchronized(@{
+        PWQC_REPO_ROOT = $repoRoot
+        PWQC_APPSETTINGS = $appSettings
+    })
+    foreach ($key in @('PWQC_SQL_SERVER', 'PWQC_SQL_DATABASE', 'PWQC_SQL_TRUST_CERT', 'PWQC_SQL_DRIVER')) {
+        $val = [Environment]::GetEnvironmentVariable($key)
+        if ($val) { $envMap[$key] = $val }
+    }
+
+    $ps = [PowerShell]::Create()
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript({
+        param($Sync, $ReqJson, $RequestId, $Stdout, $Lock, $Utf8, $McpId, $TimeoutMs, $WorkerPs1, $RepoRoot, $EnvMap)
+        function Write-McpPayload([string]$PayloadJson) {
+            $body = $Utf8.GetBytes($PayloadJson)
+            [System.Threading.Monitor]::Enter($Lock)
+            try {
+                $Stdout.Write($body, 0, $body.Length)
+                $Stdout.WriteByte(10)
+                $Stdout.Flush()
+            } finally {
+                [System.Threading.Monitor]::Exit($Lock)
+            }
+        }
+        function New-McpToolErrorJson([string]$Text) {
+            $idJson = $McpId | ConvertTo-Json -Compress
+            return '{"jsonrpc":"2.0","id":' + $idJson + ',"result":{"content":[{"type":"text","text":' + ($Text | ConvertTo-Json -Compress) + '}],"isError":true}}'
+        }
+        try {
+            $proc = $Sync.PwWorker
+            if ($null -eq $proc -or $proc.HasExited) {
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                $psi.Arguments = "-NoLogo -MTA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$WorkerPs1`" -Worker"
+                $psi.WorkingDirectory = $RepoRoot
+                $psi.RedirectStandardInput = $true
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                foreach ($key in @($EnvMap.Keys)) {
+                    if ($EnvMap[$key]) { $psi.EnvironmentVariables[$key] = [string]$EnvMap[$key] }
+                }
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                $Sync.PwWorkerErrTask = $proc.StandardError.ReadToEndAsync()
+                $readyTask = $proc.StandardOutput.ReadLineAsync()
+                if (-not $readyTask.Wait(30000)) {
+                    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+                    $Sync.PwWorker = $null
+                    Write-McpPayload (New-McpToolErrorJson 'ProjectWise MCP worker did not become ready within 30s.')
+                    return
+                }
+                $readyDeadline = [datetime]::UtcNow.AddSeconds(30)
+                $readyObj = $null
+                $ready = [string]$readyTask.Result
+                while ($true) {
+                    if (-not [string]::IsNullOrWhiteSpace($ready) -and $ready.Trim().StartsWith('{')) {
+                        try { $readyObj = $ready | ConvertFrom-Json } catch { $readyObj = $null }
+                    }
+                    if ($readyObj) { break }
+                    if ([datetime]::UtcNow -ge $readyDeadline) { break }
+                    $remainReady = [int][math]::Max(1, ($readyDeadline - [datetime]::UtcNow).TotalMilliseconds)
+                    $readyTask = $proc.StandardOutput.ReadLineAsync()
+                    if (-not $readyTask.Wait($remainReady)) { break }
+                    $ready = [string]$readyTask.Result
+                }
+                if ($null -eq $readyObj) {
+                    $err = ''
+                    try { $err = [string]$Sync.PwWorkerErrTask.Result } catch { }
+                    $Sync.PwWorker = $null
+                    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+                    Write-McpPayload (New-McpToolErrorJson "ProjectWise MCP worker failed to start: $err")
+                    return
+                }
+                if (-not [bool]$readyObj.ok) {
+                    $Sync.PwWorker = $null
+                    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+                    Write-McpPayload (New-McpToolErrorJson ("ProjectWise MCP worker init failed: " + [string]$readyObj.error))
+                    return
+                }
+                $Sync.PwWorker = $proc
+            }
+            $proc.StandardInput.WriteLine($ReqJson)
+            $proc.StandardInput.Flush()
+            $deadline = [datetime]::UtcNow.AddMilliseconds($TimeoutMs)
+            $resp = $null
+            while ([datetime]::UtcNow -lt $deadline) {
+                $remain = [int][math]::Max(1, ($deadline - [datetime]::UtcNow).TotalMilliseconds)
+                $task = $proc.StandardOutput.ReadLineAsync()
+                if (-not $task.Wait($remain)) { break }
+                $line = [string]$task.Result
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                if (-not $line.Trim().StartsWith('{')) { continue }
+                try { $obj = $line | ConvertFrom-Json } catch { continue }
+                if ($obj.id -and ([string]$obj.id -ne $RequestId)) { continue }
+                $resp = $obj
+                break
+            }
+            if ($null -eq $resp) {
+                try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+                $Sync.PwWorker = $null
+                Write-McpPayload (New-McpToolErrorJson 'ProjectWise tool timed out after 90s. Retry warm_projectwise_session, then the PW tool.')
+                return
+            }
+            $idJson = $McpId | ConvertTo-Json -Compress
+            if ($resp.ok) {
+                $dataJson = if ($null -eq $resp.data) { '{}' } else { $resp.data | ConvertTo-Json -Depth 80 -Compress }
+                if ([string]::IsNullOrWhiteSpace($dataJson)) { $dataJson = '{}' }
+                Write-McpPayload ('{"jsonrpc":"2.0","id":' + $idJson + ',"result":{"content":[{"type":"text","text":' + ($dataJson | ConvertTo-Json -Compress) + '}],"structuredContent":' + $dataJson + ',"isError":false}}')
+            } else {
+                Write-McpPayload (New-McpToolErrorJson ([string]$resp.error))
+            }
+        } catch {
+            Write-McpPayload (New-McpToolErrorJson $_.Exception.Message)
+        } finally {
+            $Sync.PwBusy = $false
+        }
+    }).AddArgument($script:McpSync).AddArgument($req).AddArgument($requestId).AddArgument($script:McpStdout).AddArgument($script:McpWriteLock).AddArgument($script:McpUtf8).AddArgument($McpId).AddArgument(90000).AddArgument((Join-Path $PSScriptRoot 'pw_qc_worker.ps1')).AddArgument($repoRoot).AddArgument($envMap)
+    if (-not $script:PwWaiters) { $script:PwWaiters = New-Object System.Collections.ArrayList }
+    [void]$script:PwWaiters.Add(@{ powershell = $ps; runspace = $rs })
+    [void]$ps.BeginInvoke()
+}
+
 function Invoke-McpTool {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -266,7 +437,7 @@ function Invoke-McpTool {
     if (-not $script:ToolDispatch.ContainsKey($Name)) {
         throw "Unknown tool: $Name"
     }
-    $noLookupTools = @('get_recent_errors', 'get_process_health', 'get_audit_scan_history')
+    $noLookupTools = @('get_recent_errors', 'get_process_health', 'get_audit_scan_history', 'warm_projectwise_session')
     if ($noLookupTools -contains $Name) {
         $bound = Get-LookupArguments -Arguments $Arguments
     } elseif ($Name -eq 'get_job_timeline') {
@@ -307,13 +478,10 @@ function Handle-McpRequest {
         switch ($method) {
             'initialize' {
                 $clientVersion = [string]$params.protocolVersion
-                $supported = @('2024-11-05', '2025-03-26')
+                $supported = @('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25')
                 $protocolVersion = if ($supported -contains $clientVersion) { $clientVersion } else { '2024-11-05' }
-                Send-McpResponse -Id $id -Result @{
-                    protocolVersion = $protocolVersion
-                    capabilities = @{ tools = @{} }
-                    serverInfo = @{ name = 'pw-qc-debug'; version = '1.0.0' }
-                }
+                # Literal JSON: Windows PowerShell ConvertTo-Json turns empty @{} into [] .
+                Send-McpJsonResult -Id $id -ResultJson "{`"protocolVersion`":`"$protocolVersion`",`"capabilities`":{`"tools`":{}},`"serverInfo`":{`"name`":`"pw-qc-debug`",`"version`":`"1.0.0`"}}"
             }
             'tools/list' {
                 Send-McpJsonResult -Id $id -ResultJson "{`"tools`":$script:ToolsListJson}"
@@ -329,6 +497,10 @@ function Handle-McpRequest {
                 $toolArgs = @{}
                 if ($params.ContainsKey('arguments') -and $params.arguments) {
                     $toolArgs = ConvertTo-McpHashtable $params.arguments
+                }
+                if ($script:PwToolNames -contains $toolName) {
+                    Start-McpPwToolAsync -McpId $id -ToolName $toolName -ToolArgs $toolArgs
+                    break
                 }
                 $data = Invoke-McpTool -Name $toolName -Arguments $toolArgs
                 $json = $data | ConvertTo-Json -Depth 80 -Compress
@@ -380,3 +552,5 @@ while ($true) {
     if (-not $request.ContainsKey('method') -or -not $request.method) { continue }
     Handle-McpRequest -Request $request
 }
+
+Stop-McpPwWorker

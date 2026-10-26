@@ -15,7 +15,7 @@ When adding or removing a module, update **both** docs and any load-order lists 
 
 ## Folder layout (Phase 4E+)
 
-Active implementations live under `modules/<Folder>/`. **Prefer folder paths** for new imports:
+Active implementations live under `modules/<Folder>/` (`Core/`, `Queue/`, `Ops/`, …). **Prefer folder paths** for new imports:
 
 ```powershell
 Import-Module (Join-Path $repoRoot 'modules\Core\Core.Results.psm1') -Force
@@ -68,7 +68,7 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
 
 `Restore-QCModuleExports.ps1` imports folder implementation paths with `-Force -Global`, runs `Restore-QCFoundationModuleExports` after feature modules, and throws via `Test-QCRequiredCommands` if exports are still missing.
 
-**Protected entrypoints:** `Start-QCPipelineDashboard.ps1`, `Run-QCProcessor.ps1`, `run_prepend_qc.ps1` (`-NoDashboard`).
+**Protected entrypoints:** `Start-QCPipelineDashboard.ps1`, `Run-QCProcessor.ps1`, `run_prepend_qc.ps1` (`-NoDashboard`), `Start-QCOpsConsole.ps1`.
 
 **Diagnostic/maintenance/processing helpers:** scripts under `scripts/diagnostics/`, `scripts/maintenance/`, and `scripts/processing/Combine-StatusSet.ps1` dot-source `Restore-QCModuleExports.ps1` and call `Import-QCModuleBootstrapSet` with script-specific feature modules and required commands. PW-only probes (`Test-PWEmailAttributes*`, `PW-SmokeTest`, `Test-PWDocumentStateChange`) are exempt.
 

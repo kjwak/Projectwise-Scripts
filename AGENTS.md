@@ -15,7 +15,11 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 |--------|---------|
 | `scripts/service/Watch-QCTrigger.ps1` | Watcher: audit/reconcile, filters, triggers, enqueue |
 | `scripts/service/Run-QCProcessor.ps1` | Worker: dequeue, lock, dispatch processor, transition job state |
-| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI |
+| `scripts/service/Start-QCPipelineDashboard.ps1` | Dashboard: watcher + worker pool + terminal UI (QC server only, Session 0 boot task) |
+| `scripts/service/Start-QCOpsConsole.ps1` | Logon WinForms console: observes/controls the boot task; never starts a second dashboard |
+| `scripts/service/Start-QCRemoteWorkerHost.ps1` | Processor-only supervisor for a remote host (no watcher/dashboard) |
+
+**Boot without login:** on `PXBENTLEY01` run `scripts/deployment/Register-QCPipelineDashboardTask.ps1` (elevated) so `Start-QCPipelineDashboard.ps1` starts at reboot from `C:\Users\jflint\Documents\github\Prepend PDF QC` (Session 0, no TUI). For the operator GUI at logon, run `Register-QCPipelineDashboardLogonConsole.ps1` (Startup shortcut → `Start-QCOpsConsole.ps1`; `-NoGui` is the text tail). The GUI must not launch the dashboard. On/off is Enable/Disable of `QC-PipelineDashboard` (Task Scheduler COM) plus `Stop-QCPipeline.ps1`. After register, the run-as account gets a Full Control task ACE so the unelevated GUI can toggle it; for an existing task run elevated `Register-QCPipelineDashboardTask.ps1 -GrantOperatorAccess` once (no recreate; owner/Read SID is not enough). Manual full scan while the watcher is live writes `queue/_watcher/ops-request.json` — do not spawn a second `Watch-QCTrigger`. On the modelling PC use `Register-QCRemoteWorkerHostTask.ps1` instead — do not register the dashboard there.
 
 Pass `-AppSettingsPath` to override config (e.g. `.\appsettings.test.json` for safe local runs).
 
@@ -37,7 +41,7 @@ Legacy `*-qc.pdf` is a **compatibility bridge** only (older prepend paths, norma
 
 | Layer | Role | Source of truth |
 |-------|------|-----------------|
-| **JSON queue** | Job scheduling and worker dispatch | `queue.rootDir` → `pending/`, `running/`, `succeeded/`, `failed/`, `_locks/` (`modules/Queue/QC.Queue.Json.psm1`) |
+| **JSON queue** | Job scheduling and worker dispatch | `queue.rootDir` → `pending/`, `running/`, `succeeded/`, `failed/`, `locks/` (`modules/Queue/QC.Queue.Json.psm1`) |
 | **SQL (`QC_Pipeline`)** | Audit ingest, package index, mirrors, reporting | Durable telemetry — **not** a second job scheduler |
 
 **Invariants:**
@@ -55,11 +59,11 @@ When `database.enabled` is true:
 1. **Primary:** `watcher_state` table (`audit_watermark_utc` / related keys) in SQL — see `modules/Database/Core.Database.psm1`, `modules/ProjectWise/PW.AuditPoller.psm1`.
 2. **Mirror / fallback:** `queue/_watcher/audit-capture-watermark.txt` and `poll_runs.watermark_after`.
 
-Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled or hybrid downtime). See `docs/architecture/hybrid-polling.md`.
+Steady-state discovery is **audit-driven** (`dms_audt` → `audit_events`). Full folder scans are reconciliation-only (scheduled, hybrid downtime, or an operator `ops-request.json` fullScan). Unpaid 06:00/18:00 recon ticks must not stall the audit watermark: resume the checkpointed folder queue (do not rediscover the PW tree every tick) and skip per-folder `sheet_index` when `fullScanSchedule.preempt.skipSheetIndex` is true. Watch-folder GUID cache PW warm (`Get-PWFoldersHashTableByGuid`) runs **only** at `fullScanSchedule` slots (`06:00` / `18:00`) and operator-requested full scans; audit ticks load `pw_folder_cache` from SQL. Each recon slot also deletes `queue/succeeded` jobs and `queue/_logs` files older than `queue.retention` (default 24h). See `docs/architecture/hybrid-polling.md`.
 
 ### Prepend mode
 
-Committed production uses `qcPrepend.mode: "projectWise"`. `QC_PREPEND` jobs are orchestrated by `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1`, which spawns `scripts/processing/Invoke-QCPrependPw.ps1` (PW export, overlay merge, lane PDF upload). `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
+Committed production uses `qcPrepend.mode: "projectWise"`. The watcher identifies a `DOCUMENT_STATE` candidate, reads live workflow state once, and enqueues `QC_PREPEND` (immediately when `qcPrepend.fastAuditEnqueue` is true; otherwise after sibling/attr sync). `Invoke-QCPrependProcessor` in `modules/Processing/QC.Processors.psm1` confirms live state, DGN pair, and lane **before** overlay when live PW state is readable; skip at preflight is success (`QC_PREPEND_SKIPPED_*`), not failure. Empty live state is **not** a skip — remote processor hosts do not `Open-PWConnection` in the parent, so preflight proceeds to the prepend child (`scripts/processing/Invoke-QCPrependPw.ps1`). The prepend child must load **pwps** (`Open-PWConnection`) and **pwps_dab** (discovery) via `Import-PWCmdletModules` in `PW.Connection` — the same path as `Test-PWConnection.ps1`. `legacy/prepend_qc.ps1` is a deprecated compatibility forwarder only.
 
 `qcPrepend.mode: "local"` runs a disk-only path inside `QC.Processors.psm1` (no PW file I/O). It is for tests and staging — not production. `legacyPw` and `pw` are accepted aliases for `projectWise`. See `docs/engineering/phase-2-native-prepend-parity-plan.md` for future in-process PW parity work.
 
@@ -118,9 +122,19 @@ Live execution queue and service logs are exposed read-only at `\\192.168.22.90\
 - **Do not claim** end-to-end verification of ProjectWise writeback, SQL telemetry, Graph email, or prepend output unless you ran it on a Windows worker with live PW/SQL/Graph access.
 - Code-only and static-test validation is sufficient for many PRs — state what was and was not validated.
 - For PW workflow debugging on a connected machine, prefer MCP `pw-qc-debug` tools before deep code speculation (see `.cursor/rules/projectwise-debugging.mdc`).
+- Cursor MCP entrypoint is `tools/pw-qc-mcp/server.ps1` (restart the MCP after changing it). SQL tools stay on the stdio thread; `warm_projectwise_session`, `compare_projectwise_to_database`, and `get_qc_process_type_diagnostics` run in a child worker so a slow `Connect-PW` does not time out SQL tools. Call `warm_projectwise_session` once before live PW compares.
+
+## Remote worker host (modelling PC)
+
+This clone may become an optional **processor host**. It must not run the watcher or the full dashboard. Per-machine queue UNC, SQL, temp roots, and `workers.enabledJobTypes` go in gitignored `appsettings.local.json` (start from `appsettings.remote-worker.example.json`). Do **not** change committed `appsettings.json` defaults to enable remote workers.
+
+Claim live UNC jobs only via `scripts/service/Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` after host-aware locks (`machineName` + PID) are on the QC server. See [`docs/engineering/remote-worker-host-guardrails.md`](docs/engineering/remote-worker-host-guardrails.md). `Watch-QCRemoteWorkerHostConsole.ps1` heartbeat follows `queue\running` for this host, not JSONL. Host throttle (`workers.remoteHost.throttle` in `appsettings.local.json`) should use `processCpuPercent` so idle CAD/hydro GUIs (HEC-RAS open, no model running) do not scale QC down; name match alone is only for `processCpuPercent: 0`.
+
+`QC_PREPEND` is not safely repeatable after the lane PDF (`*-rev.pdf` / `*-chk.pdf` / `*-prod.pdf`) exists. The worker persists `job.checkpoint` (`prepend_complete` then `writeback_complete`). Stale recovery must resume **writeback only** when `prepend_complete` is set — do not rerun prepend from heartbeat/PID/log inference.
 
 ## Safe change boundaries (unless explicitly requested)
 
 - Do not remove legacy compatibility code or flat module shims without a tracked deprecation plan.
-- Do not change production `appsettings.json` defaults to enable PW writes, notifications, or native prepend without operator sign-off.
+- Do not change production `appsettings.json` defaults to enable PW writes, notifications, native prepend, or remote workers without operator sign-off.
 - Do not treat SQL as a job queue replacement without an explicit design change.
+- Do not run `Watch-QCTrigger.ps1` or `Start-QCPipelineDashboard.ps1` on the modelling PC as a second coordinator.

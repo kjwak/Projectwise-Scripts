@@ -13,6 +13,24 @@ param(
     [string]$AppSettingsPath = ''
 )
 
+# pwps_dab requires MTA; Cursor/VS Code terminals are usually STA.
+$scriptPath = $PSCommandPath
+if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'Test-PWConnection.ps1' }
+if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "MTA relaunch: could not resolve script path. Tried: $scriptPath"
+    }
+    $staMtaHelper = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'legacy\StaMtaRelaunch.ps1'
+    if (-not (Test-Path -LiteralPath $staMtaHelper)) {
+        throw "MTA relaunch helper not found: $staMtaHelper"
+    }
+    . $staMtaHelper
+    $exeArgs = Build-PowerShellExeFileArgs -ScriptPath $scriptPath -BoundParameters $PSBoundParameters
+    & powershell.exe @exeArgs
+    exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = 'Stop'
 
 function _Get-ThisScriptDir {
@@ -54,13 +72,19 @@ $credPath = if ($pw.ContainsKey('credentialPath') -and $pw.credentialPath) { [st
 
 Write-Host "Datasource: $ds" -ForegroundColor Cyan
 Write-Host "CredentialPath: $credPath" -ForegroundColor Cyan
+Write-Host ("Apartment: {0}" -f [System.Threading.Thread]::CurrentThread.GetApartmentState()) -ForegroundColor Cyan
 
 $credRes = Get-PWCredentialFromFile -CredentialPath $credPath
 if (-not $credRes.IsSuccess) { throw ($credRes.Code + ': ' + $credRes.Message) }
 $cred = [pscredential]$credRes.Data.credential
 
 $conn = Connect-PW -DatasourceName $ds -Credential $cred
-if (-not $conn.IsSuccess) { throw ($conn.Code + ': ' + $conn.Message) }
+if (-not $conn.IsSuccess) {
+    $detail = $null
+    try { if ($conn.Data -and $conn.Data.errorMessage) { $detail = [string]$conn.Data.errorMessage } } catch { }
+    if ([string]::IsNullOrWhiteSpace($detail)) { throw ($conn.Code + ': ' + $conn.Message) }
+    throw ($conn.Code + ': ' + $conn.Message + ' ' + $detail)
+}
 Write-Host "Connected as $($conn.Data.userName)" -ForegroundColor Green
 
 $disc = Disconnect-PW

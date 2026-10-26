@@ -100,6 +100,8 @@ if (Test-Path -LiteralPath $runningDir) {
         $rows += [pscustomobject]@{
             jobId         = if ($j) { [string]$j.id } else { [System.IO.Path]::GetFileNameWithoutExtension($f.Name) }
             type          = if ($j) { [string]$j.type } else { '' }
+            machineName   = if ($j -and $j.PSObject.Properties['machineName']) { [string]$j.machineName } else { '' }
+            pid           = if ($j -and $j.PSObject.Properties['pid']) { $j.pid } else { '' }
             ageStartSecs  = $ageStartSecs
             ageDiskSecs   = $ageDiskSecs
             sourceName    = if ($j) { [string]$j.sourceName } else { '' }
@@ -124,16 +126,19 @@ if (Test-Path -LiteralPath $locksDir) {
         $payload = $null
         try { $payload = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $payload = $null }
         $ownerPid = if ($payload -and $payload.pid) { [int]$payload.pid } else { 0 }
+        $lockHost = if ($payload -and $payload.PSObject.Properties['machineName'] -and $payload.machineName) { [string]$payload.machineName } else { '' }
+        $sameHost = [string]::IsNullOrWhiteSpace($lockHost) -or ($lockHost.Trim().ToUpperInvariant() -eq ([string]$env:COMPUTERNAME).Trim().ToUpperInvariant())
         $alive = $false
-        if ($ownerPid -gt 0) {
+        if ($sameHost -and $ownerPid -gt 0) {
             $p = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
             if ($p) { $alive = $true }
         }
         $ageSecs = [int]($now - $f.LastWriteTimeUtc).TotalSeconds
         $rows += [pscustomobject]@{
             jobId        = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+            machineName  = if ($payload -and $payload.PSObject.Properties['machineName']) { [string]$payload.machineName } else { '' }
             ownerPid     = $ownerPid
-            ownerAlive   = $alive
+            ownerAlive   = if ($sameHost) { $alive } else { 'remote' }
             ageSecs      = $ageSecs
             createdAtUtc = if ($payload) { [string]$payload.createdAtUtc } else { '' }
         }
@@ -174,16 +179,19 @@ foreach ($lf in $lockFiles) {
     try { $payload = Get-Content -LiteralPath $lf.FullName -Raw | ConvertFrom-Json } catch { }
     $ownerPid = 0
     if ($payload -and $payload.pid) { $ownerPid = [int]$payload.pid }
+    $lockHost = ''
+    if ($payload -and $payload.PSObject.Properties['machineName'] -and $payload.machineName) { $lockHost = [string]$payload.machineName }
+    $sameHost = [string]::IsNullOrWhiteSpace($lockHost) -or ($lockHost.Trim().ToUpperInvariant() -eq ([string]$env:COMPUTERNAME).Trim().ToUpperInvariant())
     $alive = $false
-    if ($ownerPid -gt 0 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { $alive = $true }
-    $lockMap[$jid] = @{ ownerPid = $ownerPid; alive = $alive }
+    if ($sameHost -and $ownerPid -gt 0 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { $alive = $true }
+    $lockMap[$jid] = @{ ownerPid = $ownerPid; alive = $alive; machineName = $lockHost; sameHost = $sameHost }
 }
 $orphans = @()
 foreach ($f in $running) {
     $jid = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
     if (-not $lockMap.ContainsKey($jid)) {
         $orphans += [pscustomobject]@{ jobId = $jid; reason = 'NO_LOCK_FILE' }
-    } elseif (-not $lockMap[$jid].alive) {
+    } elseif ($lockMap[$jid].sameHost -and -not $lockMap[$jid].alive) {
         $orphans += [pscustomobject]@{ jobId = $jid; reason = "DEAD_PID($($lockMap[$jid].ownerPid))" }
     }
 }

@@ -9,6 +9,17 @@ function Assert-Eq($Actual, $Expected, $Message) {
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force
 
+$stampDir = Join-Path $repoRoot 'stamps'
+if (-not (Test-Path -LiteralPath $stampDir)) {
+    New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+}
+foreach ($name in @('Production_Stamp.pdf', 'IC_Stamp.pdf', 'Peer_Review_Stamp.pdf')) {
+    $p = Join-Path $stampDir $name
+    if (-not (Test-Path -LiteralPath $p)) {
+        Set-Content -LiteralPath $p -Value '%PDF-1.4 test stamp placeholder' -Encoding ascii
+    }
+}
+
 $config = @{
     QCProcess = @{
         DefaultProcessType = 'production'
@@ -87,6 +98,10 @@ $i15Config = @{
         )
     }
 }
+$i15Stamp = Join-Path $stampDir 'I-15_DR_Stamp.pdf'
+if (-not (Test-Path -LiteralPath $i15Stamp)) {
+    Set-Content -LiteralPath $i15Stamp -Value '%PDF-1.4 test stamp placeholder' -Encoding ascii
+}
 $i15WithPrefix = Resolve-QCStampForProcess -Config $i15Config -ProcessType 'check' `
     -FolderPath 'Documents\Caltrans\CAFWY2200-I-15_ELPSE\CADD\Sheets\Seg_1'
 $i15NoPrefix = Resolve-QCStampForProcess -Config $i15Config -ProcessType 'check' `
@@ -95,5 +110,11 @@ Assert-Eq $i15WithPrefix.resolvedStampProfile 'I15_ELPSE' 'I15 override with Doc
 Assert-Eq $i15WithPrefix.resolvedStampName 'I15_DR' 'I15 check stamp asset'
 Assert-Eq $i15NoPrefix.resolvedStampProfile 'I15_ELPSE' 'I15 override without Documents prefix'
 Assert-Eq $i15NoPrefix.resolvedStampName 'I15_DR' 'I15 check stamp asset without prefix'
+
+$missingFile = Join-Path $stampDir 'Production_Stamp.pdf'
+Remove-Item -LiteralPath $missingFile -Force -ErrorAction SilentlyContinue
+$noFile = Resolve-QCStampForProcess -Config $config -ProcessType 'production' -FolderPath 'Documents/Other'
+Assert-True (-not $noFile.IsSuccess) 'missing stamp file on disk fails resolution'
+Assert-True ($noFile.Message -match 'not found') 'missing stamp file message names path'
 
 Write-Host 'test_qc_stamp_resolver.ps1: OK'

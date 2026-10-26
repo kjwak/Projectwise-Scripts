@@ -1,6 +1,6 @@
 # Remote Worker Architecture — Intent
 
-**Status:** Planning / not yet implemented  
+**Status:** Phase 2 live on the modelling PC (UNC prepend + scheduled task). Host resource throttle is in repo (opt-in via `appsettings.local.json`; committed defaults remain off).  
 **Date:** 2026-06-24  
 **Primary deployment target:** Drainage team modelling workstation (shared hydraulic modelling PC)
 
@@ -34,7 +34,7 @@ Remote workers must **not** take over watcher responsibilities, enqueue jobs, or
 | Component | Today |
 |-----------|--------|
 | Watcher | `Watch-QCTrigger.ps1` on QC server |
-| Queue | JSON folders (`pending/`, `running/`, `succeeded/`, `failed/`, `_locks/`) |
+| Queue | JSON folders (`pending/`, `running/`, `succeeded/`, `failed/`, `locks/`) |
 | Workers | `Run-QCProcessor.ps1`, spawned by `Start-QCPipelineDashboard.ps1` on the server |
 | Job claim | `Get-NextQCJob` + `Lock-QCJob` with file locks and local PID liveness |
 | SQL | Telemetry only (`processing_jobs` mirrors outcomes; not a job scheduler) |
@@ -79,7 +79,7 @@ flowchart LR
 3. **Backward compatibility** — existing `Run-QCProcessor.ps1` entrypoint and server dashboard behavior must keep working when remote workers are disabled.
 4. **No interactive session required** — processors run as a scheduled task (or later a service) under a dedicated account, not the shared D-Team login.
 5. **Safe queue mutation only** — remote workers use existing `Lock-QCJob` / `Move-QCJob` paths; no uncoordinated file edits.
-6. **Cross-machine locking must be solved before production** — today lock liveness uses **local PID** only; a lock from the modelling PC can look “dead” on the server unless we add host-aware locks and worker heartbeats.
+6. **Cross-machine locking** — lock files include `machineName` + `pid`. Job JSON in `running/` / `succeeded/` / `failed/` stores the same owner fields; `processing_jobs.worker_machine_name` / `worker_pid` mirror them for SQL. Same-host liveness still uses PID. Other-host per-job locks are never stolen via local `Get-Process`; `Recover-QCStaleJobs` uses job `heartbeatUtc`. Deploy this lock code on the QC server **before** the modelling PC claims the UNC queue. See [`remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md).
 
 ---
 
@@ -89,7 +89,7 @@ This repo clone on the modelling workstation is intended to become a **remote wo
 
 | Runs on modelling PC | Does not run on modelling PC |
 |----------------------|------------------------------|
-| `Start-QCRemoteWorkerHost.ps1` (planned supervisor) | `Watch-QCTrigger.ps1` |
+| `Start-QCRemoteWorkerHost.ps1` (processor-only supervisor) | `Watch-QCTrigger.ps1` |
 | One or more `Run-QCProcessor.ps1` children | `Start-QCPipelineDashboard.ps1` (full pipeline) |
 | Local `qcPrepend` temp/output paths (fast disk) | Watcher audit polling / enqueue |
 
@@ -101,11 +101,11 @@ Deploy code via existing [`scripts/Publish-QCPipelineCode.ps1`](../../scripts/Pu
 
 The modelling PC is shared with hydraulic modelling. Remote QC work must defer when models are active.
 
-**Intent:**
+**In repo (`workers.remoteHost.throttle`):** the remote-host supervisor samples machine-wide CPU, physical memory, and matched modelling process trees across all sessions (including disconnected `dteam`). Patterns such as `ras*` identify HEC-RAS; with `processCpuPercent` set, idle GUI (app open, no model running) does not throttle — only measured CPU of that process plus solver children does. A status file `queue\_remote_worker.{host}.throttle.json` records `pauseNewClaims` / `recommendedSlots` and the matched-tree CPU/MB. When busy, the pool scales down to `busyRecommendedSlots` (default 1) instead of going idle unless that value is 0. Extra `Run-QCProcessor` children stay alive but skip `Get-NextQCJob`. In-flight prepend/writeback is never aborted. Missing, stale, malformed, first process-CPU sample, or `sample_error` status **fails open** (claims continue). Committed `appsettings.json` keeps throttle disabled; enable only in gitignored `appsettings.local.json`.
 
-- Detect activity via configurable process name patterns, CPU, and memory thresholds.
-- When busy: **pause new job claims** and optionally reduce active processor slots.
-- **Let running jobs finish** by default — do not abort mid-prepend or mid-PW upload unless explicitly safe at a checkpoint.
+Process Lasso (or similar) should exclude QC supervisor/worker PowerShell processes as an **ops** setting — that is not encoded in QC.
+
+SQL `qc_workers` / dashboard worker registry is still a later visibility slice. This throttle is a local host control plane only.
 
 ---
 
@@ -116,7 +116,7 @@ The modelling PC is shared with hydraulic modelling. Remote QC work must defer w
 | **1** | Local simulation: supervisor + multiple `Run-QCProcessor` instances on one machine; job-type filters |
 | **2** | Remote worker on modelling PC: shared queue over UNC; host-aware locks; scheduled task under service account |
 | **3** | Worker heartbeat and SQL telemetry (`qc_workers`); dashboard/diagnostic visibility |
-| **4** | Resource-aware throttling on modelling PC |
+| **4** | Resource-aware throttling on modelling PC (in repo; opt-in local overlay) |
 | **5** | Production hardening: gMSA, alerting, optional Windows Service, runbooks |
 
 Phase 1 should not require network shares or SQL schema changes. Phase 2 is the first production-facing milestone on the modelling PC.
@@ -158,18 +158,19 @@ Windows Service remains an option for Phase 5 if operations want SCM recovery an
 
 | Resource | Purpose |
 |----------|---------|
+| [`docs/engineering/remote-worker-host-guardrails.md`](remote-worker-host-guardrails.md) | Modelling-PC clone: processor host only; UNC claims need `-AllowUncQueue` |
 | [`AGENTS.md`](../../AGENTS.md) | Production constraints, entrypoints, queue invariants |
 | [`docs/data/database-telemetry.md`](../data/database-telemetry.md) | SQL vs JSON queue roles |
 | [`docs/reference/appsettings-reference.md`](../reference/appsettings-reference.md) | Current `workers` config |
 | [`modules/Queue/QC.Queue.Json.psm1`](../../modules/Queue/QC.Queue.Json.psm1) | Queue, locks, recovery |
-| [`scripts/service/Run-QCProcessor.ps1`](../../scripts/service/Run-QCProcessor.ps1) | Worker entrypoint (unchanged contract) |
+| [`modules/Queue/QC.HostThrottle.psm1`](../../modules/Queue/QC.HostThrottle.psm1) | Host resource sample, evaluate, status file |
+| [`scripts/service/Run-QCProcessor.ps1`](../../scripts/service/Run-QCProcessor.ps1) | Worker entrypoint (`enabledJobTypes`, `-AllowUncQueue`) |
+| [`scripts/service/Start-QCRemoteWorkerHost.ps1`](../../scripts/service/Start-QCRemoteWorkerHost.ps1) | Processor-only supervisor |
 | [`test/powershell/test_worker_pool_dispatch.ps1`](../../test/powershell/test_worker_pool_dispatch.ps1) | Parallel worker safety test |
 
 ---
 
 ## Next steps
 
-1. Implement Phase 1 supervisor and `enabledJobTypes` filtering behind config defaults that preserve current behavior.
-2. Extend lock payload and liveness for cross-host safety before enabling UNC queue on the modelling PC.
-3. Add `appsettings.local.json` on the modelling PC with queue UNC, SQL connection, local temp roots, and throttle rules.
-4. Document operational runbook (enable/disable remote workers, rollback to server-only processing).
+1. On the modelling PC, copy throttle keys from `appsettings.remote-worker.example.json` into gitignored `appsettings.local.json` and set `workers.remoteHost.throttle.enabled` to `true`, then restart `QC-RemoteWorkerHost`.
+2. SQL `qc_workers` heartbeat / dashboard host visibility remains a later slice (intent Phase 3).

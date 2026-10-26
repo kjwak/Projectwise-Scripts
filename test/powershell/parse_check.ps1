@@ -2,9 +2,12 @@
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $files = @(
     'modules\Queue\QC.Queue.Json.psm1',
+    'modules\Ops\QC.OpsConsole.psm1',
     'modules\Processing\QC.StatusSet.psm1',
     'modules\Processing\QC.Processors.psm1',
     'scripts\service\Start-QCPipelineDashboard.ps1',
+    'scripts\service\Start-QCOpsConsole.ps1',
+    'scripts\service\Invoke-QCOpsPwCompare.ps1',
     'scripts\diagnostics\Show-QCQueueDiag.ps1',
     'scripts\service\Run-QCProcessor.ps1'
 )

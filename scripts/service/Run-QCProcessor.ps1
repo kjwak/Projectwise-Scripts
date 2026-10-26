@@ -32,7 +32,10 @@ param(
     [int]$IdleSleepMs = 0,
 
     [Parameter(Mandatory = $false)]
-    [string]$WorkerLabel = ''
+    [string]$WorkerLabel = '',
+
+    [Parameter(Mandatory = $false)]
+    [switch]$AllowUncQueue
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,6 +50,7 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Core\Core.Results.psm1'
     'Queue\QC.Queue.Json.psm1'
+    'Queue\QC.HostThrottle.psm1'
     'Processing\QC.Processors.psm1'
     'Notifications\QC.Notifications.psm1'
     'Processing\QC.Rendition.psm1'
@@ -55,6 +59,9 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
 ) -RequiredCommands @(
     'Read-QCAppSettings'
     'Get-NextQCJob'
+    'Get-QCEnabledJobTypes'
+    'Get-QCRemoteWorkerHostSettings'
+    'Test-QCUncQueueClaimAllowed'
     'Lock-QCJob'
     'Move-QCJob'
     'Move-QCJobWithLockRetries'
@@ -62,6 +69,8 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
     'Invoke-QCProcessorByType'
     'Write-QCJsonLog'
     'Test-QCDatabaseEnabled'
+    'Get-QCHostThrottleClaimDecision'
+    'Read-QCHostThrottleStatus'
 ) -Context 'processor bootstrap'
 
 $script:WorkerLabel = $WorkerLabel
@@ -69,6 +78,12 @@ $script:WorkerLabel = $WorkerLabel
 $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
+
+if (-not (Test-QCUncQueueClaimAllowed -Config $config -AllowUncQueue:$AllowUncQueue.IsPresent)) {
+    throw "Queue root is a UNC path. Pass -AllowUncQueue or set workers.remoteHost.allowUncQueue in appsettings.local.json before claiming jobs from this host."
+}
+
+$enabledJobTypes = @(Get-QCEnabledJobTypes -Config $config)
 
 $telemetryRunId = Set-QCAutomationTelemetryContext -Config $config -ProcessName 'Run-QCProcessor'
 
@@ -115,6 +130,8 @@ Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Infor
     leaseSeconds = $LeaseSeconds
     idleSleepMs = $IdleSleepMs
     loopMode = $loopMode
+    enabledJobTypes = $enabledJobTypes
+    machineName = $env:COMPUTERNAME
 }
 if (Get-Command -Name 'Write-QCEffectiveDryRunPolicyLog' -ErrorAction SilentlyContinue) {
     Write-QCEffectiveDryRunPolicyLog -Config $config -Role 'worker' -WorkerLabel $script:WorkerLabel -IncludeWorkerPid
@@ -138,13 +155,15 @@ function Write-WorkerStage {
         [string]$Stage,
         [string]$JobId = '',
         [string]$JobType = '',
-        [string]$Handler = ''
+        [string]$Handler = '',
+        [string]$SourceName = ''
     )
     Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_STAGE' -Message $Stage -Data @{
         stage = $Stage
         jobId = $JobId
         jobType = $JobType
         handler = $Handler
+        sourceName = $SourceName
     }
 }
 
@@ -152,6 +171,7 @@ function Write-WorkerJobTelemetryLog {
     param(
         [string]$JobId,
         [string]$JobType,
+        [string]$Status = '',
         [object]$TelemetryResult
     )
     if (-not $TelemetryResult) { return }
@@ -165,8 +185,9 @@ function Write-WorkerJobTelemetryLog {
         }
     } catch { }
     if ($code -eq 'JOB_TELEMETRY_WRITTEN') {
-        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'JOB_TELEMETRY_WRITTEN' -Message 'Job outcome recorded in processing_jobs.' -Data @{
-            jobId = $JobId; jobType = $JobType; written = $written; rowsAffected = $rowsAffected
+        $msg = if ($Status -eq 'running') { 'Job claim recorded in processing_jobs.' } else { 'Job outcome recorded in processing_jobs.' }
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'JOB_TELEMETRY_WRITTEN' -Message $msg -Data @{
+            jobId = $JobId; jobType = $JobType; status = $Status; written = $written; rowsAffected = $rowsAffected
         }
         return
     }
@@ -234,7 +255,7 @@ function _Write-WorkerJobOutcomeTelemetry {
         [string]$JobId,
         [string]$JobType,
         [string]$Status,
-        [int]$DurationMs,
+        [Nullable[int]]$DurationMs = $null,
         [hashtable]$ResultData,
         [string]$ErrorCode = '',
         [string]$ErrorMessage = ''
@@ -264,14 +285,25 @@ function _Write-WorkerJobOutcomeTelemetry {
     if ([string]::IsNullOrWhiteSpace($jobDocumentGuid) -and $ResultData -is [hashtable] -and $ResultData.ContainsKey('documentGuid')) {
         $jobDocumentGuid = [string]$ResultData.documentGuid
     }
+    $workerMachine = $null
+    $workerPid = $null
+    try {
+        if ($Job.ContainsKey('machineName') -and $Job['machineName']) { $workerMachine = [string]$Job['machineName'] }
+    } catch { }
+    try {
+        if ($Job.ContainsKey('pid') -and $null -ne $Job['pid'] -and [int]$Job['pid'] -gt 0) { $workerPid = [int]$Job['pid'] }
+    } catch { }
+    if ([string]::IsNullOrWhiteSpace($workerMachine)) { $workerMachine = [string]$env:COMPUTERNAME }
+    if ($null -eq $workerPid -or [int]$workerPid -le 0) { $workerPid = [int]$PID }
     $telRes = Write-QCJobTelemetry -Config $Config -JobId $JobId -JobType $JobType -Status $Status `
         -SourcePath ([string]$Job['sourcePath']) -SourceFolder ([string]$Job['sourceFolder']) `
         -DedupeKey ([string]$Job['dedupeKey']) -TriggerSource $triggerSource -StartedAtUtc $startedAtUtc `
         -AttemptCount $jobAttempts -DurationMs $DurationMs -ResultData $rdJson `
         -ErrorCode $(if ($ErrorCode) { $ErrorCode } else { $null }) `
         -ErrorMessage $(if ($ErrorMessage) { $ErrorMessage } else { $null }) `
-        -DocumentGuid $jobDocumentGuid
-    Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -TelemetryResult $telRes
+        -DocumentGuid $jobDocumentGuid `
+        -WorkerMachineName $workerMachine -WorkerPid $workerPid
+    Write-WorkerJobTelemetryLog -JobId $JobId -JobType $JobType -Status $Status -TelemetryResult $telRes
     return $telRes
 }
 
@@ -300,9 +332,14 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     # Returns hashtable: @{ Outcome = 'succeeded'|'failed'|'requeued'|'skipped_locked'|'dryrun_noop'; ExitOk = [bool]; SkipId = [string] }
     $jobId = [string]$Job['id']
     $jobType = [string]$Job['type']
+    $sourceName = ''
+    try {
+        if ($Job.ContainsKey('sourceName') -and $Job['sourceName']) { $sourceName = [string]$Job['sourceName'] }
+        elseif ($Job.ContainsKey('sourcePath') -and $Job['sourcePath']) { $sourceName = [System.IO.Path]::GetFileName([string]$Job['sourcePath']) }
+    } catch { }
 
     if ($IsDryRun -and -not $DryRunAllowStateChange) {
-        Write-WorkerStage -Stage 'dry-run: evaluating read-only dispatch' -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage 'dry-run: evaluating read-only dispatch' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job (read-only, no lock/state changes).' -Data @{
             jobId = $jobId; jobType = $jobType; handler = $Handler
             wouldRun = $true; wouldLock = $false; wouldChangeState = $false
@@ -339,8 +376,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
         jobType = $jobType
         handler = $Handler
         sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
+        sourcePath = if ($Job.ContainsKey('sourcePath')) { [string]$Job['sourcePath'] } else { '' }
+        sourceName = $sourceName
     }
-    Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler
+    Write-WorkerStage -Stage 'locking queue job' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
     $lock = Lock-QCJob -JobId $jobId -Config $Config
     if (-not $lock.IsSuccess) {
         $benignLockCodes = @(
@@ -372,7 +411,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
     }
 
     try {
-        Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage 'loading locked job' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         $loaded = Get-QCJobById -JobId $jobId -Config $Config
         if (-not $loaded.IsSuccess -or -not $loaded.Data.found) { throw "Failed to load locked job: $jobId" }
         # After a long wait to acquire the job lock, the job may have already
@@ -386,6 +425,10 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             return @{ Outcome = 'skipped_locked'; ExitOk = $true; SkipId = $jobId }
         }
         $Job = [hashtable]$loaded.Data.job
+        try {
+            if ($Job.ContainsKey('sourceName') -and $Job['sourceName']) { $sourceName = [string]$Job['sourceName'] }
+            elseif ($Job.ContainsKey('sourcePath') -and $Job['sourcePath']) { $sourceName = [System.IO.Path]::GetFileName([string]$Job['sourcePath']) }
+        } catch { }
 
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_SELECTED' -Message 'Job locked and running (exclusive owner).' -Data @{
             jobId = $jobId
@@ -395,10 +438,12 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             sourceFolder = if ($Job.ContainsKey('sourceFolder')) { [string]$Job['sourceFolder'] } else { '' }
             sourcePath = if ($Job.ContainsKey('sourcePath')) { [string]$Job['sourcePath'] } else { '' }
             sourceName = if ($Job.ContainsKey('sourceName')) { [string]$Job['sourceName'] } else { '' }
+            machineName = if ($Job.ContainsKey('machineName')) { [string]$Job['machineName'] } else { '' }
+            pid = if ($Job.ContainsKey('pid')) { $Job['pid'] } else { $PID }
         }
 
         if ($IsDryRun) {
-            Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler
+            Write-WorkerStage -Stage 'dry-run: locked job dispatch check' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
             Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_DRYRUN' -Message 'Dry-run: would dispatch job.' -Data @{
                 jobId = $jobId; jobType = [string]$Job['type']; handler = $Handler
                 wouldRun = $true; wouldLock = $true; wouldChangeState = $DryRunAllowStateChange
@@ -406,7 +451,9 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             return @{ Outcome = 'dryrun_noop'; ExitOk = $true; SkipId = $jobId }
         }
 
-        Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler
+        _Write-WorkerJobOutcomeTelemetry -Config $Config -Job $Job -JobId $jobId -JobType $jobType -Status 'running'
+
+        Write-WorkerStage -Stage ("running processor: $Handler") -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         if (Get-Command -Name 'Update-QCJobHeartbeat' -ErrorAction SilentlyContinue) {
             try { Update-QCJobHeartbeat -JobId $jobId -Config $Config -Job $Job | Out-Null } catch { }
         }
@@ -434,7 +481,7 @@ function _Process-OneJob([hashtable]$Job, [string]$Handler, [hashtable]$Config, 
             # The previous Update-QCJob + Move-QCJob sequence acquired the global
             # write lock twice in a row, doubling contention and producing
             # spurious WORKER_MOVE_FAILED / QUEUE_LOCK_TIMEOUT under load.
-            Write-WorkerStage -Stage 'moving completed job to succeeded' -JobId $jobId -JobType $jobType -Handler $Handler
+            Write-WorkerStage -Stage 'moving completed job to succeeded' -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
             $mv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState 'succeeded' -Config $Config -Job $Job
             if (-not $mv.IsSuccess) {
                 $innerErr = ''
@@ -525,7 +572,7 @@ WHERE document_name = @srcName AND folder_path = @srcFolder
         $target = if ($attempts -ge $MaxAttempts) { 'failed' } else { 'pending' }
         # Single Move-QCJob call (same rationale as the success path - one lock
         # cycle, in-memory job preserved with attempts/lastError stamped on disk).
-        Write-WorkerStage -Stage ("moving failed job to $target") -JobId $jobId -JobType $jobType -Handler $Handler
+        Write-WorkerStage -Stage ("moving failed job to $target") -JobId $jobId -JobType $jobType -Handler $Handler -SourceName $sourceName
         $fmv = Move-QCJobWithLockRetries -JobId $jobId -FromState 'running' -ToState $target -Config $Config -Job $Job
         if (-not $fmv.IsSuccess) {
             $innerErr = ''
@@ -576,6 +623,8 @@ $skip = New-Object System.Collections.Generic.List[string]
 $processed = 0
 $lastOutcomeOk = $true
 $startedAt = [DateTime]::UtcNow
+$script:LastThrottlePause = $null
+$script:LastThrottleLogUtc = [DateTime]::MinValue
 
 while ($true) {
     if ($MaxJobs -gt 0 -and $processed -ge $MaxJobs) {
@@ -593,7 +642,53 @@ while ($true) {
     # pass exited starved workers during long sweeps. QC_PREPEND was always
     # immediately eligible.
     Write-WorkerStage -Stage 'polling queue for pending job'
-    $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip)
+
+    $rhNow = Get-QCRemoteWorkerHostSettings -Config $config
+    $throttlePause = $false
+    $throttleReason = 'disabled'
+    try {
+        $thCfg = $rhNow.throttle
+        if ($thCfg -and [bool]$thCfg.enabled) {
+            $qroot = Get-QCHostThrottleQueueRoot -Config $config
+            if (-not [string]::IsNullOrWhiteSpace($qroot)) {
+                $thPath = Get-QCHostThrottleStatusPath -QueueRoot $qroot
+                $thStatus = Read-QCHostThrottleStatus -Path $thPath
+                $thDecision = Get-QCHostThrottleClaimDecision -Status $thStatus -Settings $thCfg -MaxParallel ([int]$rhNow.maxParallel)
+                $throttleReason = [string]$thDecision.reason
+                $throttlePause = -not (Test-QCHostThrottleWorkerMayClaim -Decision $thDecision -WorkerLabel $script:WorkerLabel)
+            }
+        }
+    } catch {
+        $throttlePause = $false
+        $throttleReason = 'sample_error'
+    }
+    if ($throttlePause) {
+        $nowUtc = [DateTime]::UtcNow
+        $stateChanged = ($script:LastThrottlePause -ne $true)
+        $periodic = ($script:LastThrottleLogUtc -eq [DateTime]::MinValue) -or (($nowUtc - $script:LastThrottleLogUtc).TotalSeconds -ge 30)
+        if ($stateChanged -or $periodic) {
+            $script:LastThrottleLogUtc = $nowUtc
+            Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_THROTTLE_PAUSE' -Message 'Host throttle scaled down or paused this worker; idle without dequeue.' -Data @{
+                reason = $throttleReason
+                processed = $processed
+            }
+        }
+        $script:LastThrottlePause = $true
+        $pauseSleep = $IdleSleepMs
+        if ($pauseSleep -le 0) { $pauseSleep = 400 }
+        if (-not $loopMode) { break }
+        Start-Sleep -Milliseconds $pauseSleep
+        continue
+    }
+    if ($script:LastThrottlePause -eq $true) {
+        Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_THROTTLE_RESUME' -Message 'Host throttle cleared; worker may dequeue.' -Data @{
+            reason = $throttleReason
+            processed = $processed
+        }
+    }
+    $script:LastThrottlePause = $false
+
+    $next = Get-NextQCJob -Config $config -ExcludeJobIds @($skip) -IncludeJobTypes $enabledJobTypes
     if (-not $next.IsSuccess) { throw $next.Message }
     if (-not $next.Data.job) {
         Write-QCJsonLog -WorkerLabel $script:WorkerLabel -IncludeWorkerPid -Level 'Information' -Code 'WORKER_NO_JOB' -Message 'No pending jobs.' -Data @{

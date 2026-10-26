@@ -9,9 +9,10 @@ function _PWC-TestPWDiscoveryCmdlets {
     [CmdletBinding()]
     param()
 
-    # pwps_dab discovery/listing can appear independently of pwps connection cmdlets.
-    # Either command is enough to prove the current runspace still has document/folder discovery.
-    return [bool]((Get-Command -Name Get-PWFolderView -ErrorAction SilentlyContinue) -or (Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue))
+    # Document search is the prepend/status-set/writeback primitive. FolderView alone is not enough:
+    # Open-PWConnection (pwps) can succeed while Get-PWDocumentsBySearch (pwps_dab) is missing
+    # from the *caller* session if pwps_dab was imported into this module's session state.
+    return [bool](Get-Command -Name Get-PWDocumentsBySearch -ErrorAction SilentlyContinue)
 }
 
 function _PWC-TryImportPWModules {
@@ -33,7 +34,9 @@ function _PWC-TryImportPWModules {
     if ($hasConnection -and $hasDiscovery) { return $true }
 
     foreach ($name in @('pwps_dab','pwps')) {
-        try { Import-Module $name -Force -ErrorAction Stop | Out-Null } catch { }
+        # -Global: Import-Module inside this module otherwise parks pwps_dab in module
+        # session state. Prepend then cannot see Get-PWDocumentsBySearch.
+        try { Import-Module $name -Force -Global -ErrorAction Stop | Out-Null } catch { }
         $hasConnection = [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
         $hasDiscovery = _PWC-TestPWDiscoveryCmdlets
         if ($hasConnection -and $hasDiscovery) { return $true }
@@ -42,10 +45,27 @@ function _PWC-TryImportPWModules {
     # Common explicit path (Bentley install) if modules aren't in PSModulePath.
     $pwpsPath = 'C:\Program Files (x86)\Bentley\ProjectWise\bin\PowerShell\pwps\pwps.psd1'
     if (Test-Path -LiteralPath $pwpsPath) {
-        try { Import-Module $pwpsPath -Force -ErrorAction Stop | Out-Null } catch { }
+        try { Import-Module $pwpsPath -Force -Global -ErrorAction Stop | Out-Null } catch { }
     }
 
-    return [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
+    $hasConnection = [bool](Get-Command -Name Open-PWConnection -ErrorAction SilentlyContinue)
+    $hasDiscovery = _PWC-TestPWDiscoveryCmdlets
+    return ($hasConnection -and $hasDiscovery)
+}
+
+function Import-PWCmdletModules {
+    <#
+    .SYNOPSIS
+    Loads pwps (Open-PWConnection) and pwps_dab (discovery) for -NoProfile workers.
+    .DESCRIPTION
+    Open-PWConnection lives in pwps; folder/document cmdlets live in pwps_dab.
+    Import-Module pwps_dab alone can succeed on workstation installs without
+    exporting Open-PWConnection. Call this before any ProjectWise connect.
+    #>
+    [CmdletBinding()]
+    param()
+
+    return (_PWC-TryImportPWModules)
 }
 
 function Test-PWDiscoveryCmdlets {
@@ -71,17 +91,15 @@ function Ensure-PWDiscoveryCmdlets {
     [CmdletBinding()]
     param()
 
+    # Always re-import after Open-PWConnection: connect can drop pwps_dab. -Global so
+    # script callers (Invoke-QCPrependPw.ps1) can invoke Get-PWDocumentsBySearch.
+    try { Import-Module pwps_dab -Force -Global -ErrorAction Stop | Out-Null } catch { }
+
     if (_PWC-TestPWDiscoveryCmdlets) {
         return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available.' -Data @{ discoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
     }
 
-    try { Import-Module pwps_dab -Force -ErrorAction Stop | Out-Null } catch { }
-
-    if (_PWC-TestPWDiscoveryCmdlets) {
-        return New-QCSuccessResult -Code 'PW_DISCOVERY_READY' -Message 'ProjectWise discovery cmdlets are available after re-import.' -Data @{ discoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
-    }
-
-    $msg = 'ProjectWise connected, but pwps_dab discovery cmdlets are missing (Get-PWFolderView/Get-PWDocumentsBySearch). Re-import pwps_dab or run the worker under ProjectWise PowerShell/MTA; do not treat this as an empty folder.'
+    $msg = 'ProjectWise connected, but pwps_dab discovery cmdlets are missing (Get-PWDocumentsBySearch). Re-import pwps_dab with -Global or run the worker under ProjectWise PowerShell/MTA; do not treat this as an empty folder.'
     return New-QCFailureResult -Code 'PW_DISCOVERY_INCOMPLETE' -Message $msg -Data @{ psModulePath = $env:PSModulePath; missingDiscoveryCmdlets = @('Get-PWFolderView','Get-PWDocumentsBySearch') }
 }
 
@@ -130,14 +148,24 @@ function Connect-PW {
         [pscredential]$Credential
     )
 
-    if (-not (_PWC-TryImportPWModules)) {
+    if (-not (Import-PWCmdletModules)) {
         $psmp = $env:PSModulePath
         $msg = 'ProjectWise cmdlets not loaded (Open-PWConnection missing). Import pwps_dab/pwps or run under ProjectWise PowerShell. If pwps_dab is installed but still missing, ensure the watcher/worker runs in MTA (pwps_dab requires -MTA).'
         return New-QCFailureResult -Code 'PW_MISSING_MODULE' -Message $msg -Data @{ psModulePath = $psmp }
     }
 
     try {
-        Open-PWConnection -DatasourceName $DatasourceName -UserName $Credential.UserName -Password $Credential.Password -WarningAction SilentlyContinue | Out-Null
+        $openPw = {
+            Open-PWConnection -DatasourceName $DatasourceName -UserName $Credential.UserName -Password $Credential.Password -WarningAction SilentlyContinue | Out-Null
+        }
+        try {
+            & $openPw
+        } catch {
+            if ($_.Exception.Message -match 'connection is already open') {
+                Close-PWConnection -ErrorAction SilentlyContinue
+                & $openPw
+            } else { throw }
+        }
         $discRes = Ensure-PWDiscoveryCmdlets
         if (-not $discRes.IsSuccess) {
             return New-QCFailureResult -Code 'PW_DISCOVERY_INCOMPLETE' -Message $discRes.Message -Data @{ datasourceName = $DatasourceName; userName = $Credential.UserName; discovery = $discRes.Data }
@@ -580,6 +608,7 @@ function Connect-PWIfNeeded {
 Export-ModuleMember -Function @(
     # Public API (used by watcher/worker/status-set)
     'Get-PWCredentialFromFile',
+    'Import-PWCmdletModules',
     'Connect-PW',
     'Disconnect-PW',
     'Test-PWDiscoveryCmdlets',

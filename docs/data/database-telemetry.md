@@ -67,6 +67,8 @@ Schema is managed by `Initialize-QCDatabaseSchema` in `Core.Database.psm1`. It i
 | 1.4.0 | `pw_users` lookup + `v_audit_events_with_user` view |
 | 1.5.0 | `sheet_index` QC attribute columns (`checker_email`, `qc_review_type`, `qc_assigned_to`) |
 | 1.14.0 | `qc_workflow_events.transition_event_id` FK to `transition_events.id` |
+| 1.21.0 | Notification email threading tables |
+| 1.22.0 | `processing_jobs.worker_machine_name` / `worker_pid` (which host claimed the job) |
 
 ### Schema 1.2.0 — comment sync (see `docs/workflow/qc-comment-status-sync.md`)
 
@@ -167,6 +169,8 @@ Queue type `QC_COMMENT_STATUS_SYNC` is stored as **`QC_STATE`** in `job_type` (m
 | `status` | NVARCHAR(20) | `pending`, `succeeded`, `failed`, `dead` |
 | `duration_ms` | INT | Job execution time in milliseconds |
 | `source_path` / `source_folder` | NVARCHAR | Document and folder paths (canonical: lowercase `documents\...`; see `Normalize-QCDocumentsFolderPath` in `Core.Paths.psm1`) |
+| `worker_machine_name` | NVARCHAR(128) | Host that claimed the job (`COMPUTERNAME`). Stamped on claim and kept on succeeded/failed. Schema 1.22.0. |
+| `worker_pid` | INT | Worker process ID on that host. Schema 1.22.0. |
 | `error_code` / `error_message` | NVARCHAR | Error details on failure |
 | `result_data` | NVARCHAR(MAX) | JSON result payload |
 

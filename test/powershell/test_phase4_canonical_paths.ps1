@@ -26,6 +26,13 @@ $canonicalScripts = @(
     @{ Path = 'scripts\maintenance\Reset-QCFolderWorkflow.ps1' }
     @{ Path = 'scripts\processing\Combine-StatusSet.ps1' }
     @{ Path = 'scripts\deployment\Promote-DevToMain.ps1' }
+    @{ Path = 'scripts\deployment\Register-QCPipelineDashboardTask.ps1' }
+    @{ Path = 'scripts\deployment\Set-QCScheduledTaskOperatorAcl.ps1' }
+    @{ Path = 'scripts\deployment\Register-QCPipelineDashboardLogonConsole.ps1' }
+    @{ Path = 'scripts\service\Watch-QCPipelineDashboardConsole.ps1' }
+    @{ Path = 'scripts\service\Start-QCOpsConsole.ps1' }
+    @{ Path = 'scripts\service\Invoke-QCOpsPwCompare.ps1' }
+    @{ Path = 'scripts\deployment\Register-QCRemoteWorkerHostTask.ps1' }
 )
 Write-Host '=== Canonical script paths ===' -ForegroundColor Cyan
 foreach ($item in $canonicalScripts) {

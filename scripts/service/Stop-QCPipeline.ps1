@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Forcibly terminates every PowerShell process that looks like a QC pipeline component
-(dashboard, watcher, or worker) for this repository. Useful when stale dashboards
+(dashboard, remote worker host, watcher, or worker) for this repository. Useful when stale dashboards
 are running and Fortinet is throwing blocks because of the high concurrency.
 
 .PARAMETER WhatIf
@@ -15,15 +15,22 @@ $ErrorActionPreference = 'Stop'
 
 $patterns = @(
     'Start-QCPipelineDashboard',
+    'Start-QCRemoteWorkerHost',
     'Watch-QCTrigger',
     'Run-QCProcessor',
     'run_prepend_qc'
 )
 $rx = ($patterns -join '|')
+$excludeRx = 'Start-QCOpsConsole|Watch-QCPipelineDashboardConsole|Invoke-QCOpsPwCompare'
 
 $me = $PID
 $procs = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
-    Where-Object { $_.CommandLine -and ($_.CommandLine -match $rx) -and ($_.ProcessId -ne $me) }
+    Where-Object {
+        $_.CommandLine -and
+        ($_.CommandLine -match $rx) -and
+        ($_.CommandLine -notmatch $excludeRx) -and
+        ($_.ProcessId -ne $me)
+    }
 
 if (-not $procs -or @($procs).Count -eq 0) {
     Write-Host "No QC pipeline processes found." -ForegroundColor Green
