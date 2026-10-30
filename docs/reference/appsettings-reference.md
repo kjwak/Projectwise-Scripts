@@ -192,7 +192,7 @@ Local host control plane for the modelling PC. Never abort in-flight jobs. Enabl
 |-----|-------------|
 | `enabled` | Default `false`. When false, no sampling pause. |
 | `sampleSeconds` | Supervisor sample interval (default `10`). Status older than `max(3 * sampleSeconds, 30)` seconds is ignored (fail-open). |
-| `cpuPercent` | Pause/scale when machine-wide CPU is at/above this percent. `0` or omit = ignore CPU. |
+| `cpuPercent` | Pause/scale when machine-wide CPU is at/above this percent (Processor Information `_Total`, same 0–100% as Task Manager, including all processor groups). `0` or omit = ignore CPU. |
 | `memoryPercent` | Pause/scale when physical memory utilization is at/above this percent. `0` or omit = ignore memory. |
 | `processCpuPercent` | Scale only when **matched modelling apps** (and their child processes) use at least this much CPU, as percent of one logical processor summed over the process tree. Measured over `sampleSeconds`. `0` = a matching name alone is enough (idle HEC-RAS would throttle). Typical: `15`–`25`. |
 | `processMemoryMb` | Optional working-set floor in MB for the matched tree. `0` = ignore. Prefer CPU for “model is running”. |

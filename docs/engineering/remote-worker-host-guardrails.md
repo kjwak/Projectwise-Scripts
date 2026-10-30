@@ -59,7 +59,7 @@ Do not manually move the job to `succeeded\` unless prepend **and** workflow wri
 
 ## Host resource throttle
 
-When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`). Updates overwrite that file in place (Write, not Delete). If the file is already unreadable (ops throttle frozen / Explorer needs admin to delete it), elevate-delete it once on the QC-server queue root; the next sample recreates it.
+When `workers.remoteHost.throttle.enabled` is true (modelling PC `appsettings.local.json` only), the supervisor samples **machine-wide** CPU, physical memory, and matched modelling process trees across all sessions. Machine CPU is Processor Information `_Total` `% Processor Time` (Task Manager’s 0–100% across **all** processor groups). `Win32_Processor.LoadPercentage` is not used — on a Threadripper (64+ cores) it only sees group 0 and can read ~90% while Task Manager shows ~40%. Results go to `queue\_remote_worker.{host}.throttle.json` (includes `matchedProcessCpuPercent` / `matchedProcessMemoryMb`). Updates overwrite that file in place (Write, not Delete). If the file is already unreadable (ops throttle frozen / Explorer needs admin to delete it), elevate-delete it once on the QC-server queue root; the next sample recreates it.
 
 - **Busy:** `recommendedSlots=busyRecommendedSlots` (default **1**). Supervisor stops spawning above that count. Extra children stay alive but skip `Get-NextQCJob` (lowest `RW*` labels keep claiming). `pauseNewClaims` is true only when `busyRecommendedSlots` is **0**. After a worker lease-exits, the next spawn reuses the lowest free `RW*` label (do not keep incrementing to `RW102`).
 - **In-flight work always finishes** (prepend, reconnect, writeback, notification).
@@ -86,7 +86,7 @@ Do not run QC processors under the shared interactive D-Team login. Use a dedica
 .\scripts\deployment\Register-QCRemoteWorkerHostTask.ps1 -AllowUncQueue
 ```
 
-Runs `Start-QCRemoteWorkerHost.ps1` at startup with a short delay, **whether the user is logged on or not**. You will be prompted for the run-as password (stored with the task). Unregister with `-Unregister`.
+Runs `Start-QCRemoteWorkerHost.ps1` at startup with a short delay, **whether the user is logged on or not**. You will be prompted for the run-as password (stored with the task). The registrar sets `ExecutionTimeLimit` to zero so Task Scheduler does not kill the supervisor after the default 72 hours. Unregister with `-Unregister`. Changing an already-registered password-logon task (including that time limit) requires supplying the same run-as password again.
 
 The QC server (`PXBENTLEY01`) uses a different registrar — `Register-QCPipelineDashboardTask.ps1` — do not run that here.
 
