@@ -122,10 +122,12 @@ if ($StartupDelaySeconds -gt 0) {
     $trigger.Delay = _ConvertTo-Iso8601DurationSeconds -Seconds $StartupDelaySeconds
 }
 
+# ExecutionTimeLimit 0 disables the default 72-hour stop so the supervisor can run continuously.
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 5) `
     -MultipleInstances IgnoreNew

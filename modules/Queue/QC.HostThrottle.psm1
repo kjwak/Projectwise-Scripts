@@ -74,7 +74,8 @@ function Get-QCHostExcludedPidSet {
             }
         }
     }
-    return $set
+    # Unary comma: empty HashSet enumerates to no pipeline output (function would return $null).
+    return ,$set
 }
 
 function Select-QCHostMatchedProcesses {
@@ -722,10 +723,70 @@ function Get-QCHostThrottleClaimDecision {
     }
 }
 
+function ConvertTo-QCHostCpuPercentFromProcessorInformation {
+    <#
+    .SYNOPSIS
+    Machine CPU % from Processor Information rows (all processor groups).
+    Prefer Name=_Total (Task Manager). Do not use Win32_Processor.LoadPercentage
+    or PerfOS Processor(_Total) on hosts with >64 logical processors - those
+    only see processor group 0 (Threadripper looks ~90% busy while Task Manager is ~40%).
+    #>
+    [CmdletBinding()]
+    param($Rows)
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($r in @($Rows)) {
+        if ($null -eq $r) { continue }
+        $name = ''
+        try { $name = [string]$r.Name } catch { $name = '' }
+        $pct = $null
+        try {
+            if ($r.PSObject.Properties['PercentProcessorTime'] -and $null -ne $r.PercentProcessorTime) {
+                $pct = [double]$r.PercentProcessorTime
+            }
+        } catch { $pct = $null }
+        if ($null -eq $pct) { continue }
+        $list.Add([pscustomobject]@{ Name = $name; PercentProcessorTime = $pct }) | Out-Null
+    }
+    if ($list.Count -eq 0) { return $null }
+    $picked = $null
+    $grand = @($list | Where-Object { $_.Name -eq '_Total' })
+    if ($grand.Count -gt 0) {
+        $picked = [double]$grand[0].PercentProcessorTime
+    } else {
+        $nodes = @($list | Where-Object { $_.Name -match '^[0-9]+,_Total$' })
+        if ($nodes.Count -gt 0) {
+            $picked = [double]($nodes | Measure-Object -Property PercentProcessorTime -Average).Average
+        }
+    }
+    if ($null -eq $picked) { return $null }
+    if ($picked -lt 0) { $picked = 0 }
+    if ($picked -gt 100) { $picked = 100 }
+    return [math]::Round($picked, 1)
+}
+
 function Get-QCHostCpuPercentLive {
+    try {
+        $rows = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name='_Total'" -ErrorAction Stop)
+        $cpu = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows $rows
+        if ($null -ne $cpu) { return $cpu }
+    } catch { }
+    try {
+        $rows = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ProcessorInformation -ErrorAction Stop)
+        $cpu = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows $rows
+        if ($null -ne $cpu) { return $cpu }
+    } catch { }
+    try {
+        $row = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop
+        if ($null -ne $row -and $null -ne $row.PercentProcessorTime) {
+            $v = [double]$row.PercentProcessorTime
+            if ($v -lt 0) { $v = 0 }
+            if ($v -gt 100) { $v = 100 }
+            return [math]::Round($v, 1)
+        }
+    } catch { }
     $rows = @(Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop)
     if ($rows.Count -eq 0) { return $null }
-    return [double](($rows | Measure-Object -Property LoadPercentage -Average).Average)
+    return [math]::Round([double](($rows | Measure-Object -Property LoadPercentage -Average).Average), 1)
 }
 
 function Get-QCHostMemoryPercentLive {

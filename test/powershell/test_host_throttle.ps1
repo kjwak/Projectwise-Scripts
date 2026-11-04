@@ -29,7 +29,7 @@ $enabledSettings = @{
 
 # --- Config / defaults ---
 $missing = Get-QCRemoteWorkerHostSettings -Config @{ queue = @{ rootDir = 'C:\q' } }
-Assert-False $missing.throttle.enabled 'throttle block absent → disabled'
+Assert-False $missing.throttle.enabled 'throttle block absent -> disabled'
 Assert-Eq ([int]$missing.throttle.sampleSeconds) 10 'sampleSeconds default 10'
 Assert-Eq ([double]$missing.throttle.cpuPercent) 0 'cpuPercent default 0'
 Assert-Eq ([double]$missing.throttle.memoryPercent) 0 'memoryPercent default 0'
@@ -403,9 +403,32 @@ try {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- Machine CPU: Processor Information _Total (all processor groups) ---
+$cpuGrand = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows @(
+    [pscustomobject]@{ Name = '0,0'; PercentProcessorTime = 97 }
+    [pscustomobject]@{ Name = '0,_Total'; PercentProcessorTime = 91 }
+    [pscustomobject]@{ Name = '_Total'; PercentProcessorTime = 39 }
+)
+Assert-Eq ([double]$cpuGrand) ([double]39) 'prefer _Total over group-0 rows (Task Manager match)'
+$cpuNodes = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows @(
+    [pscustomobject]@{ Name = '0,_Total'; PercentProcessorTime = 80 }
+    [pscustomobject]@{ Name = '1,_Total'; PercentProcessorTime = 20 }
+)
+Assert-Eq ([double]$cpuNodes) ([double]50) 'average NUMA node totals when _Total is absent'
+$cpuSkipCores = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows @(
+    [pscustomobject]@{ Name = '0,0'; PercentProcessorTime = 99 }
+)
+Assert-True ($null -eq $cpuSkipCores) 'per-logical-processor rows are not machine CPU'
+$cpuCap = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows @(
+    [pscustomobject]@{ Name = '_Total'; PercentProcessorTime = 140 }
+)
+Assert-Eq ([double]$cpuCap) ([double]100) 'cap displayed machine CPU at 100'
+$cpuEmpty = ConvertTo-QCHostCpuPercentFromProcessorInformation -Rows @()
+Assert-True ($null -eq $cpuEmpty) 'empty Processor Information -> null'
+
 # --- Supervisor spawn plan ---
 $pausedSpawn = Get-QCHostThrottleSpawnPlan -CurrentCount 1 -Want 0
-Assert-False $pausedSpawn.shouldSpawn 'paused / zero slots → no new child spawning'
+Assert-False $pausedSpawn.shouldSpawn 'paused / zero slots -> no new child spawning'
 Assert-False $pausedSpawn.shouldStopExcess 'decreasing recommended slots does not kill existing workers'
 $grow = Get-QCHostThrottleSpawnPlan -CurrentCount 1 -Want 2
 Assert-True $grow.shouldSpawn 'increasing slots allows new workers'
