@@ -137,16 +137,31 @@ function _SSPub-DocumentsDisplayPath([string]$Path) {
 }
 
 function _SSPub-FolderTryPaths([string]$Path) {
+    # Status-set uploads resolve Caltrans\... . A Documents\ prefix and a pw:\\ path
+    # do not resolve that folder. New-PWDocument on an unresolved path returns null
+    # and does not throw, so the stripped path has to be tried first.
     $display = _SSPub-DocumentsDisplayPath -Path $Path
     $ordered = New-Object System.Collections.Generic.List[string]
-    if (-not (_SSPub-IsBlank $display)) { [void]$ordered.Add($display) }
+    $stripped = ''
     if ($display -match '^(?i)Documents\\') {
         $stripped = $display.Substring('Documents\'.Length)
-        if (-not (_SSPub-IsBlank $stripped) -and -not $ordered.Contains($stripped)) { [void]$ordered.Add($stripped) }
     }
+    if (-not (_SSPub-IsBlank $stripped)) { [void]$ordered.Add($stripped) }
+    if (-not (_SSPub-IsBlank $display) -and -not $ordered.Contains($display)) { [void]$ordered.Add($display) }
     $original = ($Path -as [string]).Trim().TrimEnd('\')
     if (-not (_SSPub-IsBlank $original) -and -not $ordered.Contains($original)) { [void]$ordered.Add($original) }
     return @($ordered)
+}
+
+function _SSPub-PwFolderExists([string]$Path) {
+    $cmd = Get-Command -Name 'Get-PWFolders' -ErrorAction SilentlyContinue
+    if (-not $cmd) { return $true }
+    try {
+        $folder = Get-PWFolders -FolderPath $Path -JustOne -ErrorAction SilentlyContinue
+        return ($null -ne $folder)
+    } catch {
+        return $false
+    }
 }
 
 function Get-StatusSetPublicationSettings {
@@ -436,12 +451,16 @@ function _SSPub-CreateDocument {
     $cmd = Get-Command -Name 'New-PWDocument' -ErrorAction SilentlyContinue
     if (-not $cmd) { throw 'New-PWDocument is not available in this session.' }
     $created = $false
-    $lastError = ''
+    $lastError = 'No resolved ProjectWise folder accepted the document.'
     foreach ($tp in @(_SSPub-FolderTryPaths -Path $FolderPath)) {
+        if (-not (_SSPub-PwFolderExists -Path $tp)) { continue }
         try {
-            New-PWDocument -FolderPath $tp -FilePath $FilePath -DocumentName $DocumentName -ErrorAction Stop | Out-Null
-            $created = $true
-            break
+            $createdDoc = New-PWDocument -FolderPath $tp -FilePath $FilePath -DocumentName $DocumentName -ErrorAction Stop
+            if ($createdDoc) {
+                $created = $true
+                break
+            }
+            $lastError = "New-PWDocument returned no document for folder '$tp'."
         } catch {
             $lastError = [string]$_.Exception.Message
         }

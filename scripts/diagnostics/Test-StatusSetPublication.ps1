@@ -67,7 +67,6 @@ if ([string]::IsNullOrWhiteSpace($AppSettingsPath)) {
 
 . (Join-Path $PSScriptRoot '..\Restore-QCModuleExports.ps1') -RepoRoot $repoRoot
 Import-QCModuleBootstrapSet -FeatureModules @(
-    'ProjectWise\PW.Connection.psm1'
     'Processing\QC.StatusSet.psm1'
     'Processing\QC.StatusSetPublication.psm1'
 ) -RequiredCommands @(
@@ -75,8 +74,12 @@ Import-QCModuleBootstrapSet -FeatureModules @(
     'Write-QCJsonLog'
     'Invoke-StatusSetPublication'
     'Invoke-StatusSetPublicationSourceReconcile'
-    'Connect-PW'
 ) -Context 'Test-StatusSetPublication bootstrap'
+# Foundation restore drops PW.Connection session exports. Re-import it last.
+Import-QCModuleGlobal -RelativePath 'ProjectWise\PW.Connection.psm1'
+if (-not (Get-Command -Name 'Connect-PW' -ErrorAction SilentlyContinue)) {
+    throw 'Test-StatusSetPublication bootstrap failed: missing command(s): Connect-PW'
+}
 
 function Write-StatusSetPublicationReport {
     param($Result, [string]$ProjectKey, [datetime]$AsOfDate, [string]$Mode, [bool]$UseLatestExisting, [bool]$ScheduledEnabled, $Reconcile)
