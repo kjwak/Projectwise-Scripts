@@ -305,6 +305,7 @@ $script:WatchModuleLoadOrder = @(
     'Core\QC.WatcherOrchestration.psm1'
     'Core\QC.StatusSetBatching.psm1'
     'Processing\QC.StatusSet.psm1'
+    'Processing\QC.StatusSetPublication.psm1'
     'Workflow\QC.ProcessType.psm1'
     'ProjectWise\PW.Connection.psm1'
     'ProjectWise\PW.Users.psm1'
@@ -327,6 +328,7 @@ $script:WatchModuleRestoreOrder = @(
     'ProjectWise\PW.Connection.psm1'
     'ProjectWise\PW.AuditPoller.psm1'
     'ProjectWise\PW.Discovery.psm1'
+    'Processing\QC.StatusSetPublication.psm1'
 )
 
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
@@ -385,6 +387,7 @@ $script:WatchRequiredCommands = @(
     'Invoke-StatusSetHistoryRetention'
     'Invoke-QCQueueRetention'
     'Invoke-StatusSetReconcile'
+    'Invoke-StatusSetScheduledPublication'
     'Get-PWCredentialFromFile'
     'Connect-PW'
     'Get-PWImmediateChildFolders'
@@ -588,6 +591,7 @@ if (-not (Test-Path -LiteralPath $pwConnPath)) {
 }
 Import-Module $pwConnPath -Force -WarningAction SilentlyContinue | Out-Null
 Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSet.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $repoRoot 'modules\Processing\QC.StatusSetPublication.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Workflow\QC.ProcessType.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $repoRoot 'modules\Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
@@ -2222,6 +2226,7 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             # --- FULL FOLDER SCAN (reconciliation or fallback) ---
+            $statusSetPublicationCompletedSlotKey = $null
             if ($runFullScan) {
 
             if (-not (_Watch-EnsureAllModuleExports)) {
@@ -3028,6 +3033,7 @@ if ($statusSetRules.Count -ge 0) {
                 } -AlsoTag 'Watch-QCTrigger-Reconcile'
                 # Keep slot in-flight; do not mark complete.
             } elseif ($script:fullScanScheduleInFlightSlotKey) {
+                $statusSetPublicationCompletedSlotKey = [string]$script:fullScanScheduleInFlightSlotKey
                 try {
                     if ([string]$script:fullScanScheduleInFlightSlotKey -like 'ops_request|*') {
                         $cleared = $false
@@ -3057,6 +3063,23 @@ if ($statusSetRules.Count -ge 0) {
             }
 
             } # end if ($runFullScan)
+
+            # Archive copies run after the slot is marked complete. Failures stay in this try
+            # so a publication error cannot abort audit, queue, or other reconciliation work.
+            if ($pwSessionOpen -and (Get-Command -Name 'Invoke-StatusSetScheduledPublication' -ErrorAction SilentlyContinue)) {
+                try {
+                    $publishLog = {
+                        param($Level, $Code, $Message, $Data)
+                        _Watch-WriteJsonLog -Flush -Level $Level -Code $Code -Message $Message -Data $Data -AlsoTag 'Watch-QCTrigger-Reconcile'
+                    }
+                    [void](Invoke-StatusSetScheduledPublication -Config $config -QueueRoot $queueRoot -CompletedSlotKey $statusSetPublicationCompletedSlotKey -LogCallback $publishLog)
+                } catch {
+                    _Watch-WriteJsonLog -Flush -Level 'Warning' -Code 'STATUS_SET_PUBLISH_FAILED' -Message 'Status set publication failed without stopping reconciliation.' -Data @{
+                        error = [string]$_.Exception.Message
+                        slotKey = [string]$statusSetPublicationCompletedSlotKey
+                    } -AlsoTag 'Watch-QCTrigger-Reconcile'
+                }
+            }
 
             if ($statusSetBatchingEnabled -and $statusRuleObj -and $pwSessionOpen) {
                 $forceStatusSetBatch = ($watcherTick -eq 1 -and [bool]$statusSetBatchingSettings.processOnWatcherStart)

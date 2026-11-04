@@ -26,6 +26,7 @@ $qcBootstrapScripts = @(
     @{ Path = 'diagnostics\PW-ListDocsInFolder.ps1'; Context = 'PW-ListDocsInFolder bootstrap' }
     @{ Path = 'diagnostics\PW-TestWatchRoots.ps1'; Context = 'PW-TestWatchRoots bootstrap' }
     @{ Path = 'diagnostics\Test-PWConnection.ps1'; Context = 'Test-PWConnection bootstrap' }
+    @{ Path = 'diagnostics\Test-StatusSetPublication.ps1'; Context = 'Test-StatusSetPublication bootstrap' }
     @{ Path = 'diagnostics\Test-QCEmailTemplate.ps1'; Context = 'Test-QCEmailTemplate bootstrap' }
     @{ Path = 'diagnostics\Test-QCNotificationGraph.ps1'; Context = 'Test-QCNotificationGraph bootstrap' }
     @{ Path = 'diagnostics\Test-QCWatcherSessionAlert.ps1'; Context = 'Test-QCWatcherSessionAlert bootstrap' }

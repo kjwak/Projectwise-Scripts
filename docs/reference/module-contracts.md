@@ -87,6 +87,7 @@ Recommendation for implementation phase:
 | `QC.Queue.Json` | JSON file-based queue (atomic, lock-aware) |
 | `QC.Reporting` | QC reporting snapshots |
 | `QC.StatusSet` | Status set pairing, merge, writeback |
+| `QC.StatusSetPublication` | Dated Status Set archive copy after Monday reconciliation |
 | `QC.Triggers` | Trigger rule evaluation |
 | `QC.Worker` | Worker lifecycle, lock-retry, transitions |
 | `QC.Workflow` | QC workflow state/attribute writeback |

@@ -23,7 +23,7 @@ Project documentation for the Prepend PDF QC pipeline. For a quick repo overview
 
 | Document | Description |
 |----------|-------------|
-| [`architecture/hybrid-polling.md`](architecture/hybrid-polling.md) | **Current:** audit-driven watcher, reconciliation, watermarks |
+| [`architecture/hybrid-polling.md`](architecture/hybrid-polling.md) | **Current:** audit-driven watcher, reconciliation, Monday Status Set publication, watermarks |
 | [`architecture/qc-package-model.md`](architecture/qc-package-model.md) | SQL sheet packages and lane QC PDF registry |
 | [`architecture/audit-trail-architecture.md`](architecture/audit-trail-architecture.md) | Original audit-trail design (historical + as-built notes) |
 | [`architecture/watcher-architecture-refactor-summary.md`](architecture/watcher-architecture-refactor-summary.md) | Watcher refactor summary (historical) |

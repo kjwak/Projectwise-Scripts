@@ -72,6 +72,7 @@ Flat `modules/<Name>.psm1` files are compatibility shims forwarding to `modules/
 | `QC.Reporting.psm1` | Read-only QC reporting aggregation and JSON snapshot generation for `QC_REPORTING_SCAN` jobs. |
 | `QC.ReviewStamp.psm1` | QC review stamp processor integration. |
 | `QC.StatusSet.psm1` | Native status-set implementation: manifest/cache, PW export/writeback, PDF merging, workspace reconciliation. |
+| `QC.StatusSetPublication.psm1` | Dated ProjectWise archive copy of configured Status Set PDFs after the Monday 06:00 reconciliation slot. |
 | `QC.Triggers.psm1` | Trigger rule ordering, matching, and job-type classification. |
 | `QC.WatcherAlerts.psm1` | Operational email alerts when the watcher loses ProjectWise connectivity. |
 | `QC.WatcherOrchestration.psm1` | Watcher tick orchestration shared by trigger scan entrypoints. |

@@ -42,6 +42,7 @@ Optional: other machine-only paths in `appsettings.local.json` or `appsettings.t
 | `qcRendition` | QC_RENDITION profiles + Ready for QC notification gate |
 | `statusSet` | STATUS_SET_GEN merge + manifest + PW upload |
 | `statusSetBatching` | Defer audit STATUS_SET_GEN to dirty-folder batch runs |
+| `statusSetPublication` | Monday 06:00 archive copy of configured Status Set PDFs |
 | `qcWorkflow` | Optional PW workflow/attributes after QC |
 | `qcReporting` | QC_REPORTING_SCAN metrics |
 | `watcher` | Audit vs full-scan orchestration |
@@ -300,6 +301,44 @@ Local rollback copies only. Live `_StatusSet.pdf` and the current `_statusset.ma
 | `maxGbPerFolder` | `10` | Cap on kept history bytes per workspace. `0` disables the cap. Oldest non-recent copies drop first. |
 
 Preview with `.\scripts\maintenance\Reconcile-QCStatusSets.ps1 -DryRun`. Global `dryRun: true` also skips deletes.
+
+---
+
+## statusSetPublication
+
+Copies each configured Status Set PDF to a ProjectWise archive folder after the Monday 06:00 reconciliation slot. Implemented in `modules/Processing/QC.StatusSetPublication.psm1` and called from `Watch-QCTrigger.ps1` after the slot is marked complete. This is not a second scheduler. If `statusSetPublication` is omitted, or a project has no `sets`, nothing is published.
+
+| Key | Description |
+|-----|-------------|
+| `enabled` | Watcher switch. Committed value is `false` so a deploy does not start Monday copies until review. |
+| `timeZoneId` | Calendar zone for the publication date. `America/Phoenix` maps to Windows `US Mountain Standard Time`. |
+| `trigger.dayOfWeek` | Default `Monday`. |
+| `trigger.time` | Must match a `fullScanSchedule.times` entry. Default `06:00`. |
+| `projects[].projectKey` | Operator name passed to `Test-StatusSetPublication.ps1 -ProjectKey`. |
+| `projects[].enabled` | Scheduled runs skip `enabled: false`. The manual script can still target the project. |
+| `projects[].sets[]` | One archive document per entry. Add a set to cover another segment; no code change. |
+| `sets[].sourceFolder` | Folder that already contains the generated Status Set PDF. |
+| `sets[].identification.method` | `statusSetPdfName` (uses `statusSet.statusSetPdfName`) or `documentName`. |
+| `sets[].destinationFolder` | Existing ProjectWise folder. The copy does not create the folder. |
+| `sets[].fileNamePattern` | Must include `{yyyyMMdd}` or `{yyyy-MM-dd}`. Optional `{segmentId}`. |
+
+The initial project is `CAFWY2200-I-15_ELPSE` (`N_Seg` and `S_Seg` into `Out\_I-15-ELPSE_Civil-StatusSets`). To provision another project, add a `projects[]` entry. Leave `sets` empty until the source and destination folders exist.
+
+Manual check, from the repo root on a ProjectWise workstation:
+
+```powershell
+.\scripts\diagnostics\Test-StatusSetPublication.ps1 `
+  -ProjectKey "CAFWY2200-I-15_ELPSE" `
+  -AsOfDate "2026-11-02" `
+  -UseLatestExisting `
+  -Mode Preview
+```
+
+`-Mode Publish` performs the copy. `-RunReconciliation` runs `Invoke-StatusSetNativeJob` for the configured folders only. It does not mark `full_scan_schedule` slots or move the audit watermark. `-UseLatestExisting` accepts the current source PDFs and prints their real dates; scheduled runs do not use that switch.
+
+Global `dryRun: true` blocks the copy even in `-Mode Publish`.
+
+Log codes: `STATUS_SET_PUBLISH_START`, `STATUS_SET_PUBLISH_OK`, `STATUS_SET_PUBLISH_PREVIEW_OK`, `STATUS_SET_PUBLISH_ALREADY`, `STATUS_SET_PUBLISH_CONFLICT`, `STATUS_SET_PUBLISH_DEFERRED`, `STATUS_SET_PUBLISH_DISABLED`, `STATUS_SET_PUBLISH_FAILED`.
 
 ---
 

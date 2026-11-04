@@ -49,6 +49,7 @@ function Resolve-ModuleImplPath {
         'QC.Triggers.psm1' = 'Queue\QC.Triggers.psm1'
         'QC.Processors.psm1' = 'Processing\QC.Processors.psm1'
         'QC.StatusSet.psm1' = 'Processing\QC.StatusSet.psm1'
+        'QC.StatusSetPublication.psm1' = 'Processing\QC.StatusSetPublication.psm1'
         'QC.Rendition.psm1' = 'Processing\QC.Rendition.psm1'
         'QC.ReviewStamp.psm1' = 'Processing\QC.ReviewStamp.psm1'
         'QC.PdfExport.psm1' = 'Processing\QC.PdfExport.psm1'

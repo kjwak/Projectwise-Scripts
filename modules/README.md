@@ -107,6 +107,12 @@ An earlier in-memory `QC.Package*` module cluster was archived in Phase 3 under 
   - operations: `Merge-StatusSetPdfWithQpdf`, `Export-StatusSetPdfToFolder`, `Invoke-StatusSetNativeJob`, `Sync-StatusSetWorkspaceToPw`, `Invoke-StatusSetHistoryRetention`, `Invoke-StatusSetReconcile`
 - **Operational constraints handled**: AV-friendly throttling for file ops and PW export; manifest-driven sheet-cache reuse; staged/atomic `_StatusSet.pdf` replacement with `_history`; calendar thinning of `_history` and manifest backups during reconcile (not per-job); retention-based staging cleanup instead of per-job scratch deletion.
 
+### `QC.StatusSetPublication.psm1`
+- **Purpose**: copy configured `_StatusSet.pdf` documents to a dated archive folder after Monday 06:00 reconciliation.
+- **Key exports**: `Get-StatusSetPublicationSettings`, `Test-StatusSetPublicationSlot`, `Invoke-StatusSetPublication`, `Invoke-StatusSetPublicationSourceReconcile`, `Invoke-StatusSetScheduledPublication`.
+- **Shared with the manual script**: `scripts/diagnostics/Test-StatusSetPublication.ps1` calls `Invoke-StatusSetPublication`. It does not keep a second copy path.
+- **Does not**: delete or replace the source PDF, mark full-scan slots complete, or send mail.
+
 ### Comment-status sync (`QC_COMMENT_STATUS_SYNC`)
 
 - **`QC.PdfExport.psm1`**: `Export-QCPdfToStaging` — PW PDF download to staging.

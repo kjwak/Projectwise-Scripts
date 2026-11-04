@@ -14,7 +14,7 @@ Read-only probes, smoke tests, and queue/PW inspection scripts are implemented u
 
 | Location | Examples |
 | --- | --- |
-| `diagnostics/` | `Show-QCStatus`, `Show-QCQueueDiag`, `Get-PWFolderStateCounts`, `Scan-PWProjectMetrics`, `PW-BrowseFolder`, `Test-PWConnection`, `Test-PWEmailAttributes*`, `Test-QC*` |
+| `diagnostics/` | `Show-QCStatus`, `Show-QCQueueDiag`, `Get-PWFolderStateCounts`, `Scan-PWProjectMetrics`, `PW-BrowseFolder`, `Test-PWConnection`, `Test-StatusSetPublication` (`Preview` is read-only; `Publish` copies), `Test-PWEmailAttributes*`, `Test-QC*` |
 
 `tools/discovery/` is unchanged in Phase 4C (deferred).
 
@@ -77,6 +77,7 @@ Low-risk deployment helpers are implemented under `deployment/`. The same filena
 | `Stop-QCPipeline.ps1` | Safety/operations helper that finds and stops PowerShell processes running this repo's watcher, worker, or dashboard scripts. Does not match the logon ops GUI. |
 | `Sync-OverlayReviewStamp.ps1` | Compatibility wrapper → `deployment/Sync-OverlayReviewStamp.ps1` (sync overlay Python into PyInstaller bundle). |
 | `Test-PWConnection.ps1` | Compatibility wrapper → `diagnostics/Test-PWConnection.ps1`. |
+| `diagnostics/Test-StatusSetPublication.ps1` | Manual preview or publish of configured Status Set archive copies. Uses `Invoke-StatusSetPublication`. |
 | `Watch-QCTrigger.ps1` | One-shot trigger scan that discovers local/ProjectWise candidates, evaluates rules and filters, and enqueues queue jobs. |
 | `README.md` | Existing overview and usage notes for script entrypoints. |
 | `FILES.md` | This file; quick purpose index and refactoring assessment for the scripts directory. |

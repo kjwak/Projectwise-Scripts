@@ -71,6 +71,10 @@ Committed production uses `qcPrepend.mode: "projectWise"`. The watcher identifie
 
 Each workspace under `statusSet.localRoot` keeps rollback copies in `_history` (`_StatusSet_yyyyMMdd_HHmmss.pdf`) and manifest `.bak_*` files. These are **not** a second scheduler. Thinning runs during `Invoke-StatusSetReconcile` and once per scheduled full-scan slot (`statusSet.historyRetention`: recent copies + daily/weekly calendar tiers + `maxGbPerFolder`). Do not delete `_history` from `STATUS_SET_GEN` itself (AV file-churn). Live `_StatusSet.pdf` and the current manifest are never deleted.
 
+### Status set publication
+
+After the Monday `06:00` full-scan slot completes (`America/Phoenix`, Windows id `US Mountain Standard Time`), `Invoke-StatusSetScheduledPublication` copies each configured project's Status Set PDF into its archive folder. The copy uses the same export/create commands as status-set writeback (`Export-StatusSetPdfToFolder`, `New-PWDocument`). Source PDFs are not modified. Projects with no `statusSetPublication.projects[].sets` do no work. Committed `statusSetPublication.enabled` is **false** until an operator turns it on; that flag does not block `scripts/diagnostics/Test-StatusSetPublication.ps1 -Mode Publish`. A manual `-RunReconciliation` calls `Invoke-StatusSetNativeJob` for the configured folders only and does not mark `full_scan_schedule` slots or move the audit watermark. See `docs/architecture/hybrid-polling.md` and `docs/reference/appsettings-reference.md`.
+
 ## Documentation map
 
 Start at `docs/README.md`. Key paths:

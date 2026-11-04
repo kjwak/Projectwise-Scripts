@@ -95,6 +95,7 @@ Each tick (typical production config):
        → Process up to checkEveryNFolders remaining folders (STATUS_SET_GEN; sheet_index skipped when preempt.skipSheetIndex)
        → Checkpoint remaining queue; yield so next tick repeats step 1 (no tree rediscovery)
        → Mark slot complete only when the folder queue is empty
+       → Then, only for a Monday 06:00 slot when statusSetPublication.enabled is true, copy configured Status Set PDFs (failures do not roll back the slot or the audit watermark)
   4. Invoke-QCQueueStartupCheck — queue stats + stale/orphan running\ recovery
   5. Write poll_runs telemetry to database
 ```
@@ -112,6 +113,14 @@ When `qcPrepend.fastAuditEnqueue` is **true** (QC server overlay; committed defa
 Check-in, version, and content-change events on documents in watched Sheets folders trigger folder-level STATUS_SET_GEN candidates. The existing manifest comparison (`Test-StatusSetWatcherShouldEnqueue`) still runs as the correctness gate.
 
 **PW document listing resilience (May 2026):** `Get-StatusSetPWFolderState` no longer relies solely on wildcard `DocumentName=*.pdf` search (often empty on TYPSA datasources). It falls back to full-folder listing and `Get-PWDocumentsInFolder` (same as QC doc scan). If `oneLevelDeep` finds nothing, it retries with `oneLevelDeep: false` on the same path. Logs: `docListingMethod` on `WATCH_PW_STATUSSET_SCAN_DONE`; `WATCH_PW_STATUSSET_NO_DOCS` when still empty; `WATCH_PW_STATUSSET_NO_PAIRS` when PDFs exist but no PDF+DGN pairs.
+
+### Status set publication
+
+`QC.StatusSetPublication.psm1` runs at the end of a completed `full_scan_schedule|yyyy-MM-dd|06:00` slot when that calendar day is Monday in `statusSetPublication.timeZoneId` (`America/Phoenix`). It does not add a scheduler. `18:00`, other weekdays, and operator `ops_request` scans do not publish.
+
+For each configured set the module resolves the Status Set document the generator already writes (`statusSet.statusSetPdfName`, default `_StatusSet.pdf`), checks that it was refreshed or confirmed current during that cycle, copies it to the destination folder under the dated name, and re-reads the destination to compare content. An identical destination is already published. Different content is a conflict and is not overwritten. A `STATUS_SET_GEN` job still pending or running defers the copy in `queue/_watcher/statusset-publication-pending.json` and retries on later ticks for up to 36 hours. Publication errors are logged and do not fail the reconciliation slot.
+
+`statusSetPublication.enabled` is false in committed config. Manual verification is `scripts/diagnostics/Test-StatusSetPublication.ps1`, which calls `Invoke-StatusSetPublication` directly.
 
 ---
 

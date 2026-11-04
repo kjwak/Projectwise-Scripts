@@ -101,6 +101,9 @@ Status-set processing scripts live under `scripts/processing/`. Deployment helpe
 ### `processing/Run-CombineStatusSet.ps1` (wrapper: `Run-CombineStatusSet.ps1`)
 - **Purpose**: launcher that reads `statusSet.localRoot` from `appsettings.json` and forwards to `Combine-StatusSet.ps1`.
 
+### `diagnostics/Test-StatusSetPublication.ps1`
+- **Purpose**: preview or publish the configured Status Set archive using `Invoke-StatusSetPublication`. Default mode is `Preview`. Does not register a scheduled task.
+
 ### `deployment/Promote-DevToMain.ps1` (wrapper: `Promote-DevToMain.ps1`)
 - **Purpose**: promote `dev` to `main` and push (git workflow helper).
 
