@@ -2,7 +2,19 @@
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesRoot = Join-Path $repoRoot 'modules'
 
+$watcherText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\Watch-QCTrigger.ps1') -Raw
+if ($watcherText -notmatch '(?s)\$script:WatchModuleRestoreOrder = @\((.*?)\)') {
+    throw 'WatchModuleRestoreOrder not found in Watch-QCTrigger.ps1'
+}
+$watcherRestore = @([regex]::Matches($Matches[1], "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+$publicationIndex = [array]::IndexOf($watcherRestore, 'Processing\QC.StatusSetPublication.psm1')
+$resultsIndex = [array]::IndexOf($watcherRestore, 'Core\Core.Results.psm1')
+if ($publicationIndex -lt 0 -or $resultsIndex -lt 0 -or $publicationIndex -ge $resultsIndex) {
+    throw 'QC.StatusSetPublication.psm1 must load before the foundation modules in WatchModuleRestoreOrder'
+}
+
 $restoreOrder = @(
+    'Processing\QC.StatusSetPublication.psm1'
     'Core\Core.Results.psm1'
     'Core\Core.Paths.psm1'
     'Core\Core.Runtime.psm1'
@@ -30,6 +42,7 @@ $loadOrder = @(
     'Processing\QC.Processors.psm1'
     'Core\QC.WatcherOrchestration.psm1'
     'Processing\QC.StatusSet.psm1'
+    'Processing\QC.StatusSetPublication.psm1'
     'ProjectWise\PW.Connection.psm1'
     'ProjectWise\PW.Users.psm1'
     'ProjectWise\PW.Discovery.psm1'
@@ -38,6 +51,7 @@ $loadOrder = @(
 $need = @(
     'Get-Sha256TextHex'
     'Test-QCDatabaseEnabled'
+    'Invoke-StatusSetScheduledPublication'
     'Write-QCPollRunTelemetry'
     'Mark-QCAuditEventsProcessed'
     'Write-QCSheetIndex'

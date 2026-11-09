@@ -315,7 +315,10 @@ $script:WatchModuleLoadOrder = @(
 
 # QC.Workflow/Processors can drop QC.Notifications exports; QC.Notifications can drop PW.Discovery exports;
 # QC.StatusSet nested-import drops PW.Connection session exports.
+# QC.StatusSetPublication force-imports Core.Runtime and QC.StatusSet, which drops hashing, database,
+# and ProjectWise session exports. Load it before the foundation restore so those exports are put back.
 $script:WatchModuleRestoreOrder = @(
+    'Processing\QC.StatusSetPublication.psm1'
     'Core\Core.Results.psm1'
     'Core\Core.Paths.psm1'
     'Core\Core.Runtime.psm1'
@@ -328,7 +331,6 @@ $script:WatchModuleRestoreOrder = @(
     'ProjectWise\PW.Connection.psm1'
     'ProjectWise\PW.AuditPoller.psm1'
     'ProjectWise\PW.Discovery.psm1'
-    'Processing\QC.StatusSetPublication.psm1'
 )
 
 # Commands the watcher calls after nested Import-Module -Force can drop session exports.
