@@ -200,15 +200,10 @@ else {
     Write-Host ("Using module(s): {0}" -f ($imported -join ', '))
 }
 
+# Do not import PWPS_DAB and PWPS_Cloud in the same session: OIDC token types
+# conflict and Bentley recommends one module per session. Inventory Cloud via ListAvailable only.
 if ($hasCloud -and ($imported -notcontains 'PWPS_Cloud')) {
-    try {
-        Import-Module PWPS_Cloud -Force -ErrorAction Stop
-        $imported += 'PWPS_Cloud'
-        Write-Host 'Also imported PWPS_Cloud for cmdlet inventory (after DAB).'
-    }
-    catch {
-        Write-Host ("PWPS_Cloud import failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-    }
+    Write-Host 'PWPS_Cloud is installed; re-run with -PreferCloudModule for a Cloud-only session.'
 }
 
 $Progressive.modulesImported = $imported
@@ -250,7 +245,7 @@ $Progressive.login = $login
 
 $loggedIn = ($login.nonAdmin.ok -eq $true) -or ($login.full.ok -eq $true)
 if (-not $loggedIn) {
-    Write-Host 'No session — skipping live probes.' -ForegroundColor Red
+    Write-Host 'No session - skipping live probes.' -ForegroundColor Red
     $Progressive | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutDir 'summary.json') -Encoding UTF8
     Write-Host ("Wrote {0}" -f (Join-Path $OutDir 'summary.json'))
     return
@@ -334,33 +329,25 @@ $Progressive.reads = $readProbes
 
 Write-Section 'Cloud / PWPS_Cloud Get-* probes (read-only)'
 $cloudProbes = @()
-foreach ($name in @(
-        'Get-CloudProject',
-        'Get-CloudTemplates',
-        'Get-CloudProjectWorkAreaConnections',
-        'Get-CloudProjectRoles',
-        'Get-CloudProjectId',
-        'Get-DataCenterLocations',
-        'Get-BillingCountries'
-    )) {
-    if (-not (Test-Cmd $name)) {
-        $cloudProbes += [pscustomobject]@{ label = $name; ok = $false; error = 'cmdlet missing'; summary = $null; sample = @() }
-        Write-Host ("[MISS] {0}" -f $name) -ForegroundColor DarkGray
-        continue
-    }
-    $cloudProbes += Invoke-Probe $name { & $name -ErrorAction Stop }
-}
-# Never capture Get-OIDCToken return value (auth credential); record success only.
+$usingCloud = ($imported -contains 'PWPS_Cloud')
+
+# Never capture/print Get-OIDCToken return value (ToString can dump refresh token).
+$token = $null
+$tokenOk = $false
 if (Test-Cmd 'Get-OIDCToken') {
     $oidcRow = [ordered]@{ label = 'Get-OIDCToken'; ok = $false; error = $null; summary = $null; sample = @() }
     try {
-        $null = Get-OIDCToken -ErrorAction Stop
+        $token = Get-OIDCToken -ErrorAction Stop
+        $tokenOk = $true
         $oidcRow.ok = $true
-        $oidcRow.summary = 'token_acquired (value redacted)'
+        $oidcRow.summary = ('token_acquired type={0} (value redacted)' -f $token.GetType().FullName)
         Write-Host ('[OK]   Get-OIDCToken :: {0}' -f $oidcRow.summary) -ForegroundColor Green
     }
     catch {
         $oidcRow.error = $_.Exception.Message
+        if ($oidcRow.error -match 'Refresh Token|Decoded Payload|OIDCAuthToken') {
+            $oidcRow.error = 'OIDC error (details redacted)'
+        }
         Write-Host ('[FAIL] Get-OIDCToken :: {0}' -f $oidcRow.error) -ForegroundColor Yellow
     }
     $cloudProbes += [pscustomobject]$oidcRow
@@ -369,6 +356,45 @@ else {
     $cloudProbes += [pscustomobject]@{ label = 'Get-OIDCToken'; ok = $false; error = 'cmdlet missing'; summary = $null; sample = @() }
     Write-Host '[MISS] Get-OIDCToken' -ForegroundColor DarkGray
 }
+
+$cloudGets = @(
+    'Get-CloudProject',
+    'Get-CloudTemplates',
+    'Get-CloudProjectWorkAreaConnections',
+    'Get-CloudProjectRoles',
+    'Get-CloudProjectId',
+    'Get-DataCenterLocations',
+    'Get-BillingCountries'
+)
+foreach ($name in $cloudGets) {
+    if (-not (Test-Cmd $name)) {
+        $cloudProbes += [pscustomobject]@{ label = $name; ok = $false; error = 'cmdlet missing'; summary = $null; sample = @() }
+        Write-Host ("[MISS] {0}" -f $name) -ForegroundColor DarkGray
+        continue
+    }
+    if (-not $tokenOk) {
+        # Still try no-arg form for cmdlets that might not need a token in-session.
+        $cloudProbes += Invoke-Probe $name { & $name -ErrorAction Stop }
+        continue
+    }
+    $cmd = Get-Command $name -ErrorAction Stop
+    if ($cmd.Parameters.ContainsKey('OIDCToken')) {
+        $cloudProbes += Invoke-Probe $name { & $name -OIDCToken $token -ErrorAction Stop }
+    }
+    elseif ($cmd.Parameters.ContainsKey('Token') -and $cmd.Parameters.ContainsKey('CloudProjectId')) {
+        $cloudProbes += [pscustomobject]@{
+            label = $name; ok = $false; error = 'needs CloudProjectId (skipped)'; summary = $null; sample = @()
+        }
+        Write-Host ("[SKIP] {0} :: needs CloudProjectId" -f $name) -ForegroundColor DarkGray
+    }
+    else {
+        $cloudProbes += Invoke-Probe $name { & $name -ErrorAction Stop }
+    }
+}
+if (-not $usingCloud) {
+    Write-Host 'Note: Cloud probes ran under PWPS_DAB session. Prefer -PreferCloudModule for Cloud-native OIDC types.' -ForegroundColor DarkYellow
+}
+$token = $null
 $Progressive.cloud = $cloudProbes
 
 Write-Section 'Capability matrix'
@@ -402,7 +428,7 @@ foreach ($n in $matrixNames) {
             elseif ($n -eq 'Get-PWDocumentEAttributes') {
                 $entry.invoke = 'exists-only (needs document)'
                 $matrix += [pscustomobject]$entry
-                Write-Host ("[EXISTS] {0} (not invoked — needs document)" -f $n)
+                Write-Host ("[EXISTS] {0} (not invoked - needs document)" -f $n)
                 continue
             }
             elseif ($n -eq 'Get-PWFolders') {
@@ -414,7 +440,7 @@ foreach ($n in $matrixNames) {
             elseif ($n -eq 'Get-PWDocumentsBySearch') {
                 $entry.invoke = 'exists-only (needs folder)'
                 $matrix += [pscustomobject]$entry
-                Write-Host ("[EXISTS] {0} (not invoked — needs folder)" -f $n)
+                Write-Host ("[EXISTS] {0} (not invoked - needs folder)" -f $n)
                 continue
             }
             else {
@@ -430,7 +456,7 @@ foreach ($n in $matrixNames) {
         }
     }
     elseif ($exists) {
-        $entry.invoke = 'exists-only (mutating/export — not run)'
+        $entry.invoke = 'exists-only (mutating/export - not run)'
         Write-Host ("[EXISTS] {0} (not invoked)" -f $n) -ForegroundColor DarkCyan
     }
     else {
