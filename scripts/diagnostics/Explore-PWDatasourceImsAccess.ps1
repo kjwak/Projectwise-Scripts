@@ -27,6 +27,24 @@ param(
     [string]$OutDir = ''
 )
 
+# pwps_dab / PWPS_Cloud require MTA; Cursor/VS Code terminals are usually STA.
+$scriptPath = $PSCommandPath
+if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'Explore-PWDatasourceImsAccess.ps1' }
+if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "MTA relaunch: could not resolve script path. Tried: $scriptPath"
+    }
+    $staMtaHelper = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'legacy\StaMtaRelaunch.ps1'
+    if (-not (Test-Path -LiteralPath $staMtaHelper)) {
+        throw "MTA relaunch helper not found: $staMtaHelper"
+    }
+    . $staMtaHelper
+    $exeArgs = Build-PowerShellExeFileArgs -ScriptPath $scriptPath -BoundParameters $PSBoundParameters
+    & powershell.exe @exeArgs
+    exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = 'Continue'
 $Progressive = [ordered]@{}
 
@@ -322,7 +340,6 @@ foreach ($name in @(
         'Get-CloudProjectWorkAreaConnections',
         'Get-CloudProjectRoles',
         'Get-CloudProjectId',
-        'Get-OIDCToken',
         'Get-DataCenterLocations',
         'Get-BillingCountries'
     )) {
@@ -332,6 +349,25 @@ foreach ($name in @(
         continue
     }
     $cloudProbes += Invoke-Probe $name { & $name -ErrorAction Stop }
+}
+# Never capture Get-OIDCToken return value (auth credential); record success only.
+if (Test-Cmd 'Get-OIDCToken') {
+    $oidcRow = [ordered]@{ label = 'Get-OIDCToken'; ok = $false; error = $null; summary = $null; sample = @() }
+    try {
+        $null = Get-OIDCToken -ErrorAction Stop
+        $oidcRow.ok = $true
+        $oidcRow.summary = 'token_acquired (value redacted)'
+        Write-Host ('[OK]   Get-OIDCToken :: {0}' -f $oidcRow.summary) -ForegroundColor Green
+    }
+    catch {
+        $oidcRow.error = $_.Exception.Message
+        Write-Host ('[FAIL] Get-OIDCToken :: {0}' -f $oidcRow.error) -ForegroundColor Yellow
+    }
+    $cloudProbes += [pscustomobject]$oidcRow
+}
+else {
+    $cloudProbes += [pscustomobject]@{ label = 'Get-OIDCToken'; ok = $false; error = 'cmdlet missing'; summary = $null; sample = @() }
+    Write-Host '[MISS] Get-OIDCToken' -ForegroundColor DarkGray
 }
 $Progressive.cloud = $cloudProbes
 
