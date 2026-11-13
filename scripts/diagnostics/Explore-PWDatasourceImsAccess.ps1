@@ -4,14 +4,26 @@ Read-only probe of ProjectWise datasource access via Bentley IMS (and optional P
 
 .DESCRIPTION
 Logs in with IMS (prefers -NonAdminLogin), inventories available modules/cmdlets,
-probes shallow folder/document/work-area reads, and exercises safe Get-* Cloud cmdlets.
-Does not create, update, delete, checkout, export, or change workflow/attributes.
+probes generic root discovery vs exact known-folder metadata reads, and optionally
+Cloud Get-* cmdlets. Distinguishes report-only metadata success from export denials.
+
+Does not create, update, delete, checkout, or change workflow/attributes.
+Export is attempted only when -ProbeExport is set (expected deny under report-only).
 
 .PARAMETER DatasourceName
 ProjectWise datasource, e.g. azdot-pw.bentley.com:azdot-pw-02
 
 .PARAMETER PreferCloudModule
-If PWPS_Cloud is installed, import it first and prefer its New-PWLogin / Get-* cmdlets.
+If PWPS_Cloud is installed, import it alone (never with PWPS_DAB in the same session).
+
+.PARAMETER KnownFolderPaths
+Exact folder paths known to be visible in ProjectWise Explorer. These are probed with
+Get-PWFolders -JustOne and Get-PWDocumentsBySearch -JustThisFolder. Generic root
+enumeration often fails under report-only even when these succeed.
+
+.PARAMETER ProbeExport
+If set, attempt Export-PWDocuments on the first document found in a known folder
+(expected to fail without PowerShell Users / admin).
 
 .PARAMETER OutDir
 Directory for JSON summary (default: %TEMP%\pw-ims-probe\<timestamp>)
@@ -22,6 +34,13 @@ param(
     [string]$DatasourceName = 'azdot-pw.bentley.com:azdot-pw-02',
 
     [switch]$PreferCloudModule,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$KnownFolderPaths = @(
+        '02_HELP\Digital_Delivery_Docs\Modeling Guidelines'
+    ),
+
+    [switch]$ProbeExport,
 
     [Parameter(Mandatory = $false)]
     [string]$OutDir = ''
@@ -109,10 +128,19 @@ function Invoke-Probe {
         }
     }
     catch {
-        $row.error = $_.Exception.Message
+        $msg = $_.Exception.Message
+        if ($msg -match 'Refresh Token|Decoded Payload|OIDCAuthToken') {
+            $msg = 'OIDC token type/binding error (details redacted)'
+        }
+        $row.error = $msg
         Write-Host ("[FAIL] {0} :: {1}" -f $Label, $row.error) -ForegroundColor Yellow
     }
     return [pscustomobject]$row
+}
+
+function Clear-PWPSCloudModule {
+    Get-Module PWPS_Cloud, pwps_cloud -ErrorAction SilentlyContinue |
+        Remove-Module -Force -ErrorAction SilentlyContinue
 }
 
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
@@ -157,6 +185,10 @@ $imported = @()
 try { Undo-PWLogin -ErrorAction SilentlyContinue | Out-Null } catch { }
 try { Close-PWConnection -ErrorAction SilentlyContinue | Out-Null } catch { }
 
+# Start clean: overlapping DAB/Cloud OIDC types and cmdlet resolution cause false denials.
+Get-Module PWPS_Cloud, pwps_cloud, PWPS_DAB, pwps_dab -ErrorAction SilentlyContinue |
+    Remove-Module -Force -ErrorAction SilentlyContinue
+
 function Invoke-ImsNonAdminLogin {
     param([string]$Ds, [string]$ModuleQualifier = '')
     # PWPS_DAB uses -DatasourceName; PWPS_Cloud docs often show -Datasource.
@@ -200,10 +232,18 @@ else {
     Write-Host ("Using module(s): {0}" -f ($imported -join ', '))
 }
 
-# Do not import PWPS_DAB and PWPS_Cloud in the same session: OIDC token types
-# conflict and Bentley recommends one module per session. Inventory Cloud via ListAvailable only.
-if ($hasCloud -and ($imported -notcontains 'PWPS_Cloud')) {
-    Write-Host 'PWPS_Cloud is installed; re-run with -PreferCloudModule for a Cloud-only session.'
+# Do not keep PWPS_DAB and PWPS_Cloud loaded together: OIDC types conflict and
+# Bentley recommends one module per session. DAB import can auto-pull Cloud.
+if ($imported -contains 'PWPS_DAB') {
+    Get-Module PWPS_Cloud, pwps_cloud -ErrorAction SilentlyContinue |
+        Remove-Module -Force -ErrorAction SilentlyContinue
+    if ($hasCloud) {
+        Write-Host 'PWPS_Cloud is installed; re-run with -PreferCloudModule for a Cloud-only session (not co-loaded).'
+    }
+}
+if ($imported -contains 'PWPS_Cloud') {
+    Get-Module PWPS_DAB, pwps_dab -ErrorAction SilentlyContinue |
+        Remove-Module -Force -ErrorAction SilentlyContinue
 }
 
 $Progressive.modulesImported = $imported
@@ -262,23 +302,32 @@ $sessionProbes += Invoke-Probe 'Get-PWServerVersion' { Get-PWServerVersion }
 $Progressive.session = $sessionProbes
 
 Write-Section 'Cmdlet inventory (post-login)'
-$cloudCmds = @(Get-Command *-Cloud* -ErrorAction SilentlyContinue | Select-Object Name, ModuleName, CommandType)
+# IMPORTANT: Get-Command *-Cloud* auto-imports PWPS_Cloud and can break DAB
+# report-only folder/document metadata reads. Only inventory Cloud when requested.
+$usingCloudSession = ($imported -contains 'PWPS_Cloud')
+$cloudCmds = @()
 $pwpsCloudCmds = @()
-if (Get-Module PWPS_Cloud -ErrorAction SilentlyContinue) {
+if ($usingCloudSession) {
+    $cloudCmds = @(Get-Command *-Cloud* -ErrorAction SilentlyContinue | Select-Object Name, ModuleName, CommandType)
     $pwpsCloudCmds = @(Get-Command -Module PWPS_Cloud -ErrorAction SilentlyContinue | Select-Object Name, CommandType)
+    Write-Host ("*-Cloud* cmdlets: {0}" -f $cloudCmds.Count)
+    $cloudCmds | Select-Object -First 30 | ForEach-Object { Write-Host ("  {0}\{1}" -f $_.ModuleName, $_.Name) }
+    Write-Host ("PWPS_Cloud exports: {0}" -f $pwpsCloudCmds.Count)
+}
+else {
+    Clear-PWPSCloudModule
+    Write-Host 'Skipping Cloud cmdlet auto-discovery (DAB-only session). Use -PreferCloudModule separately.'
 }
 $Progressive.cmdlets = [ordered]@{
-    cloudStar     = @($cloudCmds | ForEach-Object { "$($_.ModuleName)\$($_.Name)" })
+    cloudStar      = @($cloudCmds | ForEach-Object { "$($_.ModuleName)\$($_.Name)" })
     pwpsCloudCount = $pwpsCloudCmds.Count
     pwpsCloudSample = @($pwpsCloudCmds | Select-Object -First 40 -ExpandProperty Name)
-    hasGetCloudProject = (Test-Cmd 'Get-CloudProject')
+    hasGetCloudProject = if ($usingCloudSession) { (Test-Cmd 'Get-CloudProject') } else { $false }
     hasGetWorkAreas = (Test-Cmd 'Get-PWWorkAreas') -or (Test-Cmd 'Get-PWRichProjects')
+    dabOnlySession = (-not $usingCloudSession)
 }
-Write-Host ("*-Cloud* cmdlets: {0}" -f $cloudCmds.Count)
-$cloudCmds | Select-Object -First 30 | ForEach-Object { Write-Host ("  {0}\{1}" -f $_.ModuleName, $_.Name) }
-Write-Host ("PWPS_Cloud exports: {0}" -f $pwpsCloudCmds.Count)
 
-Write-Section 'Folder / project reads'
+Write-Section 'Generic root discovery (often blocked under report-only)'
 $readProbes = @()
 $readProbes += Invoke-Probe 'Get-PWFolders (Documents)' { Get-PWFolders -FolderPath 'Documents' -ErrorAction Stop }
 $readProbes += Invoke-Probe 'Get-PWFoldersImmediateChildren Documents' {
@@ -292,10 +341,8 @@ $readProbes += Invoke-Probe 'Get-PWFolderView Documents' {
     else { throw 'cmdlet missing' }
 }
 
-# Alternate roots sometimes used on cloud DS
-foreach ($root in @('', 'Documents\AZDOT', 'AZDOT')) {
-    if ([string]::IsNullOrWhiteSpace($root)) { continue }
-    $readProbes += Invoke-Probe ("Get-PWFolders '{0}'" -f $root) {
+foreach ($root in @('Documents\AZDOT', 'AZDOT', '02_HELP')) {
+    $readProbes += Invoke-Probe ("Get-PWFolders '{0}' (no -JustOne)" -f $root) {
         Get-PWFolders -FolderPath $root -ErrorAction Stop
     }
 }
@@ -306,30 +353,62 @@ if (Test-Cmd 'Get-PWWorkAreas') {
 elseif (Test-Cmd 'Get-PWRichProjects') {
     $readProbes += Invoke-Probe 'Get-PWRichProjects' { Get-PWRichProjects -ErrorAction Stop }
 }
+$Progressive.genericReads = $readProbes
 
-# Shallow doc listing if any folder name appeared
-$folderSample = $null
-foreach ($p in $readProbes) {
-    if ($p.ok -and $p.sample -and $p.sample.Count -gt 0) {
-        $folderSample = [string]$p.sample[0]
-        break
+Write-Section 'Known-folder metadata (report-only path that can succeed)'
+# Ensure Cloud is not loaded before exact-path metadata probes.
+if (-not $usingCloudSession) { Clear-PWPSCloudModule }
+$knownProbes = @()
+$firstKnownDoc = $null
+foreach ($known in @($KnownFolderPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+    $knownProbes += Invoke-Probe ("Get-PWFolders -JustOne '{0}'" -f $known) {
+        Get-PWFolders -FolderPath $known -JustOne -ErrorAction Stop
+    }
+    if (Test-Cmd 'Get-PWDocumentsBySearch') {
+        $docProbe = Invoke-Probe ("Get-PWDocumentsBySearch JustThisFolder '{0}'" -f $known) {
+            Get-PWDocumentsBySearch -FolderPath $known -JustThisFolder -PopulatePath -ErrorAction Stop |
+                Select-Object -First 25
+        }
+        $knownProbes += $docProbe
+        if ($docProbe.ok -and -not $firstKnownDoc) {
+            try {
+                $firstKnownDoc = @(
+                    Get-PWDocumentsBySearch -FolderPath $known -JustThisFolder -PopulatePath -ErrorAction Stop
+                ) | Select-Object -First 1
+            }
+            catch { }
+        }
     }
 }
-if ($folderSample -and (Test-Cmd 'Get-PWDocumentsBySearch')) {
-    $docPath = $folderSample
-    if ($docPath -notmatch '(?i)^Documents\\' -and $docPath -notmatch '(?i)^Documents$') {
-        # leave as-is; Get-PWDocumentsBySearch often wants path without Documents\
+$Progressive.knownFolderReads = $knownProbes
+
+if ($ProbeExport) {
+    Write-Section 'Export probe (expected deny without PowerShell Users)'
+    $exportProbes = @()
+    if ($null -eq $firstKnownDoc) {
+        $exportProbes += [pscustomobject]@{
+            label = 'Export-PWDocuments'; ok = $false; error = 'no known-folder document to export'; summary = $null; sample = @()
+        }
+        Write-Host '[SKIP] Export-PWDocuments :: no known-folder document' -ForegroundColor DarkGray
     }
-    $readProbes += Invoke-Probe ("Get-PWDocumentsBySearch JustThisFolder '{0}'" -f $docPath) {
-        Get-PWDocumentsBySearch -FolderPath $docPath -JustThisFolder -ErrorAction Stop |
-            Select-Object -First 25
+    else {
+        $exportDir = Join-Path $OutDir 'export-probe'
+        New-Item -ItemType Directory -Force -Path $exportDir | Out-Null
+        $exportProbes += Invoke-Probe 'Export-PWDocuments (known folder doc)' {
+            Export-PWDocuments -InputDocuments @($firstKnownDoc) -OutputFolder $exportDir -ErrorAction Stop
+        }
     }
+    $Progressive.export = $exportProbes
 }
-$Progressive.reads = $readProbes
 
 Write-Section 'Cloud / PWPS_Cloud Get-* probes (read-only)'
 $cloudProbes = @()
-$usingCloud = ($imported -contains 'PWPS_Cloud')
+$usingCloud = $usingCloudSession
+if (-not $usingCloud) {
+    Write-Host 'Skipped (DAB-only session). Re-run with -PreferCloudModule for Cloud probes.' -ForegroundColor DarkGray
+    $Progressive.cloud = @([pscustomobject]@{ label = 'CloudProbes'; ok = $false; error = 'skipped_dab_only_session'; summary = $null; sample = @() })
+}
+else {
 
 # Never capture/print Get-OIDCToken return value (ToString can dump refresh token).
 $token = $null
@@ -391,13 +470,12 @@ foreach ($name in $cloudGets) {
         $cloudProbes += Invoke-Probe $name { & $name -ErrorAction Stop }
     }
 }
-if (-not $usingCloud) {
-    Write-Host 'Note: Cloud probes ran under PWPS_DAB session. Prefer -PreferCloudModule for Cloud-native OIDC types.' -ForegroundColor DarkYellow
-}
 $token = $null
 $Progressive.cloud = $cloudProbes
+} # end PreferCloudModule cloud probes
 
 Write-Section 'Capability matrix'
+if (-not $usingCloudSession) { Clear-PWPSCloudModule }
 $matrixNames = @(
     'Get-PWFolders',
     'Get-PWFoldersImmediateChildren',
@@ -411,10 +489,10 @@ $matrixNames = @(
     'Get-PWUser',
     'Get-PWGroup',
     'Invoke-PWCelExpression',
-    'Get-CloudProject',
     'Get-PWWorkAreas',
     'Get-PWEnvironments'
 )
+if ($usingCloudSession) { $matrixNames += 'Get-CloudProject' }
 $matrix = @()
 foreach ($n in $matrixNames) {
     $exists = Test-Cmd $n
