@@ -166,6 +166,7 @@ def test_build_peer_review_field_values_updater_matches_originator() -> None:
     assert "qc_rechecker_name" not in fields
 
 
+@pytest.mark.project_fixture
 def test_apply_ic_stamp_copies_all_markup(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "IC_Stamp.pdf"
@@ -198,6 +199,7 @@ def test_apply_ic_stamp_copies_all_markup(tmp_path: Path) -> None:
     after.close()
 
 
+@pytest.mark.project_fixture
 def test_apply_review_stamp_without_field_population(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "Peer_Review_Stamp.pdf"
@@ -231,6 +233,7 @@ def test_apply_review_stamp_without_field_population(tmp_path: Path) -> None:
     after.close()
 
 
+@pytest.mark.project_fixture
 def test_apply_review_stamp_flatten_single_annotation(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "Peer_Review_Stamp.pdf"
@@ -275,6 +278,7 @@ def test_apply_review_stamp_flatten_single_annotation(tmp_path: Path) -> None:
     after.close()
 
 
+@pytest.mark.project_fixture
 def test_apply_i15_stamp_on_rotated_page_visual_placement(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "I-15_DR_Stamp.pdf"
@@ -310,6 +314,7 @@ def test_apply_i15_stamp_on_rotated_page_visual_placement(tmp_path: Path) -> Non
         assert view.y0 == pytest.approx(expected_visual.y0, abs=1.0)
 
 
+@pytest.mark.project_fixture
 def test_apply_i15_stamp_copies_markup_with_colors(tmp_path: Path) -> None:
     fitz = qc_review_stamp._get_fitz()
     stamp_src = Path(__file__).resolve().parents[2] / "stamps" / "I-15_DR_Stamp.pdf"
@@ -349,6 +354,7 @@ def test_apply_i15_stamp_copies_markup_with_colors(tmp_path: Path) -> None:
     assert red_found
 
 
+@pytest.mark.project_fixture
 def test_i15_bluebeam_structural_model_on_rotated_sample(tmp_path: Path) -> None:
     stamp_src = ROOT / "stamps" / "I-15_DR_Stamp.pdf"
     target_src = ROOT / "test" / "050_D-02.10_d0847drn-qc.pdf"
@@ -416,6 +422,7 @@ def test_i15_bluebeam_structural_model_on_rotated_sample(tmp_path: Path) -> None
     assert _union_aspect(generated) == pytest.approx(1.0 / src_aspect, rel=0.02)
 
 
+@pytest.mark.project_fixture
 def test_i15_stamp_preserves_page_boxes_and_existing_link(tmp_path: Path) -> None:
     stamp_src = ROOT / "stamps" / "I-15_DR_Stamp.pdf"
     target_src = ROOT / "test" / "050_D-02.10_d0847drn-qc.pdf"
@@ -460,6 +467,7 @@ def test_i15_stamp_preserves_page_boxes_and_existing_link(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+@pytest.mark.project_fixture
 def test_i15_stamp_orientation_metadata_all_page_rotations(tmp_path: Path, rotation: int) -> None:
     stamp_src = ROOT / "stamps" / "I-15_DR_Stamp.pdf"
     if not stamp_src.is_file():

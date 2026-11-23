@@ -12,7 +12,7 @@ The pipeline reads **`appsettings.json`** at the repo root (strict JSON). Use th
 | `$schema` in JSON | IDE only; ignored at runtime. |
 | Profile merge | `appsettings.test.json` loads `appsettings.json` then the profile then `appsettings.test.local.json` then `appsettings.secrets.json`. `appsettings.json` also merges `appsettings.local.json` and `appsettings.secrets.json`. |
 
-**Testing / local overlays:** see [`docs/reference/testing-config.md`](../reference/testing-config.md). Copy `appsettings.test.json.example` → `appsettings.test.json` (gitignored).
+**Testing / local overlays:** see [`docs/reference/testing-config.md`](../reference/testing-config.md). The offline baseline creates its own standalone test config. Create a gitignored `appsettings.test.json` overlay only for separately configured integration testing.
 
 **Dry-run / side effects:** see [`docs/reference/dry-run-policy.md`](../reference/dry-run-policy.md). Watcher and worker log `EFFECTIVE_DRY_RUN_POLICY` at startup.
 

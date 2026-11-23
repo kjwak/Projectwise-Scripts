@@ -1,7 +1,7 @@
 ﻿"""Static checks for DOCUMENT_ATTR sheet_index sync from ProjectWise."""
-import json
 from pathlib import Path
 
+from appsettings_fixture import read_base_appsettings
 from module_impl import module_impl_path, read_module_source
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,7 +58,7 @@ def test_document_attr_propagates_qc_review_type_to_associated_sheet():
     assert "fieldsRaw.qcProcessType" in text
     assert "_PWD-NormalizePwEnvironmentForQcReviewType" in text
     assert "pwWritesEnabled" in text
-    appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
+    appsettings = read_base_appsettings()
     assert appsettings["QCProcess"]["EnableLegacyReviewTypeAttributeSync"] is False
 
 
@@ -90,7 +90,8 @@ def test_reconciliation_scan_uses_full_attribute_batch_builder():
 
     db = DATABASE.read_text(encoding="utf-8")
     assert "checker_email NVARCHAR(200)" in db
-    assert "sheetParamsPerRow = 12" in db
+    assert "sheetParamsPerRow = 13" in db
+    assert '@qcProcessType{0}' in db and '$params["qcProcessType$r"]' in db
 
 
 def test_database_schema_upgrade_applies_additive_patches_before_version_check():
@@ -117,7 +118,8 @@ def test_document_state_propagates_to_associated_sheet_files():
     assert "_PWD-InvokeSetPwDocumentState" in discovery
 
     watch = WATCHER.read_text(encoding="utf-8")
-    assert "Sync-PWAssociatedSheetWorkflowState -Config $config" in watch
+    assert "Sync-PWAssociatedSheetWorkflowState @syncPwParams" in watch
+    assert "WATCH_FAST_AUDIT_SYNC_PASS" in watch
     assert "WATCH_SHEET_STATE_SYNC" in discovery
 
 
@@ -135,7 +137,7 @@ def test_qc_prepend_defaults_review_type_on_associated_sheet():
     assert "Invoke-PrependQcReviewTypeDefaultIfNeeded" in prepend_pw
     assert "Ensure-PWQcReviewTypeOnAssociatedSheet" in prepend_pw
 
-    appsettings = json.loads((REPO_ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
+    appsettings = read_base_appsettings()
     enabled = appsettings["projectWise"]["qcReviewTypeAttributes"]["enabledEnvironments"]
     assert "Caltrans" in enabled
 

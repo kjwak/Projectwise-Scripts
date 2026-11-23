@@ -1,28 +1,27 @@
 # Testing configuration
 
-Use a **test profile** so queue folders, dry-run behavior, and optional SQL telemetry stay separate from day-to-day `appsettings.json`, without duplicating the full file.
+## Offline Windows baseline
 
-## Quick start
+Use a clean Git checkout and a developer Python environment. Install the PDF and test dependencies once, then launch the baseline twice with separate output directories:
 
-1. Copy the example profile:
+```powershell
+python -m pip install -r .\tools\overlay\requirements-dev.txt
 
-   ```powershell
-   Copy-Item .\appsettings.test.json.example .\appsettings.test.json
-   ```
+$run1 = Join-Path $env:TEMP ('pwqc-baseline-' + [guid]::NewGuid().ToString('N'))
+$run2 = Join-Path $env:TEMP ('pwqc-baseline-' + [guid]::NewGuid().ToString('N'))
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test\powershell\run_offline_baseline.ps1 -OutputDirectory $run1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test\powershell\run_offline_baseline.ps1 -OutputDirectory $run2
+```
 
-2. Adjust paths in `appsettings.test.json` if `C:\QC_Test\` is not suitable.
+Each output path must be new. The runner records the Git revision, tool versions, executed commands and suite outcomes in `summary.txt`. The individual logs contain details and pytest case counts. Compare both outcomes and preserve the logs for review. A failing suite makes the runner exit nonzero.
 
-3. Run scripts with the test profile:
+- Python uses synthetic PDF overlay and annotation fixtures. Tests marked `project_fixture` require existing project PDFs or stamp assets and are deselected.
+- Windows PowerShell runs the queue, config, module inventory/import, watcher bootstrap/restore and Status Set publication tests. The publication test substitutes mock export and archive operations. The SQL integration test reports an expected skip using the runner's standalone `offline.json` with `database.enabled: false`.
+- The runner reads checked-in defaults for policy assertions and uses scratch paths for test outputs. It does not run services or require ProjectWise, SQL Server, Graph, a scheduled task or a publication target. Use this runner for offline verification. The existing focus runner can invoke the SQL integration test with the checkout's configured settings.
 
-   ```powershell
-   .\scripts\service\Watch-QCTrigger.ps1 -AppSettingsPath .\appsettings.test.json -DryRun
-   .\scripts\service\Run-QCProcessor.ps1 -AppSettingsPath .\appsettings.test.json
-   .\scripts\service\Start-QCPipelineDashboard.ps1 -AppSettingsPath .\appsettings.test.json
-   ```
+## Optional integration profiles
 
-The example sets **`database.enabled: false`** so you can test on a laptop with no SQL Server installed. Telemetry is skipped; the JSON queue and processors still run. See `docs/data/database-telemetry.md`.
-
-`appsettings.test.json`, `appsettings.local.json`, and `appsettings.secrets.json` are **gitignored**. Only `*.example` templates are committed. For the modelling PC, start from `appsettings.remote-worker.example.json` (copy keys into `appsettings.local.json`). UNC claims from that overlay still require `Start-QCRemoteWorkerHost.ps1 -AllowUncQueue` (or `workers.remoteHost.allowUncQueue`).
+There is no checked-in `appsettings.test.json.example`. For separately authorized integration work, create a gitignored `appsettings.test.json` overlay beside the base file and pass it with `-AppSettingsPath`. Set test-only roots and endpoints explicitly. Any omitted setting inherits the base defaults, and the secrets file can override your profile. Global dry-run alone does not isolate external dependencies. Review the [effective dry-run policy](dry-run-policy.md) before using any service or discovery entrypoint.
 
 ## How merge works
 
@@ -36,41 +35,15 @@ The example sets **`database.enabled: false`** so you can test on a laptop with 
 
 The result’s `Data.mergeChain` lists the files that were merged (useful in logs).
 
-## What the example profile changes
+## Optional test SQL Server
 
-`appsettings.test.json.example` is a **small overlay** merged on top of repo `appsettings.json`:
+The offline baseline skips the SQL integration test. To run it separately against an authorized test instance, provide a test-only profile with `database.enabled: true` and a connection string pointing to an isolated test database such as `QC_Pipeline_Test`.
 
-| Area | Test intent |
-|------|-------------|
-| `dryRun` | `true` — safer PW / queue behavior |
-| `queue` / `qcPrepend` / `statusSet` | Under `C:\QC_Test\` — no collision with `C:\QC_E2E_RealRun\` |
-| `statusSet.writeBackToPW` | `false` — local status-set builds without PW upload |
-| `database.enabled` | `false` — no SQL required for local testing |
-| `watcher.mode` | `audit_only` — lighter watcher loop for local runs |
-| `notifications` | Mock / disabled |
-
-Inherited from base `appsettings.json` unless you override them: `projectWise.watchList`, `triggers`, `filters`, `qcWorkflow`, etc. To scope testing to one PW root, add a `projectWise.watchList` block to your local `appsettings.test.json`.
-
-## Optional: enable SQL on your laptop later
-
-When you install SQL Server Express (or already have an instance), set in `appsettings.test.json`:
-
-```json
-"database": {
-  "enabled": true,
-  "connectionString": "Server=localhost\\SQLEXPRESS;Database=QC_Pipeline_Test;Trusted_Connection=True;TrustServerCertificate=True;",
-  "allowWritesInDryRun": true,
-  "logPlannedEventsInDryRun": true
-}
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test\powershell\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.test.json
 ```
 
-Create an empty database `QC_Pipeline_Test` (or let `Initialize-QCDatabaseSchema` run on first pipeline start if your login can create it). Schema is applied automatically by `modules/Database/Core.Database.psm1`.
-
-With global `dryRun: true`, SQL writes stay off unless `allowWritesInDryRun` is `true` — useful when you want PW dry run but still fill `audit_events` / `sheet_index` in a test database.
-
-DB integration tests: `.\test\powershell\test_audit_events_db.ps1 -AppSettingsPath .\appsettings.test.json` (skips when `database.enabled` is false).
-
-The `db\DatabaseProjectQC_Pipeline\` folder is an SSDT schema project for publish/review; the runtime does not read it directly. See `docs/data/database-telemetry.md`.
+The SQL integration test initializes the schema and writes disposable rows. The maintained schema initializer is `Initialize-QCDatabaseSchema` in `modules/Database/Core.Database.psm1`. [Database telemetry](../data/database-telemetry.md) documents the schema, and `scripts/sql/` contains checked-in maintenance scripts. This repository has no SSDT project.
 
 ## Machine-specific overrides
 
@@ -90,12 +63,8 @@ Example `appsettings.test.local.json`:
 }
 ```
 
-## Python tests
-
-Static tests under `test/python/` still read committed `appsettings.json` for default-policy checks. They are not switched by `-AppSettingsPath`. Integration work should use PowerShell tests or discovery scripts with `-AppSettingsPath`.
-
 ## Related
 
-- `docs/reference/appsettings-reference.md` — all sections
-- `docs/data/database-telemetry.md` — schema and tables
-- `test/powershell/test_config_profile_merge.ps1` — merge chain unit test
+- [Appsettings reference](appsettings-reference.md)
+- [Database telemetry](../data/database-telemetry.md)
+- [Profile merge test](../../test/powershell/test_config_profile_merge.ps1)

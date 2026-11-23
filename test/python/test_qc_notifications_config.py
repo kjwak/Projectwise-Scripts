@@ -1,10 +1,9 @@
-﻿import json
-from pathlib import Path
+﻿from pathlib import Path
 
+from appsettings_fixture import read_base_appsettings
 from module_impl import module_impl_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APPSETTINGS = REPO_ROOT / "appsettings.json"
 NOTIFICATIONS = module_impl_path("QC.Notifications.psm1")
 TEMPLATES = module_impl_path("QC.NotificationTemplates.psm1")
 GRAPH = module_impl_path("QC.NotificationGraph.psm1")
@@ -13,7 +12,7 @@ DOC = REPO_ROOT / "docs" / "workflow" / "qc-notifications.md"
 
 
 def test_appsettings_notifications_production_delivery_defaults():
-    config = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))
+    config = read_base_appsettings()
     notifications = config["notifications"]
     rendition = config["qcRendition"]
 
@@ -38,7 +37,7 @@ def test_appsettings_notifications_production_delivery_defaults():
 
 
 def test_appsettings_notification_events_include_lifecycle_states():
-    events = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["notifications"]["events"]
+    events = read_base_appsettings()["notifications"]["events"]
 
     assert events["Originated"]["eventType"] == "READY_FOR_QC"
     assert events["Originated"]["enabled"] is True
@@ -92,7 +91,7 @@ def test_graph_module_supports_html_and_client_secret_sendmail():
 
 
 def test_appsettings_notifications_email_defaults_html():
-    email = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["notifications"]["email"]
+    email = read_base_appsettings()["notifications"]["email"]
     assert email["bodyFormat"] == "Html"
     assert "qc_notification.html" in email["templatePath"]
     assert email["logoPath"].endswith("typsalogo.png.webp")

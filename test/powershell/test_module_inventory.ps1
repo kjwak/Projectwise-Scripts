@@ -1,24 +1,28 @@
-﻿# Ensures modules/FILES.md lists every *.psm1 (and no extras).
+# Ensures modules/FILES.md documents every organized module implementation.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $modulesDir = Join-Path $repoRoot 'modules'
 $filesMd = Join-Path $modulesDir 'FILES.md'
 
-$onDisk = @(Get-ChildItem -LiteralPath $modulesDir -Filter '*.psm1' | ForEach-Object { $_.Name } | Sort-Object)
+$onDisk = @(Get-ChildItem -LiteralPath $modulesDir -Filter '*.psm1' -File -Recurse |
+    Where-Object { $_.DirectoryName -ne $modulesDir } |
+    ForEach-Object { $_.FullName.Substring($modulesDir.Length + 1).Replace('\', '/') } |
+    Sort-Object)
 $raw = Get-Content -LiteralPath $filesMd -Raw
-$inDoc = [regex]::Matches($raw, '`([A-Za-z0-9._-]+\.psm1)`') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$inDoc = @([regex]::Matches($raw, '(?m)^\| `([\w./-]+\.psm1)` \|') |
+    ForEach-Object { $_.Groups[1].Value } |
+    Sort-Object)
 
-$missingFromDoc = @($onDisk | Where-Object { $_ -notin $inDoc })
-$extraInDoc = @($inDoc | Where-Object { $_ -notin $onDisk })
-
-if ($missingFromDoc.Count -gt 0 -or $extraInDoc.Count -gt 0) {
-    if ($missingFromDoc.Count -gt 0) {
-        Write-Host "Missing from modules/FILES.md: $($missingFromDoc -join ', ')"
+$differences = @(Compare-Object -ReferenceObject $onDisk -DifferenceObject $inDoc)
+foreach ($difference in $differences) {
+    if ($difference.SideIndicator -eq '<=') {
+        Write-Host "Missing from modules/FILES.md: $($difference.InputObject)"
+    } else {
+        Write-Host "Unexpected or duplicate path in modules/FILES.md: $($difference.InputObject)"
     }
-    if ($extraInDoc.Count -gt 0) {
-        Write-Host "Listed in FILES.md but not on disk: $($extraInDoc -join ', ')"
-    }
-    throw 'modules/FILES.md is out of sync with modules/*.psm1. Update FILES.md and modules/README.md when adding modules.'
+}
+if ($differences.Count -gt 0) {
+    throw 'modules/FILES.md is out of sync with the organized module implementations.'
 }
 
 Write-Host "test_module_inventory.ps1 passed ($($onDisk.Count) modules)"

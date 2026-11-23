@@ -1,12 +1,9 @@
 ﻿"""Static validation for QCProcess config shape."""
-from pathlib import Path
-import json
-
-ROOT = Path(__file__).resolve().parents[2]
+from appsettings_fixture import read_base_appsettings
 
 
 def test_qc_process_config_shape() -> None:
-    appsettings = json.loads((ROOT / "appsettings.json").read_text(encoding="utf-8-sig"))
+    appsettings = read_base_appsettings()
 
     qc_process = appsettings.get("QCProcess") or {}
     assert "ProcessTypes" in qc_process

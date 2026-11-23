@@ -1,18 +1,17 @@
-﻿import json
-import subprocess
+﻿import subprocess
 from pathlib import Path
 
+from appsettings_fixture import read_base_appsettings
 from module_impl import module_impl_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APPSETTINGS = REPO_ROOT / "appsettings.json"
 WORKFLOW = module_impl_path("QC.Workflow.psm1")
 PROCESSORS = module_impl_path("QC.Processors.psm1")
 REPORTING_DOC = REPO_ROOT / "docs" / "workflow" / "qc-reporting.md"
 
 
-def test_appsettings_qc_workflow_defaults_remain_disabled_and_attribute_first():
-    config = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))
+def test_appsettings_enables_state_and_attribute_workflow_without_dry_run_writeback():
+    config = read_base_appsettings()
     workflow = config["qcWorkflow"]
 
     assert workflow["enabled"] is True
@@ -23,7 +22,7 @@ def test_appsettings_qc_workflow_defaults_remain_disabled_and_attribute_first():
 
 
 def test_appsettings_uses_states_and_review_types_not_stage_map():
-    workflow = json.loads(APPSETTINGS.read_text(encoding="utf-8-sig"))["qcWorkflow"]
+    workflow = read_base_appsettings()["qcWorkflow"]
 
     assert "stageMap" not in workflow
     assert workflow["states"]["production"] == "In Development"
