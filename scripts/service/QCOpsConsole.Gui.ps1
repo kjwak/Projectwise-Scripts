@@ -135,13 +135,18 @@ function Request-OpsSnapshot {
             return
         }
         Show-OpsSnapshot $result
+        if (($main.SelectedTab -eq $tabQueue -and -not $result.includeQueue) -or
+            ($main.SelectedTab -eq $tabLogs -and -not $logPaused.Checked -and -not $result.includeLogs)) { Request-OpsSnapshot }
     }
 }
 
 function Invoke-OpsUiSmokeTest {
     if ($main.TabCount -ne 7) { throw 'Expected seven operator tabs.' }
+    $form.Size = $form.MinimumSize
+    $main.SelectedTab = $tabActions
     $actionChoice.Text = 'Sync folder sheet index'
     if (-not $script:ActionFields.FolderPath.folder -or -not $script:ActionFields.OneLevelDeep) { throw 'Maintenance fields were not built.' }
+    if ($actionBar.Top -ge $actionBody.Top -or $actionOutput.Height -lt 100) { throw 'Action layout hides the parameters or output.' }
     $actionChoice.Text = 'Audit event retention'
     if ($script:ActionFields.AuditEventsDays.Items.Count -lt 2) { throw 'Maintenance choices were not built.' }
     $main.SelectedTab = $tabLogs
@@ -152,6 +157,18 @@ function Invoke-OpsUiSmokeTest {
     Set-OpsRows $logGrid @($second,$first) key -ColorSeverity
     if ($logGrid.Rows[0].Tag.key -ne 'two' -or (Get-OpsSelected $logGrid).key -ne 'one') { throw 'Log insert lost order or selection.' }
     $main.SelectedTab = $tabSql
+    $script:SqlDatasets = @([pscustomobject]@{
+        id = 'dbo.test'; schema = 'dbo'; name = 'test'; label = 'Test jobs [dbo.test]'; time = 'created_at'; folder = 'source_folder'
+        defaults = @('id')
+        columns = @([pscustomobject]@{ name = 'id'; sortable = $true }, [pscustomobject]@{ name = 'created_at'; sortable = $true })
+    })
+    $sqlDatasetFind.Text = 'jobs'
+    $sqlPicker.folder.Text = 'Documents\Fixture folder'
+    $request = Get-OpsSqlRequest
+    if ($request.dataset.id -ne 'dbo.test' -or $request.filter.Folder -ne 'Documents\Fixture folder') {
+        throw 'Dataset search or the custom folder selector did not reach the query.'
+    }
+    if ($sqlDatasetBar.Top -ge $sqlPager.Top -or $sqlGrid.Height -le 40) { throw 'SQL layout hides the grid at minimum size.' }
     $table = New-Object Data.DataTable
     [void]$table.Columns.Add('id', [int])
     [void]$table.Rows.Add(7)
@@ -220,6 +237,7 @@ try { [void]$form.ShowDialog() }
 finally {
     $refresh.Stop()
     $pump.Stop()
+    $logSearchDelay.Dispose()
     if (-not $SmokeTest) { Save-OpsPreferences }
     foreach ($entry in @($script:Workers.Values)) {
         try { $entry.pipeline.Stop() } catch { }

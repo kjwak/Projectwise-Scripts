@@ -14,7 +14,7 @@ $actionBody.FlowDirection = 'TopDown'
 $actionBody.WrapContents = $false
 $actionBody.Padding = '10,4,10,10'
 $tabActions.Controls.Add($actionBody)
-$actionBar.BringToFront()
+$actionBar.SendToBack()
 $actionOutput = New-OpsDetails $tabActions
 $script:ActionFields = @{}
 $script:ActionRun = $null

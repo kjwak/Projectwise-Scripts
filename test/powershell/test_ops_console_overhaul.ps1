@@ -20,6 +20,7 @@ try {
     @'
 param([string]$FolderPath, [switch]$Preview, [int]$Delay, [int]$ExitCode)
 [Console]::Out.WriteLine("out:$FolderPath|$($Preview.IsPresent)")
+[Console]::Out.WriteLine("pid:$PID")
 [Console]::Error.WriteLine('test stderr')
 Write-Host 'test host output'
 if ($Delay) { Start-Sleep -Milliseconds $Delay }
@@ -37,6 +38,9 @@ exit $ExitCode
     Assert-True ($result.Data.output.Contains('Documents\Folder with spaces\')) 'Legacy argument quoting lost the path'
     $result = Invoke-QCOpsChildProcess -ScriptPath $child -Parameters @{ Delay = 9000 } -TimeoutMs 2200
     Assert-True ($result.Code -eq 'OPS_CHILD_TIMEOUT' -and $result.Data.elapsedMs -lt 7500) 'Child timeout did not stop the wait'
+    if ($result.Data.output -match '(?m)^pid:(\d+)') {
+        Assert-True (-not (Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)) 'The timed-out child is still running'
+    }
     $result = Invoke-QCOpsChildProcess -ScriptPath (Join-Path $tempRoot 'Missing.ps1')
     Assert-True ($result.Code -eq 'OPS_CHILD_MISSING') 'Missing script should produce a typed error'
 
@@ -69,6 +73,21 @@ exit $ExitCode
     Assert-True ($rows[0].code -eq 'TEST_NEW' -and $rows[0].job -eq 'job-1') 'Logs should sort by instant and expose IDs'
     Assert-True ($rows[1].detail.message -eq "a`r`nb") 'Multiline log order was changed'
     Assert-True ((@(ConvertTo-QCOpsLogRows -Events $logs -Ascending))[0].code -eq 'TEST_OLD') 'Oldest-first log view is broken'
+    $fixtureFolders = @('pending','_logs','_prepend_holds')
+    foreach ($folderName in $fixtureFolders) { [void](New-Item -Path (Join-Path $tempRoot $folderName) -ItemType Directory) }
+    @{ id = 'pending-example'; type = 'STATUS_SET_GEN' } | ConvertTo-Json -Compress |
+        Set-Content -LiteralPath (Join-Path $tempRoot 'pending\pending-example.json')
+    @{ jobId = 'held-example'; lane = @{ folder = 'Documents\Example'; document = 'test-rev.pdf' } } | ConvertTo-Json -Compress |
+        Set-Content -LiteralPath (Join-Path $tempRoot '_prepend_holds\sample.json')
+    $logs[0] | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $tempRoot '_logs\Watch-QCTrigger_fixture.jsonl')
+    $snapshotArgs = @{
+        Config = @{ queue = @{ root = $tempRoot }; database = @{ enabled = $false } }
+        TaskName = 'QC-OpsConsole-Fixture-DoesNotExist'; IncludeQueue = $true; IncludeLogs = $true
+    }
+    $snapshot = Get-QCOpsSnapshot @snapshotArgs
+    Assert-True ($snapshot.queueAvailable -and $snapshot.oldest.BaseName -eq 'pending-example') 'Snapshot lost its configured queue or oldest job'
+    Assert-True ($snapshot.holds -eq 1 -and @($snapshot.queue | Where-Object state -eq 'held').Count -eq 1) 'Durable lane hold is missing'
+    Assert-True ($snapshot.logs.Count -eq 1 -and $snapshot.logs[0].source -eq 'watcher') 'Snapshot did not read its watcher log'
 
     $dataset = [pscustomobject]@{
         schema = 'dbo'; name = 'unsafe]name'; time = 'created_at'; folder = 'source_folder'
@@ -120,6 +139,13 @@ exit $ExitCode
     Write-Output 'test_ops_console_overhaul: passed'
 } finally {
     # This test only removes its own GUID-named temporary fixture.
+    foreach ($folderName in @('pending','_logs','_prepend_holds')) {
+        $folderPath = Join-Path $tempRoot $folderName
+        if (Test-Path -LiteralPath $folderPath) {
+            Get-ChildItem -LiteralPath $folderPath -File | Remove-Item -Force
+            Remove-Item -LiteralPath $folderPath -Force
+        }
+    }
     Get-ChildItem -LiteralPath $tempRoot -File | Remove-Item -Force
     Remove-Item -LiteralPath $tempRoot -Force
 }

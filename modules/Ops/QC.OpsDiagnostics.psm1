@@ -3,13 +3,14 @@ Import-Module (Join-Path $PSScriptRoot '..\Core\Core.Runtime.psm1') -DisableName
 Import-Module (Join-Path $PSScriptRoot '..\Core\QC.WatcherOrchestration.psm1') -DisableNameChecking
 
 function Get-QCOpsSnapshot {
-    param([hashtable]$Config, [switch]$IncludeQueue, [switch]$IncludeLogs)
-    $status = (Get-QCOpsPipelineStatus -Config $Config).Data
+    param([hashtable]$Config, [switch]$IncludeQueue, [switch]$IncludeLogs, [string]$TaskName)
+    $status = (Get-QCOpsPipelineStatus -Config $Config -TaskName $TaskName).Data
     $root = $status.queueRoot
     $snapshot = @{
         status = $status; takenAt = [datetime]::UtcNow
         oldest = $null; holds = 0; queue = @(); logs = @()
         includeQueue = $IncludeQueue.IsPresent; includeLogs = $IncludeLogs.IsPresent
+        queueAvailable = (Test-Path -LiteralPath $root -PathType Container)
         scan = (Get-QCFullScanProgress -Config $Config -QueueRoot $root)
         schedule = @(Get-QCFullScanScheduleTimesFromConfig -Config $Config)
     }
@@ -45,8 +46,9 @@ function Get-QCOpsSnapshot {
         }) | Sort-Object lastWriteTimeUtc -Descending
     }
     if ($IncludeLogs) {
-        $events = (Get-QCOpsRecentLogEvents -QueueRoot $root -MaxLines 250 -MaxFiles 12 -Unfiltered).events
-        $snapshot.logs = @(ConvertTo-QCOpsLogRows -Events $events)
+        $logs = Get-QCOpsRecentLogEvents -QueueRoot $root -MaxLines 250 -MaxFiles 12 -Unfiltered
+        $snapshot.logsAvailable = Test-Path -LiteralPath $logs.logDir -PathType Container
+        $snapshot.logs = @(ConvertTo-QCOpsLogRows -Events $logs.events)
     }
     return $snapshot
 }

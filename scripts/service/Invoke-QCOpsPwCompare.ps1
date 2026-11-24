@@ -8,7 +8,8 @@ param(
     [Parameter(Mandatory)][string]$OutputPath,
     [string]$SheetNumber = '',
     [string]$DocumentGuid = '',
-    [string]$PackageId = ''
+    [string]$PackageId = '',
+    [string]$DocumentPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +33,8 @@ if ($PackageId) {
     $result = Compare-QCProjectWiseToDatabase -PackageId $PackageId
 } elseif ($DocumentGuid) {
     $result = Compare-QCProjectWiseToDatabase -DocumentGuid $DocumentGuid
+} elseif ($DocumentPath) {
+    $result = Compare-QCProjectWiseToDatabase -DocumentPath $DocumentPath
 } else {
     $result = Compare-QCProjectWiseToDatabase -SheetNumber $SheetNumber
 }

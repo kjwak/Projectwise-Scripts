@@ -59,6 +59,8 @@ $logGrid = New-OpsGrid $logSplit.Panel1 ([ordered]@{
 })
 $logGrid.Columns['message'].AutoSizeMode = 'Fill'
 $logDetails = New-OpsDetails $logSplit.Panel2
+$logSearchDelay = New-Object Windows.Forms.Timer
+$logSearchDelay.Interval = 225
 $script:LogRows = @()
 Set-OpsChoices $logOrder @('Newest first','Oldest first') $script:Prefs.LogOrder
 Set-OpsChoices $logRange @('All loaded','Last hour','Last 6 hours','Last 24 hours') $script:Prefs.LogRange
@@ -119,7 +121,7 @@ function Show-OpsSnapshot($Snapshot) {
         'Watcher' = "$($status.stateLabel) | ProjectWise $($status.pwText)"
         'Last watcher tick' = if ($status.lastTick) { Format-QCDisplayTime -Value $status.lastTick.ts } else { 'Unavailable' }
         'Audit watermark age' = $age
-        'Queue' = "$($status.queue.pending) pending | $($status.queue.running) running | $($status.queue.failed) failed | $($Snapshot.holds) lane holds"
+        'Queue' = if ($Snapshot.queueAvailable) { "$($status.queue.pending) pending | $($status.queue.running) running | $($status.queue.failed) failed | $($Snapshot.holds) lane holds" } else { 'Queue folder unavailable' }
         'Oldest pending' = $oldest
         'Reconciliation' = $scan
         'Scheduled scans (Arizona)' = $Snapshot.schedule -join ', '
@@ -130,8 +132,16 @@ function Show-OpsSnapshot($Snapshot) {
     if ($status.lastStall) { $items['Last watcher stall'] = "$($status.lastStall.code) | $(Format-QCDisplayTime -Value $status.lastStall.ts)" }
     if ($status.lastNotificationFail) { $items['Last notification failure'] = "$($status.lastNotificationFail.code) | $(Format-QCDisplayTime -Value $status.lastNotificationFail.ts)" }
     Set-OpsRows $overview @(foreach ($name in $items.Keys) { @{ item = $name; value = $items[$name] } }) item
+    foreach ($row in $overview.Rows) {
+        $item = $row.Tag.item
+        if ($item -in @('Last watcher stall','Last notification failure') -or
+            ($item -eq 'Queue' -and (-not $Snapshot.queueAvailable -or $Snapshot.holds -gt 0 -or $status.queue.failed -gt 0))) {
+            $row.DefaultCellStyle.ForeColor = [Drawing.Color]::Firebrick
+        }
+    }
     Set-OpsNotice $overviewFresh "Updated $stamp"
     if ($Snapshot.includeQueue) {
+        if (-not $Snapshot.queueAvailable) { Set-OpsNotice $queueNotice 'Stale data | Queue folder unavailable' -ErrorState; return }
         $script:QueueRows = @($Snapshot.queue)
         $types = @('All types') + @($script:QueueRows.type | Where-Object { $_ } | Sort-Object -Unique)
         if ($queueType.Text -and $queueType.Text -notin $types) { $types += $queueType.Text }
@@ -140,6 +150,7 @@ function Show-OpsSnapshot($Snapshot) {
         Set-OpsNotice $queueNotice "$($queueGrid.Rows.Count) shown | up to 250 per queue state, plus deferred | $stamp"
     }
     if ($Snapshot.includeLogs -and -not $logPaused.Checked) {
+        if (-not $Snapshot.logsAvailable) { Set-OpsNotice $logNotice 'Log folder unavailable or not created yet.' -ErrorState; return }
         $script:LogRows = @($Snapshot.logs)
         Show-OpsLogs
         Set-OpsNotice $logNotice "$($logGrid.Rows.Count) shown | $stamp"
@@ -201,6 +212,7 @@ function Show-OpsLogs {
         if ($query -and ($row.code,$row.job,$row.document,$row.message,$row.source -join ' ').IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
         $row
     })
+    $rows = @($rows | Select-Object -First 1500)
     if ($logOrder.Text -eq 'Oldest first') { [array]::Reverse($rows) }
     Set-OpsRows $logGrid $rows key -ColorSeverity
     Show-OpsLogDetails
@@ -250,9 +262,12 @@ function Request-OpsSheets([bool]$Compare) {
     $folder = Get-OpsFolder $sheetPicker
     $guid = ''
     $package = ''
+    $documentPath = ''
     if ($Compare) {
         $guid = [string](Get-OpsValue $selected 'document_guid')
         $package = [string](Get-OpsValue $selected 'sheet_package_id')
+        if (-not $guid -and ($query -as [guid])) { $guid = $query }
+        if ($query -match '[\\/]') { $documentPath = $query }
     }
     if (-not ($query -or $folder -or $guid -or $package)) { Set-OpsNotice $sheetNotice 'Enter a stem, GUID, folder or document path.' -ErrorState; return }
     if (-not $query) { $query = $folder }
@@ -261,19 +276,20 @@ function Request-OpsSheets([bool]$Compare) {
         param($p)
         $ErrorActionPreference = 'Stop'
         if ($p.compare) {
-            $result = Invoke-QCOpsPwCompareChild -AppSettingsPath $p.settings -SheetNumber $p.query -DocumentGuid $p.guid -PackageId $p.package
+            $result = Invoke-QCOpsPwCompareChild -AppSettingsPath $p.settings -SheetNumber $p.query -DocumentGuid $p.guid -PackageId $p.package -DocumentPath $p.documentPath
         } else {
             $result = Search-QCOpsSheets -Config $p.config -Query $p.query -Folder $p.folder
         }
         if (-not $result.IsSuccess) { throw $result.Message }
-        @{ result = $result.Data; compare = $p.compare }
-    } @{ compare = $Compare; settings = $AppSettingsPath; query = $query; guid = $guid; package = $package; folder = $folder; config = $script:Cfg } {
+        @{ result = $result.Data; compare = $p.compare; package = $p.package }
+    } @{ compare = $Compare; settings = $AppSettingsPath; query = $query; guid = $guid; package = $package; documentPath = $documentPath; folder = $folder; config = $script:Cfg } {
         param($value, $errorText)
         if ($errorText) { Set-OpsNotice $sheetNotice "Stale or unavailable | $errorText" -ErrorState; return }
         $result = $value.result
         if ($value.compare) {
             Set-OpsColumns $sheetGrid (Get-OpsFriendlyColumns @('role','document_name','database_state','projectwise_state','state_match','database_qc_process_type','projectwise_qc_process_type','qc_process_type_match','document_guid'))
             $rows = @($result.data.comparisons | Where-Object { $_ })
+            if ($value.package) { foreach ($row in $rows) { $row.sheet_package_id = $value.package } }
         } else {
             Set-OpsColumns $sheetGrid (Get-OpsFriendlyColumns @('dataset','sheet_stem','folder_path','document_name','document_guid','pw_state_name','qc_process_type','sheet_package_id'))
             $rows = @(foreach ($key in $result.data.matches_by_table.Keys) {
@@ -326,7 +342,8 @@ $logSource.Add_SelectedIndexChanged({ Show-OpsLogs })
 $logLevel.Add_SelectedIndexChanged({ Show-OpsLogs })
 $logOrder.Add_SelectedIndexChanged({ Show-OpsLogs })
 $logRange.Add_SelectedIndexChanged({ Show-OpsLogs })
-$logFind.Add_TextChanged({ Show-OpsLogs })
+$logFind.Add_TextChanged({ $logSearchDelay.Stop(); $logSearchDelay.Start() })
+$logSearchDelay.Add_Tick({ $this.Stop(); Show-OpsLogs })
 $logPaused.Add_CheckedChanged({
     $logRefresh.Enabled = -not $this.Checked
     if ($this.Checked) { Set-OpsNotice $logNotice "Paused | $($logGrid.Rows.Count) shown" }

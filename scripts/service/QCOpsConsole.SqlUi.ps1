@@ -60,20 +60,6 @@ $sqlNotice = New-OpsLabel $sqlPager 'Load a dataset.'
 $sqlSplit = New-OpsSplit $sqlBrowse
 $sqlGrid = New-OpsGrid $sqlSplit.Panel1
 $sqlDetails = New-OpsDetails $sqlSplit.Panel2
-$sqlDatasetBar.BringToFront()
-$sqlScopeBar.BringToFront()
-$sqlFilterBar.BringToFront()
-$sqlPager.BringToFront()
-# Fill is laid out after the top-docked bars.
-$sqlSplit.BringToFront()
-$sqlDatasetBar.SendToBack()
-$sqlScopeBar.SendToBack()
-$sqlFilterBar.SendToBack()
-$sqlPager.SendToBack()
-# Order top-docked bars from dataset selector to pager.
-$sqlBrowse.Controls.SetChildIndex($sqlDatasetBar, $sqlBrowse.Controls.Count - 1)
-$sqlBrowse.Controls.SetChildIndex($sqlScopeBar, $sqlBrowse.Controls.Count - 2)
-$sqlBrowse.Controls.SetChildIndex($sqlFilterBar, $sqlBrowse.Controls.Count - 3)
 
 $customBar = New-OpsToolbar $sqlCustom
 $customRun = New-OpsButton $customBar 'Run SELECT'

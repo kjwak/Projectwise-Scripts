@@ -37,10 +37,11 @@ function Get-QCOpsQueueRoot {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Config)
     $root = $null
-    try {
-        if ($Config.queue -and $Config.queue.rootDir) { $root = [string]$Config.queue.rootDir }
-        elseif ($Config.queue -and $Config.queue.root) { $root = [string]$Config.queue.root }
-    } catch { }
+    if ($Config['queue']) {
+        foreach ($key in @('rootDir','root','path')) {
+            if ($Config['queue'][$key]) { $root = [string]$Config['queue'][$key]; break }
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($root)) {
         $repoRoot = Split-Path -Parent $modulesRoot
         $root = Join-Path $repoRoot 'queue'
@@ -1738,7 +1739,7 @@ function Invoke-QCOpsMaintenanceScript {
 
 function Invoke-QCOpsPwCompareChild {
     [CmdletBinding()]
-    param([string]$AppSettingsPath, [string]$SheetNumber, [string]$DocumentGuid, [string]$PackageId)
+    param([string]$AppSettingsPath, [string]$SheetNumber, [string]$DocumentGuid, [string]$PackageId, [string]$DocumentPath)
     $helper = Join-Path (Get-QCOpsRepoRoot) 'scripts\service\Invoke-QCOpsPwCompare.ps1'
     $outFile = Join-Path $env:TEMP ('qc-ops-pwcompare-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
@@ -1746,6 +1747,7 @@ function Invoke-QCOpsPwCompareChild {
         if ($SheetNumber) { $parameters.SheetNumber = $SheetNumber }
         if ($DocumentGuid) { $parameters.DocumentGuid = $DocumentGuid }
         if ($PackageId) { $parameters.PackageId = $PackageId }
+        if ($DocumentPath) { $parameters.DocumentPath = $DocumentPath }
         $result = Invoke-QCOpsChildProcess -ScriptPath $helper -Parameters $parameters -TimeoutMs 180000
         if (-not $result.IsSuccess) { return $result }
         if (-not (Test-Path -LiteralPath $outFile)) {

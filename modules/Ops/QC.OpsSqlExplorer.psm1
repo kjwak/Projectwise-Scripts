@@ -204,17 +204,25 @@ function Invoke-QCOpsCustomSelect {
 function Export-QCOpsExplorerCsv {
     param([System.Data.DataTable]$Table, [string[]]$Columns, [string]$Path)
     if (-not $Table.Rows.Count) { throw 'There are no matching rows to export.' }
-    $Table.Rows | ForEach-Object {
-        $values = [ordered]@{}
-        foreach ($column in $Columns) {
-            $value = $_[$column]
-            if ($value -is [datetimeoffset]) { $value = $value.ToString('o') }
-            if ($value -is [datetime]) { $value = $value.ToString('o') }
-            if ($value -is [string] -and $value -match '^\s*[=+\-@]') { $value = "'" + $value }
-            $values[$column] = $value
-        }
-        [pscustomobject]$values
-    } | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding UTF8
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $temporary = Join-Path ([IO.Path]::GetDirectoryName($fullPath)) ('.qc-export-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $Table.Rows | ForEach-Object {
+            $values = [ordered]@{}
+            foreach ($column in $Columns) {
+                $value = $_[$column]
+                if ($value -is [datetimeoffset] -or $value -is [datetime]) { $value = $value.ToString('o') }
+                if ($value -is [byte[]]) { $value = [Convert]::ToBase64String($value) }
+                if ($value -is [string] -and $value -match '^\s*[=+\-@]') { $value = "'" + $value }
+                $values[$column] = $value
+            }
+            [pscustomobject]$values
+        } | Export-Csv -LiteralPath $temporary -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+        if ([IO.File]::Exists($fullPath)) { [IO.File]::Replace($temporary, $fullPath, [NullString]::Value) }
+        else { [IO.File]::Move($temporary, $fullPath) }
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
 }
 
 Export-ModuleMember -Function Get-QCOpsExplorerCatalog, New-QCOpsExplorerQuery, Invoke-QCOpsExplorerPage, New-QCOpsCustomSelect, Invoke-QCOpsCustomSelect, Export-QCOpsExplorerCsv
