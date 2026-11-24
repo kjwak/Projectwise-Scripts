@@ -19,6 +19,14 @@ Each output path must be new. The runner records the Git revision, tool versions
 - Windows PowerShell runs the queue, config, module inventory/import, watcher bootstrap/restore and Status Set publication tests. The publication test substitutes mock export and archive operations. The SQL integration test reports an expected skip using the runner's standalone `offline.json` with `database.enabled: false`.
 - The runner reads checked-in defaults for policy assertions and uses scratch paths for test outputs. It does not run services or require ProjectWise, SQL Server, Graph, a scheduled task or a publication target. Use this runner for offline verification. The existing focus runner can invoke the SQL integration test with the checkout's configured settings.
 
+Use the following command to run just the service export regression test.
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\test\powershell\test_watcher_module_bootstrap.ps1
+```
+
+The test runs the watcher and worker bootstrap in separate Windows PowerShell 5.1 processes, with and without Status Set publication preloaded. It checks the watcher's reload and restore path and repeats the worker's bootstrap. A deliberately absent standalone settings file stops each entrypoint before service work. Bentley and scheduled-task stubs fail the test if called.
+
 ## Optional integration profiles
 
 There is no checked-in `appsettings.test.json.example`. For separately authorized integration work, create a gitignored `appsettings.test.json` overlay beside the base file and pass it with `-AppSettingsPath`. Set test-only roots and endpoints explicitly. Any omitted setting inherits the base defaults, and the secrets file can override your profile. Global dry-run alone does not isolate external dependencies. Review the [effective dry-run policy](dry-run-policy.md) before using any service or discovery entrypoint.
