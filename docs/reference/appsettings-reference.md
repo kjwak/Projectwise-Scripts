@@ -91,7 +91,7 @@ Optional: `environmentEmailAttributes` — see `docs/workflow/pw-environment-ema
 
 Use explicit folder entries to include selected ProjectWise folders in reconciliation. The watcher joins `root` (a `Documents\...` path) and `path` (a relative folder path). With `oneLevelDeep: false`, it scans only that folder. Set `enableStatusSet: true` to build a separate `_StatusSet.pdf` from the matching sheet PDF and DGN pairs in each folder.
 
-The I-15 bridge entries under `CADD\Sheets\STR` use exact folder paths so reconciliation can scan those folders at the existing project discovery depth.
+The I-15 bridge and retaining-wall entries under `CADD\Sheets\STR` use exact folder paths so reconciliation can scan those folders at the existing project discovery depth.
 
 ### watchList.roots[].qcRendition
 
@@ -328,7 +328,7 @@ Copies each configured Status Set PDF to a ProjectWise archive folder after the 
 | `sets[].destinationFolder` | Existing ProjectWise folder. The copy does not create the folder. |
 | `sets[].fileNamePattern` | Must include `{yyyyMMdd}` or `{yyyy-MM-dd}`. Optional `{segmentId}`. |
 
-The `CAFWY2200-I-15_ELPSE` project publishes `N_Seg`, `S_Seg`, and the 15 configured `CADD\Sheets\STR\BR-*` folders to `Out\_I-15-ELPSE_Civil-StatusSets`. Each bridge archive uses `{yyyyMMdd}_{segmentId}_StatusSet.pdf`, where `segmentId` is the exact bridge folder name, including any spaces. To provision another project, add a `projects[]` entry. Leave `sets` empty until the source and destination folders exist.
+The `CAFWY2200-I-15_ELPSE` project publishes `N_Seg`, `S_Seg`, and the 19 configured bridge and retaining-wall folders under `CADD\Sheets\STR` to `Out\_I-15-ELPSE_Civil-StatusSets`. The bridge and retaining-wall archives use `{yyyyMMdd}_{segmentId}_StatusSet.pdf`, where `segmentId` is the exact folder name, including any spaces. To provision another project, add a `projects[]` entry. Leave `sets` empty until the source and destination folders exist.
 
 Manual check, from the repo root on a ProjectWise workstation:
 
