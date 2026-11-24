@@ -87,6 +87,12 @@ Each entry discovers every `…/{sheetsPathFromProject}` folder under `path`:
 
 Optional: `environmentEmailAttributes` — see `docs/workflow/pw-environment-email-attributes.md`.
 
+### watchList.folders[]
+
+Use explicit folder entries to include selected ProjectWise folders in reconciliation. The watcher joins `root` (a `Documents\...` path) and `path` (a relative folder path). With `oneLevelDeep: false`, it scans only that folder. Set `enableStatusSet: true` to build a separate `_StatusSet.pdf` from the matching sheet PDF and DGN pairs in each folder.
+
+The I-15 bridge entries under `CADD\Sheets\STR` use exact folder paths so reconciliation can scan those folders at the existing project discovery depth.
+
 ### watchList.roots[].qcRendition
 
 Define the ProjectWise rendition profile for every Sheets folder discovered under that root. Resolution matches the job’s `sourceFolder` to the longest `path` prefix, then applies `qcRendition.folderOverrides` if any.
@@ -310,19 +316,19 @@ Copies each configured Status Set PDF to a ProjectWise archive folder after the 
 
 | Key | Description |
 |-----|-------------|
-| `enabled` | Watcher switch. Committed value is `false` so a deploy does not start Monday copies until review. |
+| `enabled` | Enables scheduled archive copies in the watcher. |
 | `timeZoneId` | Calendar zone for the publication date. `America/Phoenix` maps to Windows `US Mountain Standard Time`. |
 | `trigger.dayOfWeek` | Default `Monday`. |
 | `trigger.time` | Must match a `fullScanSchedule.times` entry. Default `06:00`. |
 | `projects[].projectKey` | Operator name passed to `Test-StatusSetPublication.ps1 -ProjectKey`. |
 | `projects[].enabled` | Scheduled runs skip `enabled: false`. The manual script can still target the project. |
-| `projects[].sets[]` | One archive document per entry. Add a set to cover another segment; no code change. |
+| `projects[].sets[]` | One archive document per entry. Add a set for each folder to publish. |
 | `sets[].sourceFolder` | Folder that already contains the generated Status Set PDF. |
 | `sets[].identification.method` | `statusSetPdfName` (uses `statusSet.statusSetPdfName`) or `documentName`. |
 | `sets[].destinationFolder` | Existing ProjectWise folder. The copy does not create the folder. |
 | `sets[].fileNamePattern` | Must include `{yyyyMMdd}` or `{yyyy-MM-dd}`. Optional `{segmentId}`. |
 
-The initial project is `CAFWY2200-I-15_ELPSE` (`N_Seg` and `S_Seg` into `Out\_I-15-ELPSE_Civil-StatusSets`). To provision another project, add a `projects[]` entry. Leave `sets` empty until the source and destination folders exist.
+The `CAFWY2200-I-15_ELPSE` project publishes `N_Seg`, `S_Seg`, and the 15 configured `CADD\Sheets\STR\BR-*` folders to `Out\_I-15-ELPSE_Civil-StatusSets`. Each bridge archive uses `{yyyyMMdd}_{segmentId}_StatusSet.pdf`, where `segmentId` is the exact bridge folder name, including any spaces. To provision another project, add a `projects[]` entry. Leave `sets` empty until the source and destination folders exist.
 
 Manual check, from the repo root on a ProjectWise workstation:
 
