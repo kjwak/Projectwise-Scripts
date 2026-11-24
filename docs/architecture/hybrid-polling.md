@@ -49,7 +49,7 @@ Full folder reconciliation runs once per schedule slot per calendar day (after t
 
 **Crash fix:** `Invoke-QCWatcherLongRunningWork` no longer uses `System.Threading.Timer` heartbeats (those crashed the watcher ~180s into large `statusset_sheet_index` work). Progress is same-runspace only.
 
-**Operator full scan (ops console):** while the dashboard watcher is live, do **not** spawn a second `Watch-QCTrigger`. The ops GUI writes `queue/_watcher/ops-request.json` (`action=fullScan`, `requestedAtUtc`, `requestedBy`). `Get-QCFullFolderScanReconciliationPlan` treats that as due (`mode=ops_request`); after the scan finishes the watcher deletes the file. “Run audit tick now” is a no-op while the pipeline is on (the watcher is already cycling). If the pipeline is off, a one-shot `Watch-QCTrigger.ps1` is allowed.
+**Operator full scan (ops console):** Request full scan writes `queue/_watcher/ops-request.json` (`action=fullScan`, `requestedAtUtc`, `requestedBy`). `Get-QCFullFolderScanReconciliationPlan` treats that as due (`mode=ops_request`) and the watcher deletes the file when the scan finishes. When the QC server's scheduled task is disabled and stopped, **Run one watcher pass** uses `Watch-QCTrigger.ps1 -Once` to override `watcher.continuous`. The watcher holds an exclusive file handle at `queue/_watcher/active-watcher.lock` throughout startup, polling, and disconnect. See the [ops console guide](../reference/qc-ops-console.md).
 
 Per-folder reconcile noise goes to `Watch-QCTrigger-Reconcile_{yyyy-MM-dd_HH}.jsonl`; lifecycle events (`WATCH_RECONCILE_CYCLE`, `WATCH_FULL_SCAN_PREEMPT` / `RESUME`, slot done/failed) stay in the main watcher JSONL.
 

@@ -23,6 +23,8 @@ Guidance for AI agents (Cursor, Codex, etc.) working in this repository.
 
 Pass `-AppSettingsPath` to override config (e.g. `.\appsettings.test.json` for safe local runs).
 
+For operator workflows and SQL Explorer setup, see [the ops console guide](docs/reference/qc-ops-console.md). The manual watcher action uses `-Once` when the boot task is disabled and stopped. Watchers share an exclusive queue lease in `_watcher/active-watcher.lock`.
+
 There are **no** watcher/worker scripts at the repository root.
 
 ## Domain model (current production)

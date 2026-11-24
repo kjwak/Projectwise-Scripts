@@ -21,6 +21,19 @@ function Get-QCReconcileStatusSetsOnStart {
     return $onStart
 }
 
+function Enter-QCWatcherLease {
+    param([Parameter(Mandatory)][string]$QueueRoot)
+    $folder = Join-Path $QueueRoot '_watcher'
+    [void][IO.Directory]::CreateDirectory($folder)
+    $path = Join-Path $folder 'active-watcher.lock'
+    try {
+        # The open handle is the lease. Leave the file in place to avoid unlink/reopen races.
+        return [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        throw "Cannot acquire the watcher lease at '$path'. Another watcher may already be running. $($_.Exception.Message)"
+    }
+}
+
 function Get-QCWatcherContinuousSettings {
     [CmdletBinding()]
     param(
@@ -1387,4 +1400,4 @@ function Invoke-QCWatcherAuditTick {
     }
 }
 
-Export-ModuleMember -Function Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Test-QCFullScanCanResumeFolderQueue, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick, Get-QCWatcherOpsRequestPath, Get-QCWatcherOpsRequest, Set-QCWatcherOpsRequest, Clear-QCWatcherOpsRequest
+Export-ModuleMember -Function Enter-QCWatcherLease, Get-QCWatcherMode, Get-QCReconciliationPlan, Get-QCReconcileStatusSetsOnStart, Get-QCWatcherContinuousSettings, Get-QCInitiatedWorkflowStateName, Test-QCWorkflowStateIsQcInitiated, Get-QCFinalizingWorkflowStateName, Test-QCWorkflowStateIsQcFinalizing, Get-QCReadyForVerificationWorkflowStateName, Test-QCWorkflowStateIsReadyForVerification, Test-QCWorkflowStateIsAutomationIntake, Get-QCPrependAuditActions, Invoke-QCRecoverQueue, Invoke-QCReconcileAudit, Invoke-QCReconcileOutputs, Invoke-QCWatcherStartupSequence, Get-QCAuditWatermarkAgeSeconds, Get-QCFullScanScheduleTimesFromConfig, Get-QCFullFolderScanReconciliationPlan, Test-QCFullScanScheduleSlotComplete, Set-QCFullScanScheduleSlotComplete, Get-QCFullScanPreemptSettings, Get-QCFullScanProgress, Test-QCFullScanCanResumeFolderQueue, Set-QCFullScanProgress, Clear-QCFullScanProgress, Get-QCWatcherStallRecoverySettings, Test-QCWatcherChildStalled, Write-QCWatcherPhaseHeartbeat, Invoke-QCWatcherLongRunningWork, Stop-QCWatcherChildForStall, Invoke-QCWatcherAuditTick, Get-QCWatcherOpsRequestPath, Get-QCWatcherOpsRequest, Set-QCWatcherOpsRequest, Clear-QCWatcherOpsRequest

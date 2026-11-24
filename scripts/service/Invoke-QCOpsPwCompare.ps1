@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory)][string]$AppSettingsPath,
     [Parameter(Mandatory)][string]$OutputPath,
     [string]$SheetNumber = '',
-    [string]$DocumentGuid = ''
+    [string]$DocumentGuid = '',
+    [string]$PackageId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +28,9 @@ Import-QCModuleBootstrapSet -RepoRoot $repoRoot -FeatureModules @(
 
 Initialize-QCDebugMcpContext -AppSettingsPath $AppSettingsPath | Out-Null
 $result = $null
-if ($DocumentGuid) {
+if ($PackageId) {
+    $result = Compare-QCProjectWiseToDatabase -PackageId $PackageId
+} elseif ($DocumentGuid) {
     $result = Compare-QCProjectWiseToDatabase -DocumentGuid $DocumentGuid
 } else {
     $result = Compare-QCProjectWiseToDatabase -SheetNumber $SheetNumber

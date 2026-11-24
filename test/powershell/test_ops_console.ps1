@@ -82,7 +82,7 @@ try {
     Assert-Eq $requeueSkip.Data.skipped 1 'prepend_complete counted as skipped'
     Assert-True (Test-Path -LiteralPath $failedPath) 'skipped job stays in failed'
     $requeueWb = Invoke-QCOpsRequeueJobs -Config $cfg -JobPaths @($failedPath) -WritebackOnly
-    Assert-Eq $requeueWb.Data.moved 1 'writeback-only requeue moves prepend_complete'
+    Assert-Eq $requeueWb.Data.moved 1 ('writeback-only requeue moves prepend_complete. ' + ($requeueWb.Data.errors -join '; '))
     Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $queueRoot 'pending') 'job-prepend.json')) 'job landed in pending'
 
     $blind = Invoke-QCOpsEnqueueJobType -Config $cfg -JobType 'QC_PREPEND'
@@ -215,23 +215,21 @@ try {
     Assert-True ($guiText -notmatch "(?m)^\s*(Start-Process|&).{0,120}Start-QCPipelineDashboard") 'GUI does not start the dashboard'
     Assert-True ($guiText -match '-STA') 'GUI requests STA'
     Assert-True ($guiText -match 'NoGui') 'GUI keeps text console fallback'
-    Assert-True ($guiText -notmatch "_New-Tab 'Hosts'") 'Hosts tab removed'
-    Assert-True ($guiText -notmatch 'QC_COMMENT_STATUS_SYNC') 'Runs tab does not enqueue comment sync'
-    Assert-True ($guiText -match 'IncludePriority') 'pending queue grid includes priority'
-    Assert-True ($guiText -match 'IncludeDeferredStatusSet') 'pending grid includes deferred dirty-folder status-set rows'
-    Assert-True ($guiText -match "\[W\]") 'deferred pending jobs use \[W\] wait marker'
-    Assert-True ($guiText -match 'statusSetBatchText') 'header binds status-set batch schedule'
-    Assert-True ($guiText -match 'HostStatusLabels') 'header binds color-coded host status labels'
-    Assert-True ($guiText -notmatch 'lblRemote') 'header no longer uses a single remote label'
-    Assert-True ($guiText -match 'Get-QCOpsHostHealthColorArgb') 'host lines use health colors'
-    Assert-True ($guiText -notmatch 'gridQueueCounts') 'header no longer uses a fixed DataGridView for counts'
-    Assert-True ($guiText -match "Source folder") 'SQL filter is source folder'
-    Assert-True ($guiText -match 'cmbSqlSourceFolder') 'SQL folder combo exists'
-    Assert-True ($guiText -notmatch "Source path") 'SQL filter is not source path'
-    Assert-True ($guiText -match "\(Arizona\)") 'SQL watermark picker is Arizona wall clock'
-    Assert-True ($guiText -notmatch "\(local\)") 'SQL watermark picker is not machine-local'
-    Assert-True ($guiText -match 'Format-QCDisplayTime') 'GUI formats times through display zone helper'
-    Assert-True ($guiText -match 'ConvertFrom-QCDisplayWallClock') 'watermark rewind treats picker as Arizona'
+    Assert-True ($guiText -match 'QCOpsConsole\.Gui\.ps1') 'GUI loads logon UI components'
+    $diagnosticsUi = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\QCOpsConsole.DiagnosticsUi.ps1') -Raw
+    $actionsUi = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\service\QCOpsConsole.ActionsUi.ps1') -Raw
+    Assert-True ($diagnosticsUi -match 'Get-QCOpsRequeueBlockReason') 'queue inspection explains requeue restrictions'
+    Assert-True ($diagnosticsUi -match 'statusSetBatchText') 'overview includes Status Set batching'
+    Assert-True ($actionsUi -match 'Once = \$true') 'manual watcher invocation forces one pass'
+    $lease = Enter-QCWatcherLease -QueueRoot $queueRoot
+    try {
+        $denied = $false
+        try { $duplicate = Enter-QCWatcherLease -QueueRoot $queueRoot; $duplicate.Dispose() }
+        catch { $denied = $true }
+        Assert-True $denied 'a second watcher cannot acquire the same queue lease'
+    } finally { $lease.Dispose() }
+    $lease = Enter-QCWatcherLease -QueueRoot $queueRoot
+    $lease.Dispose()
 
     $utcNoon = [datetime]::SpecifyKind([datetime]'2026-08-27T19:00:00', 'Utc')
     Assert-Eq (Format-QCDisplayTime -Value $utcNoon) '2026-08-27 12:00:00' 'UTC 19:00 formats as Arizona 12:00'

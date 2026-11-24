@@ -27,8 +27,7 @@ param(
         'telemetry',
         'all'
     )]
-    [string]$Table = 'telemetry',
-    [switch]$WhatIf
+    [string]$Table = 'telemetry'
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -74,7 +73,7 @@ function _Repair-Column {
         $new = [string]$normRes.Data.path
         if ($new -eq $old) { continue }
         $changed++
-        if ($WhatIf) {
+        if ($WhatIfPreference) {
             Write-Host "[WhatIf] $TableName $key : $old -> $new"
             continue
         }

@@ -38,6 +38,9 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$Continuous,
 
+    # A manual invocation performs one pass even when watcher.continuous is enabled.
+    [switch]$Once,
+
     [Parameter(Mandatory = $false)]
     [int]$PollIntervalMs = 0
 )
@@ -609,6 +612,11 @@ $cfgRes = Read-QCAppSettings -Path $AppSettingsPath
 if (-not $cfgRes.IsSuccess) { throw $cfgRes.Message }
 $config = [hashtable]$cfgRes.Data.config
 
+if ($Once -and $Continuous) { throw 'Specify either -Once or -Continuous.' }
+$queueRoot = _Get-WatcherQueueRoot -Config $config
+$watcherLease = Enter-QCWatcherLease -QueueRoot $queueRoot
+try {
+# Keep the queue lease for startup, all ticks and disconnect.
 $telemetryRunId = ''
 if (Get-Command -Name 'Set-QCAutomationTelemetryContext' -ErrorAction SilentlyContinue) {
     $telemetryRunId = Set-QCAutomationTelemetryContext -Config $config -ProcessName 'Watch-QCTrigger'
@@ -641,7 +649,7 @@ $watcherMode = Get-QCWatcherMode -Config $config -ReconcileStatusSetsFirst:$Reco
 $reconcileStatusSetsOnStart = Get-QCReconcileStatusSetsOnStart -Config $config
 $pollIntervalOverride = if ($PollIntervalMs -gt 0) { [int]$PollIntervalMs } else { $null }
 $watcherContinuousSettings = Get-QCWatcherContinuousSettings -Config $config -ContinuousSwitch:$Continuous.IsPresent -PollIntervalMsOverride $pollIntervalOverride
-$watcherContinuous = [bool]$watcherContinuousSettings.continuous
+$watcherContinuous = -not $Once.IsPresent -and [bool]$watcherContinuousSettings.continuous
 $watcherPollSleepMs = [int]$watcherContinuousSettings.pollSleepMs
 
 $ignoreSampleEvery = 50
@@ -672,7 +680,6 @@ if (Get-Command -Name 'Write-QCEffectiveDryRunPolicyLog' -ErrorAction SilentlyCo
     Write-QCEffectiveDryRunPolicyLog -Config $config -Role 'watcher' -Flush
 }
 
-$queueRoot = _Get-WatcherQueueRoot -Config $config
 
 $script:auditRestartOverlapDone = $false
 $script:startupOutputsReconcileDone = $false
@@ -3564,4 +3571,7 @@ if ($pwSessionOpen) {
 }
 
 exit 0
+} finally {
+    $watcherLease.Dispose()
+}
 

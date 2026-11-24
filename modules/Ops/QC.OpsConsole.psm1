@@ -12,6 +12,7 @@ Import-Module (Join-Path $modulesRoot 'Queue\QC.HostThrottle.psm1') -Force -Warn
 Import-Module (Join-Path $modulesRoot 'Core\QC.WatcherOrchestration.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Core\QC.StatusSetBatching.psm1') -Force -WarningAction SilentlyContinue
 Import-Module (Join-Path $modulesRoot 'Database\Core.Database.psm1') -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $PSScriptRoot 'QC.OpsProcess.psm1') -DisableNameChecking
 
 $script:QCOpsDefaultTaskName = 'QC-PipelineDashboard'
 $script:QCOpsExpectedHost = 'PXBENTLEY01'
@@ -409,6 +410,7 @@ function Get-QCOpsRecentLogEvents {
     foreach ($pair in @(
             @{ tag = 'Watch-QCTrigger'; source = 'watcher' }
             @{ tag = 'Run-QCProcessor'; source = 'processor' }
+            @{ tag = 'Start-QCPipelineDashboard'; source = 'dashboard' }
         )) {
         $files = @()
         if (Test-Path -LiteralPath $logDir) {
@@ -423,7 +425,8 @@ function Get-QCOpsRecentLogEvents {
                 try { $o | Add-Member -NotePropertyName 'logSource' -NotePropertyValue $pair.source -Force } catch { }
                 try { $o | Add-Member -NotePropertyName 'logFile' -NotePropertyValue $f.Name -Force } catch { }
                 [void]$events.Add($o)
-                if ($pair.source -eq 'watcher') { [void]$watch.Add($o) } else { [void]$proc.Add($o) }
+                if ($pair.source -eq 'watcher') { [void]$watch.Add($o) }
+                elseif ($pair.source -eq 'processor') { [void]$proc.Add($o) }
             }
         }
     }
@@ -640,13 +643,14 @@ function Get-QCOpsRunningJobRows {
         [int]$Limit = 0,
         [string[]]$PreferJobTypes = @(),
         [hashtable]$Config,
+        [switch]$NewestPending,
         [switch]$IncludeDeferredStatusSet
     )
     $dir = Join-Path $QueueRoot $State
     $out = New-Object System.Collections.Generic.List[object]
     if (Test-Path -LiteralPath $dir) {
         $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-        if ($Limit -gt 0 -and $State -ne 'pending' -and $files.Count -gt $Limit) {
+        if ($Limit -gt 0 -and ($State -ne 'pending' -or $NewestPending) -and $files.Count -gt $Limit) {
             $files = @($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First $Limit)
         }
         foreach ($f in $files) {
@@ -679,6 +683,15 @@ function Get-QCOpsRunningJobRows {
                 $lockPath = Join-Path (Join-Path $QueueRoot 'locks') ($id + '.lock')
                 $locked = Test-Path -LiteralPath $lockPath
             } catch { }
+            $disposition = ''; $errorDetail = ''; $managedPrepend = $false
+            try { $disposition = [string]$j.disposition } catch { }
+            try { $managedPrepend = [bool]$j.prependOperation } catch { }
+            foreach ($field in @('lastError','errorMessage','errorCode')) {
+                if ($j -and $j.PSObject.Properties[$field] -and $j.$field) {
+                    $errorDetail = if ($j.$field -is [string]) { $j.$field } else { $j.$field | ConvertTo-Json -Depth 8 -Compress }
+                    break
+                }
+            }
             [void]$out.Add([pscustomobject]@{
                 state = $State
                 jobId = $id
@@ -690,6 +703,9 @@ function Get-QCOpsRunningJobRows {
                 checkpoint = $ckpt
                 locked = [bool]$locked
                 deferred = $false
+                disposition = $disposition
+                errorDetail = $errorDetail
+                managedPrepend = $managedPrepend
                 path = $f.FullName
                 lastWriteTimeUtc = $f.LastWriteTimeUtc
                 lastWriteTime = (Format-QCDisplayTime -Value $f.LastWriteTimeUtc)
@@ -738,15 +754,27 @@ function Test-QCOpsCanRequeueJob {
         [Parameter(Mandatory)]$JobRow,
         [switch]$WritebackOnly
     )
+    return -not (Get-QCOpsRequeueBlockReason -JobRow $JobRow -WritebackOnly:$WritebackOnly)
+}
+
+function Get-QCOpsRequeueBlockReason {
+    param($JobRow, [switch]$WritebackOnly)
     $type = [string]$JobRow.type
     $ckpt = [string]$JobRow.checkpoint
     $deferred = $false
     try { $deferred = [bool]$JobRow.deferred } catch { }
-    if ($deferred) { return $false }
+    if ($deferred) { return 'Deferred Status Set work has no queue job to requeue.' }
+    try { if ($JobRow.disposition -in @('needs_operator','lane_held')) { return 'Resolve the prepend lane hold before requeueing.' } } catch { }
+    try { if ($JobRow.locked) { return 'The job is locked.' } } catch { }
+    try { if ($JobRow.state -and $JobRow.state -notin @('failed','succeeded')) { return 'Only failed or succeeded jobs can be requeued.' } } catch { }
+    try { if ($JobRow.managedPrepend -and $ckpt -notin @('prepend_complete','writeback_running')) { return 'This prepend has a recorded upload. Use the recovery procedure.' } } catch { }
     if ($type -eq 'QC_PREPEND' -and $ckpt -in @('prepend_complete', 'writeback_running') -and -not $WritebackOnly.IsPresent) {
-        return $false
+        return 'Upload completed. Select writeback-only to resume the checkpoint.'
     }
-    return $true
+    if ($WritebackOnly -and ($type -ne 'QC_PREPEND' -or $ckpt -notin @('prepend_complete','writeback_running'))) {
+        return 'This job has no prepend writeback checkpoint.'
+    }
+    return ''
 }
 
 function Get-QCOpsPipelineStatus {
@@ -1017,34 +1045,41 @@ function Invoke-QCOpsRequeueJobs {
     $skipped = 0
     $errors = New-Object System.Collections.Generic.List[string]
     $queueRoot = Get-QCOpsQueueRoot -Config $Config
-    $pendingDir = Join-Path $queueRoot 'pending'
-    if (-not (Test-Path -LiteralPath $pendingDir)) { New-Item -ItemType Directory -Path $pendingDir -Force | Out-Null }
     foreach ($path in @($JobPaths)) {
         if (-not (Test-Path -LiteralPath $path)) { $skipped++; continue }
+        $fullPath = [IO.Path]::GetFullPath($path)
+        $parent = Split-Path -Parent $fullPath
+        $state = Split-Path -Leaf $parent
+        if ($state -notin @('failed','succeeded') -or $parent -ine [IO.Path]::GetFullPath((Join-Path $queueRoot $state))) {
+            $skipped++; continue
+        }
         $job = $null
         try { $job = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { $job = $null }
         if (-not $job) { $skipped++; continue }
+        $jobId = [IO.Path]::GetFileNameWithoutExtension($fullPath)
+        if ($job.PSObject.Properties['id'] -and $job.id -and $job.id -ne $jobId) { $skipped++; continue }
         $row = [pscustomobject]@{
             type = [string]$job.type
             checkpoint = $(try { [string]$job.checkpoint } catch { '' })
+            disposition = $(try { [string]$job.disposition } catch { '' })
+            managedPrepend = $(try { [bool]$job.prependOperation } catch { $false })
+            locked = (Test-Path -LiteralPath (Join-Path $queueRoot "locks\$jobId.lock"))
+            state = $state
         }
-        if (-not (Test-QCOpsCanRequeueJob -JobRow $row -WritebackOnly:$WritebackOnly)) {
+        $blocked = Get-QCOpsRequeueBlockReason -JobRow $row -WritebackOnly:$WritebackOnly
+        if ($blocked) {
+            $errors.Add("$jobId - $blocked")
             $skipped++
             continue
         }
-        $jobId = [string]$job.id
-        if ([string]::IsNullOrWhiteSpace($jobId)) { $jobId = [System.IO.Path]::GetFileNameWithoutExtension($path) }
-        $dst = Join-Path $pendingDir ($jobId + '.json')
         if (-not $PSCmdlet.ShouldProcess($path, 'Requeue to pending')) { continue }
         try {
-            $job | Add-Member -MemberType NoteProperty -Name 'status' -Value 'pending' -Force
-            $ht = @{}
-            foreach ($p in $job.PSObject.Properties) { $ht[$p.Name] = $p.Value }
-            $ht['status'] = 'pending'
-            $ht['updatedAtUtc'] = (Get-QCTimestamp)
-            ($ht | ConvertTo-Json -Depth 30) | Set-Content -LiteralPath $path -Encoding utf8
-            Move-Item -LiteralPath $path -Destination $dst -Force
-            $moved++
+            if ((Test-Path -LiteralPath (Join-Path $queueRoot "pending\$jobId.json")) -or
+                (Test-Path -LiteralPath (Join-Path $queueRoot "running\$jobId.json"))) {
+                throw 'A pending or running record already exists for this job.'
+            }
+            $move = Move-QCJob -Config $Config -JobId $jobId -FromState $state -ToState 'pending'
+            if ($move.IsSuccess) { $moved++ } else { throw $move.Message }
         } catch {
             [void]$errors.Add($_.Exception.Message)
         }
@@ -1375,7 +1410,8 @@ function Search-QCOpsSheets {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Config,
-        [string]$Query = ''
+        [string]$Query = '',
+        [string]$Folder = ''
     )
     if ([string]::IsNullOrWhiteSpace($Query)) {
         return New-QCFailureResult -Code 'OPS_SEARCH_EMPTY' -Message 'Enter a sheet stem, GUID, or folder fragment.'
@@ -1400,10 +1436,20 @@ function Search-QCOpsSheets {
         if ($guid) {
             $raw = Search-QCDebugSheet -DocumentGuid $Query
         } else {
-            $raw = Search-QCDebugSheet -SheetNumber $Query
+            if ($Query -match '[\\/]') { $raw = Search-QCDebugSheet -DocumentPath $Query }
+            else { $raw = Search-QCDebugSheet -SheetNumber $Query }
         }
     } catch {
         return New-QCFailureResult -Code 'OPS_SEARCH_FAILED' -Message $_.Exception.Message
+    }
+    if ($Folder -and $raw.data.matches_by_table) {
+        $prefix = $Folder.TrimEnd('\','/')
+        foreach ($name in @($raw.data.matches_by_table.Keys)) {
+            $raw.data.matches_by_table[$name] = @($raw.data.matches_by_table[$name] | Where-Object {
+                -not $_.folder_path -or $_.folder_path -ieq $prefix -or
+                    ([string]$_.folder_path).StartsWith($prefix + '\', [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
     }
     return New-QCSuccessResult -Code 'OPS_SEARCH' -Message 'Search finished.' -Data $raw
 }
@@ -1503,91 +1549,172 @@ function Get-QCOpsWatchFolderChoices {
     return @($out.ToArray())
 }
 
+
+function Get-QCOpsFolderPresets {
+    param([hashtable]$Config)
+    $seen = @{}
+    $roots = @()
+    if ($Config['projectWise'] -and $Config['projectWise']['watchList']) { $roots = @($Config['projectWise']['watchList']['roots']) }
+    foreach ($root in $roots) {
+        if (-not $root -or -not $root['path']) { continue }
+        $path = ([string]$root.path).Trim().TrimEnd('\','/')
+        if (-not $path -or $seen.ContainsKey($path)) { continue }
+        $seen[$path] = $true
+        $project = ($path -split '[\\/]')[-1]
+        [pscustomobject]@{ project = $project; root = $path; folder = $path }
+        if ($root['sheetsPathFromProject'] -and -not $root['projectDepth']) {
+            $sheets = $path + '\' + ([string]$root.sheetsPathFromProject).TrimStart('\','/')
+            if (-not $seen.ContainsKey($sheets)) {
+                $seen[$sheets] = $true
+                [pscustomobject]@{ project = $project; root = $path; folder = $sheets }
+            }
+        }
+    }
+    foreach ($folder in @($Config['watchFolders'])) {
+        $path = if ($folder -is [string]) { $folder } elseif ($folder -is [hashtable]) { [string]$folder['path'] } else { '' }
+        if (-not $path -or $seen.ContainsKey($path)) { continue }
+        $seen[$path] = $true
+        $parent = @($seen.Keys | Where-Object { $path.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) } |
+            Sort-Object Length -Descending | Select-Object -First 1)
+        $project = if ($parent.Count) { ($parent[0] -split '[\\/]')[-1] } else { ($path -split '[\\/]')[-1] }
+        [pscustomobject]@{ project = $project; root = if ($parent.Count) { $parent[0] } else { $path }; folder = $path }
+    }
+    if ($Config['statusSetPublication']) {
+        foreach ($project in @($Config['statusSetPublication']['projects'])) {
+            if (-not $project) { continue }
+            foreach ($set in @($project['sets'])) {
+                if (-not $set -or -not $set['sourceFolder']) { continue }
+                $path = ([string]$set['sourceFolder']).TrimEnd('\','/')
+                if ($seen.ContainsKey($path)) { continue }
+                $seen[$path] = $true
+                [pscustomobject]@{ project = [string]$project['projectKey']; root = ''; folder = $path }
+            }
+        }
+    }
+}
+
 function Get-QCOpsMaintenanceCatalog {
-    [CmdletBinding()]
-    param()
     $repo = Get-QCOpsRepoRoot
-    $m = Join-Path $repo 'scripts\maintenance'
-    return @(
+    $catalog = @(
         @{
-            id = 'reconcile-status-sets'
-            label = 'Reconcile status sets'
-            script = (Join-Path $m 'Reconcile-QCStatusSets.ps1')
-            danger = 'Low'
-            flags = @(
-                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
+            id = 'pw-connection'; label = 'Test ProjectWise connection'
+            script = 'scripts\diagnostics\Test-PWConnection.ps1'
+            help = 'Check ProjectWise authentication and connectivity.'
+            preview = @{}; fields = @()
+        }
+        @{
+            id = 'pw-folder-states'; label = 'Count ProjectWise workflow states'
+            script = 'scripts\diagnostics\Get-PWFolderStateCounts.ps1'
+            help = 'Read workflow state counts for a ProjectWise folder.'
+            preview = @{}; fields = @(@{ name = 'FolderPath'; label = 'Folder'; kind = 'folder'; required = $true })
+        }
+        @{
+            id = 'reconcile-status-sets'; label = 'Reconcile status sets'
+            script = 'scripts\maintenance\Reconcile-QCStatusSets.ps1'
+            help = 'Compare local Status Sets with ProjectWise across the configured workspaces.'
+            preview = @{ DryRun = $true }; apply = @{}; timeoutMs = 1800000; fields = @()
+        }
+        @{
+            id = 'sync-sheet-index'; label = 'Sync folder sheet index'
+            script = 'scripts\maintenance\Sync-QCFolderSheetIndex.ps1'
+            help = 'Inspect or synchronize SQL sheet index data for one ProjectWise folder.'
+            preview = @{ DryRun = $true }; apply = @{ ConfirmWrites = $true }; timeoutMs = 1800000
+            fields = @(
+                @{ name = 'FolderPath'; label = 'Folder'; kind = 'folder'; required = $true }
+                @{ name = 'OneLevelDeep'; label = 'Include one level of subfolders'; kind = 'switch' }
+                @{ name = 'WorkflowStates'; label = 'Include workflow states'; kind = 'switch' }
+                @{ name = 'EmailAttributes'; label = 'Include email attributes'; kind = 'switch' }
             )
         }
         @{
-            id = 'sync-sheet-index'
-            label = 'Sync sheet index for folder'
-            script = (Join-Path $m 'Sync-QCFolderSheetIndex.ps1')
-            danger = 'Low'
-            flags = @(
-                @{ name = 'FolderPath'; kind = 'folder'; param = '-FolderPath'; required = $true }
-                @{ name = 'ConfirmWrites'; kind = 'bool'; param = '-ConfirmWrites'; default = 'Off' }
-                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
-                @{ name = 'OneLevelDeep'; kind = 'bool'; param = '-OneLevelDeep'; default = 'Off' }
+            id = 'refresh-sheet-states'; label = 'Refresh SQL sheet states'
+            script = 'scripts\maintenance\Refresh-SheetIndexStates.ps1'
+            help = 'Compare and update SQL sheet states from ProjectWise. A blank folder scans all indexed sheets.'
+            preview = @{ DryRun = $true }; apply = @{ ConfirmWrites = $true }; timeoutMs = 1800000
+            fields = @(
+                @{ name = 'FolderPathFilter'; label = 'Folder contains'; kind = 'folder' }
+                @{ name = 'Limit'; label = 'Maximum sheets (0 for all)'; kind = 'number'; initial = '0' }
+                @{ name = 'IncludeQcPdfGuids'; label = 'Include QC PDF GUIDs'; kind = 'switch' }
             )
         }
         @{
-            id = 'refresh-sheet-states'
-            label = 'Refresh sheet_index states from PW'
-            script = (Join-Path $m 'Refresh-SheetIndexStates.ps1')
-            danger = 'Medium'
-            flags = @(
-                @{ name = 'FolderPathFilter'; kind = 'folder'; param = '-FolderPathFilter' }
-                @{ name = 'ConfirmWrites'; kind = 'bool'; param = '-ConfirmWrites'; default = 'Off' }
-                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'Off' }
-                @{ name = 'IncludeQcPdfGuids'; kind = 'bool'; param = '-IncludeQcPdfGuids'; default = 'Off' }
+            id = 'repair-folder-paths'; label = 'Normalize SQL folder paths'
+            script = 'scripts\maintenance\Repair-QCDocumentsFolderPaths.ps1'
+            help = 'Preview or apply folder-path normalization to the selected tables.'
+            preview = @{ WhatIf = $true }; apply = @{}; timeoutMs = 1800000
+            fields = @(@{ name = 'Table'; label = 'Tables'; kind = 'choice'; choices = @('all','telemetry','sheet_index','processing_jobs','audit_events','document_activity') })
+        }
+        @{
+            id = 'db-retention'; label = 'Audit event retention'
+            script = 'scripts\maintenance\Invoke-QCDatabaseRetention.ps1'
+            help = 'Count or delete audit events beyond the selected retention age.'
+            preview = @{ DryRun = $true }; apply = @{ ConfirmDeletes = $true }; timeoutMs = 1800000
+            fields = @(
+                @{ name = 'AuditEventsDays'; label = 'Keep events for'; kind = 'choice'; choices = @('Default','30','60','90','180','365'); omit = 'Default' }
+                @{ name = 'AuditIncludeUnprocessed'; label = 'Include unprocessed events'; kind = 'switch' }
             )
         }
         @{
-            id = 'repair-folder-paths'
-            label = 'Repair folder path casing'
-            script = (Join-Path $m 'Repair-QCDocumentsFolderPaths.ps1')
-            danger = 'Low'
-            flags = @(
-                @{ name = 'Table'; kind = 'choice'; param = '-Table'; options = @('all', 'telemetry', 'sheet_index', 'processing_jobs', 'audit_events', 'document_activity'); default = 'all' }
-                @{ name = 'WhatIf'; kind = 'bool'; param = '-WhatIf'; default = 'Off' }
+            id = 'reset-folder-workflow'; label = 'Reset folder workflow and telemetry'
+            script = 'scripts\maintenance\Reset-QCFolderWorkflow.ps1'
+            help = 'Preview or reset workflow and associated telemetry for a specific folder.'
+            preview = @{ DryRun = $true }; apply = @{ ConfirmReset = $true }; timeoutMs = 1800000
+            fields = @(
+                @{ name = 'FolderPath'; label = 'Folder to reset'; kind = 'folder'; required = $true }
+                @{ name = 'KeepLanePdfRegistry'; label = 'Preserve lane PDF registry'; kind = 'switch' }
             )
         }
         @{
-            id = 'db-retention'
-            label = 'Database retention (audit_events)'
-            script = (Join-Path $m 'Invoke-QCDatabaseRetention.ps1')
-            danger = 'Medium'
-            flags = @(
-                @{ name = 'AuditEventsDays'; kind = 'choice'; param = '-AuditEventsDays'; options = @('Default', '30', '60', '90', '180', '365'); default = 'Default' }
-                @{ name = 'ConfirmDeletes'; kind = 'bool'; param = '-ConfirmDeletes'; default = 'Off' }
-                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'On' }
-                @{ name = 'AuditIncludeUnprocessed'; kind = 'bool'; param = '-AuditIncludeUnprocessed'; default = 'Off' }
-            )
-        }
-        @{
-            id = 'reset-folder-workflow'
-            label = 'Reset folder workflow + telemetry'
-            script = (Join-Path $m 'Reset-QCFolderWorkflow.ps1')
-            danger = 'High'
-            flags = @(
-                @{ name = 'FolderPath'; kind = 'folder'; param = '-FolderPath'; required = $true }
-                @{ name = 'DryRun'; kind = 'bool'; param = '-DryRun'; default = 'On' }
-                @{ name = 'ConfirmReset'; kind = 'bool'; param = '-ConfirmReset'; default = 'Off' }
-                @{ name = 'KeepLanePdfRegistry'; kind = 'bool'; param = '-KeepLanePdfRegistry'; default = 'Off' }
-            )
-        }
-        @{
-            id = 'rewind-watermark'
-            label = 'Rewind audit watermark'
-            script = '(module) Set-QCOpsAuditWatermark'
-            danger = 'High'
-            confirmText = 'REWIND WATERMARK'
-            flags = @(
-                @{ name = 'When'; kind = 'choice'; options = @('1 hour ago', '6 hours ago', '1 day ago', '7 days ago', 'Custom UTC'); default = '1 hour ago' }
-                @{ name = 'CustomUtc'; kind = 'text'; placeholder = '2026-08-24T12:00:00Z' }
+            id = 'publication-preview'; label = 'Preview Status Set publication'
+            script = 'scripts\diagnostics\Test-StatusSetPublication.ps1'
+            help = 'Inspect configured archive destinations and source selection without publishing.'
+            preview = @{ Mode = 'Preview' }
+            fields = @(
+                @{ name = 'ProjectKey'; label = 'Publication project key'; kind = 'text'; required = $true }
+                @{ name = 'AsOfDate'; label = 'As-of date (YYYY-MM-DD)'; kind = 'date'; required = $true }
+                @{ name = 'UseLatestExisting'; label = 'Use latest existing Status Set'; kind = 'switch' }
             )
         }
     )
+    foreach ($item in $catalog) {
+        $item.script = Join-Path $repo $item.script
+        if (-not $item['timeoutMs']) { $item.timeoutMs = 300000 }
+        $item
+    }
+}
+
+function Get-QCOpsMaintenanceParameters {
+    param([hashtable]$Action, [hashtable]$Values, [switch]$Apply, [string]$AppSettingsPath)
+    $mode = if ($Apply) { 'apply' } else { 'preview' }
+    if (-not $Action.ContainsKey($mode)) { throw 'This action does not support the requested mode.' }
+    $parameters = @{ AppSettingsPath = $AppSettingsPath }
+    foreach ($name in $Action[$mode].Keys) { $parameters[$name] = $Action[$mode][$name] }
+    foreach ($field in $Action.fields) {
+        $value = $Values[$field.name]
+        if ($field.kind -eq 'switch') {
+            if ($value -eq $true) { $parameters[$field.name] = $true }
+            continue
+        }
+        $value = ([string]$value).Trim()
+        if (-not $value) {
+            if ($field.required) { throw "$($field.label) is required." }
+            continue
+        }
+        if ($field['omit'] -eq $value) { continue }
+        switch ($field.kind) {
+            'choice' { if ($value -notin $field.choices) { throw "Choose a valid $($field.label)." } }
+            'number' {
+                $number = 0
+                if (-not [int]::TryParse($value, [ref]$number) -or $number -lt 0) { throw "$($field.label) must be a nonnegative integer." }
+                $value = $number
+            }
+            'date' {
+                $value = [datetime]::ParseExact($value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture).ToString('yyyy-MM-dd')
+            }
+        }
+        $parameters[$field.name] = $value
+    }
+    return $parameters
 }
 
 function Invoke-QCOpsMaintenanceScript {
@@ -1595,64 +1722,40 @@ function Invoke-QCOpsMaintenanceScript {
     param(
         [Parameter(Mandatory)][string]$ScriptPath,
         [string[]]$ArgumentList = @(),
+        [hashtable]$Parameters,
         [string]$AppSettingsPath = '',
-        [int]$TimeoutMs = 300000
+        [int]$TimeoutMs = 300000,
+        [System.Collections.Concurrent.ConcurrentQueue[string]]$OutputQueue
     )
-    if (-not (Test-Path -LiteralPath $ScriptPath)) {
-        return New-QCFailureResult -Code 'OPS_MAINT_MISSING' -Message ("Script not found: {0}" -f $ScriptPath)
+    if ($null -ne $Parameters) {
+        $Parameters = $Parameters.Clone()
+        if ($AppSettingsPath -and -not $Parameters.ContainsKey('AppSettingsPath')) { $Parameters.AppSettingsPath = $AppSettingsPath }
+    } elseif ($AppSettingsPath -and $ArgumentList -notcontains '-AppSettingsPath') {
+        $ArgumentList = @($ArgumentList) + @('-AppSettingsPath', $AppSettingsPath)
     }
-    $arg = New-Object System.Collections.Generic.List[string]
-    [void]$arg.Add('-NoProfile'); [void]$arg.Add('-ExecutionPolicy'); [void]$arg.Add('Bypass')
-    [void]$arg.Add('-MTA'); [void]$arg.Add('-File'); [void]$arg.Add($ScriptPath)
-    foreach ($a in @($ArgumentList)) { [void]$arg.Add($a) }
-    if ($AppSettingsPath -and ($ArgumentList -notcontains '-AppSettingsPath')) {
-        [void]$arg.Add('-AppSettingsPath'); [void]$arg.Add($AppSettingsPath)
-    }
-    $outFile = Join-Path $env:TEMP ('qc-ops-maint-' + [guid]::NewGuid().ToString('N') + '.txt')
-    try {
-        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @($arg.ToArray()) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $outFile
-        $text = ''
-        if (Test-Path -LiteralPath $outFile) { $text = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue }
-        $ok = ($p.ExitCode -eq 0)
-        $code = if ($ok) { 'OPS_MAINT_OK' } else { 'OPS_MAINT_FAILED' }
-        if ($ok) {
-            return New-QCSuccessResult -Code $code -Message 'Maintenance script finished.' -Data @{ exitCode = $p.ExitCode; output = $text; script = $ScriptPath }
-        }
-        return New-QCFailureResult -Code $code -Message ('Maintenance script exit ' + $p.ExitCode) -Data @{ exitCode = $p.ExitCode; output = $text; script = $ScriptPath }
-    } finally {
-        Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
-    }
+    Invoke-QCOpsChildProcess -ScriptPath $ScriptPath -ArgumentList $ArgumentList -Parameters $Parameters -TimeoutMs $TimeoutMs -OutputQueue $OutputQueue
 }
 
 function Invoke-QCOpsPwCompareChild {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$AppSettingsPath,
-        [string]$SheetNumber = '',
-        [string]$DocumentGuid = ''
-    )
+    param([string]$AppSettingsPath, [string]$SheetNumber, [string]$DocumentGuid, [string]$PackageId)
     $helper = Join-Path (Get-QCOpsRepoRoot) 'scripts\service\Invoke-QCOpsPwCompare.ps1'
-    if (-not (Test-Path -LiteralPath $helper)) {
-        return New-QCFailureResult -Code 'OPS_PW_COMPARE_MISSING' -Message 'Invoke-QCOpsPwCompare.ps1 is missing.'
-    }
     $outFile = Join-Path $env:TEMP ('qc-ops-pwcompare-' + [guid]::NewGuid().ToString('N') + '.json')
-    $arg = @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-MTA', '-File', $helper,
-        '-AppSettingsPath', $AppSettingsPath,
-        '-OutputPath', $outFile
-    )
-    if ($SheetNumber) { $arg += @('-SheetNumber', $SheetNumber) }
-    if ($DocumentGuid) { $arg += @('-DocumentGuid', $DocumentGuid) }
     try {
-        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $arg -Wait -PassThru -WindowStyle Hidden
-        $json = $null
-        if (Test-Path -LiteralPath $outFile) {
-            $json = Get-Content -LiteralPath $outFile -Raw | ConvertFrom-Json
+        $parameters = @{ AppSettingsPath = $AppSettingsPath; OutputPath = $outFile }
+        if ($SheetNumber) { $parameters.SheetNumber = $SheetNumber }
+        if ($DocumentGuid) { $parameters.DocumentGuid = $DocumentGuid }
+        if ($PackageId) { $parameters.PackageId = $PackageId }
+        $result = Invoke-QCOpsChildProcess -ScriptPath $helper -Parameters $parameters -TimeoutMs 180000
+        if (-not $result.IsSuccess) { return $result }
+        if (-not (Test-Path -LiteralPath $outFile)) {
+            return New-QCFailureResult -Code 'OPS_PW_COMPARE_NO_RESULT' -Message 'ProjectWise comparison returned no result.'
         }
-        if ($p.ExitCode -ne 0 -and -not $json) {
-            return New-QCFailureResult -Code 'OPS_PW_COMPARE_FAILED' -Message ('PW compare child exit ' + $p.ExitCode)
+        $data = Get-Content -LiteralPath $outFile -Raw | ConvertFrom-Json
+        if ($data -and $data.PSObject.Properties['ok'] -and -not $data.ok) {
+            return New-QCFailureResult -Code 'OPS_PW_COMPARE_FAILED' -Message ($data | ConvertTo-Json -Depth 6 -Compress)
         }
-        return New-QCSuccessResult -Code 'OPS_PW_COMPARE' -Message 'PW compare finished.' -Data $json
+        return New-QCSuccessResult -Code 'OPS_PW_COMPARE' -Message 'ProjectWise comparison completed.' -Data $data
     } finally {
         Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
     }
@@ -1663,16 +1766,33 @@ function Set-QCOpsAuditWatermark {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][datetime]$WatermarkUtc,
-        [string]$ConfirmText = ''
+        [string]$ConfirmText = '',
+        [switch]$WhileStopped
     )
     if ($ConfirmText -ne 'REWIND WATERMARK') {
         return New-QCFailureResult -Code 'OPS_WATERMARK_CONFIRM' -Message 'Type REWIND WATERMARK to confirm.'
     }
-    $ok = Set-QCAuditWatermarkUtc -Config $Config -WatermarkUtc $WatermarkUtc
-    if ($ok) {
-        return New-QCSuccessResult -Code 'OPS_WATERMARK_SET' -Message 'Watermark updated.' -Data @{ watermarkUtc = $WatermarkUtc }
+    $lease = $null
+    try {
+        if ($WhileStopped) {
+            $status = (Get-QCOpsPipelineStatus -Config $Config -Light).Data
+            if ($status.task.enabled -or $status.task.state -eq 'Running' -or $status.lock.alive) {
+                return New-QCFailureResult -Code 'OPS_WATERMARK_WATCHER_ACTIVE' -Message 'Stop and disable the pipeline before rewinding its audit cursor.'
+            }
+            $lease = Enter-QCWatcherLease -QueueRoot $status.queueRoot
+            $current = Get-QCAuditWatermarkUtc -Config $Config
+            if ($WatermarkUtc -gt [datetime]::UtcNow -or ($current -and $WatermarkUtc -ge $current)) {
+                return New-QCFailureResult -Code 'OPS_WATERMARK_DIRECTION' -Message 'Choose a past time earlier than the current audit watermark.'
+            }
+        }
+        $ok = Set-QCAuditWatermarkUtc -Config $Config -WatermarkUtc $WatermarkUtc
+        if ($ok) {
+            return New-QCSuccessResult -Code 'OPS_WATERMARK_SET' -Message 'Watermark updated.' -Data @{ watermarkUtc = $WatermarkUtc }
+        }
+        return New-QCFailureResult -Code 'OPS_WATERMARK_FAILED' -Message 'Set-QCAuditWatermarkUtc returned false.'
+    } finally {
+        if ($lease) { $lease.Dispose() }
     }
-    return New-QCFailureResult -Code 'OPS_WATERMARK_FAILED' -Message 'Set-QCAuditWatermarkUtc returned false.'
 }
 
 Export-ModuleMember -Function *
